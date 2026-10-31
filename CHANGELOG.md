@@ -42,8 +42,14 @@
   is inside the BEEF; every BUMP root is one the tracker holds; a coinbase
   is 100 blocks deep; bsv-rs's stream verifier judges the structure, the
   proofs and each unproven input under the network's word with the doors'
-  2^31 work budget per input; the token is read from that transaction's
-  output; then each held root is asked again. Behaviour a host sees:
+  one work policy (`DOOR_WORK_BUDGET`: 2^31 per input and 2^31 per
+  transaction); the token is read from that transaction's output; then each
+  held root is asked again. Host line for bsv-wallet-cli#376: old, at the
+  beta.5 pin the discovery evidence judged scripts under the per-input
+  budget alone; new, under both figures of the doors' policy, so an overlay
+  output whose unproven transaction's inputs together pass 2^31 units is
+  dropped (`its BEEF refused`) as the doors refuse such a spend. Test:
+  `an_output_past_the_transaction_work_budget_is_dropped`. Behaviour a host sees:
   with no chain tracker (`Services` built with no `chaintracks_url`, the
   CLI's `CHAINTRACKS_URL=off`) the doors ask no overlay and answer no
   overlay certificate, an empty answer where they answered before, never a

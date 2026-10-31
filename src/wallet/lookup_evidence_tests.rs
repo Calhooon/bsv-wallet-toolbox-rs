@@ -16,6 +16,7 @@ use super::super::fixture::{
     key, proven, proven_at, published, record_json, revealed, token, transaction, HEIGHT,
 };
 use super::{overlay_certificates, OverlayCertificate, EVIDENCE_LIMIT};
+use crate::spend_verifier::{DOOR_WORK_BUDGET, WORK_OVERRIDE};
 
 /// Holds every root but those at `refused`, and none after its opening
 /// `holds` answers; its height is `height`.
@@ -201,4 +202,53 @@ async fn an_unproven_output_is_kept_only_when_its_spend_verifies() {
         answer.push(kept(vec![at(beef.to_binary(), 0)], &tracker()).await.len());
     }
     assert_eq!(answer, vec![1, 0]);
+}
+
+/// Alice's token in a transaction spending the first `inputs` outputs of
+/// `parent` (each `OP_EQUAL`) with `1 1`, unproven, beside its proven parent.
+async fn spending(parent: &bsv_rs::transaction::Transaction, inputs: u32) -> OutputListItem {
+    let mut child = transaction(alices_token(&alice(2).await));
+    child.inputs = (0..inputs)
+        .map(|vout| {
+            let mut input = TransactionInput::new(parent.id(), vout);
+            input.set_unlocking_script(bsv_rs::script::UnlockingScript::from_hex("5151").unwrap());
+            input
+        })
+        .collect();
+    let mut beef = Beef::from_binary(&proven(parent, HEIGHT)).unwrap();
+    beef.merge_raw_tx(child.to_binary(), None);
+    at(beef.to_binary(), 0)
+}
+
+/// How many of `output` the door keeps with the doors' policy's
+/// per-transaction figure lowered to `limit` through the test seam.
+async fn kept_under(output: OutputListItem, limit: u64) -> usize {
+    let budget = DOOR_WORK_BUDGET.with_per_transaction(Some(limit));
+    WORK_OVERRIDE.with(|cell| cell.set(Some(budget)));
+    let answer = kept(vec![output], &tracker()).await.len();
+    WORK_OVERRIDE.with(|cell| cell.set(None));
+    answer
+}
+
+/// The evidence judges an unproven transaction under both figures of the
+/// doors' one policy (`DOOR_WORK_BUDGET`, bsv-rs's `WorkBudget`), as the
+/// doors do: two inputs that each fit the transaction figure but together
+/// pass it are not judged and the output is dropped, while twice the figure
+/// keeps it. No test could spend 2^31, so the figure is lowered through
+/// `WORK_OVERRIDE` (test builds only). Red where the evidence passed the
+/// per-input figure alone (`with_work_budget`, before this fix).
+#[tokio::test]
+async fn an_output_past_the_transaction_work_budget_is_dropped() {
+    let mut parent = transaction(LockingScript::from_hex("87").unwrap());
+    parent.outputs.push(parent.outputs[0].clone());
+    let fits = {
+        let mut limit = 0;
+        while kept_under(spending(&parent, 1).await, limit).await == 0 {
+            limit += 1;
+            assert!(limit < 1024, "one input's spend never fit");
+        }
+        limit
+    };
+    assert_eq!(kept_under(spending(&parent, 2).await, fits).await, 0);
+    assert_eq!(kept_under(spending(&parent, 2).await, 2 * fits).await, 1);
 }
