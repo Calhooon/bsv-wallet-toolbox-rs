@@ -53,14 +53,28 @@ async fn the_reference_token_decodes_to_its_record() {
     assert!(decoded.decrypted_fields.is_empty());
 }
 
-/// `identityUtils.ts:531-535`: the output's key is not the one an `anyone`
-/// wallet derives for the record's subject; before the fix it decoded.
+/// Another identity locks the subject's record and signs it with its own
+/// key, so the field signature is not the subject's and drops it
+/// (`identityUtils.ts:532-539`) whatever the locking key; before the fix it
+/// decoded. The locking key comparison alone is
+/// `a_token_with_only_its_locking_key_swapped_is_dropped`.
 #[tokio::test]
 async fn a_token_locked_by_another_key_is_dropped() {
     let record = alice(2).await;
     let good = alice(3).await;
-    // Another identity locks and signs the subject's record.
     only_the_good_token(token(&key(7), record_json(&record)), &good);
+}
+
+/// `identityUtils.ts:526-531`: the subject's own record and field
+/// signature, only the locking key another identity's, so the output's key
+/// is not the one an `anyone` wallet derives for the subject.
+#[tokio::test]
+async fn a_token_with_only_its_locking_key_swapped_is_dropped() {
+    let record = alice(2).await;
+    let good = alice(3).await;
+    let mut chunks = token(&key(SUBJECT), record_json(&record)).chunks();
+    chunks[0] = token(&key(7), record_json(&record)).chunks()[0].clone();
+    only_the_good_token(LockingScript::from_chunks(chunks), &good);
 }
 
 /// `identityUtils.ts:536-545`: the subject's key, but a field signature
