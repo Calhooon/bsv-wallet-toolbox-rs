@@ -36,11 +36,22 @@ pub(in crate::storage::sqlx) async fn own_word_tip(
 ) -> Result<Option<OwnTip>> {
     let tracker = match (tracker, services.as_deref()) {
         (Some(tracker), _) => tracker,
-        (None, Some(services)) => services.get_chain_tracker().await.map_err(header_fault)?,
+        (None, Some(services)) => match services.get_chain_tracker().await {
+            Ok(tracker) => tracker,
+            Err(Error::ServiceError(text)) if text == NO_HEADER_SERVICE => {
+                return Ok(Some(OwnTip(None)))
+            }
+            Err(error) => return Err(header_fault(error)),
+        },
         (None, None) => return Ok(None),
     };
     Ok(Some(OwnTip(mining_tip(tracker).await?)))
 }
+
+/// `Services::get_chain_tracker`'s answer when it was built with no
+/// `chaintracks_url`: a configuration without a header service, not a
+/// fault (#506).
+const NO_HEADER_SERVICE: &str = "ChainTracker not configured in Services (no chaintracks_url)";
 
 /// The source in `beef` when it carries the transaction's bytes, its proof
 /// height from its BUMP.
