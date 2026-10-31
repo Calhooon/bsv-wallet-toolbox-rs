@@ -3,7 +3,8 @@
 
 Reads DIR/<scene>-<size>-r<run>.{json.gz,json.syms.json,out} for three runs
 of each scene and size, takes each function's median share over the three
-(a run where it is absent counts zero) and writes census.json and census.md
+(a run where it is absent counts zero) and writes census.json (the rows),
+census-full.json (the rows with the machine, scenes and totals) and census.md
 to OUT. A row per function above 2 percent per scene and size, the rest one
 `other` row; `input_size` is the size of the same scene at which the
 function's median share is largest. Measures only: no candidate, no ranking.
