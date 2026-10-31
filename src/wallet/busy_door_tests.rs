@@ -66,19 +66,22 @@ async fn fund_with(wallet: &Wallet<StorageSqlx, MockWalletServices>, lock: &[u8]
     fund_tagged(wallet, lock, 0).await
 }
 
-/// The proof height of `fund_tagged`'s coin for `tag`: past the Genesis
-/// activation of the store's network, read from bsv-rs's `ChainParams`, so
-/// the signer judges the input (a pre-Genesis coin it skips, #490). Each
-/// tag its own height: independent coinbase proofs sit apart in one BEEF.
-/// Every proof height in this file is read here, the one source (#503).
-/// Below the Chronicle activation, the era of the mock services' tip.
+/// The proof height of `fund_tagged`'s coin for `tag`: past mainnet's
+/// Genesis activation, read from bsv-rs's `ChainParams`, so the signer
+/// judges the input (a pre-Genesis coin it skips, #490). Each tag its own
+/// height: independent coinbase proofs sit apart in one BEEF. Every proof
+/// height in this file is read here, the one source (#503). Mainnet alone:
+/// every scene's store is mainnet, and the mock services' tip (880,000,
+/// `MockWalletServicesBuilder`) sits between mainnet's Genesis and Chronicle
+/// activations, so the coin and its spend share the `PostGenesis` era. On
+/// testnet that tip is below Genesis, so a testnet scene fails here, loudly.
 pub(super) fn above_genesis(wallet: &Wallet<StorageSqlx, MockWalletServices>, tag: u32) -> u32 {
-    let chain = match wallet.storage().get_settings().chain.as_str() {
-        "main" => bsv_rs::block::ChainParams::mainnet(),
-        "test" => bsv_rs::block::ChainParams::testnet(),
-        "regtest" => bsv_rs::block::ChainParams::regtest(),
-        other => panic!("no ChainParams for the store's network {other}"),
-    };
+    let network = wallet.storage().get_settings().chain;
+    assert_eq!(
+        network, "main",
+        "above_genesis serves a mainnet store alone"
+    );
+    let chain = bsv_rs::block::ChainParams::mainnet();
     let height = chain.genesis_height + 1 + tag;
     assert!(height < chain.chronicle_height, "a post-Genesis coin");
     height
