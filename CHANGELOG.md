@@ -23,18 +23,22 @@
   its proven coins (#506) and never an incoming or caller-supplied BEEF
   with proofs, which needs headers.
 - #511, bsv-wallet-cli#376 and bsv-wallet-cli#372: with no tracker on the
-  caller or the storage, a caller `inputBEEF`'s merkle roots were not
-  checked at all and `createAction` admitted the BEEF on them (the CLI's
-  `CHAINTRACKS_URL=off` reached this; `createAction.ts:909` never skips the
-  check). Old: admitted, no text. New: refused before anything is picked or
-  written, with the #509 text above. The store's own proofs, checked when
-  they were stored, are not asked again, so the wallet's own spends of its
-  proven coins under the offline setting are unchanged; with a tracker,
-  unchanged (`inputBEEF: invalid merkle root <root> at height <height>`
-  for a root the tracker refuses). A host that sets services with a header
-  service but no storage tracker (`StorageSqlx::set_chain_tracker`) is now
-  refused here too: the create door reads these roots from the storage's
-  tracker alone, so wire it as the crate docs show.
+  caller, a caller `inputBEEF`'s merkle roots were not checked at all and
+  `createAction` admitted the BEEF on them (the CLI's
+  `CHAINTRACKS_URL=off` reached this, and so did a host with a storage
+  tracker or a services header service but no caller tracker;
+  `createAction.ts:909` never skips the check). Old: admitted, no text.
+  New: the caller's roots are verified against the caller's tracker, else
+  the storage's, else the services' header service, as the create
+  pre-check reads its tracker, before anything is picked or written; a
+  root that tracker refuses is refused with `inputBEEF: invalid merkle
+  root <root> at height <height>`. No host with a header service anywhere
+  is refused for want of one; only a host with none (no tracker on the
+  caller or the storage, and services built with no `chaintracks_url`, or
+  no services) is refused, with the #509 text above. The store's own
+  proofs, checked when they were stored, are not asked again, so the
+  wallet's own spends of its proven coins under the offline setting are
+  unchanged; with a caller tracker, unchanged.
 - #506, bsv-wallet-cli#372: the create door's own-word tip read with
   services but no header service. 0.14.0-beta.4 held there, a defect
   against `own_word_tip`'s own doc. Old: with services built with no

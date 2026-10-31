@@ -572,9 +572,13 @@ structure of every chain stay the structural passes'. A BEEF the wallet did not
 sign needs headers for its proofs (T2): with no header source (no tracker on the
 caller or the storage and services built with no `chaintracks_url`, or no
 services) the pre-check holds with `no_header_source`'s text
-(`beef_verification::proofs_tracker`, #509), and `build_input_beef` holds a
-caller root no tracker reaches rather than skip it (#511); the store's own
-proofs, checked when stored, are not asked again. The set is stated once, on `judged_set`
+(`beef_verification::proofs_tracker`, #509). The caller's roots are verified
+against the same tracker, the caller's, else the storage's, else the services'
+header service (`reachable_tracker`, read before the write lock; the
+pre-check's `assemble_input_beef` asks each caller root in the
+assembly), and only a host with none anywhere holds a caller root with that
+text rather than skip it (#511); the store's own proofs, checked when stored,
+are not asked again. The set is stated once, on `judged_set`
 (`create_action/beef.rs`). Create calls the one verifier through the
 `verify_beef_word` seam (`beef_verification.rs`): the tracker's tip
 (`mining_tip`; a missing tip or a tip fault gives the latest era, #464, as at
