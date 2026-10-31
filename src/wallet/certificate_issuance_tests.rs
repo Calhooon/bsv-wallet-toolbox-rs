@@ -551,3 +551,33 @@ fn a_lenient_key_text_does_not_verify_as_the_reference_refuses_it() {
         }
     }
 }
+
+/// An uncompressed `04` subject or certifier text: `from_hex` read it at
+/// bsv-rs 0.9.0-beta.4 and at beta.5, so a stored certificate carrying one
+/// verified; toBinary's `^(02|03)[0-9a-fA-F]{64}$` (Certificate.ts:241-251)
+/// throws and `Certificate.verify` answers false (:425-441), and so does the
+/// stored-certificate audit (`issued_certificate_verifies`) since the strict
+/// read. Red with `certificate_key` reading `from_hex` alone.
+#[test]
+fn an_uncompressed_key_text_does_not_verify_as_the_reference_refuses_it() {
+    let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
+    let issued = fixture.reference_issued;
+    let parsed = parse_issued(&issued);
+    assert!(issued_certificate_verifies(&parsed.certificate));
+    let subject = key(issued.keys.subject).public_key().to_hex_uncompressed();
+    let certifier = key(issued.keys.certifier)
+        .public_key()
+        .to_hex_uncompressed();
+    let mut raw = parsed.certificate.clone();
+    raw.subject = subject.clone();
+    assert!(
+        !issued_certificate_verifies(&raw),
+        "subject {subject} verified; the reference's toBinary refuses it"
+    );
+    let mut raw = parsed.certificate.clone();
+    raw.certifier = certifier.clone();
+    assert!(
+        !issued_certificate_verifies(&raw),
+        "certifier {certifier} verified; the reference's toBinary refuses it"
+    );
+}
