@@ -27,9 +27,12 @@ pub(in crate::storage::sqlx) struct OwnTip(Option<ChainTip>);
 
 /// The tip the own transaction is judged at: the tracker's (the caller's,
 /// else the storage's own), else the services' header service, as the
-/// pre-check's word reads it. A tracker with no mining tip, or a tip read
-/// that faults, gives the latest era; with no header source configured the
-/// word is not read (`None`).
+/// pre-check's word reads it. A tracker with no mining tip, a tip read that
+/// faults, or services with no header service (`Services` built with no
+/// `chaintracks_url`, `NO_HEADER_SERVICE`) give the latest era: rule 22's
+/// word with no mining tip (#464, #506). With no services object at all
+/// the word is not read (`None`). Any other `get_chain_tracker` error holds
+/// (`header_fault`).
 pub(in crate::storage::sqlx) async fn own_word_tip(
     tracker: Option<&dyn ChainTracker>,
     services: Option<Arc<dyn WalletServices>>,
