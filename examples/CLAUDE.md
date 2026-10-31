@@ -19,6 +19,7 @@ cargo run --example monitor_demo       # Monitor daemon task scheduling
 |------|-------|---------|
 | `basic_wallet.rs` | 62 | Services creation for mainnet/testnet, `ServicesOptions` builder pattern |
 | `monitor_demo.rs` | 95 | `MonitorOptions` defaults, all 11 `TaskConfig` intervals, custom/disabled tasks |
+| `a8_census.rs` | 300 | The A8 census scenes for a profiler: createAction, the post, internalize and the large BEEF path in a loop (`benches/README.md`) |
 
 ## basic_wallet.rs
 
