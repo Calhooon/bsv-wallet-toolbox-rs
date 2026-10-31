@@ -65,7 +65,7 @@ fn dropped(why: &str) -> crate::Error {
     crate::Error::ServiceError(format!("Identity output dropped: {why}"))
 }
 
-/// `decodeIdentityOutput`'s checks on the output (`identityUtils.ts:496-545`):
+/// `decodeIdentityOutput`'s checks on the output (`identityUtils.ts:501-539`):
 /// two `PushDrop` fields, the record of 1 byte to 256 KiB and the field
 /// signature of 8 to 80; exactly five chunks, the 33-byte locking key,
 /// `OP_CHECKSIG`, each field under the push opcode its length asks
@@ -131,7 +131,7 @@ pub(super) fn decode_identity_output(script: &LockingScript) -> Result<OverlayCe
 
 impl OverlayCertificate {
     /// `decodeIdentityOutput`'s checks on the certificate
-    /// (`identityUtils.ts:546-554`): its signature verified
+    /// (`identityUtils.ts:540-554`): its signature verified
     /// (`verifiableCert.verify()`), its fields decrypted with the keyring by
     /// an `anyone` wallet (`decryptFields`, `VerifiableCertificate.ts:150-219`:
     /// each keyring value canonical base64 of 1 to 2048 bytes, each field
