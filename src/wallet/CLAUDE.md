@@ -900,7 +900,7 @@ wallet, its keyring values canonical base64 of 1 to 2048 bytes, each field
 opened under the certificate field protocol with the subject as
 counterparty. A failure, or an empty decryption, drops the entry;
 `decrypted_fields` is the decryption's. Then the fence: each root the
-first pass held is asked again (the reference's second `verify`, `:612`),
+earlier pass held is asked again (the reference's second `verify`, `:612`),
 and a second output at the same outpoint is dropped (`:700`). Before #495 the door matched the
 `decrypted_fields` a resolver supplied, which no real overlay entry fills, so
 attribute discovery against a real overlay found nothing (#494). No cache is kept (`docs/ARCHITECTURE.md` D30). Witnesses:

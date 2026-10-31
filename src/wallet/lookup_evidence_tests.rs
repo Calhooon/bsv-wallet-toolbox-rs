@@ -17,7 +17,7 @@ use super::super::fixture::{
 };
 use super::{overlay_certificates, OverlayCertificate, EVIDENCE_LIMIT};
 
-/// Holds every root but those at `refused`, and none after its first
+/// Holds every root but those at `refused`, and none after its opening
 /// `holds` answers; its height is `height`.
 struct Tracker {
     refused: u32,
@@ -135,7 +135,7 @@ async fn an_output_index_past_the_outputs_is_dropped() {
 
 /// The fence after the certificate's crypto (`identityUtils.ts:611-612`,
 /// the coordinator's `recheck`, :505-533): a root the tracker held on the
-/// first pass and no longer holds drops the output.
+/// earlier pass and no longer holds drops the output.
 #[tokio::test]
 async fn an_output_whose_root_is_gone_at_the_fence_is_dropped() {
     let good = alice(2).await;

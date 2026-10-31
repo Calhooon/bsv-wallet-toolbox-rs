@@ -157,7 +157,7 @@ fn intake(outputs: &[OutputListItem]) -> Result<()> {
     Ok(())
 }
 
-/// The coordinator's first pass (`parseEvidence`, `TransactionEvidence.ts:179-201`,
+/// The coordinator's opening pass (`parseEvidence`, `TransactionEvidence.ts:179-201`,
 /// then `run`'s `tx.verify` against the tracker, `TransactionEvidenceCoordinator.ts:289-394`):
 /// the BEEF read, its transaction the Atomic subject or else its last
 /// (`loadEvidenceTransaction`, :110-128), the output index inside it, the
@@ -365,7 +365,7 @@ fn bump_roots(bytes: &[u8]) -> std::result::Result<Vec<(u64, Hash32)>, Refused> 
 /// The coordinator's second pass on the same bytes (`recheck`,
 /// `TransactionEvidenceCoordinator.ts:505-533`): the bytes are the door's
 /// own and unchanged, so the structure and the scripts stand; each root the
-/// first pass held is asked again, and the tracker's height is not below the
+/// earlier pass held is asked again, and the tracker's height is not below the
 /// height that pass read.
 async fn fence(
     verified: &Verified,
