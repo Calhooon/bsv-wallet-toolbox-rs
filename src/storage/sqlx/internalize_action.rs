@@ -26,7 +26,7 @@ use chrono::Utc;
 use sqlx::{Row, SqliteConnection};
 use std::collections::HashMap;
 
-use super::beef_verification::{header_fault, stream_error, verify_beef_spends_with_verifier};
+use super::beef_verification::{proofs_tracker, stream_error, verify_beef_spends_with_verifier};
 use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
 use super::StorageSqlx;
 
@@ -82,15 +82,9 @@ pub async fn internalize_action_internal(
     let incoming = read_incoming_payment(&args.tx)?;
     let configured_tracker = storage.get_chain_tracker().await;
     let services = storage.get_services().ok();
-    let tracker = match &configured_tracker {
-        Some(tracker) => tracker.as_ref(),
-        None => services
-            .as_ref()
-            .ok_or_else(|| header_fault("no header service configured"))?
-            .get_chain_tracker()
-            .await
-            .map_err(header_fault)?,
-    };
+    // The incoming BEEF's proofs need headers (T2, #509): with no header
+    // source the door holds whatever the era.
+    let tracker = proofs_tracker(configured_tracker.as_deref(), services.as_deref()).await?;
     // A valid verdict is required even for an unproven payment, before any
     // basket, transaction, coin, request or broadcast can be created.
     verify_beef_spends_with_verifier(
@@ -4174,3 +4168,7 @@ mod payment_tests;
 #[cfg(test)]
 #[path = "internalize_label_tests.rs"]
 mod stored_label_tests;
+
+#[cfg(test)]
+#[path = "internalize_no_header_tests.rs"]
+mod no_header_tests;
