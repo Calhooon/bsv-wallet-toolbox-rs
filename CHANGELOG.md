@@ -87,7 +87,11 @@
   - R56 (bsv-rs #491): an `unsigned` action's input may omit
     `unlockingScript` under `includeInputUnlockingScripts`, every other
     status strict; the toolbox's `listActions` omits it as the reference
-    wallet does (`listActionsIdb.ts:77-91`), unchanged.
+    wallet does (`listActionsIdb.ts:77-91`), unchanged. bsv-rs's HTTP client
+    over the toolbox now hands that answer on, where at beta.4 it refused it
+    (`Invalid listActions result actions[0].inputs[0].unlockingScript:
+    expected the explicitly requested unlocking script`); CLI #371's line
+    moves with it.
 
 ### Fixed
 
@@ -99,6 +103,16 @@
   `Certificate.verify` answers false; with `from_hex` alone at beta.5 it
   verified. At the issuance door the texts equal the request's validated
   keys before the decode, so no door answer moves.
+- bsv-rs #498 at the beta.5 pin: the compressed-key validators
+  (`validate_public_key_arg` for proveCertificate's and the certificate
+  gates' keys, the internalize sender, the overlay record's keys) refuse an
+  x at or above p as `isValidCompressedPublicKey` does
+  (`Secp256k1Validation.ts:15-22`), through one strict read
+  (`internalize_args::compressed_key`). With `from_hex` alone at beta.5,
+  `02ffff...ff` passed the gate and proveCertificate answered `Certificate
+  not found with the provided arguments` where it answers `Validation error:
+  The certificate.certifier parameter must be a valid compressed secp256k1
+  public key` (and `certificate.subject`, `verifier`), as at beta.4.
 - bsv-rs #498 at the beta.5 pin: `ResponseAuthHeaders::get_identity_key`
   reads the identity-key header strictly (hex, then `from_bytes`), refusing
   an odd-length or hybrid key as the reference's `assertAuthIdentityKey`
