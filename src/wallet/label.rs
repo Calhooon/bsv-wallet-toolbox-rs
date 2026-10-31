@@ -26,13 +26,40 @@ fn is_ecmascript_whitespace(c: char) -> bool {
     )
 }
 
-/// `String.prototype.trim`.
-pub(crate) fn trim_ecmascript(s: &str) -> &str {
+/// ECMAScript's `String.prototype.trim`: strips the `WhiteSpace` and
+/// `LineTerminator` code points from both ends.
+///
+/// It differs from Rust's [`str::trim`] (Unicode `White_Space`) on two code
+/// points: U+FEFF (ZERO WIDTH NO-BREAK SPACE) is stripped here and kept by
+/// `str::trim`; U+0085 (NEXT LINE) is kept here and stripped by `str::trim`.
+///
+/// ```
+/// use bsv_wallet_toolbox_rs::wallet::trim_ecmascript;
+/// assert_eq!(trim_ecmascript("\u{feff}a\u{feff}"), "a");
+/// assert_eq!("\u{feff}a\u{feff}".trim(), "\u{feff}a\u{feff}");
+/// assert_eq!(trim_ecmascript("\u{0085}a\u{0085}"), "\u{0085}a\u{0085}");
+/// assert_eq!("\u{0085}a\u{0085}".trim(), "a");
+/// ```
+#[must_use]
+pub fn trim_ecmascript(s: &str) -> &str {
     s.trim_matches(is_ecmascript_whitespace)
 }
 
-/// The label as `validateLabel` leaves it: trimmed and lowercased.
-pub(crate) fn normalize_label(label: &str) -> String {
+/// A label as the SDK's `validateLabel` leaves it, the one definition of the
+/// reference's label rule for every host: `s.trim().toLowerCase()` with
+/// ECMAScript's trim ([`trim_ecmascript`]), then lowercase
+/// (ts-stack@edf6e03 `sdk/src/wallet/validationHelpers.ts:385-387`, which
+/// delegates to `validateIdentifier` at `:409-418`, the normalization at
+/// `:411`). The wallet's doors store and filter labels in this form; the
+/// byte bounds (1 to 300) are the doors' own check, not this function's.
+///
+/// ```
+/// use bsv_wallet_toolbox_rs::wallet::normalize_label;
+/// assert_eq!(normalize_label("\u{feff} Spend-Gate:X\t"), "spend-gate:x");
+/// assert_eq!(normalize_label("\u{0085}a"), "\u{0085}a");
+/// ```
+#[must_use]
+pub fn normalize_label(label: &str) -> String {
     trim_ecmascript(label).to_lowercase()
 }
 
@@ -67,5 +94,13 @@ mod tests {
         assert_eq!(trim_ecmascript("\u{FEFF} a\u{3000}\n"), "a");
         assert_eq!(trim_ecmascript("\u{0085}a\u{0085}"), "\u{0085}a\u{0085}");
         assert_eq!(normalize_label("\t P NoSend \u{2029}"), "p nosend");
+    }
+
+    /// The CLI's spend gate (bsv-wallet-cli#376) reads the stored form
+    /// through this one definition: a leading U+FEFF and a trailing space
+    /// trimmed, the case folded.
+    #[test]
+    fn normalize_label_gives_the_stored_form() {
+        assert_eq!(normalize_label("\u{feff}Spend-Gate:x "), "spend-gate:x");
     }
 }
