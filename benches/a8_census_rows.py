@@ -61,18 +61,18 @@ def crate_and_library(name, lib, binary):
     if lib in SYSTEM or lib != binary:
         return "system", SYSTEM.get(lib, lib)
     head = name.lstrip("<").split("::")
-    first = head[0]
-    if first == "bsv_rs":
+    root = head[0]
+    if root == "bsv_rs":
         return "bsv-rs", "bsv-rs " + "::".join(head[1:3])
-    if first == "bsv_wallet_toolbox_rs":
+    if root == "bsv_wallet_toolbox_rs":
         return "bsv-wallet-toolbox-rs", "toolbox " + "::".join(head[1:4])
-    if first.startswith("sqlx"):
-        return "sqlx", first.replace("_", "-")
-    if first in ("core", "alloc", "std"):
-        return "std", "Rust std (" + first + ")"
+    if root.startswith("sqlx"):
+        return "sqlx", root.replace("_", "-")
+    if root in ("core", "alloc", "std"):
+        return "std", "Rust std (" + root + ")"
     if len(head) == 1:
         return "libsqlite3-sys", "SQLite (C, bundled by libsqlite3-sys 0.30)"
-    return first.replace("_", "-"), RUST.get(first, first.replace("_", "-"))
+    return root.replace("_", "-"), RUST.get(root, root.replace("_", "-"))
 
 
 def main(directory, out, machine_path):

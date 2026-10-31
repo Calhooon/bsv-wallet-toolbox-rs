@@ -101,7 +101,7 @@ def analyse(profile_path, report_path):
 
         def via(stack, own):
             """The nearest ancestor in the binary outside std, core, alloc and
-            the leaf's own crate (`own`, its first path segment)."""
+            the leaf's own crate (`own`, its leading path segment)."""
             stack = stacks["prefix"][stack]
             while stack is not None:
                 lib, name, _ = leaf(stack)
