@@ -4,6 +4,37 @@
 
 ### Fixed
 
+- #509, bsv-wallet-cli#376 and bsv-wallet-cli#372: the create pre-check of
+  the caller's unproven `inputBEEF` transactions and `internalizeAction`
+  with no header source hold with a text naming the proofs' want of headers
+  (the keeper's T2 reading of 2026-10-31: a BEEF the wallet did not sign is
+  admitted on its proofs checked against headers). Old, with no tracker and
+  services built with no `chaintracks_url`: `Service error: ChainTracker
+  verification failed: Service error: ChainTracker not configured in
+  Services (no chaintracks_url)`; with no tracker and no services:
+  `Service error: ChainTracker verification failed: no header service
+  configured`. New, both: `Service error: ChainTracker verification failed:
+  the merkle proofs of a BEEF the wallet did not sign need headers, and no
+  header service is configured (no chain tracker, no chaintracks_url)`. The
+  class is unchanged (`ServiceError`, a retryable hold). Any other
+  `get_chain_tracker` error keeps its text; a tracker with no mining tip or
+  a faulting tip read still judges at the latest era (#464). Host note: the
+  offline setting (`CHAINTRACKS_URL=off`) covers the wallet's own spends of
+  its proven coins (#506) and never an incoming or caller-supplied BEEF
+  with proofs, which needs headers.
+- #511, bsv-wallet-cli#376 and bsv-wallet-cli#372: with no tracker on the
+  caller or the storage, a caller `inputBEEF`'s merkle roots were not
+  checked at all and `createAction` admitted the BEEF on them (the CLI's
+  `CHAINTRACKS_URL=off` reached this; `createAction.ts:909` never skips the
+  check). Old: admitted, no text. New: refused before anything is picked or
+  written, with the #509 text above. The store's own proofs, checked when
+  they were stored, are not asked again, so the wallet's own spends of its
+  proven coins under the offline setting are unchanged; with a tracker,
+  unchanged (`inputBEEF: invalid merkle root <root> at height <height>`
+  for a root the tracker refuses). A host that sets services with a header
+  service but no storage tracker (`StorageSqlx::set_chain_tracker`) is now
+  refused here too: the create door reads these roots from the storage's
+  tracker alone, so wire it as the crate docs show.
 - #506, bsv-wallet-cli#372: the create door's own-word tip read with
   services but no header service. 0.14.0-beta.4 held there, a defect
   against `own_word_tip`'s own doc. Old: with services built with no
