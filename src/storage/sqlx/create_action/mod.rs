@@ -31,7 +31,9 @@ use bsv_rs::transaction::ChainTracker;
 use chrono::Utc;
 
 use super::{beef_verification, proof_root_checks, StorageSqlx};
-use beef::{build_input_beef, CallerWord};
+#[cfg(test)]
+use beef::build_input_beef;
+use beef::{assemble_input_beef, caller_roots_tracker, AssemblyTrackers, CallerWord};
 use change::plan_change;
 use fees::P2PKH_UNLOCKING_SCRIPT_LENGTH;
 use inputs::{update_output_spent, validate_and_extend_inputs};
@@ -154,13 +156,6 @@ pub async fn create_action_at_door_internal(
     // NOTE: This uses its own pool connection (known limitation for first pass).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
 
-    // The caller's inputBEEF proofs are facts independent of this action:
-    // their roots are read against the tracker here, before the write lock
-    // (as the reference's `validateRequiredInputs` does, before any
-    // allocation). A refused root is refused before anything is picked.
-    let answers = TrackerAnswers::confirmed(
-        confirm_caller_beef_roots(chain_tracker, args.input_beef.as_deref()).await?,
-    );
     // With no caller tracker the walk reads stored proofs against the
     // storage's own, and the assembled roots are not verified.
     let storage_tracker = match chain_tracker {
@@ -172,6 +167,16 @@ pub async fn create_action_at_door_internal(
     // storage's own, else its services' header service, as internalize's.
     let network = storage.get_settings().chain;
     let services = storage.get_services().ok();
+    // The caller's inputBEEF proofs are facts independent of this action:
+    // their roots are read here, before the write lock (as the reference's
+    // `validateRequiredInputs` does, before any allocation), against the
+    // pre-check's tracker (#511); a refused root is refused before any pick.
+    let caller = chain_tracker.or(storage_tracker.as_deref());
+    let input_beef = args.input_beef.as_deref();
+    let roots_tracker = caller_roots_tracker(caller, services.as_deref(), input_beef).await?;
+    let answers = TrackerAnswers::confirmed(
+        confirm_caller_beef_roots(roots_tracker, args.input_beef.as_deref()).await?,
+    );
     // The tip the wallet's own signed transaction is judged at (#450), read
     // before the write lock; the word itself awaits nothing.
     let own_tip = match door_with.sign_and_process {
@@ -188,12 +193,13 @@ pub async fn create_action_at_door_internal(
         storage,
         word: CallerWord {
             tracker: chain_tracker.or(storage_tracker.as_deref()),
-            services,
+            services: services.clone(),
             network: &network,
             verifier: storage.script_verifier(),
         },
         own_tip,
         verify_roots: chain_tracker.is_some(),
+        roots_tracker,
         reads_proofs: chain_tracker.is_some() || storage_tracker.is_some(),
         answers: &answers,
         user_id,
@@ -264,6 +270,8 @@ struct Door<'a> {
     own_tip: Option<OwnTip>,
     /// The caller passed a tracker: the assembled BEEF's roots are verified.
     verify_roots: bool,
+    /// The caller's own roots' tracker (#511, `caller_roots_tracker`).
+    roots_tracker: Option<&'a dyn ChainTracker>,
     /// A tracker (the caller's, else the storage's own) reads stored proofs.
     reads_proofs: bool,
     answers: &'a TrackerAnswers,
@@ -642,16 +650,20 @@ impl Door<'_> {
             (false, true) => (None, tracker),
             (false, false) => (None, None),
         };
-        let built = build_input_beef(
+        let trackers = AssemblyTrackers {
+            verify,
+            read_check,
+            roots: self.roots_tracker.and(tracker),
+        };
+        let built = assemble_input_beef(
             &mut tx,
             None,
-            verify,
+            trackers,
             &extended_inputs,
             &change_result.allocated_change_inputs,
             args.input_beef.as_deref(),
             &[],
             self.trust_self(),
-            read_check,
         )
         .await;
         if let Some((height, root)) = cached.missed() {
