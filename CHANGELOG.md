@@ -13,7 +13,8 @@
   configured in Services (no chaintracks_url)`. New: the wallet's own signed
   transaction is judged at the latest era, as a spend under a tracker with
   no mining tip or a faulting tip read is (#464, rule 22). Host note for
-  CLI #347: a host's offline setting reaches allocation again; with no
+  bsv-wallet-cli#376 (the beta.5 pin intake; #347 closed 2026-10-31) and
+  bsv-wallet-cli#372: a host's offline setting reaches allocation again; with no
   header service the word is the latest era's, so a pre-Chronicle coin's
   spend is judged post-Chronicle, as #464 says. No error text moves: the
   door matches `Services::get_chain_tracker`'s existing not-configured
