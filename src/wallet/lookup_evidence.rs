@@ -2,7 +2,7 @@
 //! tracker before its identity token is read and again after the
 //! certificate's crypto, as the reference's discovery verifies it
 //! (`IdentityEvidenceVerifier.parse`, ts-stack@edf6e03
-//! `wallet-toolbox/src/utility/identityUtils.ts:598-614`, through the SDK's
+//! `wallet-toolbox/src/utility/identityUtils.ts:600-635`, through the SDK's
 //! `TransactionEvidenceCoordinator` under the policy
 //! `sdk-spv-overlay-graph-v1`, `sdk/src/transaction/TransactionEvidenceCoordinator.ts`
 //! and `TransactionEvidence.ts`). An output whose evidence fails is dropped;
@@ -27,7 +27,7 @@ use crate::Result;
 /// (`TransactionEvidence.ts:62`): one output's BEEF.
 const CANDIDATE_BYTES: usize = 1024 * 1024;
 /// `retainedBytes` (:63): an answer's BEEFs and contexts together
-/// (`queryOverlayEvidence`, `identityUtils.ts:421,433`).
+/// (`queryOverlayEvidence`, `identityUtils.ts:421,430-437`).
 const RETAINED_BYTES: usize = 16 * 1024 * 1024;
 /// `transactions` (:64): the entries of one BEEF.
 const TRANSACTIONS: usize = 256;
@@ -36,7 +36,7 @@ const INPUTS: usize = 4096;
 /// `scriptBytes` (:66): the scripts of the output's unconfirmed graph.
 const SCRIPT_BYTES: usize = 256 * 1024;
 /// `scriptMemoryBytes` (:67): the memory of one input's stacks, the third
-/// argument of `tx.verify` (`TransactionEvidenceCoordinator.ts:437`).
+/// argument of `tx.verify` (`TransactionEvidenceCoordinator.ts:345-350`).
 const SCRIPT_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 /// `queryOverlayEvidence`'s `limits.outputs ?? 512` (`identityUtils.ts:423`).
 const OUTPUTS: usize = 512;
@@ -89,9 +89,9 @@ struct Parsed {
 /// evidence verified with `tracker` under `chain`'s word, then its identity
 /// token decoded (`decode_identity_output`) and its certificate verified and
 /// decrypted (`verified_and_decrypted`), then its evidence fenced against
-/// the tracker again (`identityUtils.ts:608-609`). An output that fails any
+/// the tracker again (`identityUtils.ts:611-612`). An output that fails any
 /// step is dropped, and a second output at the same outpoint
-/// (`parseResults$`, :694-697). An answer past a limit is `EVIDENCE_LIMIT`.
+/// (`parseResults$`, :698-703). An answer past a limit is `EVIDENCE_LIMIT`.
 pub(crate) async fn overlay_certificates(
     outputs: Vec<OutputListItem>,
     tracker: &dyn ChainTracker,
@@ -136,7 +136,7 @@ pub(crate) async fn overlay_certificates(
     Ok(kept)
 }
 
-/// `queryOverlayEvidence`'s intake (`identityUtils.ts:427-437`): at most
+/// `queryOverlayEvidence`'s intake (`identityUtils.ts:430-437`): at most
 /// `OUTPUTS` outputs, each BEEF at most `CANDIDATE_BYTES`, the answer's
 /// BEEFs and contexts at most `RETAINED_BYTES`.
 fn intake(outputs: &[OutputListItem]) -> Result<()> {
@@ -153,17 +153,17 @@ fn intake(outputs: &[OutputListItem]) -> Result<()> {
     Ok(())
 }
 
-/// The coordinator's first pass (`parseEvidence`, `TransactionEvidence.ts:183-205`,
-/// then `run`'s `tx.verify` against the tracker, `TransactionEvidenceCoordinator.ts:398-447`):
+/// The coordinator's first pass (`parseEvidence`, `TransactionEvidence.ts:179-201`,
+/// then `run`'s `tx.verify` against the tracker, `TransactionEvidenceCoordinator.ts:289-394`):
 /// the BEEF read, its transaction the Atomic subject or else its last
-/// (`loadEvidenceTransaction`, :110-127), the output index inside it, the
-/// unconfirmed graph inside the limits (`assertUnconfirmedGraph`, :156-181),
+/// (`loadEvidenceTransaction`, :110-128), the output index inside it, the
+/// unconfirmed graph inside the limits (`assertUnconfirmedGraph`, :155-177),
 /// every BUMP root held by the tracker and a transaction at its block's
 /// offset 0 `COINBASE_DEPTH` deep (`MerklePath.verify`), then bsv-rs's
 /// stream verifier under the network's word: the structure, the proofs
 /// against the held roots, and each input of an unproven transaction judged
 /// with the work budget, at least one root proven (`anchors.size === 0`,
-/// :443-444).
+/// `TransactionEvidenceCoordinator.ts:354`).
 async fn verify(
     output: &OutputListItem,
     tracker: &dyn ChainTracker,
@@ -190,7 +190,7 @@ async fn verify(
     }
 }
 
-/// `parseEvidence`'s reading (`TransactionEvidence.ts:94-127`): the bytes
+/// `parseEvidence`'s reading (`TransactionEvidence.ts:93-128`): the bytes
 /// present and inside `CANDIDATE_BYTES`, the BEEF read with at most
 /// `TRANSACTIONS` entries, its transaction the Atomic subject or else its
 /// last, the output index inside it, and its unconfirmed graph.
@@ -232,7 +232,7 @@ fn parse(bytes: &[u8], output_index: u32) -> std::result::Result<Parsed, Refused
     })
 }
 
-/// `assertUnconfirmedGraph` (`TransactionEvidence.ts:156-181`): from the
+/// `assertUnconfirmedGraph` (`TransactionEvidence.ts:155-177`): from the
 /// output's transaction down to its proven ancestors, every parent inside
 /// the BEEF, no outpoint spent twice, an unproven transaction with inputs,
 /// and the graph's inputs and scripts inside `INPUTS` and `SCRIPT_BYTES`.
@@ -320,7 +320,8 @@ async fn coinbase_depth(
 }
 
 /// The roots the tracker holds, every BUMP's root of the BEEF asked once
-/// (the coordinator's `isValidRootForHeight`, :417-428); a root it refuses,
+/// (the coordinator's `isValidRootForHeight`,
+/// `TransactionEvidenceCoordinator.ts:317-327`); a root it refuses,
 /// or a tracker fault, drops the output. With the tracker's mining tip.
 async fn held_roots(
     bytes: &[u8],
@@ -358,7 +359,7 @@ fn bump_roots(bytes: &[u8]) -> std::result::Result<Vec<(u64, Hash32)>, Refused> 
 }
 
 /// The coordinator's second pass on the same bytes (`recheck`,
-/// `TransactionEvidenceCoordinator.ts:556-582`): the bytes are the door's
+/// `TransactionEvidenceCoordinator.ts:505-533`): the bytes are the door's
 /// own and unchanged, so the structure and the scripts stand; each root the
 /// first pass held is asked again, and the tracker's height is not below the
 /// height that pass read.

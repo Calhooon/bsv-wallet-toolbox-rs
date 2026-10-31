@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### Changed
+
+- #502 (api-break, the owner's 22.2 (a)): `OverlayLookupResolver` answers
+  the overlay's outputs, each with its BEEF, never certificates, as the
+  reference's resolver answers `OverlayOutputEvidence` (ts-stack@edf6e03
+  `verifyOverlayOutput.ts:4`). Old:
+  `async fn lookup_by_identity_key(&self, identity_key: &str, certifiers: &[String]) -> Result<Vec<OverlayCertificate>>`
+  and `async fn lookup_by_attributes(&self, attributes: &IndexMap<String, String>, certifiers: &[String]) -> Result<Vec<OverlayCertificate>>`.
+  New: both answer `Result<Vec<bsv_rs::overlay::OutputListItem>>`
+  (`beef`, `output_index`, `context`), the items of an overlay
+  `output-list` answer. `OverlayCertificate` stays the door's own type;
+  `HttpLookupResolver` answers the outputs it reads. No other public item
+  moves. Host note (bsv-wallet-cli#376): a host's own resolver hands over
+  each output and its BEEF as the overlay answered them; a bare record can
+  no longer be handed over, and an output whose evidence or token fails is
+  dropped from the answer (logged at debug as `Overlay output dropped:
+  <reason>`, for example `no chain evidence`, `its transaction not in its
+  BEEF`, `a root the chain tracker does not hold`).
+- #502 (T2: a discovery record without its output's chain evidence is a
+  trusted word): `discoverByIdentityKey` and `discoverByAttributes` verify
+  each overlay output's chain evidence with the services' chain tracker
+  before its identity token is read and again after the certificate's
+  crypto (`IdentityEvidenceVerifier.parse`, `identityUtils.ts:600-635`,
+  policy `sdk-spv-overlay-graph-v1`): the BEEF's transaction (the Atomic
+  subject, else its last) carries the output index; its unconfirmed graph
+  is inside the BEEF; every BUMP root is one the tracker holds; a coinbase
+  is 100 blocks deep; bsv-rs's stream verifier judges the structure, the
+  proofs and each unproven input under the network's word with the doors'
+  2^31 work budget per input; the token is read from that transaction's
+  output; then each held root is asked again. Behaviour a host sees:
+  with no chain tracker (`Services` built with no `chaintracks_url`, the
+  CLI's `CHAINTRACKS_URL=off`) the doors ask no overlay and answer no
+  overlay certificate, an empty answer where they answered before, never a
+  hold, as `queryOverlay` answers `[]` (`identityUtils.ts:399-400`); the
+  identity door still answers the stored certificates. An output with a
+  bad or absent proof is dropped where it was decoded. An answer of more
+  than 512 outputs, a BEEF over 1 MiB, 16 MiB of answer, 256 entries in a
+  BEEF, or an unconfirmed graph over 4096 inputs or 256 KiB of scripts
+  (`defaultTransactionEvidenceLimits`) answers no overlay certificate, where
+  the reference rejects the lookup.
+
 ### Fixed
 
 - #509, bsv-wallet-cli#376 and bsv-wallet-cli#372: the create pre-check of
