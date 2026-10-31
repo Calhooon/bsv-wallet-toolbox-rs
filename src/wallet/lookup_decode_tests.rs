@@ -109,7 +109,7 @@ async fn a_token_not_of_the_reference_shape_is_dropped() {
 /// `identityUtils.ts:502`: the subject's locking key and `OP_CHECKSIG`, a
 /// `PushDrop` with no field, is refused for its field count before the
 /// chunk shape (`:511-521`) is read; the base's parser indexed its absent
-/// first field and panicked.
+/// field 0 and panicked.
 #[tokio::test]
 async fn a_token_with_no_field_is_dropped() {
     let good = alice(3).await;
