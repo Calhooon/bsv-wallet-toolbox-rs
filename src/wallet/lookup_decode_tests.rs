@@ -135,3 +135,36 @@ async fn an_entry_carrying_decrypted_fields_is_dropped() {
     let carrying = token(&key(SUBJECT), serde_json::to_vec(&wire).unwrap());
     assert!(decode_identity_output(&carrying).is_err());
 }
+
+/// bsv-rs 0.9.0-beta.5's `from_hex` reads the reference's lenient key forms
+/// (bsv-rs #498). A subject written as the odd-length or hybrid text of the
+/// subject's key is still dropped: the record's compressed-key check
+/// (`lookup_record.rs`, `compressed_key`: 66 characters, `02` or `03`) refuses
+/// it before the decode parses it, where the reference reads the text with
+/// `PublicKey.fromString` for the derivation (`identityUtils.ts:526-539`) and
+/// drops the entry at `verifiableCert.verify()` (`toBinary`'s
+/// `^(02|03)[0-9a-fA-F]{64}$`, Certificate.ts:240-246). The same verdict at
+/// another step, green on beta.4 and at beta.5; a `05` tag (bsv-rs #550) the
+/// same.
+#[tokio::test]
+async fn a_lenient_subject_text_is_dropped_as_the_reference_drops_it() {
+    let good = alice(5).await;
+    let subject = key(SUBJECT).public_key();
+    let uncompressed = subject.to_hex_uncompressed();
+    let y_odd = u8::from_str_radix(&uncompressed[128..], 16).unwrap() & 1 == 1;
+    let hybrid = format!("{}{}", if y_odd { "07" } else { "06" }, &uncompressed[2..]);
+    let tag_05 = format!("05{}", &subject.to_hex()[2..]);
+    for text in [subject.to_hex()[1..].to_string(), hybrid, tag_05] {
+        let mut record = alice(6).await;
+        record.subject = text.clone();
+        let script = token(&key(SUBJECT), record_json(&record));
+        let refused = decode_identity_output(&script).unwrap_err();
+        assert!(
+            refused
+                .to_string()
+                .contains("outside the reference's bounds"),
+            "{text}: {refused}"
+        );
+        only_the_good_token(script, &good).await;
+    }
+}

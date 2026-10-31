@@ -340,7 +340,7 @@ today's words).
 | `certificate_issuance.rs` | ~1430 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
 | `certificate_issuance_auth.rs` | ~130 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
 | `direct_acquire.rs` | ~210 | Direct `acquire_certificate` argument validation and normalization, signature verification and keyring decryption proof before storage (#311, #374) |
-| `label.rs` | ~70 | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392), and the BRC-177 module-label matcher both doors call (#363); declared without a feature gate, the sqlx folder imports it as `label` (#420) |
+| `label.rs` | ~110 | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392), and the BRC-177 module-label matcher both doors call (#363); declared without a feature gate, the sqlx folder imports it as `label` (#420); `normalize_label` and `trim_ecmascript` are public since #505, re-exported as `bsv_wallet_toolbox_rs::wallet::{normalize_label, trim_ecmascript}`, the one definition of the reference's label rule for every host (bsv-wallet-cli#376's spend gate); `is_ecmascript_whitespace` stays private |
 | `discovery_search.rs` | ~320 | The reference's attribute matcher (`identityUtils.ts:140-280`): search normalization, legacy `/gi` literals, the five-class tokenizer and stop words, the NFD and Mn fold (#474) |
 | `lookup.rs` | ~760 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, SLAP host parsing, deduplication |
 | `lookup_decode.rs` | ~175 | The overlay output read as the reference's `decodeIdentityOutput` (`decode_identity_output`), and the door's signature check and decryption (`OverlayCertificate::verified_and_decrypted`) (#495) |
@@ -1035,7 +1035,20 @@ decode at `Wallet.ts:808`, answers `Certificate verification failed`. The
 outpoint follows `toBinary`'s grammar (`:260-270`): `txid` or `txid.vout`,
 64 hex digits, a decimal index without leading zeros up to `0xffffffff`; a
 txid-only text is vout 0 over its txid, and `unparsable` or `<txid>.07`
-answers `Certificate verification failed`. So does a signature bsv-rs's
+answers `Certificate verification failed`. The subject and certifier are
+read as `toBinary` reads them (`:240-254`, `certificate_key`): `02` or `03`
+and 64 hex digits, then a compressed point through `PublicKey::from_bytes`,
+so a key text in one of the reference's lenient `fromString` forms that
+bsv-rs's `PublicKey::from_hex` reads since 0.9.0-beta.5 (bsv-rs #498: the
+odd-length string padded, a hybrid key) answers `Certificate verification
+failed` as the reference's `verify` answers false; a `05` tag too (bsv-rs
+#550). Only `reverify_stored_certificates` can meet such a text: at the door
+the subject and certifier equal the request's validated keys ahead of it
+(`a_lenient_key_text_does_not_verify_as_the_reference_refuses_it`). The
+overlay record's subject and certifier are refused in those forms at the
+record's own compressed-key check (`lookup_record.rs`), where the reference
+drops the entry at `verify()`
+(`a_lenient_subject_text_is_dropped_as_the_reference_drops_it`). So does a signature bsv-rs's
 `Certificate::verify` answers `Ok(false)` to (absent, non-DER, wrong signer;
 bsv-rs #299, BRC-52's derived key from #251), as `Wallet.ts:816` (#188).
 `Wallet::reverify_stored_certificates` re-reads every stored certificate

@@ -105,9 +105,7 @@ fn base64_32(value: &str) -> bool {
 
 /// `subject` and `certifier`: a compressed public key (`Certificate.ts:241-254`).
 fn compressed_key(value: &str) -> bool {
-    value.len() == 66
-        && (value.starts_with("02") || value.starts_with("03"))
-        && bsv_rs::primitives::PublicKey::from_hex(value).is_ok()
+    crate::wallet::internalize_args::compressed_key(value).is_some()
 }
 
 /// `<txid>[.<index>]` (`Certificate.ts:260-274`): 64 hex digits, then an

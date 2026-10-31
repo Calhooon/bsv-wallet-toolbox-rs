@@ -477,7 +477,8 @@ pub async fn verify_txid_merkle_proof(
 The live `internalize_action` door passes `get_settings().chain` to
 `verify_beef_spends`. Each input of each unique unproven raw transaction,
 including parents, runs through `Spend::set_flags(word)`, where the word is
-bsv-rs's `script::input_script_flags` (#440) from the store network's
+bsv-rs's `ChainParams::word_for_input(Word::Standard, ..)` (bsv-rs #520 at the
+beta.5 re-pin; `script::input_script_flags` from beta.4, #440) from the store network's
 `ChainParams` (`beef_verification::chain_params`: `main` mainnet, `test`
 testnet, `regtest` the SV node's regtest, 10,000 and 15,000): the
 transaction-level bits of the spend's era and the coin era's
@@ -489,7 +490,7 @@ raw entries are not rejudged.
 
 The port keeps its own per-input pass (`live_word.rs`) beside bsv-rs's
 streaming verifier: the host `SpendVerifier` (D27), the create pre-check's
-judged set (#426) and the door's per-transaction work total (below) each need
+judged set (#426) each need
 the inputs one at a time, which `StreamVerifier::with_chain_params` does not
 expose. The door's preliminary pass is bsv-rs's `verify_stream_structure`
 (`structure_pass`: the bytes, the graph, the roots, the proofs), which runs
@@ -520,10 +521,22 @@ decline undone by bsv-rs #331), and `work_limit: Some(2^31)` units per input
 (#487: one unit per opcode reached plus each byte hashed; at the beta.3 pin
 the costliest corpus input spends 661, and a P2PKH input of a 10 MB standard
 transaction 10,000,235); at the doors the transaction's inputs share a total
-of the same 2^31, summed from each input's `work_spent`, the input that
-carries the sum past it not judged with the total named. An input past
-either is `NotJudgedCause::WorkBudgetExceeded`, refused at a door and skipped
-at the signer, which keeps the per-input bound alone. The door's structure
+of the same 2^31. Both bounds are bsv-rs's one policy type since the beta.5
+re-pin, `live_word::DOOR_WORK_BUDGET =
+WorkBudget::new().with_per_input(Some(2^31)).with_per_transaction(Some(2^31))`
+(bsv-rs #519, #527), charged by bsv-rs's rule: each input runs under the
+per-input bound alone, its `work_spent` is then added to the total, and a
+total above the transaction bound is
+`NotJudgedCause::TransactionWorkBudgetExceeded { input, limit, total }` at the
+crossing input (`exceeded transaction work budget {limit} units after {total}
+units of work.`). bsv-rs's stream verifier has no host hook and its charge is
+crate-private, so the word pass applies the rule input by input
+(`InputJudgements::charge`). An input past its own bound is
+`NotJudgedCause::WorkBudgetExceeded`; either is refused at a door, and the
+signer, which reads `per_input` alone, skips an input past it. Before the
+beta.5 re-pin the port summed the total itself, ran the crossing input under
+what the total left and answered `WorkBudgetExceeded` with the total as its
+budget. The door's structure
 pass runs no script and spends no budget (ARCHITECTURE P1); before the
 review of #493 it was a default-mode script pass under the per-input bound.
 
@@ -532,10 +545,13 @@ An input bsv-rs cannot judge is `Error::SpendRefused` with
 verdict: `PreGenesisCoin { height, genesis_height }` (a coin proven before the
 network's Genesis), `PreGenesisSpend` (a tip before it), `TipHeightOverflow`,
 `SourceHeightOverflow`, `ZeroActivationHeight`, and the work budget's
-`WorkBudgetExceeded`. bsv-rs keeps its typed composition crate-private and its
-public `input_script_flags` answers a text, so `input_word` names the cause
-from bsv-rs's own era table (`ProtocolEra::at_height`) in bsv-rs's order,
-never from the text. `NotJudgedCause` is non-exhaustive: every match carries a
+`WorkBudgetExceeded`. Since the beta.5 re-pin bsv-rs composes the word and
+names the cause (`word_for_input`: a zero Genesis, a zero Chronicle, a
+pre-Genesis spend, a pre-Genesis coin); `input_word` keeps only the two
+conversions ahead of it, the tip's overflow then the coin height's. At beta.4
+bsv-rs's typed composition was crate-private and `input_word` named the cause
+from bsv-rs's era table in the same order (`refusal_cause`, retired with
+the same causes and texts). `NotJudgedCause` is non-exhaustive: every match carries a
 wildcard arm. Before beta.4 these were script refusals (`The mainnet coin
 height is before Genesis.`, `The tracker tip height is before the supported
 Genesis era.`, `The coin height has no supported script era.`). A network the
@@ -634,7 +650,7 @@ The port judges at the same two places through the one verifier,
 `beef_verification::verify_own` (`beef_verification/own_word.rs`). It reads
 the signed transaction with bsv-rs's streaming reader and judges each
 input with `live_word::judge_input`, the per-input judge internalize's word
-pass uses, under `input_word` (bsv-rs's `input_script_flags`): the spend at
+pass uses, under `input_word` (bsv-rs's `word_for_input`): the spend at
 tip+1 (the latest activation with no tip, #464), the coin's UTXO bits from
 its proof height, the spend's era for a coin without one.
 The sources (`create_action/own_word.rs`, `judge_own_tx`) are untrimmed:

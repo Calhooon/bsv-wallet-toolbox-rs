@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- #505 (the owner's word 22.5 of 2026-10-31): `normalize_label` and
+  `trim_ecmascript` are public, re-exported as
+  `bsv_wallet_toolbox_rs::wallet::{normalize_label, trim_ecmascript}`: the
+  one definition of the reference's label rule (`validateLabel`'s
+  `trim().toLowerCase()`, ts-stack@edf6e03 `validationHelpers.ts:385-387`,
+  `:409-418`, `:411`), ECMAScript's trim differing from `str::trim` at U+FEFF
+  (stripped) and U+0085 (kept). Additive; the store and the doors already
+  call both. Host line for bsv-wallet-cli#376: the CLI's spend gate replaces
+  its copy of `is_ecmascript_whitespace` with these at its beta.5 pin.
+
 ### Changed
 
 - #502 (api-break, the owner's 22.2 (a)): `OverlayLookupResolver` answers
@@ -43,8 +55,68 @@
   (`defaultTransactionEvidenceLimits`) answers no overlay certificate, where
   the reference rejects the lookup.
 
+- Pin `bsv-rs =0.9.0-beta.5` (the tag at `3bad238c`) in `Cargo.toml` and
+  `fuzz/Cargo.toml`, retaining `full` and `http`; the build moves no
+  compile surface. Host lines for bsv-wallet-cli#376 (the beta.5 pin intake):
+  - The live script word is bsv-rs's public
+    `ChainParams::word_for_input(Word::Standard, spend, source)` (bsv-rs
+    #520); the port's `refusal_cause` and its mirrored cause order are
+    retired. No cause and no text moves.
+  - The doors' work policy is bsv-rs's `WorkBudget` (bsv-rs #519, #527):
+    `WorkBudget::new().with_per_input(Some(2147483648)).with_per_transaction(Some(2147483648))`,
+    the keeper's figures of 2026-10-30 unchanged; the signer reads the
+    per-input bound alone. The transaction total is charged by bsv-rs's rule
+    (each input under its own bound, its work then added) and answers
+    bsv-rs's cause: `spend refused at offset N, input I of <txid>: input I
+    not judged: exceeded work budget 2147483648 units after W units of
+    work.` (`WorkBudgetExceeded`, the total as its budget, `W` at or below
+    it) becomes `... input I not judged: exceeded transaction work budget
+    2147483648 units after T units of work.`
+    (`TransactionWorkBudgetExceeded { input, limit, total }`, `T` the total
+    with the crossing input's whole charge, above the bound). The per-input
+    refusal is unchanged. A host matching `WorkBudgetExceeded` for the total
+    matches the new variant (`NotJudgedCause` is non-exhaustive).
+  - `PublicKey::from_hex` reads the reference's lenient key forms (bsv-rs
+    #498). The toolbox keeps the reference's strict reads where it parses
+    outside text: the issued certificate's keys and the response's identity
+    key header (under Fixed below); the overlay record's subject and
+    certifier stay refused at the record's compressed-key check, the same
+    drop the reference makes at `verify()`; `validate_certificate_hex_arg`
+    refuses an odd-length key ahead of bsv-rs as before. A `05` tag is
+    refused at every one of these (bsv-rs #550).
+  - R56 (bsv-rs #491): an `unsigned` action's input may omit
+    `unlockingScript` under `includeInputUnlockingScripts`, every other
+    status strict; the toolbox's `listActions` omits it as the reference
+    wallet does (`listActionsIdb.ts:77-91`), unchanged. bsv-rs's HTTP client
+    over the toolbox now hands that answer on, where at beta.4 it refused it
+    (`Invalid listActions result actions[0].inputs[0].unlockingScript:
+    expected the explicitly requested unlocking script`); CLI #371's line
+    moves with it.
+
 ### Fixed
 
+- bsv-rs #498 at the beta.5 pin: the issued certificate's subject and
+  certifier are read as the reference's `toBinary` reads them (`02` or `03`
+  and 64 hex digits, a compressed point; `Certificate.ts:240-254`), so
+  `Wallet::reverify_stored_certificates` counts a certificate whose key text
+  is an odd-length or hybrid form as failed, as the reference's
+  `Certificate.verify` answers false; with `from_hex` alone at beta.5 it
+  verified. At the issuance door the texts equal the request's validated
+  keys before the decode, so no door answer moves.
+- bsv-rs #498 at the beta.5 pin: the compressed-key validators
+  (`validate_public_key_arg` for proveCertificate's and the certificate
+  gates' keys, the internalize sender, the overlay record's keys) refuse an
+  x at or above p as `isValidCompressedPublicKey` does
+  (`Secp256k1Validation.ts:15-22`), through one strict read
+  (`internalize_args::compressed_key`). With `from_hex` alone at beta.5,
+  `02ffff...ff` passed the gate and proveCertificate answered `Certificate
+  not found with the provided arguments` where it answers `Validation error:
+  The certificate.certifier parameter must be a valid compressed secp256k1
+  public key` (and `certificate.subject`, `verifier`), as at beta.4.
+- bsv-rs #498 at the beta.5 pin: `ResponseAuthHeaders::get_identity_key`
+  reads the identity-key header strictly (hex, then `from_bytes`), refusing
+  an odd-length or hybrid key as the reference's `assertAuthIdentityKey`
+  does; with `from_hex` alone at beta.5 it read them.
 - #509, bsv-wallet-cli#376 and bsv-wallet-cli#372: the create pre-check of
   the caller's unproven `inputBEEF` transactions and `internalizeAction`
   with no header source hold with a text naming the proofs' want of headers

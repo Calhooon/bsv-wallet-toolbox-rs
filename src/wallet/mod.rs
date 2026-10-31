@@ -100,6 +100,7 @@ mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;
 
+pub use label::{normalize_label, trim_ecmascript};
 pub use lookup::{
     dedup_certificates, HttpLookupResolver, OverlayCertificate, OverlayLookupResolver,
 };

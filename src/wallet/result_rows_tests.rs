@@ -64,13 +64,17 @@ async fn the_proof_keyring_is_exactly_the_requested_fields() {
     }
 }
 
-/// CLI #371, recorded and not moved (nothing moves on it until the stack's
-/// word): under `includeInputUnlockingScripts` the wallet answers an unsigned
-/// action's input with no `unlockingScript`, the faithful port of
-/// `listActionsIdb.ts:77,91`; the reference's own client refuses that answer.
-/// These are today's words.
+/// CLI #371: under `includeInputUnlockingScripts` the wallet answers an
+/// unsigned action's input with no `unlockingScript`, the faithful port of
+/// `listActionsIdb.ts:77,91`. The reference's own client refuses that answer
+/// (`WalletResultValidation.ts:2027-2035`, ts-stack #1451 open); bsv-rs's R56
+/// accepts it since 0.9.0-beta.5 (bsv-rs #491, the stack's word of
+/// 2026-10-31 05:1xZ), so the answer now reaches the client's caller. At
+/// beta.4 the client refused it: `Invalid listActions result
+/// actions[0].inputs[0].unlockingScript: expected the explicitly requested
+/// unlocking script`.
 #[tokio::test]
-async fn an_unsigned_input_without_its_script_is_refused_by_the_client() {
+async fn an_unsigned_input_without_its_script_is_accepted_by_the_client() {
     let (_dir, wallet) = wallet().await;
     fund_tagged(&wallet, &own_lock(&wallet), 0).await;
     let created = wallet
@@ -120,15 +124,11 @@ async fn an_unsigned_input_without_its_script_is_refused_by_the_client() {
     let input = &answer.actions[0].inputs.as_ref().unwrap()[0];
     assert!(input.unlocking_script.is_none());
     let server = served("listActions", serde_json::to_vec(&answer).unwrap()).await;
-    let error = client(&server).list_actions(args, None).await.unwrap_err();
-    assert_eq!(
-        error,
-        bsv_rs::Error::WalletError(
-            "Invalid listActions result actions[0].inputs[0].unlockingScript: \
-             expected the explicitly requested unlocking script"
-                .into()
-        )
-    );
+    let read = client(&server).list_actions(args, None).await.unwrap();
+    assert_eq!(read.actions[0].status, answer.actions[0].status);
+    assert!(read.actions[0].inputs.as_ref().unwrap()[0]
+        .unlocking_script
+        .is_none());
 }
 
 /// The `data` form of createSignature, which the key-value store and

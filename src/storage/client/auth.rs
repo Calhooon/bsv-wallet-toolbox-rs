@@ -150,10 +150,15 @@ impl ResponseAuthHeaders {
             && self.signature.is_some()
     }
 
-    /// Returns the identity key as a PublicKey if valid.
+    /// Returns the identity key as a PublicKey if valid: the hex decoded,
+    /// then `PublicKey::from_bytes`, the strict reading `from_hex` gave
+    /// before bsv-rs 0.9.0-beta.5. Since then `from_hex` reads the
+    /// reference's lenient `fromString` forms (bsv-rs #498), which the
+    /// reference's `assertAuthIdentityKey` refuses for this header
+    /// (`AuthMessageValidation.ts:81-89`), as bsv-rs's own transports do.
     pub fn get_identity_key(&self) -> Result<Option<PublicKey>> {
         match &self.identity_key {
-            Some(hex) => Ok(Some(PublicKey::from_hex(hex)?)),
+            Some(hex) => Ok(Some(PublicKey::from_bytes(&from_hex(hex)?)?)),
             None => Ok(None),
         }
     }
@@ -838,6 +843,32 @@ mod tests {
         let result = headers.get_identity_key();
         assert!(result.is_ok());
         assert!(result.unwrap().is_some());
+    }
+
+    /// The header's key in the reference's lenient forms that bsv-rs
+    /// 0.9.0-beta.5's `from_hex` reads (bsv-rs #498): an odd-length string
+    /// and a hybrid key, refused as `assertAuthIdentityKey` refuses them, and
+    /// a `05` tag (bsv-rs #550). Red at the pin with `from_hex`.
+    #[test]
+    fn test_response_auth_headers_get_identity_key_refuses_lenient_forms() {
+        let key = bsv_rs::primitives::PrivateKey::from_hex(&"11".repeat(32))
+            .unwrap()
+            .public_key();
+        let uncompressed = key.to_hex_uncompressed();
+        let y_odd = u8::from_str_radix(&uncompressed[128..], 16).unwrap() & 1 == 1;
+        let hybrid = format!("{}{}", if y_odd { "07" } else { "06" }, &uncompressed[2..]);
+        let odd = key.to_hex()[1..].to_string();
+        let tag_05 = format!("05{}", &key.to_hex()[2..]);
+        for text in [odd, hybrid, tag_05] {
+            let headers = ResponseAuthHeaders {
+                version: Some("0.1".to_string()),
+                identity_key: Some(text.clone()),
+                nonce: Some("nonce".to_string()),
+                timestamp: Some(123456),
+                signature: Some("sig".to_string()),
+            };
+            assert!(headers.get_identity_key().is_err(), "{text} was read");
+        }
     }
 
     #[test]

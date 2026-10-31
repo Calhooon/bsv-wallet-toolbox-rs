@@ -687,8 +687,8 @@ fn decode_issued_certificate(raw: &CertificateResponse) -> Result<Certificate> {
     // toBinary's assertCanonicalBase64Length (Certificate.ts:233, :237).
     let cert_type = decode_canonical_base64_32(&raw.cert_type).ok_or_else(invalid)?;
     let serial = decode_canonical_base64_32(&raw.serial_number).ok_or_else(invalid)?;
-    let subject = PublicKey::from_hex(&raw.subject).map_err(|_| invalid())?;
-    let certifier = PublicKey::from_hex(&raw.certifier).map_err(|_| invalid())?;
+    let subject = certificate_key(&raw.subject).ok_or_else(invalid)?;
+    let certifier = certificate_key(&raw.certifier).ok_or_else(invalid)?;
     let mut certificate = Certificate::new(cert_type, serial, subject, certifier);
     // The wire text is stored as answered; this parse is only for verify.
     certificate.revocation_outpoint =
@@ -698,6 +698,20 @@ fn decode_issued_certificate(raw: &CertificateResponse) -> Result<Certificate> {
     }
     certificate.signature = Some(hex::decode(&raw.signature).map_err(|_| invalid())?);
     Ok(certificate)
+}
+
+/// toBinary's subject and certifier (Certificate.ts:240-254): `02` or `03`
+/// and 64 hex digits, then the 33 bytes as a compressed point. Since bsv-rs
+/// 0.9.0-beta.5 `PublicKey::from_hex` reads the reference's lenient
+/// `fromString` forms (bsv-rs #498: an odd-length string padded, a hybrid
+/// key), which toBinary's pattern refuses, so the text is read strictly here.
+fn certificate_key(key_hex: &str) -> Option<PublicKey> {
+    let shaped = key_hex.len() == 66
+        && matches!(key_hex.get(..2), Some("02" | "03"))
+        && key_hex.bytes().all(|b| b.is_ascii_hexdigit());
+    shaped
+        .then(|| super::internalize_args::compressed_key(key_hex))
+        .flatten()
 }
 
 async fn verify_issuance_serial<W: WalletInterface + Send + Sync>(

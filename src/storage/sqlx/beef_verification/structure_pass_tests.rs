@@ -24,14 +24,14 @@ async fn the_structure_pass_judges_no_script_and_the_word_pass_refuses() {
     with_work((u64::MAX, 600), || {
         assert!(matches!(structure(&bytes, &headers), Verdict::Valid { .. }));
     });
-    WORK_OVERRIDE.with(|cell| cell.set(Some((u64::MAX, 600))));
+    WORK_OVERRIDE.with(|cell| cell.set(Some(budget((u64::MAX, 600)))));
     let result = door(&parent, &child).await;
     WORK_OVERRIDE.with(|cell| cell.set(None));
     assert!(matches!(
         work_cause(result, 1),
-        NotJudgedCause::WorkBudgetExceeded {
+        NotJudgedCause::TransactionWorkBudgetExceeded {
             input: 1,
-            budget: 600,
+            limit: 600,
             ..
         }
     ));

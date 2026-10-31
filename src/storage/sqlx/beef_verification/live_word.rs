@@ -1,7 +1,8 @@
 //! The port's per-input word pass under bsv-rs's word (#440): the host
-//! `SpendVerifier`, the create pre-check's judged set and the door's
-//! per-transaction work total need the inputs one at a time, which bsv-rs's
-//! stream verifier does not expose. The door's structure pass before it
+//! `SpendVerifier` and the create pre-check's judged set need the inputs one
+//! at a time, which bsv-rs's stream verifier does not expose (it has no host
+//! hook), so the door charges bsv-rs's `WorkBudget` here, input by input, by
+//! bsv-rs's rule. The door's structure pass before it
 //! judges no spend, so this pass also keeps the mining, outpoint and value
 //! checks. Only referenced outputs stay resident; a transaction waiting for a
 //! parent is released in wire order.
@@ -9,16 +10,15 @@
 use super::{stream_error, VerificationHeaders};
 use crate::{Error, Result};
 use crate::{SpendRequest, SpendVerificationContext, SpendVerifier};
-use bsv_rs::block::ChainParams;
 use bsv_rs::primitives::bsv::sighash::{TxInput, TxOutput, TxSighashCache};
 use bsv_rs::script::{
-    input_script_flags, LockingScript, NotJudgedCause, ProtocolEra, ScriptFlags, ScriptResource,
-    ScriptResourceLimit, Spend, TxSpendParams, UnlockingScript,
+    LockingScript, NotJudgedCause, ScriptFlags, ScriptResource, ScriptResourceLimit, Spend,
+    TxSpendParams, UnlockingScript, Word,
 };
 use bsv_rs::transaction::beef_stream::{
     display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
 };
-use bsv_rs::transaction::BeefStream;
+use bsv_rs::transaction::{BeefStream, WorkBudget};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -33,18 +33,15 @@ pub(crate) enum NoWord {
 /// The text of [`NoWord::Network`], a script refusal as before #440.
 pub(crate) const NO_NETWORK_POLICY: &str = "The storage network has no script era policy.";
 
-/// The node's word for one unmined input, composed by bsv-rs's
-/// `input_script_flags` from the store network's `ChainParams` (#440): the
-/// spend at tip+1, the block it would be mined in, with no tip the latest
-/// activation the parameters know (bsv-rs's no-tip rule, the keeper's clause
-/// of 2026-10-29); the coin's UTXO bits from its verified proof height, an
-/// unproven coin at the spend's. This is the one place the word is chosen.
-///
-/// bsv-rs keeps its typed composition crate-private (`verification_flags`,
-/// `checked_input_script_flags`) and its public one answers a text, so the
-/// cause of a refusal is named here in the same order from bsv-rs's own era
-/// table (`ProtocolEra::at_height`), never from the text: the tip's overflow,
-/// the coin height's, then a zero activation, the spend's era, the coin's.
+/// The node's word for one unmined input, bsv-rs's
+/// `ChainParams::word_for_input(Word::Standard, ..)` (bsv-rs #520) from the
+/// store network's `ChainParams` (#440): the spend at tip+1, the block it
+/// would be mined in, with no tip the latest activation the parameters know
+/// (bsv-rs's no-tip rule, the keeper's clause of 2026-10-29); the coin's UTXO
+/// bits from its verified proof height, an unproven coin at the spend's. This
+/// is the one place the word is chosen; bsv-rs names the cause of a refusal
+/// (a zero activation, the spend's era, the coin's), and the port only the
+/// two conversions ahead of it: the tip's overflow, then the coin height's.
 pub(crate) fn input_word(
     network: &str,
     tip: Option<ChainTip>,
@@ -52,46 +49,24 @@ pub(crate) fn input_word(
 ) -> std::result::Result<ScriptFlags, NoWord> {
     let chain = super::chain_params(network).ok_or(NoWord::Network)?;
     let not_judged = NoWord::NotJudged;
-    let spend = match tip {
-        Some(tip) => {
+    let spend = tip
+        .map(|tip| {
             tip.height
                 .checked_add(1)
                 .ok_or(not_judged(NotJudgedCause::TipHeightOverflow {
                     tip: tip.height,
-                }))?
-        }
-        None => chain.genesis_height.max(chain.chronicle_height),
-    };
+                }))
+        })
+        .transpose()?;
     let source = proven_height
         .map(|height| {
             u32::try_from(height)
                 .map_err(|_| not_judged(NotJudgedCause::SourceHeightOverflow { height }))
         })
         .transpose()?;
-    input_script_flags(&chain, spend, source, false)
-        .map_err(|_| not_judged(refusal_cause(&chain, spend, source)))
-}
-
-/// The cause of `input_script_flags`'s refusal of these facts.
-fn refusal_cause(chain: &ChainParams, spend: u32, source: Option<u32>) -> NotJudgedCause {
-    use bsv_rs::block::ActivationHeightsError;
-    if chain.genesis_height == 0 {
-        return NotJudgedCause::ZeroActivationHeight(ActivationHeightsError::ZeroGenesis);
-    }
-    if chain.chronicle_height == 0 {
-        return NotJudgedCause::ZeroActivationHeight(ActivationHeightsError::ZeroChronicle);
-    }
-    let era = |height| ProtocolEra::at_height(height, chain.genesis_height, chain.chronicle_height);
-    match era(spend) {
-        None => NotJudgedCause::PreGenesisSpend {
-            height: spend,
-            genesis_height: chain.genesis_height,
-        },
-        Some(_) => NotJudgedCause::PreGenesisCoin {
-            height: source.unwrap_or(spend),
-            genesis_height: chain.genesis_height,
-        },
-    }
+    chain
+        .word_for_input(Word::Standard, spend, source)
+        .map_err(not_judged)
 }
 
 pub(super) struct Coin {
@@ -436,7 +411,7 @@ impl WordPass<'_> {
         let (sources, input_total) = self.sources(txid, body)?;
         // One sighash cache per transaction, shared by all of its inputs.
         let mut judgements = super::own_word::InputJudgements::new(txid, body, self.verifier)
-            .with_transaction_work(work_budgets().1);
+            .with_transaction_work(work_budget().per_transaction);
         for (vin, source) in sources.into_iter().enumerate() {
             let proven = self.heights.get(&body.inputs[vin].prev).copied();
             let word = input_word(self.network, self.tip, proven);
@@ -450,36 +425,33 @@ impl WordPass<'_> {
     }
 }
 
-/// The work budget per input, in bsv-rs's `SpendParams::work_limit` units (one
+/// The work budget at the doors, bsv-rs's one policy type (`WorkBudget`,
+/// bsv-rs #519 and #527), in bsv-rs's `SpendParams::work_limit` units (one
 /// per opcode reached and one per byte fed to a hash, charged only under a
-/// limit), at the doors and the signer: 2^31, the keeper's word of 2026-10-30
-/// on #487, anchored on the node's 1 s validation limit. The corpus's
-/// costliest input spends 661 units; a P2PKH input of a 10 MB standard
-/// transaction 10,000,235.
-pub(crate) const WORK_PER_INPUT: u64 = 1 << 31;
-
-/// The work budget per transaction at the doors (internalize's word pass and
-/// the create pre-check), summed over its inputs: the same 2^31, the node's
-/// limit being per transaction (the keeper's amendment on #487). The signer
-/// keeps the per-input bound alone.
-pub(crate) const WORK_PER_TRANSACTION: u64 = 1 << 31;
+/// limit): 2^31 per input, the keeper's word of 2026-10-30 on #487, anchored
+/// on the node's 1 s validation limit, and the same 2^31 per transaction (the
+/// keeper's amendment on #487, the node's limit being per transaction). The
+/// signer reads `per_input` alone. The corpus's costliest input spends 661
+/// units; a P2PKH input of a 10 MB standard transaction 10,000,235.
+pub(crate) const DOOR_WORK_BUDGET: WorkBudget = WorkBudget::new()
+    .with_per_input(Some(1 << 31))
+    .with_per_transaction(Some(1 << 31));
 
 #[cfg(test)]
 thread_local! {
-    /// The witnesses' budgets `(per input, per transaction)` in place of the
-    /// constants, which no test could exhaust; test builds only.
-    pub(crate) static WORK_OVERRIDE: std::cell::Cell<Option<(u64, u64)>> =
+    /// The witnesses' budget in place of [`DOOR_WORK_BUDGET`], which no test
+    /// could exhaust; test builds only.
+    pub(crate) static WORK_OVERRIDE: std::cell::Cell<Option<WorkBudget>> =
         const { std::cell::Cell::new(None) };
 }
 
-/// The budgets `(per input, per transaction)`: [`WORK_PER_INPUT`] and
-/// [`WORK_PER_TRANSACTION`], or a witness's override in a test build.
-pub(crate) fn work_budgets() -> (u64, u64) {
+/// [`DOOR_WORK_BUDGET`], or a witness's override in a test build.
+pub(crate) fn work_budget() -> WorkBudget {
     #[cfg(test)]
-    if let Some(budgets) = WORK_OVERRIDE.with(std::cell::Cell::get) {
-        return budgets;
+    if let Some(budget) = WORK_OVERRIDE.with(std::cell::Cell::get) {
+        return budget;
     }
-    (WORK_PER_INPUT, WORK_PER_TRANSACTION)
+    DOOR_WORK_BUDGET
 }
 
 /// The refusal of an input with no word, at the input's offset: a door
@@ -578,6 +550,8 @@ pub(super) fn transaction_cache(body: &TxBody) -> Arc<TxSighashCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bsv_rs::block::ChainParams;
+    use bsv_rs::script::ProtocolEra;
     use ProtocolEra::{PostChronicle, PostGenesis};
     const GENESIS: u32 = ProtocolEra::MAINNET_GENESIS_HEIGHT;
     const CHRONICLE: u32 = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
