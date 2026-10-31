@@ -104,6 +104,24 @@ async fn store_proof(conn: &mut sqlx::SqliteConnection, tx: &Transaction) {
         .expect("record checked root");
 }
 
+/// The P2PKH lock of the wallet's BRC-29 change key under the seed's
+/// derivation prefix and suffix.
+fn funding_lock(root: PrivateKey) -> Vec<u8> {
+    let proto = ProtoWallet::new(Some(root));
+    let key = proto
+        .key_deriver()
+        .derive_private_key(
+            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
+            &format!("{PREFIX} {SUFFIX}"),
+            &Counterparty::Self_,
+        )
+        .expect("funding key");
+    let mut script = vec![0x76, 0xa9, 0x14];
+    script.extend(hash160(&key.public_key().to_compressed()));
+    script.extend([0x88, 0xac]);
+    script
+}
+
 /// Shared by all storage benches. Initialization is timed only by seed_10000.
 pub async fn seed(count: usize) -> Store {
     let storage = StorageSqlx::in_memory().await.expect("in-memory store");
@@ -129,18 +147,7 @@ pub async fn seed(count: usize) -> Store {
         .await
         .expect("default basket")
         .basket_id;
-    let proto = ProtoWallet::new(Some(root));
-    let key = proto
-        .key_deriver()
-        .derive_private_key(
-            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
-            &format!("{PREFIX} {SUFFIX}"),
-            &Counterparty::Self_,
-        )
-        .expect("funding key");
-    let mut script = vec![0x76, 0xa9, 0x14];
-    script.extend(hash160(&key.public_key().to_compressed()));
-    script.extend([0x88, 0xac]);
+    let script = funding_lock(root);
 
     let rows: Vec<_> = (0..count)
         .map(|i| {
@@ -276,6 +283,72 @@ pub async fn seed(count: usize) -> Store {
         coins: rows.iter().map(|row| row.0).collect(),
         last_transaction: count as i64,
     }
+}
+
+/// A store whose `count` coins are the outputs of one proven parent, so a
+/// spend of many of them carries one proof (per-coin proofs at one height
+/// are distinct roots for one block, which a BEEF refuses). Used by the A8
+/// census scenes that spend one, ten and a hundred inputs
+/// (`examples/a8_census.rs`); the door bench does not call it.
+#[allow(dead_code)]
+pub async fn seed_shared(count: usize) -> Store {
+    let mut store = seed(0).await;
+    let root = PrivateKey::from_hex(&format!("{:064x}", 1)).expect("synthetic key");
+    let script = funding_lock(root);
+    let mut parent = funding_transaction(1 << 24, &script);
+    parent.outputs = vec![parent.outputs[0].clone(); count];
+    let txid = parent.id();
+    let user_id = store.auth.user_id.expect("user");
+    let mut writer = store.wallet.storage().write_tx().await.expect("seed");
+    store_proof(&mut writer, &parent).await;
+    sqlx::query(
+        "INSERT INTO transactions (transaction_id, user_id, status, reference, is_outgoing, \
+         satoshis, version, lock_time, description, txid, raw_tx) \
+         VALUES (1, ?, 'completed', 'funding-shared', 0, ?, 1, 0, 'synthetic funding', ?, ?)",
+    )
+    .bind(user_id)
+    .bind((SATOSHIS * count as u64) as i64)
+    .bind(&txid)
+    .bind(parent.to_binary())
+    .execute(&mut *writer)
+    .await
+    .expect("shared parent");
+    let vouts: Vec<i64> = (0..count as i64).collect();
+    for chunk in vouts.chunks(64) {
+        let mut query = sqlx::QueryBuilder::new(
+            "INSERT INTO outputs (output_id, user_id, transaction_id, basket_id, vout, satoshis, \
+             locking_script, txid, type, spendable, change, derivation_prefix, derivation_suffix, \
+             provided_by, purpose) ",
+        );
+        query.push_values(chunk, |mut row, vout| {
+            row.push_bind(vout + 1)
+                .push_bind(user_id)
+                .push_bind(1)
+                .push_bind(store.basket)
+                .push_bind(vout)
+                .push_bind(SATOSHIS as i64)
+                .push_bind(&script)
+                .push_bind(&txid)
+                .push_bind("P2PKH")
+                .push_bind(true)
+                .push_bind(true)
+                .push_bind(PREFIX)
+                .push_bind(SUFFIX)
+                .push_bind("storage")
+                .push_bind("change");
+        });
+        query.build().execute(&mut *writer).await.expect("outputs");
+    }
+    writer.commit().await.expect("commit shared seed");
+    let roots = HashSet::from([txid, funding_transaction(0, &[0x51]).id()]);
+    store
+        .wallet
+        .storage()
+        .set_chain_tracker(Arc::new(StoredRoots(roots)))
+        .await;
+    store.coins = vouts.iter().map(|vout| vout + 1).collect();
+    store.last_transaction = 1;
+    store
 }
 
 impl Store {
