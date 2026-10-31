@@ -60,6 +60,8 @@ RUST = {
 def crate_and_library(name, lib, binary):
     if lib in SYSTEM or lib != binary:
         return "system", SYSTEM.get(lib, lib)
+    if name == f"{binary} (unsymbolized)":
+        return binary, name
     head = name.lstrip("<").split("::")
     root = head[0]
     if root == "bsv_rs":

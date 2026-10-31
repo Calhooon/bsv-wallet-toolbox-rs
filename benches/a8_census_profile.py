@@ -53,12 +53,15 @@ def load_symbols(syms_path):
 
 
 def symbol(tables, lib, address):
-    """The native symbol at `address`, and its rows' inlined frame names."""
+    """The native symbol at `address`, and its rows' inlined frame names. An
+    address the sidecar does not place (samply symbolizes no system library
+    but dyld, pthread, the kernel and platform, so every malloc address is
+    one) counts as its library's one `LIB (unsymbolized)` row."""
     starts, rows = tables.get(lib, ([], []))
     at = bisect.bisect_right(starts, address) - 1
     if at >= 0 and address < rows[at][0]:
         return rows[at][1], rows[at][2]
-    return f"{lib}+{address:#x}", ""
+    return f"{lib} (unsymbolized)", ""
 
 
 def analyse(profile_path, report_path):
