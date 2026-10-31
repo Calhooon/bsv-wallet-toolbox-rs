@@ -3,7 +3,7 @@
 //! (`decodeIdentityOutput`, ts-stack@edf6e03 `identityUtils.ts:493-557`).
 
 use bsv_rs::auth::VerifiableCertificate;
-use bsv_rs::overlay::LookupAnswer;
+use bsv_rs::overlay::OutputListItem;
 use bsv_rs::primitives::PublicKey;
 use bsv_rs::script::templates::PushDrop;
 use bsv_rs::script::LockingScript;
@@ -15,27 +15,26 @@ use bsv_rs::wallet::{
 use super::{record, OverlayCertificate};
 use crate::Result;
 
-/// Parse a `LookupAnswer` into a list of `OverlayCertificate`s.
-///
-/// Iterates over output-list results and decodes each output's identity token
-/// (`decode_identity_output`). Invalid outputs are silently skipped, as the
-/// reference's `decodeIdentityOutput` answers `null` for them.
-pub(super) fn parse_overlay_answer(answer: &LookupAnswer) -> Result<Vec<OverlayCertificate>> {
-    match answer {
-        LookupAnswer::OutputList { outputs } => {
-            let mut certs = Vec::new();
-            for output in outputs {
-                match parse_single_output(&output.beef, output.output_index) {
-                    Ok(cert) => certs.push(cert),
-                    Err(e) => {
-                        tracing::debug!("Skipping invalid overlay output: {}", e);
-                    }
-                }
+/// The door's overlay certificates from any resolver's outputs: each
+/// output's identity token decoded (`decode_identity_output`), then its
+/// certificate verified and decrypted (`verified_and_decrypted`); an output
+/// that fails is dropped, as the reference's `decodeIdentityOutput` answers
+/// `null` for it.
+pub(crate) async fn overlay_certificates(outputs: Vec<OutputListItem>) -> Vec<OverlayCertificate> {
+    let mut kept = Vec::new();
+    for output in outputs {
+        let decoded = match parse_single_output(&output.beef, output.output_index) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                tracing::debug!("Skipping invalid overlay output: {}", e);
+                continue;
             }
-            Ok(certs)
+        };
+        if let Some(certificate) = decoded.verified_and_decrypted().await {
+            kept.push(certificate);
         }
-        _ => Ok(vec![]),
     }
+    kept
 }
 
 /// Parse a single BEEF output into an `OverlayCertificate`.
@@ -138,8 +137,7 @@ impl OverlayCertificate {
     /// opened under the certificate field protocol with the subject as
     /// counterparty), and a failure or an empty result `None`, the entry
     /// dropped. `decrypted_fields` is the decryption's, whatever the entry
-    /// carried. Any resolver's entries pass here: only the HTTP resolver
-    /// holds the output its key and field signature are read from.
+    /// carried.
     pub(crate) async fn verified_and_decrypted(mut self) -> Option<Self> {
         let mut record = serde_json::to_value(&self).ok()?;
         record.as_object_mut()?.remove("decryptedFields");

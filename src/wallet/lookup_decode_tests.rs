@@ -3,17 +3,17 @@
 //! output dropped from the answer; #494: a record carrying `decryptedFields`
 //! is not the reference's eight properties and is dropped.
 
-use bsv_rs::overlay::{LookupAnswer, OutputListItem};
+use bsv_rs::overlay::OutputListItem;
 use bsv_rs::script::{LockingScript, ScriptChunk};
 
 use super::super::fixture::{beef, key, record_json, revealed, token};
-use super::{decode_identity_output, parse_overlay_answer, OverlayCertificate};
+use super::{decode_identity_output, overlay_certificates, OverlayCertificate};
 
 const CERTIFIER: u8 = 9;
 const SUBJECT: u8 = 8;
 
 /// The answer's entries for `scripts`, one output each.
-fn answered(scripts: Vec<LockingScript>) -> Vec<String> {
+async fn answered(scripts: Vec<LockingScript>) -> Vec<String> {
     let outputs = scripts
         .into_iter()
         .map(|script| OutputListItem {
@@ -22,8 +22,8 @@ fn answered(scripts: Vec<LockingScript>) -> Vec<String> {
             context: None,
         })
         .collect();
-    parse_overlay_answer(&LookupAnswer::OutputList { outputs })
-        .unwrap()
+    overlay_certificates(outputs)
+        .await
         .into_iter()
         .map(|c| c.serial_number)
         .collect()
@@ -40,8 +40,8 @@ async fn alice(serial: u8) -> OverlayCertificate {
 }
 
 /// `bad` is dropped from an answer beside `good`'s own token.
-fn only_the_good_token(bad: LockingScript, good: &OverlayCertificate) {
-    let kept = answered(vec![bad, token(&key(SUBJECT), record_json(good))]);
+async fn only_the_good_token(bad: LockingScript, good: &OverlayCertificate) {
+    let kept = answered(vec![bad, token(&key(SUBJECT), record_json(good))]).await;
     assert_eq!(kept, vec![good.serial_number.clone()]);
 }
 
@@ -62,7 +62,7 @@ async fn the_reference_token_decodes_to_its_record() {
 async fn a_token_locked_by_another_key_is_dropped() {
     let record = alice(2).await;
     let good = alice(3).await;
-    only_the_good_token(token(&key(7), record_json(&record)), &good);
+    only_the_good_token(token(&key(7), record_json(&record)), &good).await;
 }
 
 /// `identityUtils.ts:526-531`: the subject's own record and field
@@ -74,7 +74,7 @@ async fn a_token_with_only_its_locking_key_swapped_is_dropped() {
     let good = alice(3).await;
     let mut chunks = token(&key(SUBJECT), record_json(&record)).chunks();
     chunks[0] = token(&key(7), record_json(&record)).chunks()[0].clone();
-    only_the_good_token(LockingScript::from_chunks(chunks), &good);
+    only_the_good_token(LockingScript::from_chunks(chunks), &good).await;
 }
 
 /// `identityUtils.ts:532-539`: the subject's key, but a field signature
@@ -86,7 +86,7 @@ async fn a_bad_field_signature_is_dropped() {
     let mut chunks = token(&key(SUBJECT), record_json(&record)).chunks();
     let signed_elsewhere = token(&key(SUBJECT), record_json(&good)).chunks();
     chunks[3] = signed_elsewhere[3].clone();
-    only_the_good_token(LockingScript::from_chunks(chunks), &good);
+    only_the_good_token(LockingScript::from_chunks(chunks), &good).await;
 }
 
 /// `identityUtils.ts:502,516`: a third field, or a field pushed with a
@@ -116,7 +116,7 @@ async fn a_token_with_no_field_is_dropped() {
     let chunks = token(&key(SUBJECT), record_json(&good)).chunks();
     let bare = LockingScript::from_chunks(chunks[..2].to_vec());
     assert!(decode_identity_output(&bare).is_err());
-    only_the_good_token(bare, &good);
+    only_the_good_token(bare, &good).await;
 }
 
 /// #494: a record carrying `decryptedFields`, a key the reference's

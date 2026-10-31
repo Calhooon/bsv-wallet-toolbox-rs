@@ -6,7 +6,11 @@
 //! `anyone` verifier, and the `PushDrop` the subject locks and signs under
 //! `[1, 'identity']` key `1`.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use bsv_rs::auth::MasterCertificate;
+use bsv_rs::overlay::OutputListItem;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::templates::PushDrop;
 use bsv_rs::script::LockingScript;
@@ -17,6 +21,13 @@ use bsv_rs::wallet::{
 use indexmap::IndexMap;
 
 use super::OverlayCertificate;
+
+/// The subjects `revealed` issued to, by public key, so `published` locks
+/// each record under its own subject's key.
+fn subjects() -> &'static Mutex<HashMap<String, PrivateKey>> {
+    static SUBJECTS: OnceLock<Mutex<HashMap<String, PrivateKey>>> = OnceLock::new();
+    SUBJECTS.get_or_init(Default::default)
+}
 
 pub(crate) fn key(n: u8) -> PrivateKey {
     PrivateKey::from_bytes(&[n; 32]).unwrap()
@@ -66,6 +77,10 @@ pub(crate) async fn revealed(
     .await
     .unwrap();
     let certificate = signed.to_wallet_certificate();
+    subjects()
+        .lock()
+        .unwrap()
+        .insert(subject.public_key().to_hex(), subject.clone());
     OverlayCertificate {
         type_id: certificate.certificate_type,
         serial_number: certificate.serial_number,
@@ -124,4 +139,15 @@ pub(crate) fn beef(script: LockingScript) -> Vec<u8> {
         change: false,
     });
     tx.to_beef(true).unwrap()
+}
+
+/// The overlay's output for `record`: its token, locked and signed by the
+/// subject `revealed` issued it to, in a BEEF at output 0.
+pub(crate) fn published(record: &OverlayCertificate) -> OutputListItem {
+    let subject = subjects().lock().unwrap()[&record.subject].clone();
+    OutputListItem {
+        beef: beef(token(&subject, record_json(record))),
+        output_index: 0,
+        context: None,
+    }
 }

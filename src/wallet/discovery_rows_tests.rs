@@ -14,8 +14,9 @@ use crate::managers::{
 use crate::services::mock::MockWalletServices;
 use crate::storage::entities::TableCertificate;
 use crate::storage::WalletStorageWriter;
-use crate::wallet::lookup::fixture::{key, revealed};
+use crate::wallet::lookup::fixture::{key, published, revealed};
 use crate::wallet::lookup::{OverlayCertificate, OverlayLookupResolver};
+use bsv_rs::overlay::OutputListItem;
 use bsv_rs::wallet::substrates::HttpWalletJson;
 
 pub(super) type TestWallet = Wallet<crate::StorageSqlx, MockWalletServices>;
@@ -80,6 +81,7 @@ async fn overlay_with(serial: u8, fields: &[(&str, &str)]) -> OverlayCertificate
     revealed(&key(CERTIFIER), &key(SUBJECT), [serial; 32], fields).await
 }
 
+/// A host's resolver: each record published as its subject's token.
 pub(super) struct Overlay(pub(super) Vec<OverlayCertificate>);
 
 #[async_trait]
@@ -88,16 +90,16 @@ impl OverlayLookupResolver for Overlay {
         &self,
         _identity_key: &str,
         _certifiers: &[String],
-    ) -> crate::Result<Vec<OverlayCertificate>> {
-        Ok(self.0.clone())
+    ) -> crate::Result<Vec<OutputListItem>> {
+        Ok(self.0.iter().map(published).collect())
     }
 
     async fn lookup_by_attributes(
         &self,
         _attributes: &IndexMap<String, String>,
         _certifiers: &[String],
-    ) -> crate::Result<Vec<OverlayCertificate>> {
-        Ok(self.0.clone())
+    ) -> crate::Result<Vec<OutputListItem>> {
+        Ok(self.0.iter().map(published).collect())
     }
 }
 
