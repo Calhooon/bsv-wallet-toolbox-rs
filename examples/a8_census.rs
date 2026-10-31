@@ -100,8 +100,8 @@ fn big_beef(bytes: usize) -> (Vec<u8>, String, String) {
     });
     let mut data = Vec::with_capacity(bytes + 8);
     data.extend([0x00, 0x6a, 0x4e]);
-    data.extend((bytes as u32).to_le_bytes());
-    data.extend((0..bytes).map(|i| (i % 251) as u8));
+    data.extend(u32::try_from(bytes).expect("data length").to_le_bytes());
+    data.extend((0..=250u8).cycle().take(bytes));
     child.outputs.push(TransactionOutput {
         satoshis: Some(0),
         locking_script: LockingScript::from_binary(&data).expect("data"),

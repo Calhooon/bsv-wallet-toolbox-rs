@@ -65,7 +65,7 @@ impl ChainTracker for StoredRoots {
 }
 
 /// A distinct synthetic funding transaction for each coin. Its proof is a
-/// single-leaf fixture checked against StoredRoots, never a network header.
+/// single-leaf fixture checked against `StoredRoots`, never a network header.
 pub fn funding_transaction(tag: usize, script: &[u8]) -> Transaction {
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(format!("{tag:064x}"), u32::MAX);
@@ -122,43 +122,14 @@ fn funding_lock(root: PrivateKey) -> Vec<u8> {
     script
 }
 
-/// Shared by all storage benches. Initialization is timed only by seed_10000.
-pub async fn seed(count: usize) -> Store {
-    let storage = StorageSqlx::in_memory().await.expect("in-memory store");
-    let root = PrivateKey::from_hex(&format!("{:064x}", 1)).expect("synthetic key");
-    let identity = root.public_key().to_hex();
-    storage
-        .migrate("door-bench", &identity)
-        .await
-        .expect("migrate");
-    storage.make_available().await.expect("make available");
-    let wallet = Wallet::new(Some(root.clone()), storage, MockWalletServices::new())
-        .await
-        .expect("wallet");
-    let (user, _) = wallet
-        .storage()
-        .find_or_insert_user(&identity)
-        .await
-        .expect("user");
-    let auth = AuthId::with_user_id(identity, user.user_id);
-    let basket = wallet
-        .storage()
-        .find_or_create_default_basket(user.user_id)
-        .await
-        .expect("default basket")
-        .basket_id;
-    let script = funding_lock(root);
-
-    let rows: Vec<_> = (0..count)
-        .map(|i| {
-            let tx = funding_transaction(i, &script);
-            let txid = tx.id();
-            let proof = MerklePath::from_coinbase_txid(&txid, HEIGHT).to_binary();
-            (i as i64 + 1, txid, tx.to_binary(), proof)
-        })
-        .collect();
-    let mut roots: HashSet<_> = rows.iter().map(|row| row.1.clone()).collect();
-    let mut writer = wallet.storage().write_tx().await.expect("seed transaction");
+/// The seed's funding rows: one proven transaction and one coin each.
+async fn insert_funding(
+    writer: &mut sqlx::SqliteConnection,
+    rows: &[(i64, String, Vec<u8>, Vec<u8>)],
+    user_id: i64,
+    basket: i64,
+    script: &[u8],
+) {
     // 64 rows keeps even the output insert below 999 bind parameters.
     // Explicit fixture IDs let all four tables be loaded in batches.
     for chunk in rows.chunks(64) {
@@ -197,11 +168,11 @@ pub async fn seed(count: usize) -> Store {
         );
         query.push_values(chunk, |mut row, (id, txid, raw, _)| {
             row.push_bind(id)
-                .push_bind(user.user_id)
+                .push_bind(user_id)
                 .push_bind("completed")
                 .push_bind(format!("funding-{id}"))
                 .push_bind(false)
-                .push_bind(SATOSHIS as i64)
+                .push_bind(int(SATOSHIS))
                 .push_bind(1)
                 .push_bind(0)
                 .push_bind("synthetic funding")
@@ -220,12 +191,12 @@ pub async fn seed(count: usize) -> Store {
         );
         query.push_values(chunk, |mut row, (id, txid, _, _)| {
             row.push_bind(id)
-                .push_bind(user.user_id)
+                .push_bind(user_id)
                 .push_bind(id)
                 .push_bind(basket)
                 .push_bind(0)
-                .push_bind(SATOSHIS as i64)
-                .push_bind(&script)
+                .push_bind(int(SATOSHIS))
+                .push_bind(script)
                 .push_bind(txid)
                 .push_bind("P2PKH")
                 .push_bind(true)
@@ -241,6 +212,51 @@ pub async fn seed(count: usize) -> Store {
             .await
             .expect("funding outputs");
     }
+}
+
+/// A fixture count or amount as SQLite's integer.
+fn int<T: TryInto<i64>>(n: T) -> i64 {
+    n.try_into().ok().expect("fixture integer fits i64")
+}
+
+/// Shared by all storage benches. Initialization is timed only by `seed_10000`.
+pub async fn seed(count: usize) -> Store {
+    let storage = StorageSqlx::in_memory().await.expect("in-memory store");
+    let root = PrivateKey::from_hex(&format!("{:064x}", 1)).expect("synthetic key");
+    let identity = root.public_key().to_hex();
+    storage
+        .migrate("door-bench", &identity)
+        .await
+        .expect("migrate");
+    storage.make_available().await.expect("make available");
+    let wallet = Wallet::new(Some(root.clone()), storage, MockWalletServices::new())
+        .await
+        .expect("wallet");
+    let (user, _) = wallet
+        .storage()
+        .find_or_insert_user(&identity)
+        .await
+        .expect("user");
+    let auth = AuthId::with_user_id(identity, user.user_id);
+    let basket = wallet
+        .storage()
+        .find_or_create_default_basket(user.user_id)
+        .await
+        .expect("default basket")
+        .basket_id;
+    let script = funding_lock(root);
+
+    let rows: Vec<_> = (0..count)
+        .map(|i| {
+            let tx = funding_transaction(i, &script);
+            let txid = tx.id();
+            let proof = MerklePath::from_coinbase_txid(&txid, HEIGHT).to_binary();
+            (int(i) + 1, txid, tx.to_binary(), proof)
+        })
+        .collect();
+    let mut roots: HashSet<_> = rows.iter().map(|row| row.1.clone()).collect();
+    let mut writer = wallet.storage().write_tx().await.expect("seed transaction");
+    insert_funding(&mut writer, &rows, user.user_id, basket, &script).await;
     // The internalize benchmark receives a transaction with a proof already
     // stored, but without an owned transaction/output row yet.
     let incoming = funding_transaction(count, &[0x51]);
@@ -281,7 +297,7 @@ pub async fn seed(count: usize) -> Store {
         auth,
         basket,
         coins: rows.iter().map(|row| row.0).collect(),
-        last_transaction: count as i64,
+        last_transaction: int(count),
     }
 }
 
@@ -307,13 +323,13 @@ pub async fn seed_shared(count: usize) -> Store {
          VALUES (1, ?, 'completed', 'funding-shared', 0, ?, 1, 0, 'synthetic funding', ?, ?)",
     )
     .bind(user_id)
-    .bind((SATOSHIS * count as u64) as i64)
+    .bind(int(SATOSHIS) * int(count))
     .bind(&txid)
     .bind(parent.to_binary())
     .execute(&mut *writer)
     .await
     .expect("shared parent");
-    let vouts: Vec<i64> = (0..count as i64).collect();
+    let vouts: Vec<i64> = (0..int(count)).collect();
     for chunk in vouts.chunks(64) {
         let mut query = sqlx::QueryBuilder::new(
             "INSERT INTO outputs (output_id, user_id, transaction_id, basket_id, vout, satoshis, \
@@ -326,7 +342,7 @@ pub async fn seed_shared(count: usize) -> Store {
                 .push_bind(1)
                 .push_bind(store.basket)
                 .push_bind(vout)
-                .push_bind(SATOSHIS as i64)
+                .push_bind(int(SATOSHIS))
                 .push_bind(&script)
                 .push_bind(&txid)
                 .push_bind("P2PKH")
@@ -391,7 +407,7 @@ impl Store {
                 .expect("count coins");
         assert_eq!(
             (coins, free),
-            (self.coins.len() as i64, self.coins.len() as i64)
+            (int(self.coins.len()), int(self.coins.len()))
         );
     }
 
