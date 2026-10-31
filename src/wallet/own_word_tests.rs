@@ -220,17 +220,10 @@ async fn supply_source(scene: &NamedInputScene) -> Vec<u8> {
         .unwrap();
     let mut beef = Beef::new();
     let height = ProtocolEra::MAINNET_GENESIS_HEIGHT + 100;
-    let bump = MerklePath::from_coinbase_txid(&scene.input.source_txid, height);
-    // The caller's proof is checked against the storage's tracker (T2,
-    // #511), its tip the mock services' height.
-    let mut tracker = bsv_rs::transaction::MockChainTracker::new(880_000);
-    tracker.add_root(height, bump.compute_root(None).unwrap());
-    scene
-        .wallet
-        .storage()
-        .set_chain_tracker(Arc::new(tracker))
-        .await;
-    let index = beef.merge_bump(bump);
+    let index = beef.merge_bump(MerklePath::from_coinbase_txid(
+        &scene.input.source_txid,
+        height,
+    ));
     beef.merge_raw_tx(raw, Some(index));
     forget_source_bytes(scene, "no action").await;
     beef.to_binary()

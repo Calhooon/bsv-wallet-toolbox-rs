@@ -132,3 +132,96 @@ async fn create_with_a_tracker_refuses_the_wrong_root_and_admits_the_right_one()
     let (_, created) = create_with(Header::Tracker, &proven, &beef.to_binary(), &tracker).await;
     created.unwrap();
 }
+
+/// The caller's arguments on `beef`, the caller's input `proven:0`.
+async fn create_on(
+    storage: &StorageSqlx,
+    user_id: i64,
+    proven: &Transaction,
+    beef: &mut Beef,
+) -> crate::Result<()> {
+    let args = caller_args(proven, &beef.to_binary(), false);
+    create_action_internal(storage, None, user_id, args)
+        .await
+        .map(|_| ())
+}
+
+/// Refused with the invalid-root text, nothing written.
+async fn assert_wrong_root(storage: &StorageSqlx, created: crate::Result<()>) {
+    let error = created.unwrap_err();
+    eprintln!("wrong root: {error}");
+    assert!(
+        matches!(&error, Error::ValidationError(text)
+            if text.starts_with("inputBEEF: invalid merkle root ")
+                && text.ends_with(&format!(" at height {HEIGHT}"))),
+        "{error:?}"
+    );
+    assert_eq!(action_rows(storage).await, 0);
+}
+
+/// The real `Services` whose header service, on a loopback mock, carries
+/// `root` at `HEIGHT`; no tracker on the caller or the storage.
+async fn services_only(root: &str) -> (mockito::ServerGuard, StorageSqlx, i64) {
+    use crate::services::providers::{ChaintracksServiceClient, FallbackChainTracker};
+    let mut server = mockito::Server::new_async().await;
+    let header = json!({
+        "status": "success",
+        "value": {
+            "version": 1, "previousHash": "0".repeat(64), "merkleRoot": root,
+            "time": 1_700_000_000u32, "bits": 486_604_799u32, "nonce": 1u32,
+            "height": HEIGHT, "hash": "b".repeat(64),
+        }
+    });
+    server
+        .mock(
+            "GET",
+            format!("/findHeaderHexForHeight?height={HEIGHT}").as_str(),
+        )
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(header.to_string())
+        .create_async()
+        .await;
+    let mut services = crate::services::Services::mainnet().unwrap();
+    let primary = ChaintracksServiceClient::from_url(&server.url());
+    services.chaintracks = Some(Arc::new(FallbackChainTracker::new(primary)));
+    let (storage, user_id) = store().await;
+    storage.set_services(Arc::new(services));
+    (server, storage, user_id)
+}
+
+/// #511: a host with the services' header service only. The caller's root
+/// is read against it, as the pre-check reads its tracker: a wrong root is
+/// refused with the invalid-root text and the right one created. Before,
+/// refused with the proofs' text (no header service configured), and
+/// before #511 admitted unchecked.
+#[tokio::test]
+async fn create_reads_a_caller_root_against_the_services_header_service() {
+    let (proven, mut beef, _) = proven_only(false);
+    let (_server, storage, user_id) = services_only(&"c".repeat(64)).await;
+    let created = create_on(&storage, user_id, &proven, &mut beef).await;
+    assert_wrong_root(&storage, created).await;
+    let root = beef.bumps[0].compute_root(None).unwrap();
+    let (_server, storage, user_id) = services_only(&root).await;
+    create_on(&storage, user_id, &proven, &mut beef)
+        .await
+        .unwrap();
+}
+
+/// #511: no caller tracker and the storage's tracker set, no services. The
+/// caller's root is read against the storage's tracker: a wrong root is
+/// refused and the right one created. Before, admitted unchecked.
+#[tokio::test]
+async fn create_reads_a_caller_root_against_the_storage_tracker() {
+    for root in [false, true] {
+        let (proven, mut beef, tracker) = proven_only(root);
+        let (storage, user_id) = store().await;
+        storage.set_chain_tracker(Arc::new(tracker)).await;
+        let created = create_on(&storage, user_id, &proven, &mut beef).await;
+        if root {
+            created.unwrap();
+        } else {
+            assert_wrong_root(&storage, created).await;
+        }
+    }
+}

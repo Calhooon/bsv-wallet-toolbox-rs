@@ -69,14 +69,26 @@ pub(super) async fn proofs_tracker<'a>(
     tracker: Option<&'a dyn ChainTracker>,
     services: Option<&'a dyn WalletServices>,
 ) -> Result<&'a dyn ChainTracker> {
+    reachable_tracker(tracker, services)
+        .await?
+        .ok_or_else(no_header_source)
+}
+
+/// `proofs_tracker`'s tracker, or `None` where no header source is
+/// reachable (the services' not-configured answer, or no services); any
+/// other error holds with `header_fault`'s text.
+pub(super) async fn reachable_tracker<'a>(
+    tracker: Option<&'a dyn ChainTracker>,
+    services: Option<&'a dyn WalletServices>,
+) -> Result<Option<&'a dyn ChainTracker>> {
     match (tracker, services) {
-        (Some(tracker), _) => Ok(tracker),
+        (Some(tracker), _) => Ok(Some(tracker)),
         (None, Some(services)) => match services.get_chain_tracker().await {
-            Ok(tracker) => Ok(tracker),
-            Err(Error::ServiceError(text)) if text == NO_HEADER_SERVICE => Err(no_header_source()),
+            Ok(tracker) => Ok(Some(tracker)),
+            Err(Error::ServiceError(text)) if text == NO_HEADER_SERVICE => Ok(None),
             Err(error) => Err(header_fault(error)),
         },
-        (None, None) => Err(no_header_source()),
+        (None, None) => Ok(None),
     }
 }
 

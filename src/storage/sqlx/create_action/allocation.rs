@@ -1,4 +1,4 @@
-use super::beef::{build_input_beef, change_coin_gap, judge_caller_beef};
+use super::beef::{assemble_input_beef, change_coin_gap, judge_caller_beef, AssemblyTrackers};
 use super::change::plan_change;
 use super::inputs::validate_and_extend_inputs;
 use super::outputs::validate_and_extend_outputs;
@@ -530,8 +530,13 @@ impl Door<'_> {
             inner,
             answers: self.answers,
         });
+        let roots = self.roots_tracker.map(|inner| RecordingTracker {
+            inner,
+            answers: self.answers,
+        });
         let caller = caller.as_ref().map(|t| t as &dyn ChainTracker);
         let own = own.as_ref().map(|t| t as &dyn ChainTracker);
+        let roots = roots.as_ref().map(|t| t as &dyn ChainTracker);
 
         // The change coins whose BEEF cannot be built from what this wallet
         // stores (review 2 F2: a reorg-demoted received coin, its parents
@@ -602,16 +607,20 @@ impl Door<'_> {
 
             // The pre-check's bytes are judged, never returned: no known
             // txid is trimmed, so the word reads every ancestry whole.
-            let built = build_input_beef(
+            let trackers = AssemblyTrackers {
+                verify: caller,
+                read_check: own,
+                roots,
+            };
+            let built = assemble_input_beef(
                 &mut conn,
                 Some(self.storage.writer()),
-                caller,
+                trackers,
                 &extended_inputs,
                 &change_result.allocated_change_inputs,
                 self.args.input_beef.as_deref(),
                 &[],
                 self.trust_self(),
-                own,
             )
             .await;
             let refusal = match built {

@@ -94,16 +94,13 @@ fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<Str
 ///
 /// # Arguments
 /// * `storage` - The storage backend to query
-/// * `chain_tracker` - Optional chain tracker for merkle root verification (if None, skips verification)
+/// * `trackers` - the `AssemblyTrackers` the assembly's roots are read against
 /// * `extended_inputs` - User-provided inputs
 /// * `change_inputs` - Allocated change inputs from storage
 /// * `user_input_beef` - Optional user-provided BEEF with proofs for external inputs
 /// * `known_txids` - TXIDs the recipient already has (will be trimmed to txid-only)
 /// * `trust_self` - `trustSelf: 'known'`: the caller's txid-only entries are
 ///   resolved from storage (`resolve_known_txid_only_entries`)
-/// * `read_check_tracker` - the walk's tracker when `chain_tracker` is `None`
-///   (the storage's own): stored proofs are read against it, the assembled
-///   roots are not
 ///
 /// The BEEF is assembled from stored bytes only: no provider is asked
 /// (`createAction` fetches nothing, bsv-wallet-cli #44). An ancestor whose
@@ -119,17 +116,21 @@ fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<Str
 /// * `ValidationError` - If BEEF structure is invalid or merkle roots don't match chain
 /// * `TransactionError` - If a direct input (depth 0) cannot be found in any source
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn build_input_beef(
+pub(super) async fn assemble_input_beef(
     conn: &mut SqliteConnection,
     writer: Option<&SqlitePool>,
-    chain_tracker: Option<&dyn ChainTracker>,
+    trackers: AssemblyTrackers<'_>,
     extended_inputs: &[ExtendedInput],
     change_inputs: &[AllocatedChangeInput],
     user_input_beef: Option<&[u8]>,
     known_txids: &[String],
     trust_self: bool,
-    read_check_tracker: Option<&dyn ChainTracker>,
 ) -> Result<Option<Vec<u8>>> {
+    let AssemblyTrackers {
+        verify: chain_tracker,
+        read_check: read_check_tracker,
+        roots: roots_tracker,
+    } = trackers;
     // Collect unique input txids with their chain depth.
     // Depth tracks how far each txid is from the direct inputs (depth 0).
     // This matches the TypeScript reference which uses actual recursion depth,
@@ -254,44 +255,22 @@ pub(super) async fn build_input_beef(
         )));
     }
 
-    // With no tracker at all the caller's proofs cannot be checked: the
-    // call holds rather than admit unchecked roots, as the reference's
+    // With no caller tracker the caller's own roots are verified against
+    // the resolved one; with none reachable anywhere the call holds rather
+    // than admit unchecked roots, as the reference's
     // `beef.verify(chainTracker, true)` never skips (createAction.ts:909;
     // T2, #511). The store's own proofs were checked when stored, and a
     // BEEF with no caller root has nothing here to verify.
-    if chain_tracker.is_none()
-        && read_check_tracker.is_none()
-        && validation
-            .roots
-            .iter()
-            .any(|(height, root)| caller_roots.contains(&(*height, root.clone())))
-    {
-        return Err(super::beef_verification::no_header_source());
-    }
-
-    if let Some(tracker) = chain_tracker {
-        // Verify each merkle root against the ChainTracker
-        for (height, root) in &validation.roots {
-            match tracker.is_valid_root_for_height(root, *height).await {
-                Ok(true) => {
-                    // Root is valid, continue
-                }
-                Ok(false) => {
-                    return Err(Error::ValidationError(format!(
-                        "inputBEEF: invalid merkle root {} at height {}",
-                        root, height
-                    )));
-                }
-                Err(e) => {
-                    // ChainTracker error (network, block not found, etc.)
-                    // Match Go/TypeScript behavior: treat as validation failure
-                    return Err(Error::ValidationError(format!(
-                        "inputBEEF: failed to verify merkle root at height {}: {}",
-                        height, e
-                    )));
-                }
-            }
-        }
+    let roots = validation
+        .roots
+        .iter()
+        .map(|(height, root)| (*height, root.clone()))
+        .filter(|key| chain_tracker.is_some() || caller_roots.contains(key));
+    let roots: Vec<(u32, String)> = roots.collect();
+    match chain_tracker.or(roots_tracker) {
+        Some(tracker) => verify_roots(tracker, &roots).await?,
+        None if !roots.is_empty() => return Err(super::beef_verification::no_header_source()),
+        None => {}
     }
 
     // Gap #2: Trim known_txids to txid-only format
@@ -310,6 +289,96 @@ pub(super) async fn build_input_beef(
     } else {
         Ok(None)
     }
+}
+
+/// The trackers an assembly reads.
+#[derive(Clone, Copy, Default)]
+pub(super) struct AssemblyTrackers<'a> {
+    /// Every assembled root is verified against it.
+    pub(super) verify: Option<&'a dyn ChainTracker>,
+    /// With no `verify`, the walk's tracker (the storage's own): stored
+    /// proofs are read against it, the assembled roots are not.
+    pub(super) read_check: Option<&'a dyn ChainTracker>,
+    /// With no `verify`, the roots of the caller's own BUMPs are verified
+    /// against it (`caller_roots_tracker`, #511), the store's own proofs
+    /// unasked; with neither, a caller root holds with `no_header_source`.
+    pub(super) roots: Option<&'a dyn ChainTracker>,
+}
+
+/// `assemble_input_beef` with no roots tracker.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn build_input_beef(
+    conn: &mut SqliteConnection,
+    writer: Option<&SqlitePool>,
+    chain_tracker: Option<&dyn ChainTracker>,
+    extended_inputs: &[ExtendedInput],
+    change_inputs: &[AllocatedChangeInput],
+    user_input_beef: Option<&[u8]>,
+    known_txids: &[String],
+    trust_self: bool,
+    read_check_tracker: Option<&dyn ChainTracker>,
+) -> Result<Option<Vec<u8>>> {
+    let trackers = AssemblyTrackers {
+        verify: chain_tracker,
+        read_check: read_check_tracker,
+        roots: None,
+    };
+    let (inputs, beef) = (extended_inputs, user_input_beef);
+    assemble_input_beef(
+        conn,
+        writer,
+        trackers,
+        inputs,
+        change_inputs,
+        beef,
+        known_txids,
+        trust_self,
+    )
+    .await
+}
+
+/// The tracker the caller's own roots are read against (#511): `tracker`
+/// (the caller's, else the storage's), else the `services`' header service,
+/// as the pre-check reads its tracker; `None` where no header source is
+/// reachable, or with no caller BEEF (`tracker` then, unasked).
+pub(super) async fn caller_roots_tracker<'a>(
+    tracker: Option<&'a dyn ChainTracker>,
+    services: Option<&'a dyn crate::services::WalletServices>,
+    input_beef: Option<&[u8]>,
+) -> Result<Option<&'a dyn ChainTracker>> {
+    match input_beef {
+        Some(bytes) if !bytes.is_empty() => {
+            super::beef_verification::reachable_tracker(tracker, services).await
+        }
+        _ => Ok(tracker),
+    }
+}
+
+/// Verify each merkle root against `tracker`.
+async fn verify_roots(tracker: &dyn ChainTracker, roots: &[(u32, String)]) -> Result<()> {
+    for (height, root) in roots {
+        match tracker.is_valid_root_for_height(root, *height).await {
+            Ok(true) => {
+                // Root is valid, continue
+            }
+            Ok(false) => {
+                return Err(Error::ValidationError(format!(
+                    "inputBEEF: invalid merkle root {} at height {}",
+                    root, height
+                )));
+            }
+            Err(e) => {
+                // ChainTracker error (network, block not found, etc.)
+                // Match Go/TypeScript behavior: treat as validation failure
+                return Err(Error::ValidationError(format!(
+                    "inputBEEF: failed to verify merkle root at height {}: {}",
+                    height, e
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The node's word for the caller's `inputBEEF` (#426): its tip comes from
