@@ -10,6 +10,12 @@
 //! The port judges with the two-word rule (#422): the spend's era at tip+1,
 //! the coin's UTXO bits from its proof height. A signature without
 //! `SIGHASH_FORKID` fails under every post-Genesis word.
+//!
+//! #506: services with no header service (the CLI's `CHAINTRACKS_URL=off`)
+//! and no tracker give the latest era, as a tracker with no mining tip does
+//! (#464, rule 22); beta.4 held every signed createAction there with
+//! `Service error: ChainTracker verification failed: Service error:
+//! ChainTracker not configured in Services (no chaintracks_url)`.
 
 use super::busy_door_tests::{fund_tagged, own_lock, store_snapshot};
 use super::named_input_tests::{
@@ -19,6 +25,7 @@ use super::named_input_tests::{
 use bsv_rs::script::ProtocolEra;
 use bsv_rs::transaction::{Beef, MerklePath};
 use bsv_rs::wallet::{CreateActionArgs, Outpoint, SignableTransaction, WalletInterface};
+use std::sync::Arc;
 
 /// `script` with its leading signature's sighash byte stripped of
 /// `SIGHASH_FORKID` (0x40); the DER bytes are unchanged.
@@ -92,6 +99,33 @@ impl Kept {
     }
 }
 
+/// The header source the storage's services carry.
+#[derive(Clone, Copy, Debug)]
+enum Header {
+    /// The mock's tracker, its tip past the scene's coins.
+    Tracker,
+    /// The real `Services` built with no `chaintracks_url`, whose
+    /// `get_chain_tracker` answers its not-configured error, and no tracker
+    /// on the caller or the storage (#506).
+    Off,
+}
+
+const HEADERS: [Header; 2] = [Header::Tracker, Header::Off];
+
+/// `named_input_scene`, the storage's services as `header` says; the
+/// wallet keeps the mock, so a post is counted.
+async fn scene_with(header: Header) -> NamedInputScene {
+    let scene = named_input_scene().await;
+    if let Header::Off = header {
+        use crate::services::WalletServices;
+        use crate::storage::WalletStorageProvider;
+        let services = crate::services::Services::mainnet().unwrap();
+        assert!(services.get_chain_tracker().await.is_err());
+        scene.wallet.storage().set_services(Arc::new(services));
+    }
+    scene
+}
+
 async fn create_with_caller_script(
     scene: &NamedInputScene,
     script: Vec<u8>,
@@ -109,12 +143,12 @@ async fn create_with_caller_script(
 
 #[tokio::test]
 async fn create_refuses_its_own_fork_id_less_input_before_the_post() {
-    for no_send in [false, true] {
-        let scene = named_input_scene().await;
+    for (header, no_send) in HEADERS.into_iter().flat_map(|h| [(h, false), (h, true)]) {
+        let scene = scene_with(header).await;
         let before = store_snapshot(&scene.wallet).await;
         let script = without_fork_id(script_for_create_action(&scene));
         let result = create_with_caller_script(&scene, script, no_send).await;
-        eprintln!("refused: {}", assert_spend_refused(result));
+        eprintln!("{header:?} refused: {}", assert_spend_refused(result));
         assert_eq!(
             store_snapshot(&scene.wallet).await,
             before,
@@ -126,27 +160,36 @@ async fn create_refuses_its_own_fork_id_less_input_before_the_post() {
 
 #[tokio::test]
 async fn create_accepts_its_own_input_valid_under_the_word() {
-    for no_send in [false, true] {
-        let scene = named_input_scene().await;
+    for (header, no_send) in HEADERS.into_iter().flat_map(|h| [(h, false), (h, true)]) {
+        let scene = scene_with(header).await;
         let script = script_for_create_action(&scene);
         let made = create_with_caller_script(&scene, script, no_send)
             .await
             .unwrap();
-        assert!(made.txid.is_some());
+        let txid = hex::encode(made.txid.unwrap());
+        let status: String = sqlx::query_scalar("SELECT status FROM transactions WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(scene.wallet.storage().pool())
+            .await
+            .unwrap();
+        eprintln!("{header:?} no_send={no_send}: {status}");
+        assert_eq!(status, if no_send { "nosend" } else { "unproven" });
         assert_eq!(posts(&scene), usize::from(!no_send));
     }
 }
 
 #[tokio::test]
 async fn sign_action_refuses_its_own_fork_id_less_input() {
-    let scene = named_input_scene().await;
-    let signable = defer_named(&scene, 1_000, None).await;
-    let kept = Kept::read(&scene, &signable).await;
-    let bad = without_fork_id(caller_script(&scene, &signable));
-    let result = sign_named(&scene, kept.reference.clone(), spend_map(0, bad, None)).await;
-    assert_spend_refused(result);
-    let script = caller_script(&scene, &signable);
-    kept.then_signs(&scene, signable, script).await;
+    for header in HEADERS {
+        let scene = scene_with(header).await;
+        let signable = defer_named(&scene, 1_000, None).await;
+        let kept = Kept::read(&scene, &signable).await;
+        let bad = without_fork_id(caller_script(&scene, &signable));
+        let result = sign_named(&scene, kept.reference.clone(), spend_map(0, bad, None)).await;
+        eprintln!("{header:?} refused: {}", assert_spend_refused(result));
+        let script = caller_script(&scene, &signable);
+        kept.then_signs(&scene, signable, script).await;
+    }
 }
 
 /// An input whose source bytes are neither in the action's input BEEF nor
