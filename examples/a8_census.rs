@@ -39,12 +39,15 @@ use common::{
 };
 
 /// A post-Genesis height for the BEEF scenes' proven parent and tip, so the
-/// spend is judged rather than refused as pre-Genesis.
-const BEEF_HEIGHT: u32 = 900_000;
+/// spend is judged rather than refused as pre-Genesis. Not the door seed's
+/// `HEIGHT`: every root at `HEIGHT` is accepted, so the BEEF parent's root is
+/// checked against the set only at a height of its own.
+const BEEF_HEIGHT: u32 = 900_100;
 const BEEF_COIN: u64 = 1_000_000;
 
-/// Accepts the door seed's roots at its height and the BEEF parent's root at
-/// `BEEF_HEIGHT`, with a tip at `BEEF_HEIGHT`.
+/// Accepts any root at the door seed's `HEIGHT` and, at any other height,
+/// only the roots in the set (the BEEF parent's at `BEEF_HEIGHT`), with a tip
+/// at `BEEF_HEIGHT`.
 struct CensusRoots(HashSet<(u32, String)>);
 
 #[async_trait::async_trait]
