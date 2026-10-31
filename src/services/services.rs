@@ -1743,15 +1743,20 @@ fn header_ladder_error(call: &str, rung_errors: &[String]) -> String {
     }
 }
 
+/// `get_chain_tracker`'s answer when `Services` was built with no
+/// `chaintracks_url`: a configuration without a header service, not a
+/// fault. Every door that reads this answer matches this one text (#506,
+/// #509).
+pub(crate) const NO_HEADER_SERVICE: &str =
+    "ChainTracker not configured in Services (no chaintracks_url)";
+
 #[async_trait]
 impl WalletServices for Services {
     async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker> {
         if let Some(ref ct) = self.chaintracks {
             Ok(&**ct)
         } else {
-            Err(Error::ServiceError(
-                "ChainTracker not configured in Services (no chaintracks_url)".to_string(),
-            ))
+            Err(Error::ServiceError(NO_HEADER_SERVICE.to_string()))
         }
     }
 
@@ -3189,6 +3194,19 @@ mod tests {
     use super::*;
     use crate::services::providers::ArcadeConfig;
     use crate::services::traits::TxStatusDetail;
+
+    /// The doors match `get_chain_tracker`'s not-configured answer by this
+    /// constant, so it is the exact error `Services` gives when built with
+    /// no header URL (#510's read, finding 3).
+    #[tokio::test]
+    async fn no_header_url_answers_the_not_configured_constant() {
+        let services = Services::mainnet().unwrap();
+        match services.get_chain_tracker().await {
+            Err(Error::ServiceError(text)) => assert_eq!(text, NO_HEADER_SERVICE),
+            Err(other) => panic!("expected the not-configured answer, got {other:?}"),
+            Ok(_) => panic!("expected the not-configured answer, got a tracker"),
+        }
+    }
 
     struct RecordedPostService {
         name: String,

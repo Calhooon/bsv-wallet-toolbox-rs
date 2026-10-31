@@ -13,6 +13,7 @@
 use super::beef_storage::get_tx_with_proof;
 use super::beef_verification::{header_fault, mining_tip, verify_own, SourceTx};
 use crate::error::{Error, Result};
+use crate::services::services::NO_HEADER_SERVICE;
 use crate::services::WalletServices;
 use bsv_rs::transaction::beef_stream::ChainTip;
 use bsv_rs::transaction::{Beef, ChainTracker, MerklePath, Transaction};
@@ -51,11 +52,6 @@ pub(in crate::storage::sqlx) async fn own_word_tip(
     };
     Ok(Some(OwnTip(mining_tip(tracker).await?)))
 }
-
-/// `Services::get_chain_tracker`'s answer when it was built with no
-/// `chaintracks_url`: a configuration without a header service, not a
-/// fault (#506).
-const NO_HEADER_SERVICE: &str = "ChainTracker not configured in Services (no chaintracks_url)";
 
 /// The source in `beef` when it carries the transaction's bytes, its proof
 /// height from its BUMP.
