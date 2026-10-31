@@ -101,39 +101,43 @@ pub(crate) async fn overlay_certificates(
     let mut seen = HashSet::new();
     let mut kept = Vec::new();
     for output in &outputs {
-        let verified = match verify(output, tracker, chain).await {
-            Ok(verified) => verified,
+        match certificate(output, tracker, chain).await {
+            Ok((outpoint, certificate)) => {
+                if seen.insert(outpoint) {
+                    kept.push(certificate);
+                }
+            }
             Err(Limit) => return Err(limit()),
-            Err(Dropped(why)) => {
-                tracing::debug!("Overlay output dropped: {why}");
-                continue;
-            }
-        };
-        let script = LockingScript::from_binary(&verified.locking_script);
-        let record = match script
-            .map_err(crate::Error::from)
-            .and_then(|s| decode_identity_output(&s))
-        {
-            Ok(record) => record,
-            Err(e) => {
-                tracing::debug!("Skipping invalid overlay output: {}", e);
-                continue;
-            }
-        };
-        let Some(certificate) = record.verified_and_decrypted().await else {
-            continue;
-        };
-        // "Certificate crypto can await; fence its completion against
-        // current chain/session state."
-        if let Err(why) = fence(&verified, tracker).await {
-            tracing::debug!("Overlay output dropped: {why}");
-            continue;
-        }
-        if seen.insert(verified.outpoint) {
-            kept.push(certificate);
+            Err(Dropped(why)) => tracing::debug!("Overlay output dropped: {why}"),
         }
     }
     Ok(kept)
+}
+
+/// One output read as `IdentityEvidenceVerifier.parse` reads it
+/// (`identityUtils.ts:600-635`): its evidence, its token, its certificate,
+/// then the fence. Answers its outpoint and its certificate.
+async fn certificate(
+    output: &OutputListItem,
+    tracker: &dyn ChainTracker,
+    chain: &ChainParams,
+) -> std::result::Result<(String, OverlayCertificate), Refused> {
+    let verified = verify(output, tracker, chain).await?;
+    let record = LockingScript::from_binary(&verified.locking_script)
+        .map_err(crate::Error::from)
+        .and_then(|script| decode_identity_output(&script))
+        .map_err(|e| {
+            tracing::debug!("Skipping invalid overlay output: {}", e);
+            Dropped("its identity token refused")
+        })?;
+    let certificate = record
+        .verified_and_decrypted()
+        .await
+        .ok_or(Dropped("its certificate refused"))?;
+    // "Certificate crypto can await; fence its completion against current
+    // chain/session state."
+    fence(&verified, tracker).await.map_err(Dropped)?;
+    Ok((verified.outpoint, certificate))
 }
 
 /// `queryOverlayEvidence`'s intake (`identityUtils.ts:430-437`): at most
@@ -391,12 +395,12 @@ struct Roots {
 }
 
 impl Headers for Roots {
-    fn carries(&self, height: u64, root: &Hash32) -> bool {
-        self.roots.contains(&(height, *root))
-    }
-
     fn mining_tip(&self) -> Option<ChainTip> {
         self.tip
+    }
+
+    fn carries(&self, height: u64, root: &Hash32) -> bool {
+        self.roots.contains(&(height, *root))
     }
 }
 

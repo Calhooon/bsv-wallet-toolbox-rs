@@ -10,12 +10,10 @@ use async_trait::async_trait;
 use bsv_rs::block::ChainParams;
 use bsv_rs::overlay::OutputListItem;
 use bsv_rs::script::LockingScript;
-use bsv_rs::transaction::{
-    Beef, ChainTracker, ChainTrackerError, MerklePath, MerklePathLeaf, TransactionInput,
-};
+use bsv_rs::transaction::{Beef, ChainTracker, ChainTrackerError, TransactionInput};
 
 use super::super::fixture::{
-    key, proven, published, record_json, revealed, token, transaction, HEIGHT,
+    key, proven, proven_at, published, record_json, revealed, token, transaction, HEIGHT,
 };
 use super::{overlay_certificates, OverlayCertificate, EVIDENCE_LIMIT};
 
@@ -71,12 +69,9 @@ fn at(beef: Vec<u8>, output_index: u32) -> OutputListItem {
 
 /// The serials the door keeps from `outputs` against `tracker`.
 async fn kept(outputs: Vec<OutputListItem>, tracker: &Tracker) -> Vec<String> {
-    overlay_certificates(outputs, tracker, &ChainParams::mainnet())
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|c| c.serial_number)
-        .collect()
+    let answer = overlay_certificates(outputs, tracker, &ChainParams::mainnet()).await;
+    let serial = |c: OverlayCertificate| c.serial_number;
+    answer.unwrap().into_iter().map(serial).collect()
 }
 
 /// `bad` is dropped from an answer beside a good output.
@@ -163,18 +158,7 @@ async fn an_output_whose_root_is_gone_at_the_fence_is_dropped() {
 async fn a_coinbase_output_is_kept_only_100_blocks_deep() {
     let good = alice(2).await;
     let tx = transaction(alices_token(&good));
-    let bump = MerklePath::new(
-        HEIGHT,
-        vec![vec![
-            MerklePathLeaf::new_txid(0, tx.id()),
-            MerklePathLeaf::new(1, "22".repeat(32)),
-        ]],
-    )
-    .unwrap();
-    let mut beef = Beef::new();
-    let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(tx.to_binary(), Some(index));
-    let output = at(beef.to_binary(), 0);
+    let output = at(proven_at(&tx, HEIGHT, 0), 0);
     for (height, expected) in [(HEIGHT + 99, 0), (HEIGHT + 100, 1)] {
         let tracker = Tracker {
             height,

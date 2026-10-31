@@ -152,14 +152,17 @@ pub(crate) fn transaction(script: LockingScript) -> Transaction {
 /// `tx` alone in a BEEF, proven at `height` at its block's offset 1 (a
 /// coinbase, at offset 0, would want 100 blocks above it).
 pub(crate) fn proven(tx: &Transaction, height: u32) -> Vec<u8> {
-    let bump = MerklePath::new(
-        height,
-        vec![vec![
-            MerklePathLeaf::new(0, "22".repeat(32)),
-            MerklePathLeaf::new_txid(1, tx.id()),
-        ]],
-    )
-    .unwrap();
+    proven_at(tx, height, 1)
+}
+
+/// `tx` alone in a BEEF, proven at `height` at its block's `offset`, 0 or 1.
+pub(crate) fn proven_at(tx: &Transaction, height: u32, offset: u64) -> Vec<u8> {
+    let mut leaves = vec![
+        MerklePathLeaf::new_txid(offset, tx.id()),
+        MerklePathLeaf::new(offset ^ 1, "22".repeat(32)),
+    ];
+    leaves.sort_by_key(|leaf| leaf.offset);
+    let bump = MerklePath::new(height, vec![leaves]).unwrap();
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);
     beef.merge_raw_tx(tx.to_binary(), Some(index));
