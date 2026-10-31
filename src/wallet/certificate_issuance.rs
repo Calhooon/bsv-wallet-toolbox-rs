@@ -710,7 +710,7 @@ fn certificate_key(key_hex: &str) -> Option<PublicKey> {
         && matches!(key_hex.get(..2), Some("02" | "03"))
         && key_hex.bytes().all(|b| b.is_ascii_hexdigit());
     shaped
-        .then(|| PublicKey::from_bytes(&hex::decode(key_hex).ok()?).ok())
+        .then(|| super::internalize_args::compressed_key(key_hex))
         .flatten()
 }
 
