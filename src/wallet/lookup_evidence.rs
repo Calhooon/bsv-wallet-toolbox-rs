@@ -163,8 +163,8 @@ fn intake(outputs: &[OutputListItem]) -> Result<()> {
 /// offset 0 `COINBASE_DEPTH` deep (`MerklePath.verify`), then bsv-rs's
 /// stream verifier under the network's word: the structure, the proofs
 /// against the held roots, and each input of an unproven transaction judged
-/// with the work budget, at least one root proven (`anchors.size === 0`,
-/// `TransactionEvidenceCoordinator.ts:354`).
+/// under the doors' work budget per input and per transaction, at least one
+/// root proven (`anchors.size === 0`, `TransactionEvidenceCoordinator.ts:354`).
 async fn verify(
     output: &OutputListItem,
     tracker: &dyn ChainTracker,
@@ -175,9 +175,13 @@ async fn verify(
     let observed_height = coinbase_depth(&parsed.coinbases, tracker).await?;
     let (headers, anchors) = held_roots(bytes, tracker).await?;
     let referenced = referenced_outpoints(bytes).map_err(|_| Dropped("its BEEF refused"))?;
+    // The doors' one work policy, both figures (`DOOR_WORK_BUDGET`); the
+    // reference's `verify` bounds no work.
+    let budget = work_budget();
     let mut verifier = StreamVerifier::retaining(bytes, &headers, None, referenced)
         .with_chain_params(chain.clone())
-        .with_work_budget(work_budget().per_input);
+        .with_work_budget(budget.per_input)
+        .with_transaction_work_budget(budget.per_transaction);
     verifier.set_memory_limit(Some(SCRIPT_MEMORY_BYTES));
     match verifier.run() {
         Ok(Verdict::Valid { roots, .. }) if !roots.is_empty() => Ok(Verified {
