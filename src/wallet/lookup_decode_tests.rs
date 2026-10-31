@@ -106,6 +106,19 @@ async fn a_token_not_of_the_reference_shape_is_dropped() {
     }
 }
 
+/// `identityUtils.ts:502`: the subject's locking key and `OP_CHECKSIG`, a
+/// `PushDrop` with no field, is refused for its field count before the
+/// chunk shape (`:511-521`) is read; the base's parser indexed its absent
+/// first field and panicked.
+#[tokio::test]
+async fn a_token_with_no_field_is_dropped() {
+    let good = alice(3).await;
+    let chunks = token(&key(SUBJECT), record_json(&good)).chunks();
+    let bare = LockingScript::from_chunks(chunks[..2].to_vec());
+    assert!(decode_identity_output(&bare).is_err());
+    only_the_good_token(bare, &good);
+}
+
 /// #494: a record carrying `decryptedFields`, a key the reference's
 /// `certificateRecord` refuses (`identityUtils.ts:90-106`), is dropped even
 /// with a good token; the door fills that map from the decryption alone.
