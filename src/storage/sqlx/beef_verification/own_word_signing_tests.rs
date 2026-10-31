@@ -578,7 +578,18 @@ async fn create_caller_input_beef_uses_host_before_signing() {
     child.invalidate_caches();
     interpreter(&scene, &child.to_binary()).unwrap();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&scene.parent.id(), HEIGHT));
+    let proof = MerklePath::from_coinbase_txid(&scene.parent.id(), HEIGHT);
+    // The caller's proof is checked against the storage's tracker (T2,
+    // #511), its tip the mock services' height.
+    let mut tracker =
+        bsv_rs::transaction::MockChainTracker::new(ProtocolEra::MAINNET_CHRONICLE_HEIGHT + 100);
+    tracker.add_root(HEIGHT, proof.compute_root(None).unwrap());
+    scene
+        .wallet
+        .storage()
+        .set_chain_tracker(Arc::new(tracker))
+        .await;
+    let bump = beef.merge_bump(proof);
     beef.merge_raw_tx(scene.parent.to_binary(), Some(bump));
     beef.merge_raw_tx(child.to_binary(), None);
     let mut args = payment(1_000);

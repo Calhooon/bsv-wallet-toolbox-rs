@@ -83,3 +83,52 @@ async fn create_pre_check_holds_for_the_proofs_want_of_headers() {
     let (_, created) = create_with(Header::Tracker, &parent, &beef.to_binary(), &tracker).await;
     created.unwrap();
 }
+
+/// #511: a caller BEEF whose only transaction is proven at `HEIGHT` (no
+/// unproven transaction, so the pre-check judges none), the caller's input
+/// its `OP_TRUE` coin; and a tracker that holds no root for it, so its
+/// root is wrong for the chain, or with `root` the right one.
+fn proven_only(root: bool) -> (Transaction, Beef, MockChainTracker) {
+    let proven = spend(&"11".repeat(32), "00", 10_000, "51");
+    let bump = MerklePath::from_coinbase_txid(&proven.id(), HEIGHT);
+    let mut tracker = MockChainTracker::new(HEIGHT + 6);
+    if root {
+        tracker.add_root(HEIGHT, bump.compute_root(None).unwrap());
+    }
+    let mut beef = Beef::new();
+    let index = beef.merge_bump(bump);
+    beef.merge_raw_tx(proven.to_binary(), Some(index));
+    (proven, beef, tracker)
+}
+
+/// #511: with no tracker the caller's root was not checked at all and the
+/// action was created on it; now the call holds with the proofs' text,
+/// nothing written.
+#[tokio::test]
+async fn create_holds_a_caller_root_no_tracker_can_check() {
+    for header in [Header::Off, Header::None] {
+        let (proven, mut beef, tracker) = proven_only(false);
+        let (storage, created) = create_with(header, &proven, &beef.to_binary(), &tracker).await;
+        assert_held(header, &storage, created).await;
+    }
+}
+
+/// Control: the same BEEF with a tracker that holds no root for it is
+/// refused with the invalid-root text; with the right root, created.
+#[tokio::test]
+async fn create_with_a_tracker_refuses_the_wrong_root_and_admits_the_right_one() {
+    let (proven, mut beef, tracker) = proven_only(false);
+    let (storage, created) =
+        create_with(Header::Tracker, &proven, &beef.to_binary(), &tracker).await;
+    let error = created.unwrap_err();
+    eprintln!("wrong root: {error}");
+    assert!(
+        matches!(&error, Error::ValidationError(text)
+            if text.starts_with("inputBEEF: invalid merkle root ")),
+        "{error:?}"
+    );
+    assert_eq!(action_rows(&storage).await, 0);
+    let (proven, mut beef, tracker) = proven_only(true);
+    let (_, created) = create_with(Header::Tracker, &proven, &beef.to_binary(), &tracker).await;
+    created.unwrap();
+}
