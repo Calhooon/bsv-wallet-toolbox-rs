@@ -6,7 +6,7 @@ use crate::managers::{
 };
 use crate::services::{mock::MockWalletServices, Chain};
 use crate::storage::{entities::TableCertificate, WalletStorageWriter};
-use crate::wallet::lookup::fixture::revealed;
+use crate::wallet::lookup::fixture::{published, revealed};
 use crate::wallet::{OverlayLookupResolver, Wallet, WalletOptions};
 use bsv_rs::{
     primitives::PrivateKey,
@@ -156,25 +156,25 @@ impl OverlayLookupResolver for RecordingResolver {
         &self,
         key: &str,
         certifiers: &[String],
-    ) -> crate::Result<Vec<OverlayCertificate>> {
+    ) -> crate::Result<Vec<bsv_rs::overlay::OutputListItem>> {
         assert_eq!(
             certifiers, self.keys,
             "identity lookup receives sorted trusted keys"
         );
         self.identities.lock().unwrap().push(key.into());
-        Ok(self.certificates.clone())
+        Ok(self.certificates.iter().map(published).collect())
     }
     async fn lookup_by_attributes(
         &self,
         attributes: &IndexMap<String, String>,
         certifiers: &[String],
-    ) -> crate::Result<Vec<OverlayCertificate>> {
+    ) -> crate::Result<Vec<bsv_rs::overlay::OutputListItem>> {
         assert_eq!(
             certifiers, self.keys,
             "attribute lookup receives sorted trusted keys"
         );
         self.attributes.lock().unwrap().push(attributes.clone());
-        Ok(self.certificates.clone())
+        Ok(self.certificates.iter().map(published).collect())
     }
 }
 

@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use indexmap::IndexMap;
 use serde::Serialize;
 
-use bsv_rs::overlay::{LookupAnswer, NetworkPreset};
+use bsv_rs::overlay::{LookupAnswer, NetworkPreset, OutputListItem};
 use bsv_rs::script::templates::PushDrop;
 use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{IdentityCertificate, IdentityCertifier, WalletCertificate};
@@ -26,7 +26,7 @@ mod record; // the reference's overlay certificate bounds
 
 #[path = "lookup_decode.rs"]
 mod decode; // the reference's overlay output decode
-use decode::parse_overlay_answer;
+pub(crate) use decode::overlay_certificates;
 
 #[cfg(test)]
 #[path = "lookup_fixture.rs"]
@@ -96,25 +96,31 @@ impl OverlayCertificate {
     }
 }
 
-/// Resolve SLAP/SHIP certificates using the wallet's sorted trusted keys.
+/// Find the overlay's identity outputs for a discovery query. Each answer
+/// is an output of the overlay's `output-list` answer, its BEEF and its
+/// index (`OverlayOutputEvidence`, ts-stack@edf6e03
+/// `verifyOverlayOutput.ts:4`), never a certificate: the resolver's word is
+/// untrusted, and the door reads the identity token from the transaction
+/// the BEEF carries and drops an output that fails.
 /// The HTTP implementation returns empty results on network failures.
 #[async_trait]
 pub trait OverlayLookupResolver: Send + Sync {
-    /// Look up certificates whose subject matches `identity_key`.
+    /// Look up the identity outputs whose subject matches `identity_key`.
     /// `certifiers` contains the wallet's sorted trusted identity keys.
     async fn lookup_by_identity_key(
         &self,
         identity_key: &str,
         certifiers: &[String],
-    ) -> Result<Vec<OverlayCertificate>>;
+    ) -> Result<Vec<OutputListItem>>;
 
-    /// Look up certificates matching the supplied attribute key-value pairs.
+    /// Look up the identity outputs matching the supplied attribute
+    /// key-value pairs.
     /// `certifiers` contains the wallet's sorted trusted identity keys.
     async fn lookup_by_attributes(
         &self,
         attributes: &IndexMap<String, String>,
         certifiers: &[String],
-    ) -> Result<Vec<OverlayCertificate>>;
+    ) -> Result<Vec<OutputListItem>>;
 }
 
 /// Default SLAP tracker hosts for mainnet (from @bsv/sdk DEFAULT_SLAP_TRACKERS).
@@ -139,7 +145,7 @@ const OVERLAY_TIMEOUT_SECS: u64 = 10;
 /// 1. Query SLAP trackers to find competent hosts for `ls_identity`
 /// 2. Query those hosts for the actual identity/attribute lookup
 ///
-/// Results are parsed from BEEF-encoded PushDrop transaction outputs.
+/// The answer is the overlay's outputs, each with its BEEF, for the door.
 pub struct HttpLookupResolver {
     /// SLAP tracker URLs used to discover competent hosts.
     slap_trackers: Vec<String>,
@@ -271,8 +277,8 @@ impl HttpLookupResolver {
         vec![]
     }
 
-    /// Query the overlay endpoint and parse certificate results from the response.
-    async fn query_overlay<Q: Serialize>(&self, query: Q) -> Result<Vec<OverlayCertificate>> {
+    /// Query the overlay endpoint and answer the outputs of its response.
+    async fn query_overlay<Q: Serialize>(&self, query: Q) -> Result<Vec<OutputListItem>> {
         // Step 1: Resolve competent hosts for ls_identity via SLAP
         let hosts = self.resolve_competent_hosts("ls_identity").await;
         if hosts.is_empty() {
@@ -353,7 +359,7 @@ impl HttpLookupResolver {
                 }
             };
 
-            return parse_overlay_answer(&answer);
+            return Ok(answer_outputs(answer));
         }
 
         // All hosts failed - return empty gracefully
@@ -368,7 +374,7 @@ impl OverlayLookupResolver for HttpLookupResolver {
         &self,
         identity_key: &str,
         certifiers: &[String],
-    ) -> Result<Vec<OverlayCertificate>> {
+    ) -> Result<Vec<OutputListItem>> {
         let query = serde_json::json!({
             "identityKey": identity_key,
             "certifiers": certifiers,
@@ -380,7 +386,7 @@ impl OverlayLookupResolver for HttpLookupResolver {
         &self,
         attributes: &IndexMap<String, String>,
         certifiers: &[String],
-    ) -> Result<Vec<OverlayCertificate>> {
+    ) -> Result<Vec<OutputListItem>> {
         #[derive(Serialize)]
         struct AttributeQuery<'a> {
             attributes: &'a IndexMap<String, String>,
@@ -391,6 +397,14 @@ impl OverlayLookupResolver for HttpLookupResolver {
             certifiers,
         };
         self.query_overlay(query).await
+    }
+}
+
+/// The outputs of an `output-list` answer; any other answer has none.
+fn answer_outputs(answer: LookupAnswer) -> Vec<OutputListItem> {
+    match answer {
+        LookupAnswer::OutputList { outputs } => outputs,
+        _ => vec![],
     }
 }
 
@@ -689,19 +703,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_overlay_answer_empty_output_list() {
+    fn test_answer_outputs_empty_output_list() {
         let answer = LookupAnswer::OutputList { outputs: vec![] };
-        let certs = parse_overlay_answer(&answer).unwrap();
-        assert!(certs.is_empty());
+        assert!(answer_outputs(answer).is_empty());
     }
 
     #[test]
-    fn test_parse_overlay_answer_freeform() {
+    fn test_answer_outputs_freeform() {
         let answer = LookupAnswer::Freeform {
             result: serde_json::json!({"some": "data"}),
         };
-        let certs = parse_overlay_answer(&answer).unwrap();
-        assert!(certs.is_empty());
+        assert!(answer_outputs(answer).is_empty());
     }
 
     #[test]
