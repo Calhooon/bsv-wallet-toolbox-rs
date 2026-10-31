@@ -232,10 +232,7 @@ fn validate_public_key(value: &str, name: &str) -> Result<PublicKey> {
         "at least 66 length.".to_string()
     } else if length > 66 {
         "no more than 66 length.".to_string()
-    } else if let Some(key) = (value.starts_with("02") || value.starts_with("03"))
-        .then(|| PublicKey::from_hex(value).ok())
-        .flatten()
-    {
+    } else if let Some(key) = compressed_key(value) {
         return Ok(key);
     } else {
         "a valid compressed secp256k1 public key".to_string()
@@ -342,4 +339,18 @@ mod tests {
             );
         }
     }
+}
+
+/// `isValidCompressedPublicKey` (ts-stack@edf6e03
+/// `sdk/src/wallet/Secp256k1Validation.ts:15-22`): `02` or `03` and 64 hex
+/// digits naming a point with x below p, read through
+/// `PublicKey::from_bytes`. `PublicKey::from_hex` no longer answers this
+/// since bsv-rs 0.9.0-beta.5: it reads the reference's lenient `fromString`
+/// forms (bsv-rs #498), an x at or above p reduced among them, which every
+/// validator here refuses.
+pub(crate) fn compressed_key(key_hex: &str) -> Option<PublicKey> {
+    if key_hex.len() != 66 || !matches!(key_hex.get(..2), Some("02" | "03")) {
+        return None;
+    }
+    PublicKey::from_bytes(&hex::decode(key_hex).ok()?).ok()
 }

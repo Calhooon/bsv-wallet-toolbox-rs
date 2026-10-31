@@ -3393,7 +3393,7 @@ pub(crate) fn validate_public_key_arg(
         ));
     }
     let key = match normalized.get(..2) {
-        Some("02" | "03") => PublicKey::from_hex(&normalized).ok(),
+        Some("02" | "03") => super::internalize_args::compressed_key(&normalized),
         _ => None,
     }
     .ok_or_else(|| invalid_certificate_argument(name, "a valid compressed secp256k1 public key"))?;
