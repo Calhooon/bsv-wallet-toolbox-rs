@@ -13,8 +13,10 @@ use bsv_rs::auth::MasterCertificate;
 use bsv_rs::overlay::OutputListItem;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::templates::PushDrop;
-use bsv_rs::script::LockingScript;
-use bsv_rs::transaction::{Transaction, TransactionOutput};
+use bsv_rs::script::{LockingScript, UnlockingScript};
+use bsv_rs::transaction::{
+    Beef, MerklePath, MerklePathLeaf, Transaction, TransactionInput, TransactionOutput,
+};
 use bsv_rs::wallet::{
     Counterparty, CreateSignatureArgs, GetPublicKeyArgs, Outpoint, ProtoWallet, Protocol,
 };
@@ -130,15 +132,43 @@ pub(crate) fn token(subject: &PrivateKey, json: Vec<u8>) -> LockingScript {
     PushDrop::new(key, vec![json, signature]).lock()
 }
 
-/// A transaction whose output 0 is `script`, as BEEF.
-pub(crate) fn beef(script: LockingScript) -> Vec<u8> {
+/// The height the fixture's BUMPs claim.
+pub(crate) const HEIGHT: u32 = 800_000;
+
+/// A transaction spending a coin outside any BEEF, its output 0 `script`.
+pub(crate) fn transaction(script: LockingScript) -> Transaction {
     let mut tx = Transaction::new();
+    let mut input = TransactionInput::new("11".repeat(32), 0);
+    input.set_unlocking_script(UnlockingScript::new());
+    tx.inputs.push(input);
     tx.outputs.push(TransactionOutput {
         satoshis: Some(1),
         locking_script: script,
         change: false,
     });
-    tx.to_beef(true).unwrap()
+    tx
+}
+
+/// `tx` alone in a BEEF, proven at `height` at its block's offset 1 (a
+/// coinbase, at offset 0, would want 100 blocks above it).
+pub(crate) fn proven(tx: &Transaction, height: u32) -> Vec<u8> {
+    let bump = MerklePath::new(
+        height,
+        vec![vec![
+            MerklePathLeaf::new(0, "22".repeat(32)),
+            MerklePathLeaf::new_txid(1, tx.id()),
+        ]],
+    )
+    .unwrap();
+    let mut beef = Beef::new();
+    let index = beef.merge_bump(bump);
+    beef.merge_raw_tx(tx.to_binary(), Some(index));
+    beef.to_binary()
+}
+
+/// A transaction whose output 0 is `script`, proven at `HEIGHT`, as BEEF.
+pub(crate) fn beef(script: LockingScript) -> Vec<u8> {
+    proven(&transaction(script), HEIGHT)
 }
 
 /// The overlay's output for `record`: its token, locked and signed by the

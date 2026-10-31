@@ -26,7 +26,10 @@ mod record; // the reference's overlay certificate bounds
 
 #[path = "lookup_decode.rs"]
 mod decode; // the reference's overlay output decode
-pub(crate) use decode::overlay_certificates;
+
+#[path = "lookup_evidence.rs"]
+mod evidence; // the reference's overlay output evidence
+pub(crate) use evidence::overlay_certificates;
 
 #[cfg(test)]
 #[path = "lookup_fixture.rs"]

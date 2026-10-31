@@ -38,6 +38,14 @@ fn certifier(icon_url: Option<String>) -> Certifier {
 }
 
 pub(super) async fn wallet(icon_url: Option<String>) -> TestWallet {
+    wallet_on(MockWalletServices::new(), icon_url).await
+}
+
+/// The rows tests' wallet over `services`.
+pub(super) async fn wallet_on<V: WalletServices + Send + Sync + 'static>(
+    services: V,
+    icon_url: Option<String>,
+) -> Wallet<crate::StorageSqlx, V> {
     let settings = WalletSettings {
         trust_settings: TrustSettings {
             trust_level: 1,
@@ -60,7 +68,7 @@ pub(super) async fn wallet(icon_url: Option<String>) -> TestWallet {
     Wallet::with_options(
         Some(key(SUBJECT)),
         storage,
-        MockWalletServices::new(),
+        services,
         WalletOptions {
             settings_manager: Some(Arc::new(manager)),
             ..Default::default()
