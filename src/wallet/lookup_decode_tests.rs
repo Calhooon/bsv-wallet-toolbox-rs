@@ -77,7 +77,7 @@ async fn a_token_with_only_its_locking_key_swapped_is_dropped() {
     only_the_good_token(LockingScript::from_chunks(chunks), &good);
 }
 
-/// `identityUtils.ts:536-545`: the subject's key, but a field signature
+/// `identityUtils.ts:532-539`: the subject's key, but a field signature
 /// over other bytes; before the fix it decoded.
 #[tokio::test]
 async fn a_bad_field_signature_is_dropped() {
@@ -89,7 +89,7 @@ async fn a_bad_field_signature_is_dropped() {
     only_the_good_token(LockingScript::from_chunks(chunks), &good);
 }
 
-/// `identityUtils.ts:497,506-516`: a third field, or a field pushed with a
+/// `identityUtils.ts:502,516`: a third field, or a field pushed with a
 /// longer opcode than its length asks; before the fix each decoded.
 #[tokio::test]
 async fn a_token_not_of_the_reference_shape_is_dropped() {
