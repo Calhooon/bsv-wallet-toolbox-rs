@@ -26,9 +26,10 @@ use std::sync::Arc;
 pub(in crate::storage::sqlx) struct OwnTip(Option<ChainTip>);
 
 /// The tip the own transaction is judged at: the tracker's (the caller's,
-/// else the storage's own), else the services' header service, as the
-/// pre-check's word reads it. A tracker with no mining tip, a tip read that
-/// faults, or services with no header service (`Services` built with no
+/// else the storage's own), else the services' header service, in the
+/// order the pre-check's word reads its sources (the pre-check's own answer
+/// to a missing header service is #509's). A tracker with no mining tip, a
+/// tip read that faults, or services with no header service (`Services` built with no
 /// `chaintracks_url`, `NO_HEADER_SERVICE`) give the latest era: rule 22's
 /// word with no mining tip (#464, #506). With no services object at all
 /// the word is not read (`None`). Any other `get_chain_tracker` error holds
