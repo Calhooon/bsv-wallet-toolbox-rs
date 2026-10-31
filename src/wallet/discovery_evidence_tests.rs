@@ -10,6 +10,11 @@ use bsv_rs::wallet::{DiscoverByAttributesArgs, DiscoverByIdentityKeyArgs};
 use indexmap::IndexMap;
 
 use super::super::discovery_rows_tests::{wallet, wallet_on};
+use crate::services::{
+    BlockHeader, FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult,
+    GetStatusForTxidsResult, GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput,
+    PostBeefResult, UtxoVerdict,
+};
 use crate::wallet::lookup::fixture::{key, published, record_json, revealed, token};
 use crate::wallet::lookup::OverlayLookupResolver;
 use crate::WalletServices;
@@ -49,12 +54,10 @@ impl OverlayLookupResolver for Host {
     }
 }
 
-/// The serials each door answers for the wallet's own key and for `name`
-/// `Alice`, against `resolver`.
-async fn answers<V: WalletServices + Send + Sync + 'static>(
+/// Each door's request for the wallet's own key and for `name` `Alice`.
+fn requests<V: WalletServices + Send + Sync + 'static>(
     wallet: &super::Wallet<crate::StorageSqlx, V>,
-    resolver: &Host,
-) -> (Vec<String>, Vec<String>) {
+) -> (DiscoverByIdentityKeyArgs, DiscoverByAttributesArgs) {
     let identity = DiscoverByIdentityKeyArgs {
         identity_key: wallet.identity_key().into(),
         limit: None,
@@ -67,6 +70,15 @@ async fn answers<V: WalletServices + Send + Sync + 'static>(
         offset: None,
         seek_permission: None,
     };
+    (identity, attributes)
+}
+
+/// The serials each door answers for `requests`, against `resolver`.
+async fn answers<V: WalletServices + Send + Sync + 'static>(
+    wallet: &super::Wallet<crate::StorageSqlx, V>,
+    resolver: &Host,
+) -> (Vec<String>, Vec<String>) {
+    let (identity, attributes) = requests(wallet);
     let by_key = wallet.discover_identity_with_resolver(identity, resolver);
     let by_key = by_key.await.unwrap().certificates;
     let by_name = wallet.discover_attributes_with_resolver(attributes, resolver);
@@ -126,4 +138,117 @@ async fn a_host_resolvers_outputs_meet_the_evidence() {
         answers(&wallet(None).await, &host).await,
         (serial.clone(), serial)
     );
+}
+
+/// Services whose header service faults: `get_chain_tracker` answers a
+/// transport error, every other read the mock's (#521).
+struct Faulting(crate::services::mock::MockWalletServices);
+
+const FAULT: &str = "chaintracks: connection refused";
+
+#[async_trait::async_trait]
+impl WalletServices for Faulting {
+    async fn get_chain_tracker(&self) -> crate::Result<&dyn bsv_rs::transaction::ChainTracker> {
+        Err(crate::Error::NetworkError(FAULT.into()))
+    }
+
+    async fn get_height(&self) -> crate::Result<u32> {
+        self.0.get_height().await
+    }
+
+    async fn get_header_for_height(&self, height: u32) -> crate::Result<Vec<u8>> {
+        self.0.get_header_for_height(height).await
+    }
+
+    async fn hash_to_header(&self, hash: &str) -> crate::Result<BlockHeader> {
+        self.0.hash_to_header(hash).await
+    }
+
+    async fn get_raw_tx(&self, txid: &str, next: bool) -> crate::Result<GetRawTxResult> {
+        self.0.get_raw_tx(txid, next).await
+    }
+
+    async fn get_merkle_path(&self, txid: &str, next: bool) -> crate::Result<GetMerklePathResult> {
+        self.0.get_merkle_path(txid, next).await
+    }
+
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> crate::Result<Vec<PostBeefResult>> {
+        self.0.post_beef(beef, txids).await
+    }
+
+    async fn get_utxo_status(
+        &self,
+        script: &str,
+        format: Option<GetUtxoStatusOutputFormat>,
+        at: Option<&str>,
+        next: bool,
+    ) -> crate::Result<GetUtxoStatusResult> {
+        self.0.get_utxo_status(script, format, at, next).await
+    }
+
+    async fn get_status_for_txids(
+        &self,
+        txids: &[String],
+        next: bool,
+    ) -> crate::Result<GetStatusForTxidsResult> {
+        self.0.get_status_for_txids(txids, next).await
+    }
+
+    async fn get_bsv_exchange_rate(&self) -> crate::Result<f64> {
+        self.0.get_bsv_exchange_rate().await
+    }
+
+    async fn get_fiat_exchange_rate(
+        &self,
+        currency: FiatCurrency,
+        base: Option<FiatCurrency>,
+    ) -> crate::Result<f64> {
+        self.0.get_fiat_exchange_rate(currency, base).await
+    }
+
+    fn hash_output_script(&self, script: &[u8]) -> String {
+        self.0.hash_output_script(script)
+    }
+
+    async fn is_utxo(&self, txid: &str, vout: u32, script: &[u8]) -> UtxoVerdict {
+        self.0.is_utxo(txid, vout, script).await
+    }
+
+    async fn n_lock_time_is_final(&self, n_lock_time: u32) -> crate::Result<bool> {
+        self.0.n_lock_time_is_final(n_lock_time).await
+    }
+
+    async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> crate::Result<bool> {
+        self.0.n_lock_time_is_final_for_tx(input).await
+    }
+
+    async fn get_beef(&self, txid: &str, known: &[String]) -> crate::Result<GetBeefResult> {
+        self.0.get_beef(txid, known).await
+    }
+}
+
+/// A header service that faults with a text other than not-configured is
+/// each door's answer, the services' class and text unchanged, and no
+/// resolver is asked; before #521 both doors answered an empty overlay part
+/// (the reference's `getChainTracker()` is uncaught, ts-stack@edf6e03
+/// `Wallet.ts:901`).
+#[tokio::test]
+async fn a_faulting_header_service_is_the_discover_calls_answer() {
+    let record = revealed(&key(9), &key(8), [2; 32], &[("name", "Alice")]).await;
+    let host = Host::new(vec![published(&record)]);
+    let services = Faulting(crate::services::mock::MockWalletServices::new());
+    let wallet = wallet_on(services, None).await;
+    let (identity, attributes) = requests(&wallet);
+    let by_key = wallet
+        .discover_identity_with_resolver(identity, &host)
+        .await;
+    let by_name = wallet.discover_attributes_with_resolver(attributes, &host);
+    let by_name = by_name.await;
+    for answer in [by_key, by_name] {
+        match answer {
+            Err(crate::Error::NetworkError(text)) => assert_eq!(text, FAULT),
+            other => panic!("expected the header service's fault, got {other:?}"),
+        }
+    }
+    assert_eq!(host.asked.load(Ordering::SeqCst), 0);
 }
