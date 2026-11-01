@@ -45,6 +45,9 @@ jobs:
 
       - name: Generate coverage
         run: cargo llvm-cov --lib --features sqlite --lcov --output-path lcov.info
+        env:
+          # Two replays for a ladder scene a runner stall failed (#513); one locally.
+          LADDER_FIXTURES_STALL_REPLAYS: "2"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4.6.0
