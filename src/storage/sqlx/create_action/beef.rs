@@ -341,18 +341,17 @@ pub(super) async fn build_input_beef(
 /// The tracker the caller's own roots are read against (#511): `tracker`
 /// (the caller's, else the storage's), else the `services`' header service,
 /// as the pre-check reads its tracker; `None` where no header source is
-/// reachable, or with no caller BEEF (`tracker` then, unasked).
+/// reachable. The services are asked only when the caller's BEEF carries a
+/// root to verify (`caller_beef_roots`, #515): with none, `tracker`, unasked.
 pub(super) async fn caller_roots_tracker<'a>(
     tracker: Option<&'a dyn ChainTracker>,
     services: Option<&'a dyn crate::services::WalletServices>,
     input_beef: Option<&[u8]>,
 ) -> Result<Option<&'a dyn ChainTracker>> {
-    match input_beef {
-        Some(bytes) if !bytes.is_empty() => {
-            super::beef_verification::reachable_tracker(tracker, services).await
-        }
-        _ => Ok(tracker),
+    if tracker.is_some() || super::tracker::caller_beef_roots(input_beef).is_empty() {
+        return Ok(tracker);
     }
+    super::beef_verification::reachable_tracker(tracker, services).await
 }
 
 /// Verify each merkle root against `tracker`.

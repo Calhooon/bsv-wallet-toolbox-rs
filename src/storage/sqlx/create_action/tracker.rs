@@ -6,6 +6,22 @@ use std::collections::{HashMap, HashSet};
 // Helper Functions
 // =============================================================================
 
+/// The caller's roots: the `(height, root)` of each BUMP of the caller's
+/// `inputBEEF` whose root computes. Empty with no bytes, or bytes that do
+/// not parse (the assembly refuses those with its own text).
+pub(super) fn caller_beef_roots(input_beef: Option<&[u8]>) -> Vec<(u32, String)> {
+    let Some(bytes) = input_beef.filter(|bytes| !bytes.is_empty()) else {
+        return Vec::new();
+    };
+    let Ok(beef) = Beef::from_binary(bytes) else {
+        return Vec::new();
+    };
+    beef.bumps
+        .iter()
+        .filter_map(|b| b.compute_root(None).ok().map(|r| (b.block_height, r)))
+        .collect()
+}
+
 /// Read every root of the caller's `inputBEEF` against `tracker`, before
 /// the write lock. Returns the confirmed `(height, root)` pairs; a refused
 /// root, or a tracker fault, fails the call with the error the assembly's
@@ -16,21 +32,10 @@ pub(super) async fn confirm_caller_beef_roots(
     input_beef: Option<&[u8]>,
 ) -> Result<HashSet<(u32, String)>> {
     let mut confirmed = HashSet::new();
-    let (Some(tracker), Some(bytes)) = (tracker, input_beef) else {
+    let Some(tracker) = tracker else {
         return Ok(confirmed);
     };
-    if bytes.is_empty() {
-        return Ok(confirmed);
-    }
-    let Ok(beef) = Beef::from_binary(bytes) else {
-        return Ok(confirmed);
-    };
-    let roots: Vec<(u32, String)> = beef
-        .bumps
-        .iter()
-        .filter_map(|b| b.compute_root(None).ok().map(|r| (b.block_height, r)))
-        .collect();
-    for (height, root) in roots {
+    for (height, root) in caller_beef_roots(input_beef) {
         if confirmed.contains(&(height, root.clone())) {
             continue;
         }
