@@ -140,16 +140,29 @@ async fn a_host_resolvers_outputs_meet_the_evidence() {
     );
 }
 
-/// Services whose header service faults: `get_chain_tracker` answers a
-/// transport error, every other read the mock's (#521).
-struct Faulting(crate::services::mock::MockWalletServices);
+/// Services whose header service faults: `get_chain_tracker` answers the
+/// error its function makes, every other read the mock's (#521).
+struct Faulting(
+    crate::services::mock::MockWalletServices,
+    fn() -> crate::Error,
+);
 
 const FAULT: &str = "chaintracks: connection refused";
+
+/// The transport fault the #521 scenes send.
+fn transport() -> crate::Error {
+    crate::Error::NetworkError(FAULT.into())
+}
+
+/// Services whose header service answers `fault`.
+fn faulting(fault: fn() -> crate::Error) -> Faulting {
+    Faulting(crate::services::mock::MockWalletServices::new(), fault)
+}
 
 #[async_trait::async_trait]
 impl WalletServices for Faulting {
     async fn get_chain_tracker(&self) -> crate::Result<&dyn bsv_rs::transaction::ChainTracker> {
-        Err(crate::Error::NetworkError(FAULT.into()))
+        Err((self.1)())
     }
 
     async fn get_height(&self) -> crate::Result<u32> {
@@ -236,7 +249,7 @@ impl WalletServices for Faulting {
 async fn a_faulting_header_service_is_the_discover_calls_answer() {
     let record = revealed(&key(9), &key(8), [2; 32], &[("name", "Alice")]).await;
     let host = Host::new(vec![published(&record)]);
-    let services = Faulting(crate::services::mock::MockWalletServices::new());
+    let services = faulting(transport);
     let wallet = wallet_on(services, None).await;
     let (identity, attributes) = requests(&wallet);
     let by_key = wallet
@@ -272,7 +285,7 @@ async fn at_the_boundary<V: WalletServices + Send + Sync + 'static>(
 /// scene, green on the base.
 #[tokio::test]
 async fn a_faulting_header_service_reaches_the_host_as_a_transport_fault() {
-    let services = Faulting(crate::services::mock::MockWalletServices::new());
+    let services = faulting(transport);
     for answer in at_the_boundary(&wallet_on(services, None).await).await {
         match answer {
             Err(bsv_rs::Error::WalletFault(fault)) => assert_eq!(
@@ -295,4 +308,34 @@ async fn with_no_header_service_the_boundary_answers_no_certificate() {
     for answer in at_the_boundary(&wallet_on(services, None).await).await {
         assert!(answer.unwrap().certificates.is_empty());
     }
+}
+
+const OTHER_SERVICE_TEXT: &str = "chaintracks: header service answered 503";
+
+/// The header service's `ServiceError` with a text other than the
+/// not-configured one, the case closest to `overlay_tracker`'s match: the
+/// fault, its text unchanged, is each door's answer, not the empty overlay
+/// part, and no resolver is asked; red with the match widened to every
+/// `ServiceError` (#524).
+#[tokio::test]
+async fn a_service_error_of_another_text_is_the_discover_calls_answer() {
+    let host = Host::new(vec![]);
+    let services = faulting(|| crate::Error::ServiceError(OTHER_SERVICE_TEXT.into()));
+    let wallet = wallet_on(services, None).await;
+    let (identity, attributes) = requests(&wallet);
+    let answers = [
+        wallet
+            .discover_identity_with_resolver(identity, &host)
+            .await,
+        wallet
+            .discover_attributes_with_resolver(attributes, &host)
+            .await,
+    ];
+    for answer in answers {
+        match answer {
+            Err(crate::Error::ServiceError(text)) => assert_eq!(text, OTHER_SERVICE_TEXT),
+            other => panic!("expected the services' other fault, got {other:?}"),
+        }
+    }
+    assert_eq!(host.asked.load(Ordering::SeqCst), 0);
 }
