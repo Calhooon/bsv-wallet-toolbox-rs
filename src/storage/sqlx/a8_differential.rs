@@ -86,7 +86,10 @@ fn answer(incoming: crate::Result<IncomingPayment>) -> Answer {
         format!("{height} {idx} {root} {}", hex::encode(c.merkle_path))
     });
     let body = incoming.body.map(|body| {
-        let fields = format!("{:?}", (&body.inputs, &body.outputs, body.version));
+        let fields = format!(
+            "{:?}",
+            (&body.inputs, &body.outputs, body.version, body.lock_time)
+        );
         [body.raw, fields.into_bytes()].concat()
     });
     Ok((
