@@ -107,7 +107,7 @@ timeout; the previous two waits could exceed the webhook sender's 10 s limit
 with the default 5 s store timeout. The host deadline remains CLI #249's job.
 
 **ChainTracker methods:**
-- `set_chain_tracker(tracker)` - Set ChainTracker for BEEF and proof verification. Without one NO merkle proof is stored: `ingest_merkle_proof` returns `ProofIngestOutcome::TrackerUnavailable`, the BEEF walk fetches none, `internalize_action` holds (`ServiceError`, nothing stored): since #103 the door needs the tracker for the verifier's roots (a missing mining tip gives the latest era, #464), and a missing tracker is could-not-look, never a verdict; with no tracker and services built with no `chaintracks_url`, or no services, it holds with `no_header_source`'s text, the proofs' want of headers (#509)
+- `set_chain_tracker(tracker)` - Set ChainTracker for BEEF and proof verification. Without one NO merkle proof is stored: `ingest_merkle_proof` returns `ProofIngestOutcome::TrackerUnavailable`, the BEEF walk fetches none, `internalize_action` holds (`ServiceError`, nothing stored): since #103 the door needs the tracker for the verifier's roots (a missing mining tip gives the latest era, #464), and a missing tracker is could-not-look, never a verdict; with no tracker and services built with no `chaintracks_url`, or no services, it holds with `no_header_source`'s text, the proofs' want of headers (#509); the create door holds a caller's `inputBEEF` root with the same text (#511), and asks the services for a header service only when that BEEF carries a root to verify (#515)
 - `clear_chain_tracker()` - Remove the ChainTracker (from then on no proof is stored)
 - `get_chain_tracker()` - Internal: get current ChainTracker if set
 
@@ -593,7 +593,11 @@ against the same tracker, the caller's, else the storage's, else the services'
 header service (`reachable_tracker`, read before the write lock; the
 pre-check's `assemble_input_beef` asks each caller root in the
 assembly), and only a host with none anywhere holds a caller root with that
-text rather than skip it (#511); the store's own proofs, checked when stored,
+text rather than skip it (#511). The services are asked only when the
+caller's BEEF carries a caller root (a BUMP whose root computes,
+`caller_beef_roots`): a BEEF with none asks nothing, so a services fault
+other than not-configured holds only a create with a root to verify, with
+`header_fault`'s text (#515); the store's own proofs, checked when stored,
 are not asked again. The set is stated once, on `judged_set`
 (`create_action/beef.rs`). Create calls the one verifier through the
 `verify_beef_word` seam (`beef_verification.rs`): the tracker's tip

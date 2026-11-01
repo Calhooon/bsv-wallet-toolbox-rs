@@ -18,6 +18,20 @@
   not-configured case and answers as before; a host whose header service
   faults now reads that fault from both discover calls, never "no
   certificates".
+- #515, bsv-wallet-cli#386: with no tracker on the caller or the storage,
+  the create door asked the services for a header service whenever the
+  caller's `inputBEEF` was non-empty. Old: a `get_chain_tracker` error
+  other than the not-configured answer refused every such create with
+  `ChainTracker verification failed: ...` and the services' text, though
+  a BEEF with no BUMP root carried nothing to verify. New: the services
+  are asked only when the caller's BEEF carries a caller root (a BUMP whose
+  root computes); a BEEF with none goes on as before #511, and one with a
+  root still holds with that fault's text, or with the no-header-source
+  text where no header service is configured (#511). Host note: the real
+  `Services` gives no other error, so `CHAINTRACKS_URL=off` and a
+  configured header service answer as before; a host with its own
+  `WalletServices` whose header service faults is no longer refused a
+  create whose `inputBEEF` carries no root.
 
 ## [0.14.0-beta.5] - 2026-10-31
 
