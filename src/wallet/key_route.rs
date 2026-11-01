@@ -58,6 +58,28 @@ pub(super) struct KeyRoute<'a> {
     originator: &'a str,
 }
 
+/// The seven key calls, each with its arguments and result: the one list the
+/// route, its `WalletInterface` impl and the tests' doubles are built from.
+/// `key_calls!(then)` invokes `then!` on the list; `key_calls!(then { .. })`
+/// puts the braced tokens ahead of it.
+macro_rules! key_calls {
+    ($then:ident $({ $($ahead:tt)* })?) => {
+        $then! {
+            $($($ahead)*)?
+            get_public_key(GetPublicKeyArgs) -> GetPublicKeyResult;
+            encrypt(EncryptArgs) -> EncryptResult;
+            decrypt(DecryptArgs) -> DecryptResult;
+            create_hmac(CreateHmacArgs) -> CreateHmacResult;
+            verify_hmac(VerifyHmacArgs) -> VerifyHmacResult;
+            create_signature(CreateSignatureArgs) -> CreateSignatureResult;
+            verify_signature(VerifySignatureArgs) -> VerifySignatureResult;
+        }
+    };
+}
+// The tests' double is built from the same list.
+#[cfg(all(test, feature = "sqlite"))]
+pub(super) use key_calls;
+
 // One routed method per key call: the manager for `privileged: true` once
 // the everyday ProtoWallet's validators pass the arguments, the everyday
 // ProtoWallet otherwise.
@@ -102,15 +124,7 @@ impl<'a> KeyRoute<'a> {
         self.manager.map(Some).ok_or_else(privileged_refusal)
     }
 
-    routed_key_calls! {
-        get_public_key(GetPublicKeyArgs) -> GetPublicKeyResult;
-        encrypt(EncryptArgs) -> EncryptResult;
-        decrypt(DecryptArgs) -> DecryptResult;
-        create_hmac(CreateHmacArgs) -> CreateHmacResult;
-        verify_hmac(VerifyHmacArgs) -> VerifyHmacResult;
-        create_signature(CreateSignatureArgs) -> CreateSignatureResult;
-        verify_signature(VerifySignatureArgs) -> VerifySignatureResult;
-    }
+    key_calls!(routed_key_calls);
 }
 
 // The route as a `WalletInterface`, for bsv-rs's certificate helpers
@@ -120,8 +134,8 @@ impl<'a> KeyRoute<'a> {
 // method is the everyday ProtoWallet's.
 macro_rules! key_route_interface {
     (
-        routed { $($key:ident($key_args:ty) -> $key_result:ty;)* }
         everyday { $(fn $name:ident(&self $(, $arg:ident: $arg_type:ty)*) -> $result:ty;)* }
+        $($key:ident($key_args:ty) -> $key_result:ty;)*
     ) => {
         #[async_trait]
         impl WalletInterface for KeyRoute<'_> {
@@ -143,16 +157,7 @@ macro_rules! key_route_interface {
     };
 }
 
-key_route_interface! {
-    routed {
-        get_public_key(GetPublicKeyArgs) -> GetPublicKeyResult;
-        encrypt(EncryptArgs) -> EncryptResult;
-        decrypt(DecryptArgs) -> DecryptResult;
-        create_hmac(CreateHmacArgs) -> CreateHmacResult;
-        verify_hmac(VerifyHmacArgs) -> VerifyHmacResult;
-        create_signature(CreateSignatureArgs) -> CreateSignatureResult;
-        verify_signature(VerifySignatureArgs) -> VerifySignatureResult;
-    }
+key_calls!(key_route_interface {
     everyday {
         fn reveal_counterparty_key_linkage(&self, args: InterfaceRevealCounterpartyArgs, originator: Option<&str>) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult>;
         fn reveal_specific_key_linkage(&self, args: InterfaceRevealSpecificArgs, originator: Option<&str>) -> bsv_rs::Result<RevealSpecificKeyLinkageResult>;
@@ -176,4 +181,4 @@ key_route_interface! {
         fn get_network(&self, originator: Option<&str>) -> bsv_rs::Result<GetNetworkResult>;
         fn get_version(&self, originator: Option<&str>) -> bsv_rs::Result<GetVersionResult>;
     }
-}
+});
