@@ -8,6 +8,7 @@
 //! field decryption (705-731), with no row written on a refusal.
 
 use super::busy_door_tests::certificate_rows;
+use super::privileged_keys_tests::PrivilegedDouble;
 use super::*;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bsv_rs::auth::certificates::MasterCertificate;
@@ -183,7 +184,13 @@ async fn direct_acquire_verify_stores_ciphertext_and_keyring_unchanged() {
         KeyringRevealer::Certifier,
         KeyringRevealer::PublicKey(PublicKey::from_hex(&key(9)).unwrap()),
     ] {
-        let wallet = wallet().await;
+        // A privileged request needs a privileged key manager (#142); this
+        // one holds the wallet's own root key, so the subject and the
+        // keyring's proof are the wallet's identity as the fixture issues them.
+        let mut wallet = wallet().await;
+        wallet.set_privileged_key_manager(PrivilegedDouble::with_key(ProtoWallet::new(Some(
+            PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap(),
+        ))));
         let mut args = signed_args(&wallet).await;
         args.keyring_revealer = Some(revealer.clone());
         args.privileged = Some(true);

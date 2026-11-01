@@ -40,7 +40,7 @@ pub(super) struct Asked {
 }
 
 /// A privileged key manager that records each request and answers under its
-/// own key, which is not the wallet's.
+/// own key, which is not the wallet's unless a scene gives it that key.
 pub(super) struct PrivilegedDouble {
     pub(super) key: ProtoWallet,
     pub(super) asked: StdMutex<Vec<Asked>>,
@@ -48,8 +48,12 @@ pub(super) struct PrivilegedDouble {
 
 impl PrivilegedDouble {
     pub(super) fn new() -> Arc<Self> {
+        Self::with_key(ProtoWallet::new(Some(PrivateKey::random())))
+    }
+
+    pub(super) fn with_key(key: ProtoWallet) -> Arc<Self> {
         Arc::new(Self {
-            key: ProtoWallet::new(Some(PrivateKey::random())),
+            key,
             asked: StdMutex::new(Vec::new()),
         })
     }

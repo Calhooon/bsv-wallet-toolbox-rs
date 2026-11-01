@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 use bsv_rs::auth::certificates::{Certificate, MasterCertificate};
 use bsv_rs::primitives::{from_base64, from_hex, PublicKey};
 use bsv_rs::wallet::{
-    AcquireCertificateArgs, KeyringRevealer, Outpoint, ProtoWallet, WalletCertificate,
+    AcquireCertificateArgs, KeyringRevealer, Outpoint, WalletCertificate, WalletInterface,
 };
 
 use super::{
@@ -168,11 +168,13 @@ fn master_certificate(
 }
 
 /// Verify the signature and prove every field can be decrypted through the
-/// acquiring wallet's internal crypto, before storage. The proof carries no
-/// caller originator and needs no protocol permission. The plaintext is
-/// discarded; the caller stores the encrypted fields and keyring unchanged (#374).
-pub(super) async fn verify_acquire_direct(
-    wallet: &ProtoWallet,
+/// acquiring wallet's internal crypto, before storage: the everyday key, or
+/// the privileged key manager for `privileged: true` (#142). The proof
+/// needs no protocol permission; only a privileged manager hears the
+/// caller's originator, from the route. The plaintext is discarded; the
+/// caller stores the encrypted fields and keyring unchanged (#374).
+pub(super) async fn verify_acquire_direct<W: WalletInterface>(
+    wallet: &W,
     certificate: &WalletCertificate,
     keyring: &IndexMap<String, String>,
     args: &AcquireCertificateArgs,
