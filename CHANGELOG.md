@@ -159,6 +159,40 @@
   tip read's rate limit or transport fault now sees `NetworkError`; no
   verdict moves (the wallet reads a tip fault as no tip, the latest era,
   #464, and no code of ours matches on the class).
+- #554, #565, bsv-wallet-cli#386: the Chaintracks reads gave one fault
+  kind two error classes, by read. Old: the client's `ChainTracker` root
+  check and tip read (and so `FallbackChainTracker::mining_tip`, which
+  passes it through) answered every fault as `ChainTrackerError::Other`,
+  a 429 inside the Retry-After window (`Rate limited: Chaintracks: retry
+  after <n>s`) among them, where the client's and the fallback tracker's
+  height read answered every fault, a refused frame too, as
+  `NetworkError`. New: one mapping, `tracker_fault`, for the client's
+  root check, height read and tip read, one class per fault kind
+  whatever the route. `NetworkError`: the Retry-After window, a send
+  fault, a timeout, an HTTP error status, a body that fails to decode as
+  JSON. `Other`: a frame the client refuses after decoding (a status
+  other than success, a missing field, header bytes that are not hex, a
+  range that does not end at the tip). The fallback tracker's height
+  read and `mining_tip` pass the client's class through; its root check
+  is unchanged (`NetworkError` for every header-service fault). Every
+  class that moved: on the root check and the tip read, the window
+  (#148's gate, not in a release yet), a send fault, a timeout, an HTTP
+  error status and a body that fails to decode, on every route
+  (`/findHeaderHexForHeight`, `/getChain`, `/findChainTipHeaderHex`,
+  `/getHeaders`), `Other` to `NetworkError`; on both height reads, a
+  refused frame (`Chaintracks getPresentHeight: status=<s>`,
+  `Chaintracks getPresentHeight: missing value`), `NetworkError` to
+  `Other`. The texts are unchanged byte for byte (the client's public
+  reads and the header ladders keep their `Error` and its text, `Service
+  error: Chaintracks findChainTipHeaderHex failed: HTTP <status>` among
+  them); bsv-rs's Display prefix reads `network error: ` where it read
+  `chain tracker error: `, and the reverse for the height read's refused
+  frame. Host note (bsv-wallet-cli#386): no verdict moves (every fault
+  stays an `Err`, never `Ok(false)` or `Ok(None)`; the wallet reads a tip
+  fault as no tip, the latest era, #464, and no code of ours matches on
+  the class); a host matching `ChainTrackerError::Other` or
+  `NetworkError` for these faults, or printing the class's prefix, sees
+  the class above.
 
 - #530, bsv-wallet-cli#386: every immediate broadcast wrote its BEEF as
   hex to the temp folder. Old: the create door's broadcast wrote
