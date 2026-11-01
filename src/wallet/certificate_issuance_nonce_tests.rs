@@ -114,3 +114,18 @@ async fn nonce_key_id_is_textdecoder_lossy_utf8() {
     let valid = verify_server_nonce(&reader, &nonce, &certifier_key, Some(ORIGINATOR));
     assert!(valid.await.unwrap());
 }
+
+// #558: the 16 nonce bytes are the OS draw, fresh on every call.
+#[tokio::test]
+async fn client_nonce_draws_sixteen_fresh_os_bytes() {
+    let wallet = wallet().await;
+    let certifier_key = PublicKey::from_hex(&certifier()).unwrap();
+    let draw = || create_client_nonce(&wallet, &certifier_key, Some(ORIGINATOR));
+    let (a, b) = (draw().await.unwrap(), draw().await.unwrap());
+    let (a, b) = (
+        decode_issuance_base64(&a).unwrap(),
+        decode_issuance_base64(&b).unwrap(),
+    );
+    assert_eq!((a.len(), b.len()), (48, 48));
+    assert_ne!(a[..NONCE_SIZE], b[..NONCE_SIZE]);
+}

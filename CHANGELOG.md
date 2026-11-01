@@ -15,8 +15,9 @@
 ### Changed
 
 - #191: the remote client's auth nonces (`create_nonce`,
-  `create_simple_nonce`, the request nonce), the certifier request id and
-  the managers' key-file bytes (the CWI profile id that salts the
+  `create_simple_nonce`, the request nonce), the certifier request id, the
+  certificate client nonce's 16 bytes (`create_client_nonce`, #558; old:
+  `rand::random()`) and the managers' key-file bytes (the CWI profile id that salts the
   password, the pads, the snapshot keys) draw from the OS CSPRNG
   (`rand::rngs::OsRng`) directly, as the reference's `Random(n)` draws
   from `crypto.getRandomValues`. Old: `rand::thread_rng()`. No seed reaches
