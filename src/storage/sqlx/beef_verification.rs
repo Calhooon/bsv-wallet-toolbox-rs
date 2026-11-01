@@ -204,22 +204,6 @@ async fn verification_headers(
     Ok(headers)
 }
 
-/// `verify_beef_word` on a reading in hand (the `a8-beef-bytes` path, #556).
-pub(super) async fn verify_read_word(
-    read: &ReadOnce,
-    tracker: &dyn ChainTracker,
-    network: &str,
-    judge: &(dyn Fn(&Hash32) -> bool + Sync),
-    verifier: Option<&dyn crate::SpendVerifier>,
-) -> Result<()> {
-    let tip = mining_tip(tracker).await?;
-    let headers = VerificationHeaders {
-        tip,
-        roots: HashSet::new(),
-    };
-    live_word::verify_elements(|| read.borrowed(), &headers, network, judge, verifier)
-}
-
 /// bsv-rs's structure pass (`verify_stream_structure`): the bytes, the
 /// graph, the roots and the proofs, with no spend judged and no script run.
 fn structure_pass(bytes: &[u8], headers: &VerificationHeaders) -> Result<Verdict> {
@@ -238,8 +222,12 @@ pub(super) async fn mining_tip(tracker: &dyn ChainTracker) -> Result<Option<Chai
 /// checks already passed: each input of every unproven raw transaction that
 /// `judge` names is judged as `verify_beef_spends` judges it, with the same
 /// era rule and refusals. The roots are the route's; only the tip is asked.
+/// The inputs come from the bytes (the oracle path) or from a reading of
+/// them in hand (`read`, the `a8-beef-bytes` path, #556), as in
+/// `verify_spends`.
 pub(super) async fn verify_beef_word(
     bytes: &[u8],
+    read: Option<&ReadOnce>,
     tracker: &dyn ChainTracker,
     network: &str,
     judge: &(dyn Fn(&Hash32) -> bool + Sync),
@@ -249,7 +237,12 @@ pub(super) async fn verify_beef_word(
         tip: mining_tip(tracker).await?,
         roots: HashSet::new(),
     };
-    live_word::verify_judging(bytes, &headers, network, judge, verifier)
+    match read {
+        None => live_word::verify_judging(bytes, &headers, network, judge, verifier),
+        Some(read) => {
+            live_word::verify_elements(|| read.borrowed(), &headers, network, judge, verifier)
+        }
+    }
 }
 
 fn verification_result(verdict: Verdict) -> Result<()> {
