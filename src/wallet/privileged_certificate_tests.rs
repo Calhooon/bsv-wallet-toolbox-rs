@@ -9,6 +9,7 @@
 //! never a proof under the everyday key.
 
 use super::busy_door_tests::{certificate_rows, wallet};
+use super::direct_acquire_tests::issued_to as issued;
 use super::privileged_keys_tests::{
     assert_privileged_refusal, Asked, PrivilegedDouble, ORIGINATOR,
 };
@@ -38,29 +39,6 @@ fn outpoint() -> String {
     format!("{}.0", "ab".repeat(32))
 }
 
-/// A certificate issued to `subject`, its keyring encrypted to that key.
-async fn issued(subject: &str) -> MasterCertificate {
-    let certifier = certifier();
-    let mut master = MasterCertificate::issue_for_subject(
-        &ProtoWallet::new(Some(certifier.clone())),
-        &certifier,
-        PublicKey::from_hex(subject).unwrap(),
-        IndexMap::from([
-            ("name".to_string(), "Alice".to_string()),
-            ("role".to_string(), "reader".to_string()),
-        ]),
-        [33; 32],
-        Some([32; 32]),
-        Some("certificate.test"),
-    )
-    .await
-    .unwrap();
-    master.set_revocation_outpoint(Some(Outpoint::new([0xab; 32], 0)));
-    master.set_signature(None);
-    master.sign(&certifier).unwrap();
-    master
-}
-
 fn reason(privileged: Option<bool>) -> Option<String> {
     privileged.map(|_| REASON.to_string())
 }
@@ -87,19 +65,6 @@ fn acquire_args(master: &MasterCertificate, privileged: Option<bool>) -> Acquire
 async fn store(wallet: &TestWallet, master: &MasterCertificate) {
     let now = chrono::Utc::now();
     let certificate = &master.certificate;
-    let row = TableCertificate {
-        certificate_id: 0,
-        user_id: wallet.user_id,
-        cert_type: BASE64.encode([33; 32]),
-        serial_number: BASE64.encode([32; 32]),
-        certifier: certifier().public_key().to_hex(),
-        subject: certificate.subject.to_hex(),
-        verifier: Some(certifier().public_key().to_hex()),
-        revocation_outpoint: outpoint(),
-        signature: hex::encode(certificate.signature.clone().unwrap()),
-        created_at: now,
-        updated_at: now,
-    };
     let fields = certificate
         .fields
         .iter()
@@ -114,6 +79,19 @@ async fn store(wallet: &TestWallet, master: &MasterCertificate) {
             updated_at: now,
         })
         .collect();
+    let row = TableCertificate {
+        certificate_id: 0,
+        user_id: wallet.user_id,
+        cert_type: BASE64.encode([33; 32]),
+        serial_number: BASE64.encode([32; 32]),
+        certifier: certifier().public_key().to_hex(),
+        subject: certificate.subject.to_hex(),
+        verifier: Some(certifier().public_key().to_hex()),
+        revocation_outpoint: outpoint(),
+        signature: hex::encode(certificate.signature.clone().unwrap()),
+        created_at: now,
+        updated_at: now,
+    };
     wallet
         .storage()
         .insert_certificate_with_fields(&wallet.auth(), row, fields)

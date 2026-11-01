@@ -113,8 +113,15 @@ fn protocol() -> Protocol {
     Protocol::new(SecurityLevel::App, "privileged witness")
 }
 
-// The caller's arguments with the three fields set as the scene asks.
+// The caller's arguments with the three fields set as the scene asks; a
+// `keyed` call's with the witness protocol and key id as well.
 macro_rules! args {
+    (keyed $kind:ident { $($field:ident: $value:expr),* $(,)? }, $privileged:expr) => {
+        args!(
+            $kind { $($field: $value,)* protocol_id: protocol(), key_id: "1".to_string() },
+            $privileged
+        )
+    };
     ($kind:ident { $($field:ident: $value:expr),* $(,)? }, $privileged:expr) => {
         $kind {
             $($field: $value,)*
@@ -129,39 +136,12 @@ macro_rules! args {
 /// One of the seven calls with `privileged` as given, its answer in words.
 async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_rs::Result<String> {
     let originator = Some(ORIGINATOR);
-    let key_id = || "1".to_string();
     // decrypt, verify_hmac and verify_signature first make their input with
     // the same request encrypt, create_hmac and create_signature send.
-    let encrypt_args = || {
-        args!(
-            EncryptArgs {
-                plaintext: b"secret".to_vec(),
-                protocol_id: protocol(),
-                key_id: key_id()
-            },
-            privileged
-        )
-    };
-    let hmac_args = || {
-        args!(
-            CreateHmacArgs {
-                data: b"data".to_vec(),
-                protocol_id: protocol(),
-                key_id: key_id()
-            },
-            privileged
-        )
-    };
-    let signature_args = || {
-        args!(
-            CreateSignatureArgs {
-                data: Some(b"data".to_vec()),
-                protocol_id: protocol(),
-                key_id: key_id()
-            },
-            privileged
-        )
-    };
+    let encrypt_args = || args!(keyed EncryptArgs { plaintext: b"secret".to_vec() }, privileged);
+    let hmac_args = || args!(keyed CreateHmacArgs { data: b"data".to_vec() }, privileged);
+    let signature_args =
+        || args!(keyed CreateSignatureArgs { data: Some(b"data".to_vec()) }, privileged);
     let answer = match name {
         "get_public_key" => {
             let args = args!(GetPublicKeyArgs { identity_key: true }, privileged);
@@ -171,25 +151,16 @@ async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_
         "decrypt" => {
             // Sealed under the key the call is answered with, so it opens.
             let sealed = wallet.encrypt(encrypt_args(), originator).await?;
-            let args = args!(
-                DecryptArgs {
-                    ciphertext: sealed.ciphertext,
-                    protocol_id: protocol(),
-                    key_id: key_id()
-                },
-                privileged
-            );
+            let args = args!(keyed DecryptArgs { ciphertext: sealed.ciphertext }, privileged);
             format!("{:?}", wallet.decrypt(args, originator).await?)
         }
         "create_hmac" => format!("{:?}", wallet.create_hmac(hmac_args(), originator).await?),
         "verify_hmac" => {
             let made = wallet.create_hmac(hmac_args(), originator).await?;
             let args = args!(
-                VerifyHmacArgs {
+                keyed VerifyHmacArgs {
                     data: b"data".to_vec(),
                     hmac: made.hmac,
-                    protocol_id: protocol(),
-                    key_id: key_id()
                 },
                 privileged
             );
@@ -206,11 +177,9 @@ async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_
                 .create_signature(signature_args(), originator)
                 .await?;
             let args = args!(
-                VerifySignatureArgs {
+                keyed VerifySignatureArgs {
                     data: Some(b"data".to_vec()),
                     signature: made.signature,
-                    protocol_id: protocol(),
-                    key_id: key_id(),
                     counterparty: Some(Counterparty::Anyone),
                     for_self: Some(true)
                 },

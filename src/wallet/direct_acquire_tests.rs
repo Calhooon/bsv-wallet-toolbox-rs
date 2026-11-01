@@ -64,15 +64,19 @@ fn direct_args() -> AcquireCertificateArgs {
     }
 }
 
-// The SDK equivalent of issueCertificateForSubject encrypts to this wallet
-// and signs with the certifier's BRC-52 child key. Re-sign after setting the
-// outpoint, since the issuance helper uses the absent-outpoint sentinel.
 async fn signed_master(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> MasterCertificate {
+    issued_to(wallet.identity_key()).await
+}
+
+// The SDK equivalent of issueCertificateForSubject encrypts to `subject` and
+// signs with the certifier's (key 7) BRC-52 child key. Re-sign after setting
+// the outpoint, since the issuance helper uses the absent-outpoint sentinel.
+pub(super) async fn issued_to(subject: &str) -> MasterCertificate {
     let certifier = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
     let mut master = MasterCertificate::issue_for_subject(
         &ProtoWallet::new(Some(certifier.clone())),
         &certifier,
-        PublicKey::from_hex(wallet.identity_key()).unwrap(),
+        PublicKey::from_hex(subject).unwrap(),
         IndexMap::from([
             ("name".to_string(), "Alice".to_string()),
             ("role".to_string(), "reader".to_string()),
