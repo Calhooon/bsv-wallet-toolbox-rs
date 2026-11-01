@@ -30,6 +30,31 @@
     retired. No cause and no text moves: `... input I not judged: exceeded
     transaction work budget 2147483648 units after T units of work.`
     (`TransactionWorkBudgetExceeded { input, limit, total }`) as at beta.5.
+  - The compressed-key validators read through bsv-rs's public
+    `wallet::validate_public_key` (bsv-rs #579, the reference's
+    `validatePublicKey`): `validate_public_key_arg` (proveCertificate's and
+    the certificate gates' keys, the direct and issuance acquire's
+    certifier) and the internalize sender; the port's copies retired. No
+    verdict and no text moves: the refusal stays `Validation error: The
+    <name> parameter must be ...` in the reference's five endings. The
+    issued certificate's keys and the overlay record's keys stay on the
+    port's `toBinary` read (`Certificate.ts:240-254`, untrimmed, either
+    case), which no public bsv-rs helper names.
+  - `ResponseAuthHeaders::get_identity_key` reads the header through
+    bsv-rs's public `auth::assert_auth_identity_key` (bsv-rs #579, the
+    reference's `assertAuthIdentityKey`, `AuthMessageValidation.ts:81-90`).
+    Old: an upper-case key and an uncompressed `04` key were read; an
+    odd-length key answered `SDK error: invalid hex string: Odd number of
+    digits`, a hybrid key `SDK error: invalid public key: Invalid public key
+    encoding: elliptic curve point encoding error`, a `05` tag `SDK error:
+    invalid public key: Invalid public key encoding: unknown point format`
+    and an x off the curve `SDK error: invalid public key: Point not on
+    curve`. New: each form is `SDK error: authentication error:
+    Authentication identityKey must be a canonical compressed public key.`
+    (a space-padded key too), and an x off the curve `SDK error:
+    authentication error: Authentication identityKey must be a valid
+    compressed public key.` The client's live path is bsv-rs's `Peer`,
+    strict since bsv-rs #582; this is the public helper's verdict.
 
 ### Fixed
 

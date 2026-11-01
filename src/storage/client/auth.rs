@@ -150,15 +150,17 @@ impl ResponseAuthHeaders {
             && self.signature.is_some()
     }
 
-    /// Returns the identity key as a PublicKey if valid: the hex decoded,
-    /// then `PublicKey::from_bytes`, the strict reading `from_hex` gave
-    /// before bsv-rs 0.9.0-beta.5. Since then `from_hex` reads the
-    /// reference's lenient `fromString` forms (bsv-rs #498), which the
-    /// reference's `assertAuthIdentityKey` refuses for this header
-    /// (`AuthMessageValidation.ts:81-89`), as bsv-rs's own transports do.
+    /// Returns the identity key as a PublicKey if valid, read by bsv-rs's
+    /// `assert_auth_identity_key` (bsv-rs #579), the reference's
+    /// `assertAuthIdentityKey` for this header (`AuthMessageValidation.ts:81-90`,
+    /// applied at `:344` to the folded `x-bsv-auth-identity-key`), as bsv-rs's
+    /// own transport reads it: the text as given, `02` or `03` and 64
+    /// lowercase hex digits, a valid point; refused as `Error::AuthError` in
+    /// its two sentences. Upper-case hex and an uncompressed key, which the
+    /// beta.5 read (hex, then `PublicKey::from_bytes`) took, are refused.
     pub fn get_identity_key(&self) -> Result<Option<PublicKey>> {
         match &self.identity_key {
-            Some(hex) => Ok(Some(PublicKey::from_bytes(&from_hex(hex)?)?)),
+            Some(text) => Ok(Some(bsv_rs::auth::assert_auth_identity_key(text)?)),
             None => Ok(None),
         }
     }
@@ -868,6 +870,38 @@ mod tests {
                 signature: Some("sig".to_string()),
             };
             assert!(headers.get_identity_key().is_err(), "{text} was read");
+        }
+    }
+
+    /// The header read as the reference's `assertAuthIdentityKey` reads it
+    /// (`AuthMessageValidation.ts:81-90`, through bsv-rs's helper, #579):
+    /// an upper-case key and an uncompressed key, which the beta.5 read (hex,
+    /// then `PublicKey::from_bytes`) took, are refused in its two sentences;
+    /// a `02` key with an x off the curve answers the point's sentence.
+    #[test]
+    fn the_identity_key_header_is_read_as_assert_auth_identity_key_reads_it() {
+        let key = bsv_rs::primitives::PrivateKey::from_hex(&"11".repeat(32))
+            .unwrap()
+            .public_key();
+        let header = |text: String| ResponseAuthHeaders {
+            version: Some("0.1".to_string()),
+            identity_key: Some(text),
+            nonce: Some("nonce".to_string()),
+            timestamp: Some(123456),
+            signature: Some("sig".to_string()),
+        };
+        let form = "SDK error: authentication error: Authentication identityKey must be a canonical compressed public key.";
+        let point = "SDK error: authentication error: Authentication identityKey must be a valid compressed public key.";
+        let read = header(key.to_hex()).get_identity_key().unwrap();
+        assert_eq!(read, Some(key.clone()));
+        for (text, words) in [
+            (key.to_hex().to_uppercase(), form),
+            (key.to_hex_uncompressed(), form),
+            (format!(" {}", key.to_hex()), form),
+            (format!("02{}", "00".repeat(31) + "05"), point),
+        ] {
+            let refused = header(text.clone()).get_identity_key().unwrap_err();
+            assert_eq!(refused.to_string(), words, "{text}");
         }
     }
 
