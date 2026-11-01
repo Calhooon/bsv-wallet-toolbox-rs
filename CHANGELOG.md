@@ -55,6 +55,22 @@
     authentication error: Authentication identityKey must be a valid
     compressed public key.` The client's live path is bsv-rs's `Peer`,
     strict since bsv-rs #582; this is the public helper's verdict.
+  - bsv-rs #582's transport row at the toolbox's two `Peer` doors: the
+    storage client (`storage_client.rs:288-290`) and certificate issuance
+    (`certificate_issuance_auth.rs:43-45`) build bsv-rs's `Peer` over
+    `SimplifiedFetchTransport`. Old: an upper-case
+    `x-bsv-auth-identity-key` on a storage server's or a certifier's
+    general answer was read. New: the transport refuses it with bsv-rs's
+    `Error::AuthError("Authentication identityKey must be a canonical
+    compressed public key.")` and no message reaches the peer, so the
+    storage call or the issuance door's `acquireCertificate` answers that
+    error where beta.5 answered the call. Witness: bsv-rs's
+    `a_general_answer_with_an_upper_case_identity_key_header_is_refused_582`
+    (`tests/auth_header_key_strictness_498.rs`, the `upper_case` row of
+    `vectors/public_key_validation_579.json`); bsv-rs's witness only, no
+    toolbox witness. Host line for bsv-wallet-cli#386: a storage server or
+    a certifier sending its identity key in upper case is refused at this
+    pin.
   - The wallet wire's `sendWithResults` status byte is BRC-100's and the
     reference's, 1 `unproven`, 2 `sending`, 3 `failed` (bsv-rs #590; was
     0/1/2), another byte refused as `Unknown sendWith result status code:
@@ -76,6 +92,9 @@
     resolves 1.0.154. R56 (bsv-rs #491) is unchanged at this tag and
     ts-stack #1451 is open, so beta.5's line stands. bsv-rs #604 (an
     abort refusal's kind) is not in this tag.
+  - bsv-rs #574 and #577 (the nightly Mutants jobs: the complete
+    scoreboard and the shards under the memory ceiling) touch no toolbox
+    path.
 
 ### Fixed
 
