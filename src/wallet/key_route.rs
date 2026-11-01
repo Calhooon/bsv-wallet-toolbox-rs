@@ -111,19 +111,6 @@ impl<'a> KeyRoute<'a> {
         }
     }
 
-    /// The manager a privileged request goes to, `None` for an everyday one,
-    /// or the reference's refusal when the request is privileged and the
-    /// wallet has no manager.
-    pub(super) fn manager(
-        &self,
-        privileged: Option<bool>,
-    ) -> bsv_rs::Result<Option<&'a dyn PrivilegedKeyManager>> {
-        if privileged != Some(true) {
-            return Ok(None);
-        }
-        self.manager.map(Some).ok_or_else(privileged_refusal)
-    }
-
     key_calls!(routed_key_calls);
 }
 

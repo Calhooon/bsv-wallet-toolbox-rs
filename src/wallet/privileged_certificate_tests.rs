@@ -5,8 +5,10 @@
 //! `privileged` (`MasterCertificate.ts:383-401`, called from
 //! `signer/methods/proveCertificate.ts:31-41`), and the direct acquire takes
 //! its subject and proves its keyring under that key (`Wallet.ts:698-724`).
-//! With no manager both are the reference's refusal (`Wallet.ts:460-461`),
-//! never a proof under the everyday key.
+//! With no manager the acquire is the reference's refusal
+//! (`Wallet.ts:460-461`, uncaught at `:697-703`) and the prove the helper's
+//! decrypt catch (`MasterCertificate.ts:564-623`), never a proof under the
+//! everyday key.
 
 use super::busy_door_tests::{certificate_rows, wallet};
 use super::direct_acquire_tests::issued_to as issued;
@@ -104,6 +106,15 @@ async fn prove(
     master: &MasterCertificate,
     privileged: Option<bool>,
 ) -> bsv_rs::Result<ProveCertificateResult> {
+    prove_revealing(wallet, master, privileged, &["name"]).await
+}
+
+async fn prove_revealing(
+    wallet: &TestWallet,
+    master: &MasterCertificate,
+    privileged: Option<bool>,
+    fields_to_reveal: &[&str],
+) -> bsv_rs::Result<ProveCertificateResult> {
     let certificate = &master.certificate;
     let args = ProveCertificateArgs {
         certificate: WalletCertificate {
@@ -115,7 +126,10 @@ async fn prove(
             signature: hex::encode(certificate.signature.clone().unwrap()),
             fields: certificate.fields.clone(),
         },
-        fields_to_reveal: vec!["name".to_string()],
+        fields_to_reveal: fields_to_reveal
+            .iter()
+            .map(|name| name.to_string())
+            .collect(),
         verifier: verifier().public_key().to_hex(),
         privileged,
         privileged_reason: reason(privileged),
@@ -200,12 +214,59 @@ async fn privileged_direct_acquire_without_a_manager_is_the_references_refusal()
     assert_eq!(certificate_rows(&wallet).await, (0, 0));
 }
 
+/// The prove's answer is the helper's fault: class `Internal`, `message`
+/// byte for byte.
+fn assert_internal_fault<T: std::fmt::Debug>(
+    scene: &str,
+    result: bsv_rs::Result<T>,
+    message: &str,
+) {
+    match result {
+        Err(bsv_rs::Error::WalletFault(fault)) => {
+            assert_eq!(fault.family, bsv_rs::WalletFaultFamily::Internal, "{scene}");
+            assert_eq!(fault.message, message, "{scene}");
+        }
+        other => panic!("{scene}: expected the Internal fault {message:?}, got {other:?}"),
+    }
+}
+
+// With no manager the prove has no guard of its own, as
+// `signer/methods/proveCertificate.ts:31-41` has none: the helper runs, the
+// route's refusal is thrown inside `decryptField` and its catch answers
+// (`MasterCertificate.ts:564-623`).
 #[tokio::test]
-async fn privileged_prove_without_a_manager_is_the_references_refusal() {
+async fn privileged_prove_without_a_manager_is_the_decrypt_catch() {
     let (_dir, wallet) = wallet().await;
     let master = issued(wallet.identity_key()).await;
     store(&wallet, &master).await;
-    assert_privileged_refusal("prove", prove(&wallet, &master, Some(true)).await);
+    assert_internal_fault(
+        "prove",
+        prove(&wallet, &master, Some(true)).await,
+        "Failed to decrypt certificate field!",
+    );
+}
+
+#[tokio::test]
+async fn privileged_prove_of_no_field_without_a_manager_is_an_empty_keyring() {
+    let (_dir, wallet) = wallet().await;
+    let master = issued(wallet.identity_key()).await;
+    store(&wallet, &master).await;
+    let proof = prove_revealing(&wallet, &master, Some(true), &[]).await;
+    let keyring = proof.expect("no field touches no key").keyring_for_verifier;
+    assert_eq!(keyring, IndexMap::<String, String>::new());
+}
+
+#[tokio::test]
+async fn privileged_prove_of_a_missing_field_without_a_manager_is_the_subset_refusal() {
+    // The subset check precedes any decrypt (`MasterCertificate.ts:370-380`).
+    let (_dir, wallet) = wallet().await;
+    let master = issued(wallet.identity_key()).await;
+    store(&wallet, &master).await;
+    assert_internal_fault(
+        "prove",
+        prove_revealing(&wallet, &master, Some(true), &["nickname"]).await,
+        "Fields to reveal must be a subset of the certificate fields. Missing the \"nickname\" field.",
+    );
 }
 
 #[tokio::test]
