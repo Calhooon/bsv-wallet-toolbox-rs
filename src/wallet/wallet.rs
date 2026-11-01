@@ -1496,13 +1496,9 @@ where
                 let (mut post_words, mut post_fault) = (Vec::new(), None);
                 let broadcast_outcome = if let Some(ref beef_bytes) = full_beef_bytes {
                     let txid_strings = vec![txid.clone()];
-                    // Validate BEEF structure and dump to file for diagnostics
+                    // Validate BEEF structure and log its shape
                     match bsv_rs::transaction::Beef::from_binary(beef_bytes) {
                         Ok(parsed) => {
-                            let dump_path =
-                                std::env::temp_dir().join(format!("beef-{}.hex", &txid[..8]));
-                            let _ = std::fs::write(&dump_path, hex::encode(beef_bytes));
-
                             // Structural validation: check leaf count and input coverage
                             if let Err(validation_err) =
                                 crate::storage::broadcast::validate_beef_for_broadcast(
@@ -1522,8 +1518,7 @@ where
                                 num_bumps = parsed.bumps.len(),
                                 num_txs = parsed.txs.len(),
                                 beef_len = beef_bytes.len(),
-                                dump_path = %dump_path.display(),
-                                "BEEF dumped for analysis"
+                                "BEEF parsed for broadcast"
                             );
                         }
                         Err(e) => {
