@@ -20,10 +20,14 @@ use super::tasks::{
     UnfailTask,
 };
 
-/// Generate random bytes using the `rand` crate's thread-local CSPRNG.
-fn rand_bytes(buf: &mut [u8]) {
-    use rand::RngCore;
-    rand::thread_rng().fill_bytes(buf);
+/// Random bytes from a stream seeded by `seed` for replay, or from the OS
+/// CSPRNG when `None` (#191).
+fn rand_bytes(seed: Option<[u8; 32]>, buf: &mut [u8]) {
+    use rand::{RngCore, SeedableRng};
+    match seed {
+        Some(seed) => rand::rngs::StdRng::from_seed(seed).fill_bytes(buf),
+        None => crate::rng::os_fill(buf),
+    }
 }
 
 /// Health status for an individual monitor task.
@@ -135,7 +139,7 @@ where
     pub fn with_options(storage: Arc<S>, services: Arc<V>, options: MonitorOptions) -> Self {
         // Generate a random 16-byte hex string as instance ID
         let mut bytes = [0u8; 16];
-        rand_bytes(&mut bytes);
+        rand_bytes(options.rng_seed, &mut bytes);
         let instance_id = hex::encode(bytes);
 
         // The storage's persisted broadcast memory drives the reduced sends
@@ -714,19 +718,15 @@ mod tests {
 
     #[test]
     fn test_monitor_instance_id_is_unique() {
-        // Two calls to rand_bytes should produce different values
-        let id1 = {
-            let mut bytes = [0u8; 16];
-            rand_bytes(&mut bytes);
-            hex::encode(bytes)
+        // Two unseeded draws differ over 32 bytes; a seeded pair is equal.
+        let draw = |seed| {
+            let mut bytes = [0u8; 32];
+            rand_bytes(seed, &mut bytes);
+            bytes
         };
-        let id2 = {
-            let mut bytes = [0u8; 16];
-            rand_bytes(&mut bytes);
-            hex::encode(bytes)
-        };
-        assert_ne!(id1, id2);
-        assert_eq!(id1.len(), 32); // 16 bytes = 32 hex chars
+        assert_ne!(draw(None), draw(None));
+        assert_eq!(draw(Some([7; 32])), draw(Some([7; 32])));
+        assert_ne!(draw(Some([7; 32])), draw(Some([8; 32])));
     }
 
     #[test]
