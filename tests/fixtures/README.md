@@ -5,6 +5,17 @@ Each file records `name`, `issue`, `inputs`, `calls`, and `expected`. An unknown
 fixture field is an error. The storage tests require the default `sqlite` feature.
 The services lane can add `mod ladders;` beside `mod storage;` in `main.rs`.
 
+The services ladder scenes under `data/ladders/` replay as a lib test
+(`cargo test --lib ladder_fixtures`, `ladders.rs`). A scene that differs because
+a rung faulted at the 2000 ms client deadline (within 100 ms, `LATE_SLACK_MS`)
+where the scene scripts no late answer is a runner stall, replayed and named in
+the run's log. `LADDER_FIXTURES_STALL_REPLAYS` is how many replays it gets: one
+when unset, so the local run is unchanged; CI sets two on the steps that run the
+ladders (#513). A stall past the last replay fails with `RUNNER STALL, not a
+ladder verdict` at the head of the message; a difference that is the ladder's is
+never replayed. The deadline itself does not move: the scripted timeouts
+(`delay_ms` 3000) are written against it.
+
 `UPDATE_FIXTURES=1 cargo test --test fixtures` rewrites only `expected` and
 canonical formatting. Review that diff as a behavior change. Replay without the
 variable never writes fixtures. A mismatch prints a unified diff and fails.
