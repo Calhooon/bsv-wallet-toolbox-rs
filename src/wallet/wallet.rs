@@ -88,6 +88,10 @@ mod discovery_rows_tests;
 #[path = "privileged_keys_tests.rs"]
 mod privileged_keys_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "privileged_certificate_tests.rs"]
+mod privileged_certificate_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -2523,15 +2527,20 @@ where
                     keyring,
                 } = direct_acquire::validate_acquire_direct_args(&args)?;
 
-                // Set the subject to the wallet's identity key (Wallet.ts:698-704)
-                certificate.subject = self.identity_key.clone();
-                direct_acquire::verify_acquire_direct(
-                    &self.proto_wallet,
-                    &certificate,
-                    &keyring,
-                    &args,
-                )
-                .await?;
+                // The subject is the identity key the caller named, the
+                // privileged key manager's for `privileged: true`, else the
+                // reference's refusal (Wallet.ts:698-704, #142).
+                let keys = self.key_route(originator);
+                certificate.subject = keys
+                    .get_public_key(GetPublicKeyArgs {
+                        identity_key: true,
+                        privileged: args.privileged,
+                        privileged_reason: args.privileged_reason.clone(),
+                        ..Default::default()
+                    })
+                    .await?
+                    .public_key;
+                direct_acquire::verify_acquire_direct(&keys, &certificate, &keyring, &args).await?;
 
                 let now = chrono::Utc::now();
 
@@ -2744,16 +2753,22 @@ where
         // This follows the TypeScript/Go implementation:
         // 1. For each field to reveal, decrypt the master key
         // 2. Re-encrypt the symmetric key for the verifier
+        // The keyring is derived under the key the caller named
+        // (MasterCertificate.ts:383-401 with `privileged`, #142): the
+        // privileged key manager's, else the reference's refusal
+        // (Wallet.ts:460-461), never the everyday key.
+        let keys = self.key_route(originator);
+        keys.manager(args.privileged)?;
         let keyring_for_verifier = create_keyring_for_verifier(
-            &key_route::KeyRoute::new(&self.proto_wallet, None, originator),
+            &keys,
             &certifier,
             &verifier,
             &storage_cert.certificate.fields,
             &args.fields_to_reveal,
             master_keyring,
             &storage_cert.certificate.serial_number,
-            None,
-            None,
+            args.privileged,
+            args.privileged_reason.as_deref(),
         )
         .await?;
 

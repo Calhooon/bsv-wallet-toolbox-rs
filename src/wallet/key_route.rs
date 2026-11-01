@@ -6,6 +6,10 @@
 //! everyday `ProtoWallet`, its arguments intact as before.
 
 use super::*;
+use bsv_rs::wallet::{
+    DiscoverByAttributesArgs as AttributesArgs, DiscoverByIdentityKeyArgs as IdentityKeyArgs,
+    DiscoverCertificatesResult as DiscoverResult,
+};
 
 /// The reference's text for a privileged request on a wallet with no
 /// privileged key manager (ts-stack@edf6e03 `Wallet.ts:461`).
@@ -80,5 +84,70 @@ impl<'a> KeyRoute<'a> {
         verify_hmac(VerifyHmacArgs) -> VerifyHmacResult;
         create_signature(CreateSignatureArgs) -> CreateSignatureResult;
         verify_signature(VerifySignatureArgs) -> VerifySignatureResult;
+    }
+}
+
+// The route as a `WalletInterface`, for bsv-rs's certificate helpers
+// (`MasterCertificate::decrypt_fields`), which pass the caller's `privileged`
+// to the wallet they are given, as the reference passes it to `this`
+// (`Wallet.ts:705-724`): the seven key calls take the route, every other
+// method is the everyday ProtoWallet's.
+macro_rules! key_route_interface {
+    (
+        routed { $($key:ident($key_args:ty) -> $key_result:ty;)* }
+        everyday { $(fn $name:ident(&self $(, $arg:ident: $arg_type:ty)*) -> $result:ty;)* }
+    ) => {
+        #[async_trait]
+        impl WalletInterface for KeyRoute<'_> {
+            $(
+                async fn $key(
+                    &self,
+                    args: $key_args,
+                    _originator: Option<&str>,
+                ) -> bsv_rs::Result<$key_result> {
+                    KeyRoute::$key(self, args).await
+                }
+            )*
+            $(
+                async fn $name(&self $(, $arg: $arg_type)*) -> $result {
+                    WalletInterface::$name(self.proto $(, $arg)*).await
+                }
+            )*
+        }
+    };
+}
+
+key_route_interface! {
+    routed {
+        get_public_key(GetPublicKeyArgs) -> GetPublicKeyResult;
+        encrypt(EncryptArgs) -> EncryptResult;
+        decrypt(DecryptArgs) -> DecryptResult;
+        create_hmac(CreateHmacArgs) -> CreateHmacResult;
+        verify_hmac(VerifyHmacArgs) -> VerifyHmacResult;
+        create_signature(CreateSignatureArgs) -> CreateSignatureResult;
+        verify_signature(VerifySignatureArgs) -> VerifySignatureResult;
+    }
+    everyday {
+        fn reveal_counterparty_key_linkage(&self, args: InterfaceRevealCounterpartyArgs, originator: Option<&str>) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult>;
+        fn reveal_specific_key_linkage(&self, args: InterfaceRevealSpecificArgs, originator: Option<&str>) -> bsv_rs::Result<RevealSpecificKeyLinkageResult>;
+        fn create_action(&self, args: CreateActionArgs, originator: Option<&str>) -> bsv_rs::Result<CreateActionResult>;
+        fn sign_action(&self, args: SignActionArgs, originator: Option<&str>) -> bsv_rs::Result<SignActionResult>;
+        fn abort_action(&self, args: AbortActionArgs, originator: Option<&str>) -> bsv_rs::Result<AbortActionResult>;
+        fn list_actions(&self, args: ListActionsArgs, originator: Option<&str>) -> bsv_rs::Result<ListActionsResult>;
+        fn internalize_action(&self, args: InternalizeActionArgs, originator: Option<&str>) -> bsv_rs::Result<InternalizeActionResult>;
+        fn list_outputs(&self, args: ListOutputsArgs, originator: Option<&str>) -> bsv_rs::Result<ListOutputsResult>;
+        fn relinquish_output(&self, args: RelinquishOutputArgs, originator: Option<&str>) -> bsv_rs::Result<RelinquishOutputResult>;
+        fn acquire_certificate(&self, args: AcquireCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<WalletCertificate>;
+        fn list_certificates(&self, args: ListCertificatesArgs, originator: Option<&str>) -> bsv_rs::Result<ListCertificatesResult>;
+        fn prove_certificate(&self, args: ProveCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<ProveCertificateResult>;
+        fn relinquish_certificate(&self, args: RelinquishCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<RelinquishCertificateResult>;
+        fn discover_by_identity_key(&self, args: IdentityKeyArgs, originator: Option<&str>) -> bsv_rs::Result<DiscoverResult>;
+        fn discover_by_attributes(&self, args: AttributesArgs, originator: Option<&str>) -> bsv_rs::Result<DiscoverResult>;
+        fn is_authenticated(&self, originator: Option<&str>) -> bsv_rs::Result<AuthenticatedResult>;
+        fn wait_for_authentication(&self, originator: Option<&str>) -> bsv_rs::Result<AuthenticatedResult>;
+        fn get_height(&self, originator: Option<&str>) -> bsv_rs::Result<GetHeightResult>;
+        fn get_header_for_height(&self, args: GetHeaderArgs, originator: Option<&str>) -> bsv_rs::Result<GetHeaderResult>;
+        fn get_network(&self, originator: Option<&str>) -> bsv_rs::Result<GetNetworkResult>;
+        fn get_version(&self, originator: Option<&str>) -> bsv_rs::Result<GetVersionResult>;
     }
 }
