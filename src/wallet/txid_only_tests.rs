@@ -1,4 +1,5 @@
 //! The create arm's post reads stored BEEF when the response omits it (#466).
+//! An immediate broadcast leaves no BEEF dump in the temp folder (#530).
 
 use super::busy_door_tests::{fund_tagged, own_lock};
 use super::named_input_tests::payment;
@@ -293,4 +294,43 @@ async fn other_create_options_keep_tx() {
             assert_side_fields(&wallet, &result, no_send, delayed).await;
         }
     }
+}
+
+/// The `beef-<txid8>.hex` files under the temp folder, with their modified times.
+fn beef_dumps() -> std::collections::HashMap<std::path::PathBuf, std::time::SystemTime> {
+    std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("beef-") && name.ends_with(".hex")
+        })
+        .filter_map(|entry| Some((entry.path(), entry.metadata().ok()?.modified().ok()?)))
+        .collect()
+}
+
+/// An immediate broadcast writes no `beef-<txid8>.hex` under the temp folder (#530).
+#[tokio::test]
+async fn immediate_broadcast_writes_no_beef_dump() {
+    let (wallet, parent) = funded_wallet().await;
+    let before = beef_dumps();
+    let result = created(wallet.create_action(txid_only_payment(&parent), None).await);
+    let txid = hex::encode(result.txid.expect("the answer carries its txid"));
+    assert_eq!(wallet.services().mock.call_count("post_beef"), 1);
+
+    let name = format!("beef-{}.hex", &txid[..8]);
+    let written: Vec<_> = beef_dumps()
+        .into_iter()
+        .filter(|(path, modified)| {
+            path.file_name().is_some_and(|file| file == name.as_str())
+                && before.get(path) != Some(modified)
+        })
+        .map(|(path, _)| path)
+        .collect();
+    // Only a file this run created is removed; one it overwrote is left.
+    for path in written.iter().filter(|path| !before.contains_key(*path)) {
+        let _ = std::fs::remove_file(path);
+    }
+    assert!(written.is_empty(), "the broadcast wrote {written:?}");
 }
