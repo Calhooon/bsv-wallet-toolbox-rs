@@ -49,6 +49,9 @@ use super::signer::{SignerInput, WalletSigner};
 #[path = "direct_acquire.rs"]
 mod direct_acquire;
 
+#[path = "key_route.rs"]
+mod key_route;
+
 #[cfg(test)]
 #[path = "rng_tests.rs"]
 mod rng_tests;
@@ -80,6 +83,10 @@ mod direct_acquire_tests;
 #[cfg(all(test, feature = "sqlite"))]
 #[path = "discovery_rows_tests.rs"]
 mod discovery_rows_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "privileged_keys_tests.rs"]
+mod privileged_keys_tests;
 
 // =============================================================================
 // Constants
@@ -935,87 +942,14 @@ where
         Ok(txids)
     }
 
-    /// Calls ProtoWallet.get_public_key.
-    fn proto_get_public_key(
-        &self,
-        args: GetPublicKeyArgs,
-    ) -> std::result::Result<GetPublicKeyResult, bsv_rs::Error> {
-        // Pass the SDK request intact so every field reaches its validator.
-        let result = self.proto_wallet.get_public_key(args)?;
-
-        Ok(GetPublicKeyResult {
-            public_key: result.public_key,
-        })
-    }
-
-    /// Calls ProtoWallet.encrypt.
-    fn proto_encrypt(
-        &self,
-        args: EncryptArgs,
-    ) -> std::result::Result<EncryptResult, bsv_rs::Error> {
-        let result = self.proto_wallet.encrypt(args)?;
-
-        Ok(EncryptResult {
-            ciphertext: result.ciphertext,
-        })
-    }
-
-    /// Calls ProtoWallet.decrypt.
-    fn proto_decrypt(
-        &self,
-        args: DecryptArgs,
-    ) -> std::result::Result<DecryptResult, bsv_rs::Error> {
-        let result = self.proto_wallet.decrypt(args)?;
-
-        Ok(DecryptResult {
-            plaintext: result.plaintext,
-        })
-    }
-
-    /// Calls ProtoWallet.create_hmac.
-    fn proto_create_hmac(
-        &self,
-        args: CreateHmacArgs,
-    ) -> std::result::Result<CreateHmacResult, bsv_rs::Error> {
-        let result = self.proto_wallet.create_hmac(args)?;
-
-        Ok(CreateHmacResult { hmac: result.hmac })
-    }
-
-    /// Calls ProtoWallet.verify_hmac.
-    fn proto_verify_hmac(
-        &self,
-        args: VerifyHmacArgs,
-    ) -> std::result::Result<VerifyHmacResult, bsv_rs::Error> {
-        let result = self.proto_wallet.verify_hmac(args)?;
-
-        Ok(VerifyHmacResult {
-            valid: result.valid,
-        })
-    }
-
-    /// Calls ProtoWallet.create_signature.
-    fn proto_create_signature(
-        &self,
-        args: CreateSignatureArgs,
-    ) -> std::result::Result<CreateSignatureResult, bsv_rs::Error> {
-        let result = self.proto_wallet.create_signature(args)?;
-
-        Ok(CreateSignatureResult {
-            signature: result.signature,
-        })
-    }
-
-    /// Calls ProtoWallet.verify_signature.
-    fn proto_verify_signature(
-        &self,
-        args: VerifySignatureArgs,
-    ) -> std::result::Result<VerifySignatureResult, bsv_rs::Error> {
-        let result = self.proto_wallet.verify_signature(args)?;
-
-        Ok(VerifySignatureResult {
-            valid: result.valid,
-        })
+    /// The key route of one call: the privileged key manager for
+    /// `privileged: true`, the everyday `ProtoWallet` otherwise (#186).
+    fn key_route<'a>(&'a self, originator: Option<&'a str>) -> key_route::KeyRoute<'a> {
+        key_route::KeyRoute::new(
+            &self.proto_wallet,
+            self.privileged_key_manager.as_ref(),
+            originator,
+        )
     }
 }
 
@@ -1839,7 +1773,8 @@ where
     V: WalletServices + Send + Sync + 'static,
 {
     // =========================================================================
-    // Key Operations (delegated to ProtoWallet)
+    // Key Operations (the everyday ProtoWallet, or the privileged key
+    // manager for `privileged: true`: key_route.rs)
     // =========================================================================
 
     async fn get_public_key(
@@ -1858,7 +1793,7 @@ where
             )
             .await?;
         }
-        self.proto_get_public_key(args)
+        self.key_route(originator).get_public_key(args).await
     }
 
     async fn encrypt(
@@ -1875,7 +1810,7 @@ where
             crate::managers::PermissionUsageType::Encrypting,
         )
         .await?;
-        self.proto_encrypt(args)
+        self.key_route(originator).encrypt(args).await
     }
 
     async fn decrypt(
@@ -1892,7 +1827,7 @@ where
             crate::managers::PermissionUsageType::Encrypting,
         )
         .await?;
-        self.proto_decrypt(args)
+        self.key_route(originator).decrypt(args).await
     }
 
     async fn create_hmac(
@@ -1909,7 +1844,7 @@ where
             crate::managers::PermissionUsageType::Hmac,
         )
         .await?;
-        self.proto_create_hmac(args)
+        self.key_route(originator).create_hmac(args).await
     }
 
     async fn verify_hmac(
@@ -1926,7 +1861,7 @@ where
             crate::managers::PermissionUsageType::Hmac,
         )
         .await?;
-        self.proto_verify_hmac(args)
+        self.key_route(originator).verify_hmac(args).await
     }
 
     async fn create_signature(
@@ -1943,7 +1878,7 @@ where
             crate::managers::PermissionUsageType::Signing,
         )
         .await?;
-        self.proto_create_signature(args)
+        self.key_route(originator).create_signature(args).await
     }
 
     async fn verify_signature(
@@ -1952,7 +1887,7 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<VerifySignatureResult> {
         validate_originator(originator)?;
-        self.proto_verify_signature(args)
+        self.key_route(originator).verify_signature(args).await
     }
 
     async fn reveal_counterparty_key_linkage(
