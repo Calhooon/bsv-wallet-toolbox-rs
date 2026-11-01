@@ -116,7 +116,8 @@ async fn nonce_key_id_is_textdecoder_lossy_utf8() {
 }
 
 // #558: the 16 nonce bytes are one OS draw, fresh on every call; the draw
-// count tells os_fill from thread_rng, which freshness alone cannot.
+// count tells os_fill from a user-space generator, which freshness alone
+// cannot.
 #[tokio::test]
 async fn client_nonce_draws_sixteen_fresh_os_bytes() {
     let wallet = wallet().await;
