@@ -113,7 +113,7 @@ def beefs():
     rows = sorted(glob.glob(os.path.join(ROOT, "tests/vectors/broadcast_body/*.bin")))
     for path in rows:
         data = open(path, "rb").read()
-        for target in ("beef_door", "broadcast_memory"):
+        for target in ("beef_door", "a8_beef_bytes", "broadcast_memory"):
             write(target, stem(path), data)
 
 

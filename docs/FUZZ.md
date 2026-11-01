@@ -1,14 +1,16 @@
 # Fuzzing
 
-The `fuzz/` crate holds twelve cargo-fuzz targets, one per parser that reads
+The `fuzz/` crate holds thirteen cargo-fuzz targets, one per parser that reads
 bytes from outside the wallet (#58). Each is a thin wrapper that feeds the
 fuzzer's bytes to the production entry point and asserts nothing but "no
 panic": a refusal is a fine answer.
 
 The crate is its own workspace (`fuzz/Cargo.toml`); the root crate's
-`Cargo.toml` does not know it. It depends on the root crate with the
-`bench-support` feature, for the one hidden seam it uses
-(`benchmark_support::local_explorer_services`, the explorers at a local base).
+`Cargo.toml` does not know it. It depends on the root crate with two
+features: `bench-support`, for the hidden seam the provider targets use
+(`benchmark_support::local_explorer_services`, the explorers at a local base),
+and `a8-beef-bytes`, for the `a8_beef_bytes` target's seam
+(`a8_beef_bytes_differential`, both paths in one binary, #556).
 
 ## The targets
 
@@ -60,8 +62,11 @@ the fixtures and vectors already in the repository by `fuzz/seed_corpus.py`
   the explorers, BHS and Chaintracks; the TSC proofs among them for
   `tsc_proof`; the BUMPs among them for `merkle_path`.
 - `test_vectors/transactions/merkle_path.json`: the TSC proof vectors.
-- `tests/vectors/broadcast_body/*.bin`: the six BEEF rows, for `beef_door`
-  and `broadcast_memory`.
+- `tests/vectors/broadcast_body/*.bin`: the six BEEF rows, for `beef_door`,
+  `a8_beef_bytes` and `broadcast_memory`.
+- `corpus/a8_beef_bytes/` began as a copy of `corpus/beef_door/` (its 378
+  inputs, 1.5 MB, the six named rows and `beef_door`'s found inputs), so the
+  differential starts from every BEEF shape the door's target reached.
 - `tests/vectors/arcade_status_verdicts.json`: the submit and status bodies
   for `arc` and `arcade`, the same bodies as SSE frames for `arcade_sse`, and
   the memory row each word is recorded as for `broadcast_memory`.
