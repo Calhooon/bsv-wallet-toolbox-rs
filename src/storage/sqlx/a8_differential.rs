@@ -7,9 +7,7 @@
 //! feature, the fuzz target `a8_beef_bytes` call it.
 
 use super::{read_incoming_once, read_incoming_payment, IncomingPayment};
-use crate::storage::sqlx::beef_verification::{
-    verify_beef_spends_with_verifier, verify_read_spends,
-};
+use crate::storage::sqlx::beef_verification::{verify_beef_spends_with_verifier, verify_spends};
 use bsv_rs::transaction::beef_stream::ChainTip;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 use std::collections::HashSet;
@@ -25,6 +23,14 @@ pub(crate) struct Headers {
 }
 
 impl Headers {
+    /// No tip, every root carried.
+    pub(crate) fn no_tip() -> Self {
+        Self {
+            tip: None,
+            roots: None,
+        }
+    }
+
     pub(crate) fn census(roots: Option<HashSet<(u32, String)>>) -> Self {
         let chain = bsv_rs::block::ChainParams::mainnet();
         let tip = crate::services::chain_tip(&chain, CENSUS_HEIGHT, 1_700_000_000, 419_328, None);
@@ -64,14 +70,7 @@ fn contexts() -> Vec<(&'static str, Headers, &'static str)> {
     vec![
         ("tip, every root", Headers::census(None), "main"),
         ("tip, no root", Headers::census(none), "main"),
-        (
-            "no tip",
-            Headers {
-                tip: None,
-                roots: None,
-            },
-            "main",
-        ),
+        ("no tip", Headers::no_tip(), "main"),
         ("testnet", Headers::census(None), "test"),
     ]
 }
@@ -118,7 +117,7 @@ async fn read_once_path(bytes: &[u8], headers: &Headers, network: &str) -> Answe
         async {
             let (mut incoming, read, subject_at) = read_incoming_once(bytes)?;
             let roots = &incoming.roots;
-            verify_read_spends(bytes, &read, roots, headers, network, None).await?;
+            verify_spends(bytes, Some(&read), roots, headers, network, None).await?;
             incoming.body = subject_at.and_then(|index| read.into_body(index));
             Ok(incoming)
         }

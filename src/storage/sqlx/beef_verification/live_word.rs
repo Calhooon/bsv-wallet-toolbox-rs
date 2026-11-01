@@ -166,20 +166,7 @@ pub(super) fn verify_elements<'e, I>(
 where
     I: Iterator<Item = Result<Cow<'e, Element>>>,
 {
-    let mut pass = WordPass {
-        network,
-        judge,
-        verifier,
-        selected: Vec::new(),
-        tip: headers.tip,
-        heights: HashMap::new(),
-        bumps: Vec::new(),
-        wanted: HashSet::new(),
-        entries: HashMap::new(),
-        held: HashMap::new(),
-        waiting: HashMap::new(),
-        ready: BTreeSet::new(),
-    };
+    let mut pass = WordPass::new(network, judge, verifier, headers.tip);
     for element in elements() {
         match &*element? {
             Element::Bump(bump) => {
@@ -218,7 +205,29 @@ where
     super::own_word::verify_selected(verifier, &pass.selected)
 }
 
-impl WordPass<'_> {
+impl<'a> WordPass<'a> {
+    fn new(
+        network: &'a str,
+        judge: &'a (dyn Fn(&Hash32) -> bool + Sync),
+        verifier: Option<&'a dyn SpendVerifier>,
+        tip: Option<ChainTip>,
+    ) -> Self {
+        Self {
+            network,
+            judge,
+            verifier,
+            selected: Vec::new(),
+            tip,
+            heights: HashMap::new(),
+            bumps: Vec::new(),
+            wanted: HashSet::new(),
+            entries: HashMap::new(),
+            held: HashMap::new(),
+            waiting: HashMap::new(),
+            ready: BTreeSet::new(),
+        }
+    }
+
     fn wake(&mut self, txid: Hash32) {
         for offset in self.waiting.remove(&txid).unwrap_or_default() {
             if let Some(pending) = self.held.get_mut(&offset) {

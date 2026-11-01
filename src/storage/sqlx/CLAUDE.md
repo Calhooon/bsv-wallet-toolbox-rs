@@ -507,7 +507,7 @@ The `a8-beef-bytes` feature (#556, the A8 cycle of the BEEF path's bytes,
 off by default) chooses a second path beside this one, the oracle:
 `beef_verification/read_once.rs` reads a BEEF once with bsv-rs's stream
 reader and hands the elements by reference to every pass (`read_incoming_once`
-and `verify_read_spends` at internalize: the subject scan, the structure pass
+and `verify_spends` with the reading at internalize: the subject scan, the structure pass
 folded into a structure-only `BeefIndex` as `StreamVerifier` folds it, the
 word pass through `live_word::verify_elements`; `judge_read_caller_beef` and
 `verify_read_word` at create's judge), where the oracle reads the same bytes

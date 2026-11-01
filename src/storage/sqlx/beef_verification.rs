@@ -134,9 +134,26 @@ pub(super) async fn verify_beef_spends(
     verify_beef_spends_with_verifier(bytes, roots, tracker, network, None).await
 }
 
-/// Live door verification with the storage's optional host script backend.
+/// Live door verification with the storage's optional host script backend,
+/// on the bytes (the oracle path of `verify_spends`).
+#[cfg(any(test, feature = "a8-beef-bytes"))]
 pub(super) async fn verify_beef_spends_with_verifier(
     bytes: &[u8],
+    roots: &[(u64, Hash32)],
+    tracker: &dyn ChainTracker,
+    network: &str,
+    verifier: Option<&dyn crate::SpendVerifier>,
+) -> Result<()> {
+    verify_spends(bytes, None, roots, tracker, network, verifier).await
+}
+
+/// The door's verification of `bytes`: from the bytes themselves (the
+/// oracle path), or from a reading of them in hand (`read`, the
+/// `a8-beef-bytes` path, #556), the same headers and passes either way. A
+/// reading without an atomic subject takes the oracle's structure pass.
+pub(super) async fn verify_spends(
+    bytes: &[u8],
+    read: Option<&ReadOnce>,
     roots: &[(u64, Hash32)],
     tracker: &dyn ChainTracker,
     network: &str,
@@ -148,8 +165,15 @@ pub(super) async fn verify_beef_spends_with_verifier(
     // verdict (the keeper's word of 2026-10-30, structure-only). The one word
     // pass then judges every input once, under the network's ChainParams and
     // both work budgets, with the mining, outpoint and value checks (#440).
-    verification_result(structure_pass(bytes, &headers)?)?;
-    live_word::verify(bytes, &headers, network, verifier)
+    let Some(read) = read else {
+        verification_result(structure_pass(bytes, &headers)?)?;
+        return live_word::verify(bytes, &headers, network, verifier);
+    };
+    match read.subject {
+        Some(subject) => read_once::structure(read, subject, &headers)?,
+        None => verification_result(structure_pass(bytes, &headers)?)?,
+    }
+    live_word::verify_elements(|| read.borrowed(), &headers, network, &|_| true, verifier)
 }
 
 /// The tracker's tip and the roots of `roots` it carries, each distinct
@@ -178,26 +202,6 @@ async fn verification_headers(
         }
     }
     Ok(headers)
-}
-
-/// `verify_beef_spends_with_verifier` on a reading in hand (the
-/// `a8-beef-bytes` path, #556): the same headers, the structure pass and the
-/// word pass from the elements read once. A BEEF without an atomic subject
-/// takes the oracle's structure pass on `bytes`.
-pub(super) async fn verify_read_spends(
-    bytes: &[u8],
-    read: &ReadOnce,
-    roots: &[(u64, Hash32)],
-    tracker: &dyn ChainTracker,
-    network: &str,
-    verifier: Option<&dyn crate::SpendVerifier>,
-) -> Result<()> {
-    let headers = verification_headers(roots, tracker).await?;
-    match read.subject {
-        Some(subject) => read_once::structure(read, subject, &headers)?,
-        None => verification_result(structure_pass(bytes, &headers)?)?,
-    }
-    live_word::verify_elements(|| read.borrowed(), &headers, network, &|_| true, verifier)
 }
 
 /// `verify_beef_word` on a reading in hand (the `a8-beef-bytes` path, #556).

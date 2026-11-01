@@ -27,8 +27,7 @@ use sqlx::{Row, SqliteConnection};
 use std::collections::HashMap;
 
 use super::beef_verification::{
-    a8_beef_bytes, proofs_tracker, read_once, stream_error, verify_beef_spends_with_verifier,
-    verify_read_spends, ReadOnce,
+    a8_beef_bytes, proofs_tracker, read_once, stream_error, verify_spends, ReadOnce,
 };
 use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
 use super::StorageSqlx;
@@ -97,22 +96,11 @@ pub async fn internalize_action_internal(
     // A valid verdict is required even for an unproven payment, before any
     // basket, transaction, coin, request or broadcast can be created.
     let (chain, script_verifier) = (&storage.get_settings().chain, storage.script_verifier());
-    match read {
-        Some((read, subject_at)) => {
-            let roots = &incoming.roots;
-            verify_read_spends(&args.tx, &read, roots, tracker, chain, script_verifier).await?;
-            incoming.body = subject_at.and_then(|index| read.into_body(index));
-        }
-        None => {
-            verify_beef_spends_with_verifier(
-                &args.tx,
-                &incoming.roots,
-                tracker,
-                chain,
-                script_verifier,
-            )
-            .await?
-        }
+    let reading = read.as_ref().map(|(read, _)| read);
+    let roots = &incoming.roots;
+    verify_spends(&args.tx, reading, roots, tracker, chain, script_verifier).await?;
+    if let Some((read, subject_at)) = read {
+        incoming.body = subject_at.and_then(|index| read.into_body(index));
     }
     let txid = incoming.txid;
     let body = incoming
@@ -1010,25 +998,20 @@ fn incoming_payment(
 /// in the reading, at the index returned, until the verification is done.
 fn read_incoming_once(bytes: &[u8]) -> Result<(IncomingPayment, ReadOnce, Option<usize>)> {
     let read = read_once(bytes)?;
-    let mut bumps = Vec::new();
-    let mut roots = Vec::new();
-    let mut subject_at = None;
-    let mut subject_bump = None;
-    for (index, element) in read.elements.iter().enumerate() {
-        match element {
-            Element::Bump(bump) => {
-                bumps.push((bump.offset, bump.wire_len));
-                roots.push((bump.block_height, bump.root));
-            }
-            Element::Tx {
-                txid, bump_index, ..
-            } if Some(*txid) == read.subject => {
-                subject_at = Some(index);
-                subject_bump = *bump_index;
-            }
-            _ => {}
-        }
-    }
+    let in_hand = read.elements.iter().filter_map(|element| match element {
+        Element::Bump(bump) => Some(bump),
+        _ => None,
+    });
+    let bumps: Vec<_> = in_hand.clone().map(|b| (b.offset, b.wire_len)).collect();
+    let roots = in_hand.map(|b| (b.block_height, b.root)).collect();
+    // The scan keeps the subject's last element, as the stream's does.
+    let subject_at = read.elements.iter().rposition(
+        |element| matches!(element, Element::Tx { txid, .. } if Some(*txid) == read.subject),
+    );
+    let subject_bump = match subject_at.map(|index| &read.elements[index]) {
+        Some(Element::Tx { bump_index, .. }) => *bump_index,
+        _ => None,
+    };
     let incoming = incoming_payment(bytes, read.subject, &bumps, roots, None, subject_bump)?;
     Ok((incoming, read, subject_at))
 }
