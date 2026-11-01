@@ -1,5 +1,5 @@
 {
-  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. Floor = 80 for a file at or above 80, else the score measured by lane oracle-57-mutants-d (2026-10-24, beta fc343d6) rounded down. Door floors come from a 1/8 sample and are provisional until the nightly has run once.",
+  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. Floor = 80 for a file at or above 80, else the score measured by lane oracle-57-mutants-d (2026-10-24, beta fc343d6) rounded down. Door floors come from a 1/8 sample and are provisional until the nightly has run once. The doors that judge under the node's word (create_action/must_spend.rs, own_word.rs, review_beef.rs; the owner's word of 2026-11-01 14:1xZ and 14:4xZ, #535) are measured under the door oracle (.cargo/mutants-doors.toml: the lib and every integration target that enters a door function) and their floors come from that widened figure only, never the --lib one (docs/census/mutants-oracle-2026-11-01.md, base 83a5b049).",
   "files": {
     "src/monitor/tasks/arcade_events.rs": {
       "floor": 47,
@@ -149,9 +149,21 @@
       "floor": 64,
       "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
     },
+    "src/storage/sqlx/create_action/must_spend.rs": {
+      "floor": 80,
+      "_comment": "Measured 94.74% (18/19) under the door oracle, 0.00% (0/19) under --lib (docs/census/mutants-oracle-2026-11-01.md); the survivor 131:31 is the triage lane's (#535)."
+    },
     "src/storage/sqlx/create_action/outputs.rs": {
       "floor": 64,
       "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+    },
+    "src/storage/sqlx/create_action/own_word.rs": {
+      "floor": 71,
+      "_comment": "Measured 71.43% (5/7) under the door oracle, the same under --lib (docs/census/mutants-oracle-2026-11-01.md). Issue to file: raise src/storage/sqlx/create_action/own_word.rs from 71 to 80, the door gate of 2026-11-01 14:1xZ (survivors 46:47 and 92:44)."
+    },
+    "src/storage/sqlx/create_action/review_beef.rs": {
+      "floor": 80,
+      "_comment": "Measured 100.00% (13/13) under the door oracle, the same under --lib (docs/census/mutants-oracle-2026-11-01.md)."
     },
     "src/storage/sqlx/create_action/signing.rs": {
       "floor": 64,
