@@ -625,26 +625,20 @@ where
     /// `privileged` is the request's, as the reference passes
     /// `requestArgs.privileged` (ts-stack@edf6e03
     /// `WalletPermissionsManager.ts:5165-5350`), so a privileged key call
-    /// needs a privileged grant when the manager differentiates them.
+    /// needs a privileged grant when the manager differentiates them. No
+    /// counterparty is passed (the reference passes the request's, `self`
+    /// when absent).
     async fn check_protocol_permission(
         &self,
         originator: Option<&str>,
         privileged: bool,
         protocol: &Protocol,
-        counterparty: Option<&str>,
         usage_type: crate::managers::PermissionUsageType,
     ) -> Result<()> {
         let originator = originator.unwrap_or_default();
         if let Some(ref pm) = self.permissions_manager {
-            pm.ensure_protocol_permission(
-                originator,
-                privileged,
-                protocol,
-                counterparty,
-                None,
-                usage_type,
-            )
-            .await?;
+            pm.ensure_protocol_permission(originator, privileged, protocol, None, None, usage_type)
+                .await?;
         }
         Ok(())
     }
@@ -1800,7 +1794,6 @@ where
                 originator,
                 args.privileged == Some(true),
                 protocol_id,
-                None,
                 crate::managers::PermissionUsageType::PublicKey,
             )
             .await?;
@@ -1819,7 +1812,6 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
-            None,
             crate::managers::PermissionUsageType::Encrypting,
         )
         .await?;
@@ -1837,7 +1829,6 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
-            None,
             crate::managers::PermissionUsageType::Encrypting,
         )
         .await?;
@@ -1855,7 +1846,6 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
-            None,
             crate::managers::PermissionUsageType::Hmac,
         )
         .await?;
@@ -1873,7 +1863,6 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
-            None,
             crate::managers::PermissionUsageType::Hmac,
         )
         .await?;
@@ -1891,7 +1880,6 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
-            None,
             crate::managers::PermissionUsageType::Signing,
         )
         .await?;

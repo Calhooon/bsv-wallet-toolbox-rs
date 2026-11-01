@@ -723,7 +723,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 ### Permission Check Helpers (internal)
 
 When `permissions_manager` is set, operations automatically check permissions:
-- `check_protocol_permission(originator, privileged, protocol, counterparty, usage_type)` - DPACP enforcement, `privileged` the request's
+- `check_protocol_permission(originator, privileged, protocol, usage_type)` - DPACP enforcement, `privileged` the request's, no counterparty (the reference passes the request's)
 - `check_basket_permission(originator, basket, usage_type)` - DBAP enforcement
 - `check_spending_permission(originator, satoshis)` - DSAP enforcement
 - `check_certificate_permission(originator, privileged, verifier, cert_type, fields, usage_type)` - DCAP enforcement
