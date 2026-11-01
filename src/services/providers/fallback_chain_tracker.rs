@@ -350,6 +350,10 @@ impl ChainTracker for FallbackChainTracker {
 }
 
 #[cfg(test)]
+#[path = "fallback_chain_tracker_gate_tests.rs"]
+mod gate_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::services::providers::chaintracks_client::ChaintracksConfig;
