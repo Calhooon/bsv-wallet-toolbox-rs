@@ -1,0 +1,4 @@
+žid: 1
+event: status
+data: {"er?or": "transaction failed validation", "txid": "11111111111111111", "reason": "policy", "status": 467, "title": "Generic error", "detail": "Transaction could not be processed", "titcoin-sv.github.io/a67"}
+

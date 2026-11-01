@@ -1,0 +1,4 @@
+Fid: 1
+event: status
+data: {"txid": "0555555555","txStatus": "MINED"}
+

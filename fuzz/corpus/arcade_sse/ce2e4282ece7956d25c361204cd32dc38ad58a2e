@@ -1,4 +1,0 @@
-¦id: 1
-event: status
-data: {"error": "transaction failed validation", "txid": "0000000000000000000000000000000000000000000004099276460824344803", "reason": "TX_INVALID 803", "reason": "TX_INVALID (31): insufficient-fee", "status": 465, "title": "Fee too low", "detail": "Transaction fee is too low", "type": "https://bitcoinrrors?id=_465"}
-

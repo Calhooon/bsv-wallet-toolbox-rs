@@ -1,4 +1,0 @@
-§id: 1
-event: status
-data: {"tx`id": "11111111111111111111111111111111ssssssssssssssssssssssssssssksssssssssssssssssssssssssssssssss111111ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿCTÿÿÿÿÿÿÿÿÿÿÿÿÿÿED", "status": 476, "timestamp": "2026-10-26T00:00:00Z", "extraInfo": "T$_LOCK_TIME (35): non-final - retryable: the transaction is not final against this peer's chain view; resubmit after the locktim eexpires"}
-

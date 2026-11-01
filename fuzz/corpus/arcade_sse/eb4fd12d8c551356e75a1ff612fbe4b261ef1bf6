@@ -1,0 +1,4 @@
+Mid: 1
+event: status
+data: {"txid": "111111111", "status": 2111111111111111111111_MULTIPLE_NODES"}
+

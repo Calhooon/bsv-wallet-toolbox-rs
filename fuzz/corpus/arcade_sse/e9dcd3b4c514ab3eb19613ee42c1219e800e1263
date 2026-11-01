@@ -1,0 +1,4 @@
+§id: 1
+event: status
+data: {"txid": "11111111111Z", "extraInfo": ""}
+

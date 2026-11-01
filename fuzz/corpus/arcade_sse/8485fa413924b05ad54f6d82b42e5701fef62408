@@ -1,0 +1,4 @@
+§id: 1
+event: status
+data: {"tx`id": "1111-2T006:00:00Z", "extraInfo": "T$_LOexpires"}
+

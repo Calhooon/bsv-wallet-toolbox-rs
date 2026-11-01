@@ -1,0 +1,4 @@
+Œid: 1
+event: status
+data: {"txidä": "222222b", "extsaInfo": "reorg_reanchor"}
+

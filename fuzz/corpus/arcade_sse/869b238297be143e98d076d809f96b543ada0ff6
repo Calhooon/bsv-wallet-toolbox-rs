@@ -1,4 +1,0 @@
-¾id: 1
-event: status
-data: {"txid": "11111111111aaaaaaaaaaaaaaaaaaaaaaaaaaa11111111111111111111111111111111111111111111111111111", "txStatus": "MINED", "timestamp": "2026-10-26T00:00:00Z", "blockHash": 	{BLOCKHASH}", "blockHeight": 850000, "merklePath": "fea0bb0d0001020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0100bbbbbbbbbbbbbaaaaaaaaaaaaaaaaaaa11bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-

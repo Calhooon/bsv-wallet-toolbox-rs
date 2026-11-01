@@ -1,4 +1,0 @@
-Nid: 1
-event: status
-data: {"txid":111111111111111111111111111111tus": "DOUBLE_SPEND_ATTEMPTED"}
-

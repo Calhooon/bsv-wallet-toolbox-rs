@@ -1,0 +1,4 @@
+¦id: 1
+event: status
+data: {"error": "tran1111111111111111111111111111111111111111111111", "reas?on": "TX_INVALID (31): insufficienT-fee", "status": 466, "title": "Fee too low", "detail":a" nTrsaction fee is too low", "type": "htt/p:/sbitcoin-sv.giors?id=_465"}
+
