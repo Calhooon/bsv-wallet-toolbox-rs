@@ -33,11 +33,12 @@ still unmeasured. Pin endpoints describe direct dependents' toolbox requirements
 | Largest Rust file (lines) | measured 2026-11-01: 7153 | <= 800; #55, #61, #62 | `max_file_lines` |
 | Unwrap/expect outside tests (count) | measured 2026-11-01: 61 | 0; #55, #56 | `unwraps_outside_tests` |
 | Door and ladders mutation score (%) | measured 2026-11-01: 60.24 | >= 80; #57 | `mutation_score_pct` |
+| Fuzz hours, twelve targets, last census (h) | not yet measured | No crash, corpus grows; #58 | `fuzz_hours` |
 | Undocumented public items (count) | measured 2026-11-01: 308 | 0; #55 | `undocumented_public_items` |
 | Direct dependents, oldest toolbox pin | measured 2026-10-23: 0.3.38 | Current minor or dated plan; #59 | `dependent_pin_min` |
 | Direct dependents, newest toolbox pin | measured 2026-10-23: 0.12.1 | Current minor or dated plan; #59 | `dependent_pin_max` |
 
-<!-- scoreboard:sha256 e22ebc4f5263480c58b04639baf675cffccf0a3be4e8b51d5c972931096fa00d -->
+<!-- scoreboard:sha256 1a81ef6427523a81f3935d8cc4dde829cd1d0d70989bc5e1843642a0b48ecd35 -->
 <!-- scoreboard:end -->
 
 ### Feeding the table
@@ -67,7 +68,7 @@ set to the run's date, and keys from the table's JSON column:
 
 These example numbers are synthetic. `benches/baseline.json` supplies latency,
 memory, request and explorer metrics. `tools/ratchet.json` supplies code-health,
-mutation and pin metrics, incorporating the exports of #57 and #59; a metric in
+mutation, fuzz and pin metrics, incorporating the exports of #57 and #59; a metric in
 the other file fails with its key and the file it belongs to. A flat
 object with `measured_at` and metric keys is also accepted; extra keys are ignored.
 Numbers are nonnegative, counts are integers, mutation is a percentage, and pin
