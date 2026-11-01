@@ -175,7 +175,8 @@ prefix, as for the variant mapping above:
 - `prove_certificate`'s absent and ambiguous certificate matches are
   `InvalidParameter` (`signer/methods/proveCertificate.ts:28-29`).
 - A privileged request on a wallet with no privileged key manager (the
-  seven key calls, `prove_certificate`, the direct `acquire_certificate`)
+  seven key calls, the direct `acquire_certificate`; `prove_certificate`
+  answers its decrypt catch instead, see Privileged key route)
   is `NotImplemented` with the reference's text, `Privileged operations
   require the Wallet to be configured with a privileged key manager.`
   (`Wallet.ts:460-461`, a plain `Error` there; #186, #142).
@@ -553,11 +554,15 @@ calls and the certificate paths share it.
 `prove_certificate` with `privileged: true` derives the verifier's keyring
 through the manager (`create_keyring_for_verifier` decrypts and encrypts
 with the caller's `privileged` and `privileged_reason`, as
-`MasterCertificate.ts:383-401` does); with no manager the refusal comes
-after the stored row is found and before any key is used, where the
-reference's `decryptField` would catch it as `Failed to decrypt certificate
-field!` (`MasterCertificate.ts:564-623`): the owner's word (23.2) asks for
-the refusal. The direct `acquire_certificate` takes its subject from
+`MasterCertificate.ts:383-401` does). With no manager the prove has no
+guard of its own, as `signer/methods/proveCertificate.ts:31-41` has none:
+the helper runs, the route's refusal is thrown inside the field's decrypt
+and its catch answers, so the host sees `WalletFault { family: Internal,
+message: "Failed to decrypt certificate field!" }`, the reference's text
+(`MasterCertificate.ts:564-623`); an empty `fieldsToReveal` answers an
+empty keyring and a field the certificate lacks the subset text, both
+ahead of any key (`:370-380`). Before #568's fix round the prove answered
+the `NotImplemented` refusal there. The direct `acquire_certificate` takes its subject from
 `get_public_key { identity_key: true }` with the caller's fields and proves
 the keyring under the same route (`Wallet.ts:698-724`), so with no manager
 it is the refusal before the proof, nothing stored. The issuance path reads
@@ -1014,7 +1019,7 @@ reads the plaintext as UTF-8. The keyring does not carry the field plaintext.
 1. **Validate arguments** - After permission, check privilegedReason, the `certificate.fields` names (1478-1480), type, serial, certifier, subject, revocation outpoint, signature, the 100000-item array bound, requested name lengths, verifier, then the 100-name count and uniqueness before the lookup (`ts-stack@edf6e03 validationHelpers.ts:1477-1518`)
 2. **Query certificate** - Finds unique certificate matching normalized args via `list_certificates`
 3. **Validate keyring** - Ensures storage has master keyring for decryption
-4. **Create verifier keyring** - Under the key route: the privileged key manager for `privileged: true`, else the everyday key; with `privileged: true` and no manager the reference's refusal (#142). For each field to reveal:
+4. **Create verifier keyring** - Under the key route: the privileged key manager for `privileged: true`, else the everyday key; with `privileged: true` and no manager the decrypt catch's `Failed to decrypt certificate field!` (#142). For each field to reveal:
    - Decrypts master symmetric key using certifier as counterparty with key_id = field_name
    - Re-encrypts for verifier using key_id = "{serial_number} {field_name}"
 5. **Return keyring** - Field names mapped to base64-encoded encrypted symmetric keys

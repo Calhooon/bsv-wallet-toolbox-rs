@@ -2768,10 +2768,11 @@ where
         // 2. Re-encrypt the symmetric key for the verifier
         // The keyring is derived under the key the caller named
         // (MasterCertificate.ts:383-401 with `privileged`, #142): the
-        // privileged key manager's, else the reference's refusal
-        // (Wallet.ts:460-461), never the everyday key.
+        // privileged key manager's, never the everyday key. With no manager
+        // the route's refusal meets the helper's decrypt catch, as the
+        // reference's does (`Failed to decrypt certificate field!`,
+        // MasterCertificate.ts:564-623); no field to reveal touches no key.
         let keys = self.key_route(originator);
-        keys.manager(args.privileged)?;
         let keyring_for_verifier = create_keyring_for_verifier(
             &keys,
             &certifier,
