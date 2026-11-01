@@ -85,6 +85,9 @@ jobs:
 
       - name: Run unit tests (sqlite)
         run: cargo test --lib --features sqlite,remote --verbose
+        env:
+          # Two replays for a ladder scene a runner stall failed (#513); one locally.
+          LADDER_FIXTURES_STALL_REPLAYS: "2"
 
       # Every target under tests/, not services_tests alone: the witnesses of
       # the 0.4.x fixes live in the other files.
@@ -110,6 +113,9 @@ jobs:
       # well under a minute past its build, so it runs rather than only builds.
       - name: Run unit and integration tests (remote only)
         run: cargo test --lib --tests --no-default-features --features remote
+        env:
+          # Two replays for a ladder scene a runner stall failed (#513); one locally.
+          LADDER_FIXTURES_STALL_REPLAYS: "2"
 
   # Clippy covers SQL storage with remote, plus remote without default features.
   clippy:
