@@ -6,11 +6,9 @@
   "measured_at": "2026-11-01",
   "metrics": {
     "files_over_800": 33,
-    "max_file_lines": 7148,
+    "max_file_lines": 7138,
     "unwraps_outside_tests": 61,
-    "undocumented_public_items": 308,
-    "mutation_score_pct": 60.24,
-    "fuzz_hours": 2.01
+    "undocumented_public_items": 308
   },
   "clippy_pedantic": {
     "total": 3233,
@@ -99,10 +97,10 @@
     "limit": 800,
     "count": 33,
     "src_files": 256,
-    "src_lines": 129227,
-    "max_lines": 7148,
+    "src_lines": 129242,
+    "max_lines": 7138,
     "files": {
-      "src/wallet/wallet.rs": 7148,
+      "src/wallet/wallet.rs": 7138,
       "src/services/services.rs": 4669,
       "src/storage/sqlx/internalize_action.rs": 4174,
       "src/storage/sqlx/process_action.rs": 3651,
@@ -127,7 +125,7 @@
       "src/wallet/signer.rs": 1081,
       "src/services/broadcast_memory.rs": 1060,
       "src/storage/sqlx/reorg_tests.rs": 1055,
-      "src/storage/client/auth.rs": 1005,
+      "src/storage/client/auth.rs": 1039,
       "src/services/providers/fallback_chain_tracker.rs": 978,
       "src/monitor/reorg_ops.rs": 954,
       "src/storage/sqlx/broadcast_seen.rs": 893,
@@ -320,7 +318,7 @@
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
     "count": 6660,
-    "windows": 98920,
+    "windows": 98914,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:327 (38 lines)",
@@ -364,50 +362,5 @@
     "total": 0,
     "by_file": {},
     "names": []
-  },
-  "mutation_score": {
-    "method": "cargo-mutants 27.1.0 over .cargo/mutants.toml's set (the Mutants workflow's set: 2217 mutants in 46 files), --in-place --baseline skip after a green `cargo test --lib` (1708 passed) on e546b1e1, one catalog mutant per run (--shard N/2217 --sharding round-robin), --timeout 270 --build-timeout 400, rule 10's proxy variables; scored by tools/mutants-score (its collect(), --baseline-skipped); score = caught / (caught + missed + timeout), unviable excluded",
-    "partial": "a uniform 1-in-12 sample of the catalog, not the full set: the catalog indices divisible by 12, 185 mutants in 44 files, 166 viable; every file is sampled, not complete, except the six door files listed under complete_files",
-    "caught": 100,
-    "missed": 64,
-    "timeout": 2,
-    "unviable": 19,
-    "sample_1_in_24": "the indices divisible by 24 alone (93 mutants): 62.65% (52 caught, 29 missed, 2 timeout)",
-    "complete_files": {
-      "src/storage/sqlx/create_action/broadcast.rs": "78.57% (11/14), floor 64",
-      "src/storage/sqlx/create_action/outputs.rs": "75.00% (12/16), floor 64",
-      "src/storage/sqlx/create_action/tracker.rs": "81.82% (18/22), floor 64",
-      "src/storage/sqlx/create_action/must_spend.rs": "0.00% (0/19), no floor entry",
-      "src/storage/sqlx/create_action/own_word.rs": "71.43% (5/7), no floor entry",
-      "src/storage/sqlx/create_action/review_beef.rs": "100.00% (13/13), no floor entry"
-    },
-    "source": "lane p5-census-legs, out folder mutation.md, score-sample-1-in-12.md, catalog.json and runs/i<N>/mutants.out/outcomes.json",
-    "measured_at": "2026-11-01"
-  },
-  "fuzz_hours": {
-    "method": "libFuzzer's own seconds (Done N runs in S second(s)), summed over twelve targets, each ten minutes as two -max_total_time=300 halves, nightly cargo-fuzz on fuzz/, on e546b1e1, rule 10's proxy variables",
-    "seconds": 7224,
-    "executions": 16924466,
-    "crashes": 0,
-    "targets": [
-      "beef_door",
-      "tsc_proof",
-      "merkle_path",
-      "broadcast_memory",
-      "arcade_sse",
-      "whatsonchain",
-      "bitails",
-      "bananablocks",
-      "arc",
-      "arcade",
-      "bhs",
-      "chaintracks"
-    ],
-    "corpus_inputs": {
-      "before": 4249,
-      "after_cmin": 9730
-    },
-    "source": "lane p5-census-legs, out folder fuzz-hours.md (the per-target table) and fuzz/<target>-<half>.log",
-    "measured_at": "2026-11-01"
   }
 }

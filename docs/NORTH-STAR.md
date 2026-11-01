@@ -30,7 +30,7 @@ still unmeasured. Pin endpoints describe direct dependents' toolbox requirements
 | Door with monitor beside it, p99 (ms) | not yet measured | Unchanged from door baseline; #69 | `writer_door_p99_ms` |
 | Explorer calls per block | not yet measured | Bounded by re-ask schedule; #72 | `explorer_calls_per_block` |
 | Rust files over 800 lines (count) | measured 2026-11-01: 33 | 0; #55, #61, #62 | `files_over_800` |
-| Largest Rust file (lines) | measured 2026-11-01: 7148 | <= 800; #55, #61, #62 | `max_file_lines` |
+| Largest Rust file (lines) | measured 2026-11-01: 7138 | <= 800; #55, #61, #62 | `max_file_lines` |
 | Unwrap/expect outside tests (count) | measured 2026-11-01: 61 | 0; #55, #56 | `unwraps_outside_tests` |
 | Door and ladders mutation score (%) | measured 2026-11-01: 60.24 | >= 80; #57 | `mutation_score_pct` |
 | Fuzz hours, twelve targets, last census (h) | measured 2026-11-01: 2.01 | No crash, corpus grows; #58 | `fuzz_hours` |
@@ -38,7 +38,7 @@ still unmeasured. Pin endpoints describe direct dependents' toolbox requirements
 | Direct dependents, oldest toolbox pin | measured 2026-10-23: 0.3.38 | Current minor or dated plan; #59 | `dependent_pin_min` |
 | Direct dependents, newest toolbox pin | measured 2026-10-23: 0.12.1 | Current minor or dated plan; #59 | `dependent_pin_max` |
 
-<!-- scoreboard:sha256 60b109812bd0951f85e79c8921408aa42a58924fad41f00e791c7f3f31602244 -->
+<!-- scoreboard:sha256 528b874e72b7e94ac03c761119cbd1d50e14b6f2a2bdc6d4244c51073f2977a6 -->
 <!-- scoreboard:end -->
 
 ### Feeding the table
