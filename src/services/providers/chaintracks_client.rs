@@ -382,6 +382,21 @@ fn median_time_past(bytes: &[u8], tip_bytes: &[u8], count: usize) -> Result<u32>
     Ok(times[times.len() / 2])
 }
 
+/// A client fault in the tracker's error class (#554): a transport-class
+/// fault (the Retry-After window, a send fault, a timeout, an HTTP status
+/// reqwest refused) is `NetworkError`, as the fallback tracker answers the
+/// root check and the height read; a fault in what the service answered (a
+/// frame or header the client refuses) is `Other`. The text is the
+/// client's Display, unchanged.
+fn tracker_fault(e: &Error) -> ChainTrackerError {
+    match e {
+        Error::RateLimited { .. } | Error::NetworkError(_) | Error::HttpError(_) => {
+            ChainTrackerError::NetworkError(e.to_string())
+        }
+        _ => ChainTrackerError::Other(e.to_string()),
+    }
+}
+
 #[async_trait]
 impl ChainTracker for ChaintracksServiceClient {
     async fn is_valid_root_for_height(
@@ -391,7 +406,7 @@ impl ChainTracker for ChaintracksServiceClient {
     ) -> std::result::Result<bool, ChainTrackerError> {
         ChaintracksServiceClient::is_valid_root_for_height(self, root, height)
             .await
-            .map_err(|e| ChainTrackerError::Other(e.to_string()))
+            .map_err(|e| tracker_fault(&e))
     }
 
     async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
@@ -404,7 +419,7 @@ impl ChainTracker for ChaintracksServiceClient {
         self.verifier_tip()
             .await
             .map(Some)
-            .map_err(|e| ChainTrackerError::Other(e.to_string()))
+            .map_err(|e| tracker_fault(&e))
     }
 }
 
