@@ -541,8 +541,14 @@ the message `Privileged operations require the Wallet to be configured with
 a privileged key manager.` byte for byte (`:460-461`). `None` or
 `Some(false)` is the everyday `ProtoWallet`, as before. The BRC-98/99
 protocol check runs first and is unchanged (it still judges the request as
-unprivileged). `key_route.rs` holds the route; the wallet's seven calls and
-the certificate paths share it.
+unprivileged). The argument validators run ahead of the privileged route,
+so an argument refusal (the `privilegedReason` text among them) keeps its
+text and place with and without a manager, as the reference's order has
+it: its substrates run `validateWalletArgs` ahead of `Wallet.ts`
+(`WalletArgumentValidation.ts`, from `HTTPWalletJSON.ts:48`,
+`WalletWireProcessor.ts:21`). The no-manager refusal answers only a valid
+privileged request. `key_route.rs` holds the route; the wallet's seven
+calls and the certificate paths share it.
 
 `prove_certificate` with `privileged: true` derives the verifier's keyring
 through the manager (`create_keyring_for_verifier` decrypts and encrypts

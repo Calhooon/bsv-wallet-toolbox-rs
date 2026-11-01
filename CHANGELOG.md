@@ -213,7 +213,12 @@
   Wallet to be configured with a privileged key manager.` No public type
   moves. Unprivileged calls are unchanged, the permission check stays
   ahead of the route, and issuance reads no privileged key, as the
-  reference's does not. Host note: a privileged request on a wallet with
+  reference's does not. The argument validators run ahead of the
+  privileged route, so an argument refusal (the `privilegedReason` text
+  among them) keeps its text and place with and without a manager, as
+  the reference's order has it (its substrates validate ahead of
+  `Wallet.ts`); the no-manager refusal answers only a valid privileged
+  request. Host note: a privileged request on a wallet with
   no manager is now this refusal where it was a silent everyday answer;
   the CLI's 501 mapping (its #145) reads it by its class.
 - #530, bsv-wallet-cli#386: every immediate broadcast wrote its BEEF as
