@@ -1,4 +1,6 @@
 # cargo-mutants 27.1.0. Run `cargo test --lib` in both build and test phases.
+# The three doors that judge under the node's word run under every test target
+# instead, from `.cargo/mutants-doors.toml` (#535); they are excluded here.
 examine_globs = [
     "src/storage/sqlx/create_action/*.rs",
     "src/storage/sqlx/process_action.rs",
@@ -7,6 +9,11 @@ examine_globs = [
     "src/services/services.rs",
     "src/services/providers/*.rs",
     "src/monitor/tasks/*.rs",
+]
+exclude_globs = [
+    "src/storage/sqlx/create_action/must_spend.rs",
+    "src/storage/sqlx/create_action/own_word.rs",
+    "src/storage/sqlx/create_action/review_beef.rs",
 ]
 additional_cargo_args = ["--lib"]
 timeout_multiplier = 3.0

@@ -1,0 +1,30 @@
+# cargo-mutants 27.1.0. The doors that judge under the node's word (the owner's
+# word of 2026-11-01 14:1xZ, 23.5 (c), and 14:4xZ; #535): their witnesses live in
+# the `fixtures` suite and four other integration targets as well as the lib, so
+# the oracle is the lib and every integration target that enters a door function
+# (docs/census/mutants-oracle-2026-11-01.md, the reach table), under the CI
+# integration step's features. A target that never enters a file's functions
+# cannot kill its mutants; a new target that does is added here.
+# `.cargo/mutants.toml` excludes these files; the Mutants workflow runs this
+# config as its own shard group (`--config`), and the scores job reads both
+# catalogues as one.
+examine_globs = [
+    "src/storage/sqlx/create_action/must_spend.rs",
+    "src/storage/sqlx/create_action/own_word.rs",
+    "src/storage/sqlx/create_action/review_beef.rs",
+]
+additional_cargo_args = [
+    "--lib",
+    "--test=fixtures",
+    "--test=caller_complete_funding_tests",
+    "--test=immediate_broadcast_hint_tests",
+    "--test=known_ancestor_tests",
+    "--test=test_vectors",
+]
+features = ["sqlite", "remote", "bench-support"]
+timeout_multiplier = 3.0
+minimum_test_timeout = 20.0
+build_timeout_multiplier = 3.0
+
+# Mutations can introduce unused code. Such warnings must not count as kills.
+cap_lints = true
