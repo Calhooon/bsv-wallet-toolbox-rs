@@ -9,7 +9,8 @@
     "max_file_lines": 7153,
     "unwraps_outside_tests": 61,
     "undocumented_public_items": 308,
-    "mutation_score_pct": 60.24
+    "mutation_score_pct": 60.24,
+    "fuzz_hours": 2.01
   },
   "clippy_pedantic": {
     "total": 3237,
@@ -381,6 +382,32 @@
       "src/storage/sqlx/create_action/review_beef.rs": "100.00% (13/13), no floor entry"
     },
     "source": "lane p5-census-legs, out folder mutation.md, score-sample-1-in-12.md, catalog.json and runs/i<N>/mutants.out/outcomes.json",
+    "measured_at": "2026-11-01"
+  },
+  "fuzz_hours": {
+    "method": "libFuzzer's own seconds (Done N runs in S second(s)), summed over twelve targets, each ten minutes as two -max_total_time=300 halves, nightly cargo-fuzz on fuzz/, on e546b1e1, rule 10's proxy variables",
+    "seconds": 7224,
+    "executions": 16924466,
+    "crashes": 0,
+    "targets": [
+      "beef_door",
+      "tsc_proof",
+      "merkle_path",
+      "broadcast_memory",
+      "arcade_sse",
+      "whatsonchain",
+      "bitails",
+      "bananablocks",
+      "arc",
+      "arcade",
+      "bhs",
+      "chaintracks"
+    ],
+    "corpus_inputs": {
+      "before": 4249,
+      "after_cmin": 9730
+    },
+    "source": "lane p5-census-legs, out folder fuzz-hours.md (the per-target table) and fuzz/<target>-<half>.log",
     "measured_at": "2026-11-01"
   }
 }
