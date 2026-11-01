@@ -26,7 +26,10 @@ use chrono::Utc;
 use sqlx::{Row, SqliteConnection};
 use std::collections::HashMap;
 
-use super::beef_verification::{proofs_tracker, stream_error, verify_beef_spends_with_verifier};
+use super::beef_verification::{
+    a8_beef_bytes, proofs_tracker, read_once, stream_error, verify_beef_spends_with_verifier,
+    verify_read_spends, ReadOnce,
+};
 use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
 use super::StorageSqlx;
 
@@ -78,8 +81,14 @@ pub async fn internalize_action_internal(
     let senders = validate_internalize_action_args(&args)?;
 
     // Scan one element at a time, keeping the subject and BUMP locations only.
-    // No parsed copy of the ancestor graph survives the scan.
-    let incoming = read_incoming_payment(&args.tx)?;
+    // No parsed copy of the ancestor graph survives the scan. Under
+    // `a8-beef-bytes` (#556) the one reading is kept for the verification.
+    let (mut incoming, read) = if a8_beef_bytes() {
+        let (incoming, read, subject_at) = read_incoming_once(&args.tx)?;
+        (incoming, Some((read, subject_at)))
+    } else {
+        (read_incoming_payment(&args.tx)?, None)
+    };
     let configured_tracker = storage.get_chain_tracker().await;
     let services = storage.get_services().ok();
     // The incoming BEEF's proofs need headers (T2, #509): with no header
@@ -87,14 +96,24 @@ pub async fn internalize_action_internal(
     let tracker = proofs_tracker(configured_tracker.as_deref(), services.as_deref()).await?;
     // A valid verdict is required even for an unproven payment, before any
     // basket, transaction, coin, request or broadcast can be created.
-    verify_beef_spends_with_verifier(
-        &args.tx,
-        &incoming.roots,
-        tracker,
-        &storage.get_settings().chain,
-        storage.script_verifier(),
-    )
-    .await?;
+    let (chain, script_verifier) = (&storage.get_settings().chain, storage.script_verifier());
+    match read {
+        Some((read, subject_at)) => {
+            let roots = &incoming.roots;
+            verify_read_spends(&args.tx, &read, roots, tracker, chain, script_verifier).await?;
+            incoming.body = subject_at.and_then(|index| read.into_body(index));
+        }
+        None => {
+            verify_beef_spends_with_verifier(
+                &args.tx,
+                &incoming.roots,
+                tracker,
+                chain,
+                script_verifier,
+            )
+            .await?
+        }
+    }
     let txid = incoming.txid;
     let body = incoming
         .body
@@ -954,7 +973,21 @@ fn read_incoming_payment(bytes: &[u8]) -> Result<IncomingPayment> {
             _ => {}
         }
     }
-    let txid = stream.subject().map(|id| display_hex(&id)).ok_or_else(|| {
+    let subject = stream.subject();
+    incoming_payment(bytes, subject, &bumps, roots, body, subject_bump)
+}
+
+/// The subject's txid, its BUMP's claim and the roots, from the scan of
+/// `bytes`: the BUMPs' offsets and lengths, the subject's body and BUMP index.
+fn incoming_payment(
+    bytes: &[u8],
+    subject: Option<Hash32>,
+    bumps: &[(u64, u64)],
+    roots: Vec<(u64, Hash32)>,
+    body: Option<TxBody>,
+    subject_bump: Option<u64>,
+) -> Result<IncomingPayment> {
+    let txid = subject.map(|id| display_hex(&id)).ok_or_else(|| {
         Error::ValidationError("BEEF is not AtomicBEEF (missing atomic_txid)".into())
     })?;
     let bump = subject_bump
@@ -970,6 +1003,34 @@ fn read_incoming_payment(bytes: &[u8]) -> Result<IncomingPayment> {
         roots,
         bump_claim,
     })
+}
+
+/// `read_incoming_payment` on one reading of `bytes` kept for the
+/// verification (the `a8-beef-bytes` path, #556): the subject's body stays
+/// in the reading, at the index returned, until the verification is done.
+fn read_incoming_once(bytes: &[u8]) -> Result<(IncomingPayment, ReadOnce, Option<usize>)> {
+    let read = read_once(bytes)?;
+    let mut bumps = Vec::new();
+    let mut roots = Vec::new();
+    let mut subject_at = None;
+    let mut subject_bump = None;
+    for (index, element) in read.elements.iter().enumerate() {
+        match element {
+            Element::Bump(bump) => {
+                bumps.push((bump.offset, bump.wire_len));
+                roots.push((bump.block_height, bump.root));
+            }
+            Element::Tx {
+                txid, bump_index, ..
+            } if Some(*txid) == read.subject => {
+                subject_at = Some(index);
+                subject_bump = *bump_index;
+            }
+            _ => {}
+        }
+    }
+    let incoming = incoming_payment(bytes, read.subject, &bumps, roots, None, subject_bump)?;
+    Ok((incoming, read, subject_at))
 }
 
 /// An unverified merkle-proof claim lifted out of an incoming BEEF's BUMP.

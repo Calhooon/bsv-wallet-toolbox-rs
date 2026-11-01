@@ -2,11 +2,12 @@ use super::beef_graph::{
     describe_invalid_beef, merge_beef_linked, needed_by_roots, prune_beef_to_roots,
 };
 use super::beef_storage::get_tx_with_proof;
+use super::beef_verification::{read_once, ReadOnce};
 use super::beef_walk::beef_bfs_walk;
 use super::inputs::ExtendedInput;
 use super::AllocatedChangeInput;
 use crate::error::{Error, Result};
-use bsv_rs::transaction::beef_stream::display_hex;
+use bsv_rs::transaction::beef_stream::{display_hex, Element, Hash32};
 use bsv_rs::transaction::{Beef, BeefTx, ChainTracker};
 use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use std::collections::HashSet;
@@ -32,6 +33,12 @@ async fn resolve_known_txid_only_entries(
     user_beef: Beef,
     roots: &[String],
 ) -> Result<(Beef, Vec<String>)> {
+    // With no txid-only entry the split keeps a clone of the whole BEEF;
+    // under `a8-beef-bytes` (#556) the caller's is kept, no body copied.
+    if super::beef_verification::a8_beef_bytes() && !user_beef.txs.iter().any(BeefTx::is_txid_only)
+    {
+        return Ok((user_beef, Vec::new()));
+    }
     // Decided before any await: no borrow of a `BeefTx` (not `Sync`) may
     // live across one.
     let (kept, from_storage) = split_txid_only_entries(&user_beef, roots);
@@ -459,6 +466,13 @@ pub(super) async fn judge_caller_beef(
     let (Some(assembled), Some(caller)) = (assembled, caller) else {
         return Ok(());
     };
+    // Under `a8-beef-bytes` (#556) each BEEF is read once; bytes either
+    // stream refuses take the oracle below, its texts and its verdict.
+    if super::beef_verification::a8_beef_bytes() {
+        if let (Ok(caller), Ok(read)) = (read_once(caller), read_once(assembled)) {
+            return judge_read_caller_beef(conn, &caller, &read, word).await;
+        }
+    }
     // The assembly parsed the caller's bytes already.
     let Ok(caller) = Beef::from_binary(caller) else {
         return Ok(());
@@ -487,6 +501,72 @@ pub(super) async fn judge_caller_beef(
         word.verifier,
     )
     .await
+}
+
+/// `judged_set` on readings of the two BEEFs (the `a8-beef-bytes` path,
+/// #556): the caller's raw transactions not `held` that the assembly carries
+/// raw with no BUMP, each judged by its last entry in the assembly, as a
+/// parsed `Beef` finds it.
+fn judged_read_set(
+    caller: &ReadOnce,
+    assembled: &ReadOnce,
+    held: &HashSet<Hash32>,
+) -> HashSet<Hash32> {
+    let raw_unproven = assembled.raw_unproven();
+    let mut judged = HashSet::new();
+    for element in &caller.elements {
+        if let Element::Tx { txid, .. } = element {
+            if !held.contains(txid) && raw_unproven.get(txid) == Some(&true) {
+                judged.insert(*txid);
+            }
+        }
+    }
+    judged
+}
+
+/// `judge_caller_beef` on one reading of each BEEF (the `a8-beef-bytes`
+/// path, #556): the same set, the same store read and the same word, the
+/// word pass fed the assembly's elements in hand.
+async fn judge_read_caller_beef(
+    conn: &mut SqliteConnection,
+    caller: &ReadOnce,
+    assembled: &ReadOnce,
+    word: &CallerWord<'_>,
+) -> Result<()> {
+    let raw: Vec<String> = judged_read_set(caller, assembled, &HashSet::new())
+        .iter()
+        .map(display_hex)
+        .collect();
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let held: HashSet<Hash32> = store_holds(conn, &raw)
+        .await?
+        .iter()
+        .filter_map(|txid| caller_hash(txid))
+        .collect();
+    let judged = judged_read_set(caller, assembled, &held);
+    if judged.is_empty() {
+        return Ok(());
+    }
+    let tracker =
+        super::beef_verification::proofs_tracker(word.tracker, word.services.as_deref()).await?;
+    super::beef_verification::verify_read_word(
+        assembled,
+        tracker,
+        word.network,
+        &|txid| judged.contains(txid),
+        word.verifier,
+    )
+    .await
+}
+
+/// The wire-order hash of a display txid `store_holds` answered.
+fn caller_hash(txid: &str) -> Option<Hash32> {
+    let mut hash = [0u8; 32];
+    hex::decode_to_slice(txid, &mut hash).ok()?;
+    hash.reverse();
+    Some(hash)
 }
 
 /// The gap in a change coin's stored ancestry: the BEEF for `txid` alone,

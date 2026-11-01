@@ -17,7 +17,9 @@ use crate::storage::traits::BeefVerificationMode;
 
 mod live_word;
 mod own_word;
+mod read_once;
 pub(crate) use own_word::{verify_own, SourceTx};
+pub(crate) use read_once::{a8_beef_bytes, read_once, ReadOnce};
 
 /// The store's `chain` word's activation heights (`main`, `test`,
 /// `regtest`; #471); `None` for a word the script policy does not read.
@@ -174,6 +176,42 @@ async fn verification_headers(
         }
     }
     Ok(headers)
+}
+
+/// `verify_beef_spends_with_verifier` on a reading in hand (the
+/// `a8-beef-bytes` path, #556): the same headers, the structure pass and the
+/// word pass from the elements read once. A BEEF without an atomic subject
+/// takes the oracle's structure pass on `bytes`.
+pub(super) async fn verify_read_spends(
+    bytes: &[u8],
+    read: &ReadOnce,
+    roots: &[(u64, Hash32)],
+    tracker: &dyn ChainTracker,
+    network: &str,
+    verifier: Option<&dyn crate::SpendVerifier>,
+) -> Result<()> {
+    let headers = verification_headers(roots, tracker).await?;
+    match read.subject {
+        Some(subject) => read_once::structure(read, subject, &headers)?,
+        None => verification_result(structure_pass(bytes, &headers)?)?,
+    }
+    live_word::verify_elements(|| read.borrowed(), &headers, network, &|_| true, verifier)
+}
+
+/// `verify_beef_word` on a reading in hand (the `a8-beef-bytes` path, #556).
+pub(super) async fn verify_read_word(
+    read: &ReadOnce,
+    tracker: &dyn ChainTracker,
+    network: &str,
+    judge: &(dyn Fn(&Hash32) -> bool + Sync),
+    verifier: Option<&dyn crate::SpendVerifier>,
+) -> Result<()> {
+    let tip = mining_tip(tracker).await?;
+    let headers = VerificationHeaders {
+        tip,
+        roots: HashSet::new(),
+    };
+    live_word::verify_elements(|| read.borrowed(), &headers, network, judge, verifier)
 }
 
 /// bsv-rs's structure pass (`verify_stream_structure`): the bytes, the
