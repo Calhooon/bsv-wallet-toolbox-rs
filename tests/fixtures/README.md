@@ -7,7 +7,8 @@ The services lane can add `mod ladders;` beside `mod storage;` in `main.rs`.
 
 The services ladder scenes under `data/ladders/` replay as a lib test
 (`cargo test --lib ladder_fixtures`, `ladders.rs`). A scene that differs because
-a rung faulted at the 2000 ms client deadline (within 100 ms, `LATE_SLACK_MS`)
+a rung faulted at the 2000 ms client deadline (from 100 ms before it on, `LATE_SLACK_MS`,
+with no ceiling: a 2106 ms fault is a stall too)
 where the scene scripts no late answer is a runner stall, replayed and named in
 the run's log. `LADDER_FIXTURES_STALL_REPLAYS` is how many replays it gets: one
 when unset, so the local run is unchanged; CI sets two on the steps that run the
