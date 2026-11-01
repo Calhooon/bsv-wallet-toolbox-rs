@@ -136,8 +136,8 @@ macro_rules! args {
 /// One of the seven calls with `privileged` as given, its answer in words.
 async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_rs::Result<String> {
     let originator = Some(ORIGINATOR);
-    // decrypt, verify_hmac and verify_signature first make their input with
-    // the same request encrypt, create_hmac and create_signature send.
+    // decrypt, verify_hmac and verify_signature make their input ahead of the
+    // call, with the same request encrypt, create_hmac and create_signature send.
     let encrypt_args = || args!(keyed EncryptArgs { plaintext: b"secret".to_vec() }, privileged);
     let hmac_args = || args!(keyed CreateHmacArgs { data: b"data".to_vec() }, privileged);
     let signature_args =
@@ -221,8 +221,8 @@ async fn each_privileged_key_call_reaches_the_manager_with_the_callers_fields() 
         if name.starts_with("verify") {
             assert!(answer.unwrap().contains("valid: true"), "{name}");
         }
-        // decrypt, verify_hmac and verify_signature first make their input
-        // through the same route; every request reached the double.
+        // decrypt, verify_hmac and verify_signature make their input ahead of the
+        // call through the same route; every request reached the double.
         let made: Vec<Asked> = double.asked().split_off(before);
         let expected: Vec<Asked> = match name {
             "decrypt" => vec![asked("encrypt"), asked("decrypt")],
