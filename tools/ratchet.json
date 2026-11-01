@@ -99,7 +99,7 @@
     "limit": 800,
     "count": 33,
     "src_files": 256,
-    "src_lines": 129242,
+    "src_lines": 129505,
     "max_lines": 7138,
     "files": {
       "src/wallet/wallet.rs": 7138,
@@ -128,7 +128,7 @@
       "src/services/broadcast_memory.rs": 1060,
       "src/storage/sqlx/reorg_tests.rs": 1055,
       "src/storage/client/auth.rs": 1039,
-      "src/services/providers/fallback_chain_tracker.rs": 978,
+      "src/services/providers/fallback_chain_tracker.rs": 977,
       "src/monitor/reorg_ops.rs": 954,
       "src/storage/sqlx/broadcast_seen.rs": 893,
       "src/storage/sqlx/proof_root_tests.rs": 876,
@@ -319,8 +319,8 @@
   },
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
-    "count": 6660,
-    "windows": 98914,
+    "count": 6646,
+    "windows": 99106,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:327 (38 lines)",
