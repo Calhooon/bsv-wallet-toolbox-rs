@@ -222,6 +222,19 @@ impl RateGate {
     }
 }
 
+/// The key of a provider's process gate ([`RateGate::shared`]): its name
+/// and base, and a fingerprint of its API key when it has one, so the
+/// budget is the host's or the key's and the key itself is never held.
+pub(crate) fn shared_key(provider: &str, base: &str, api_key: Option<&str>) -> String {
+    match api_key.filter(|k| !k.is_empty()) {
+        Some(key) => format!(
+            "{provider} {base} key:{}",
+            hex::encode(&bsv_rs::primitives::sha256(key.as_bytes())[..8])
+        ),
+        None => format!("{provider} {base}"),
+    }
+}
+
 /// The seconds a `Retry-After` header asks for: delta-seconds or an
 /// HTTP-date (RFC 9110 section 10.2.3). `None` when absent or garbled.
 pub fn retry_after_secs(headers: &HeaderMap) -> Option<u64> {

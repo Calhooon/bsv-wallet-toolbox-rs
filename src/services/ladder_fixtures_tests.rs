@@ -14,10 +14,11 @@ use crate::services::providers::pace::Clock;
 
 /// `Services` with WhatsOnChain, Bitails and (when given) BananaBlocks at
 /// local fixture bases, each with a gate of its own and a client that
-/// gives up after `timeout_secs`; the rest from `options`. The three gates
-/// read one clock held still for the scene: a 429 with no Retry-After
-/// closes a rung for a second, and the scene's next call must find it
-/// closed however slow the runner (bsv-wallet-toolbox-rs#53). Return that
+/// gives up after `timeout_secs`; the rest from `options`, the header
+/// services with gates of their own too (#148). Every gate reads one
+/// clock held still for the scene: a 429 with no Retry-After closes a rung
+/// for a second, and the scene's next call must find it closed however
+/// slow the runner (bsv-wallet-toolbox-rs#53). Return that
 /// clock too so a replay can advance to the window's boundary (#194).
 fn services_at(
     options: ServicesOptions,
@@ -59,7 +60,8 @@ fn services_at(
             )
         }),
     )
-    .unwrap();
+    .unwrap()
+    .with_header_clock(&clock);
     (services, clock)
 }
 
