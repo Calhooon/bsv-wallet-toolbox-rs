@@ -104,8 +104,12 @@ async fn test_validate_stored_beef_tracker_error_rejects() {
     );
 }
 
-/// The `beef-rejected-*.hex` names under `std::env::temp_dir()`.
+/// This process's `beef-rejected-<millis>-<pid>-<n>.hex` names under
+/// `std::env::temp_dir()`. The folder is shared, so another process's dumps
+/// between the two reads are not this tree's; the `<pid>` segment keeps
+/// only names this process wrote.
 fn rejected_dumps() -> HashSet<String> {
+    let pid = std::process::id().to_string();
     std::fs::read_dir(std::env::temp_dir())
         .map(|dir| {
             dir.filter_map(std::result::Result::ok)
@@ -113,6 +117,7 @@ fn rejected_dumps() -> HashSet<String> {
                 .filter(|p| p.extension().is_some_and(|x| x == "hex"))
                 .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
                 .filter(|n| n.starts_with("beef-rejected-"))
+                .filter(|n| n.split('-').nth(3) == Some(pid.as_str()))
                 .collect()
         })
         .unwrap_or_default()
