@@ -26,6 +26,7 @@ break-glass-script-history = []
 # the door Criterion bench drives (`cargo bench --bench door --features
 # bench-support`). No default or `full` build compiles them.
 bench-support = ["sqlite"]
+a8-beef-bytes = []
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits
