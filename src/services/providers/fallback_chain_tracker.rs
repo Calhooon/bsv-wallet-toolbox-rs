@@ -335,11 +335,10 @@ impl ChainTracker for FallbackChainTracker {
     }
 
     async fn current_height(&self) -> Result<u32, ChainTrackerError> {
-        // Delegate to primary — height lookups don't have the same gap problem
-        self.primary
-            .get_present_height()
-            .await
-            .map_err(|e| ChainTrackerError::NetworkError(e.to_string()))
+        // Delegate to primary: height lookups don't have the same gap
+        // problem. The client's class passes through, as the tip read's
+        // does (#554).
+        self.primary.current_height().await
     }
 
     async fn mining_tip(
