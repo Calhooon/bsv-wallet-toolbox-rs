@@ -106,9 +106,11 @@ const PENDING_TRANSACTION_TTL_SECS: i64 = 24 * 60 * 60;
 // PrivilegedKeyManager
 // =============================================================================
 
-/// Trait for privileged key management operations.
-/// Used for two-factor authentication where crypto operations at SecurityLevel >= 2
-/// are routed through a separate key manager.
+/// Trait for privileged key management operations: the privileged keyring of
+/// BRC-100's `privileged` flag. A key call with `privileged: true` goes here
+/// with the caller's arguments intact (ts-stack@edf6e03 `Wallet.ts:455-570`;
+/// `key_route.rs`, #186), as do the certificate keyring and subject the
+/// caller names (#142).
 #[async_trait]
 pub trait PrivilegedKeyManager: Send + Sync {
     async fn get_public_key(

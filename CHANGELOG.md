@@ -194,6 +194,28 @@
   `NetworkError` for these faults, or printing the class's prefix, sees
   the class above.
 
+- #186, #142, bsv-wallet-cli#386 (the owner's word of 2026-11-01
+  14:1xZ, the keeper's reading (6) 23.2): a privileged request was
+  answered under the everyday key. Old: `get_public_key`, `encrypt`,
+  `decrypt`, `create_hmac`, `verify_hmac`, `create_signature` and
+  `verify_signature` with `privileged: true` were answered by the
+  everyday `ProtoWallet` whether or not a `PrivilegedKeyManager` was set;
+  `prove_certificate` built the verifier's keyring under the everyday
+  key, and the direct `acquire_certificate` took the everyday identity
+  key as subject. New: as ts-stack@edf6e03 `Wallet.ts:455-570`, each of
+  the seven goes to the manager with the caller's `privileged`,
+  `privileged_reason` and `seek_permission`; `prove_certificate` derives
+  the keyring through it (`MasterCertificate.ts:383-401`) and the direct
+  acquire takes the manager's identity key as subject and proves the
+  keyring under it (`Wallet.ts:698-724`). With no manager each is
+  `WalletRefusal { class: NotImplemented, message }`, the message the
+  reference's text byte for byte: `Privileged operations require the
+  Wallet to be configured with a privileged key manager.` No public type
+  moves. Unprivileged calls are unchanged, the permission check stays
+  ahead of the route, and issuance reads no privileged key, as the
+  reference's does not. Host note: a privileged request on a wallet with
+  no manager is now this refusal where it was a silent everyday answer;
+  the CLI's 501 mapping (its #145) reads it by its class.
 - #530, bsv-wallet-cli#386: every immediate broadcast wrote its BEEF as
   hex to the temp folder. Old: the create door's broadcast wrote
   `$TMPDIR/beef-<txid8>.hex` (`std::env::temp_dir()`) on every immediate
