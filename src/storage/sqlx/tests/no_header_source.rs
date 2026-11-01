@@ -372,7 +372,7 @@ async fn create_asks_no_header_service_for_a_beef_with_no_caller_root() {
         &p[..16]
     );
     assert!(matches!(error, Error::ValidationError(_)), "{error:?}");
-    assert!(error.to_string().starts_with(&structure), "{error}");
+    assert_eq!(error.to_string(), structure);
     assert_eq!(asks, 0, "the services are not asked");
     assert_eq!(action_rows(&storage).await, 0);
 }
