@@ -19,6 +19,7 @@ use bsv_rs::transaction::beef_stream::{
     display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
 };
 use bsv_rs::transaction::BeefStream;
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -147,6 +148,24 @@ pub(super) fn verify_judging(
     judge: &(dyn Fn(&Hash32) -> bool + Sync),
     verifier: Option<&dyn SpendVerifier>,
 ) -> Result<()> {
+    let elements = || BeefStream::new(bytes).map(|e| e.map(Cow::Owned).map_err(stream_error));
+    verify_elements(elements, headers, network, judge, verifier)
+}
+
+/// The word pass over a BEEF's elements, read twice: the outpoints the
+/// unproven transactions spend, then each element folded in, wire order.
+/// `elements` yields them afresh for each read, owned from a stream of the
+/// bytes or borrowed from a reading already in hand.
+pub(super) fn verify_elements<'e, I>(
+    elements: impl Fn() -> I,
+    headers: &VerificationHeaders,
+    network: &str,
+    judge: &(dyn Fn(&Hash32) -> bool + Sync),
+    verifier: Option<&dyn SpendVerifier>,
+) -> Result<()>
+where
+    I: Iterator<Item = Result<Cow<'e, Element>>>,
+{
     let mut pass = WordPass {
         network,
         judge,
@@ -161,8 +180,8 @@ pub(super) fn verify_judging(
         waiting: HashMap::new(),
         ready: BTreeSet::new(),
     };
-    for element in BeefStream::new(bytes) {
-        match element.map_err(stream_error)? {
+    for element in elements() {
+        match &*element? {
             Element::Bump(bump) => {
                 pass.bumps.push(bump.block_height);
                 for txid in bump.proven() {
@@ -180,15 +199,15 @@ pub(super) fn verify_judging(
             _ => {}
         }
     }
-    for element in BeefStream::new(bytes) {
-        pass.fold(element.map_err(stream_error)?)?;
+    for element in elements() {
+        pass.fold(element?)?;
         while let Some(offset) = pass.ready.iter().next().copied() {
             pass.ready.remove(&offset);
             let pending = pass
                 .held
                 .remove(&offset)
                 .ok_or_else(|| Error::Internal("ready spend has no held transaction".into()))?;
-            pass.accept(offset, pending.txid, None, pending.body)?;
+            pass.accept(offset, pending.txid, None, &pending.body)?;
         }
     }
     if !pass.held.is_empty() {
@@ -211,20 +230,22 @@ impl WordPass<'_> {
         }
     }
 
-    fn fold(&mut self, element: Element) -> Result<()> {
-        match element {
+    /// An owned element's body is moved into the held set; a borrowed one's
+    /// is copied there only when it waits for a parent.
+    fn fold(&mut self, element: Cow<'_, Element>) -> Result<()> {
+        match &*element {
             Element::Bump(_) => {}
-            Element::TxidOnly { txid, .. } => {
+            &Element::TxidOnly { txid, .. } => {
                 if let std::collections::hash_map::Entry::Vacant(slot) = self.entries.entry(txid) {
                     slot.insert(Entry::default());
                     self.wake(txid);
                 }
             }
-            Element::Tx {
+            &Element::Tx {
                 offset,
                 txid,
                 bump_index,
-                body,
+                ref body,
             } => {
                 if bump_index.is_none() {
                     let missing: HashSet<_> = body
@@ -237,6 +258,9 @@ impl WordPass<'_> {
                         for prev in &missing {
                             self.waiting.entry(*prev).or_default().push(offset);
                         }
+                        let Element::Tx { body, .. } = element.into_owned() else {
+                            return Err(Error::Internal("a held element is no transaction".into()));
+                        };
                         self.held.insert(
                             offset,
                             Pending {
@@ -254,13 +278,19 @@ impl WordPass<'_> {
         Ok(())
     }
 
-    fn accept(&mut self, offset: u64, txid: Hash32, bump: Option<u64>, body: TxBody) -> Result<()> {
+    fn accept(
+        &mut self,
+        offset: u64,
+        txid: Hash32,
+        bump: Option<u64>,
+        body: &TxBody,
+    ) -> Result<()> {
         if self.entries.get(&txid).is_some_and(|entry| entry.raw) {
             return Ok(());
         }
         if bump.is_none() && (self.judge)(&txid) {
-            self.mining_rules(offset, txid, &body)?;
-            self.spends(offset, txid, &body)?;
+            self.mining_rules(offset, txid, body)?;
+            self.spends(offset, txid, body)?;
         }
         for input in &body.inputs {
             self.wanted.remove(&(input.prev, input.vout));
@@ -268,7 +298,7 @@ impl WordPass<'_> {
                 parent.outputs.remove(&input.vout);
             }
         }
-        let outputs = self.retain_outputs(txid, &body);
+        let outputs = self.retain_outputs(txid, body);
         let coinbase =
             matches!(body.inputs.as_slice(), [i] if i.prev == [0; 32] && i.vout == u32::MAX);
         let coinbase_height = if coinbase {

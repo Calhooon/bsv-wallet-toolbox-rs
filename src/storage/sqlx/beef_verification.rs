@@ -138,6 +138,22 @@ pub(super) async fn verify_beef_spends_with_verifier(
     network: &str,
     verifier: Option<&dyn crate::SpendVerifier>,
 ) -> Result<()> {
+    let headers = verification_headers(roots, tracker).await?;
+    // The structure pass reads the graph, the roots and the proofs and runs
+    // no script: bsv-rs's default script mode is a parity mode, never a live
+    // verdict (the keeper's word of 2026-10-30, structure-only). The one word
+    // pass then judges every input once, under the network's ChainParams and
+    // both work budgets, with the mining, outpoint and value checks (#440).
+    verification_result(structure_pass(bytes, &headers)?)?;
+    live_word::verify(bytes, &headers, network, verifier)
+}
+
+/// The tracker's tip and the roots of `roots` it carries, each distinct
+/// root asked once.
+async fn verification_headers(
+    roots: &[(u64, Hash32)],
+    tracker: &dyn ChainTracker,
+) -> Result<VerificationHeaders> {
     let mut headers = VerificationHeaders {
         tip: mining_tip(tracker).await?,
         roots: HashSet::new(),
@@ -157,13 +173,7 @@ pub(super) async fn verify_beef_spends_with_verifier(
             }
         }
     }
-    // The structure pass reads the graph, the roots and the proofs and runs
-    // no script: bsv-rs's default script mode is a parity mode, never a live
-    // verdict (the keeper's word of 2026-10-30, structure-only). The one word
-    // pass then judges every input once, under the network's ChainParams and
-    // both work budgets, with the mining, outpoint and value checks (#440).
-    verification_result(structure_pass(bytes, &headers)?)?;
-    live_word::verify(bytes, &headers, network, verifier)
+    Ok(headers)
 }
 
 /// bsv-rs's structure pass (`verify_stream_structure`): the bytes, the
