@@ -135,8 +135,9 @@ async fn height_read_inside_the_window_asks_nothing_and_cannot_look() {
 /// The tip read (`mining_tip`: `/getChain` once per client, then the tip
 /// header and the eleven-header range): a 429 on any of its three calls
 /// closes the rung, and inside the window no call of the read makes a
-/// request; the read is a fault (the client's `Other`), never a tip and
-/// never `Ok(None)`. After the window the read asks again.
+/// request; the read is could-not-look (`NetworkError`, the class of the
+/// root check and the height read, #554), never a tip and never
+/// `Ok(None)`. After the window the read asks again.
 #[tokio::test]
 async fn tip_read_inside_the_window_asks_nothing_and_is_a_fault() {
     let tip_route = "/findChainTipHeaderHex";
@@ -161,10 +162,7 @@ async fn tip_read_inside_the_window_asks_nothing_and_is_a_fault() {
         let limited = too_many(&mut server, limited_route, 1).await;
 
         let is_a_fault = |got: &Result<_, ChainTrackerError>, when: &str| {
-            assert!(
-                matches!(got, Err(e) if e.to_string().contains("Rate limited: Chaintracks")),
-                "{limited_route} {when}: a 429's window is a fault, never a tip: {got:?}"
-            );
+            assert_could_not_look(got, &format!("{limited_route} {when}"));
         };
         let met = tracker.mining_tip().await;
         clock.advance(Duration::from_secs(RETRY_AFTER_SECS - 1));
@@ -185,4 +183,48 @@ async fn tip_read_inside_the_window_asks_nothing_and_is_a_fault() {
             answered.assert_async().await;
         }
     }
+}
+
+/// A fault in what the service answered is not could-not-look (#554): a
+/// range the client refuses (header bytes that are not hex) keeps the tip
+/// read's `Other`, its text naming the refusal.
+#[tokio::test]
+async fn tip_read_over_a_refused_range_is_other() {
+    let mut server = crate::services::mock_server().await;
+    let clock = Clock::held();
+    let tracker = tracker_at(&server.url(), &clock);
+    let network = answer(&mut server, "/getChain", serde_json::json!("main"), 1).await;
+    let tip = header_json(900_010, &"11".repeat(32));
+    let tip_read = answer(&mut server, "/findChainTipHeaderHex", tip, 1).await;
+    let range_route = "/getHeaders?height=900000&count=11";
+    let range = answer(&mut server, range_route, serde_json::json!("zz"), 1).await;
+
+    let got = tracker.mining_tip().await;
+    assert!(
+        matches!(&got, Err(ChainTrackerError::Other(m)) if m.contains("invalid header bytes")),
+        "a refused range is the client's Other: {got:?}"
+    );
+    network.assert_async().await;
+    tip_read.assert_async().await;
+    range.assert_async().await;
+}
+
+/// The client's own root check (its `ChainTracker` impl, beneath the
+/// fallback tracker's) maps the window as the tip read does (#554):
+/// could-not-look, `NetworkError`, the text unchanged.
+#[tokio::test]
+async fn client_root_check_inside_the_window_cannot_look() {
+    let mut server = crate::services::mock_server().await;
+    let clock = Clock::held();
+    let client = ChaintracksServiceClient::at_clock(&server.url(), clock.clone());
+    let root = "ab".repeat(32);
+    let route = "/findHeaderHexForHeight?height=700";
+
+    let limited = too_many(&mut server, route, 1).await;
+    let met = ChainTracker::is_valid_root_for_height(&client, &root, 700).await;
+    clock.advance(Duration::from_secs(RETRY_AFTER_SECS - 1));
+    let inside = ChainTracker::is_valid_root_for_height(&client, &root, 700).await;
+    limited.assert_async().await;
+    assert_could_not_look(&met, "the 429 itself");
+    assert_could_not_look(&inside, "inside the window");
 }
