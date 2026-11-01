@@ -622,9 +622,14 @@ where
 
     /// Checks protocol permission if a permissions manager is set.
     /// Returns Ok(()) if no manager is set or if permission is granted.
+    /// `privileged` is the request's, as the reference passes
+    /// `requestArgs.privileged` (ts-stack@edf6e03
+    /// `WalletPermissionsManager.ts:5165-5350`), so a privileged key call
+    /// needs a privileged grant when the manager differentiates them.
     async fn check_protocol_permission(
         &self,
         originator: Option<&str>,
+        privileged: bool,
         protocol: &Protocol,
         counterparty: Option<&str>,
         usage_type: crate::managers::PermissionUsageType,
@@ -633,7 +638,7 @@ where
         if let Some(ref pm) = self.permissions_manager {
             pm.ensure_protocol_permission(
                 originator,
-                false, // not privileged by default
+                privileged,
                 protocol,
                 counterparty,
                 None,
@@ -1793,6 +1798,7 @@ where
         if let Some(ref protocol_id) = args.protocol_id {
             self.check_protocol_permission(
                 originator,
+                args.privileged == Some(true),
                 protocol_id,
                 None,
                 crate::managers::PermissionUsageType::PublicKey,
@@ -1811,6 +1817,7 @@ where
         // BRC-98/99: Check protocol permission for encryption
         self.check_protocol_permission(
             originator,
+            args.privileged == Some(true),
             &args.protocol_id,
             None,
             crate::managers::PermissionUsageType::Encrypting,
@@ -1828,6 +1835,7 @@ where
         // BRC-98/99: Check protocol permission for decryption
         self.check_protocol_permission(
             originator,
+            args.privileged == Some(true),
             &args.protocol_id,
             None,
             crate::managers::PermissionUsageType::Encrypting,
@@ -1845,6 +1853,7 @@ where
         // BRC-98/99: Check protocol permission for HMAC
         self.check_protocol_permission(
             originator,
+            args.privileged == Some(true),
             &args.protocol_id,
             None,
             crate::managers::PermissionUsageType::Hmac,
@@ -1862,6 +1871,7 @@ where
         // BRC-98/99: Check protocol permission for HMAC verification
         self.check_protocol_permission(
             originator,
+            args.privileged == Some(true),
             &args.protocol_id,
             None,
             crate::managers::PermissionUsageType::Hmac,
@@ -1879,6 +1889,7 @@ where
         // BRC-98/99: Check protocol permission for signing
         self.check_protocol_permission(
             originator,
+            args.privileged == Some(true),
             &args.protocol_id,
             None,
             crate::managers::PermissionUsageType::Signing,
