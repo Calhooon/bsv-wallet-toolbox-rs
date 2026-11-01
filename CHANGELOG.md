@@ -21,6 +21,15 @@
 
 ### Fixed
 
+- #530, bsv-wallet-cli#386: every immediate broadcast wrote its BEEF as
+  hex to the temp folder. Old: the create door's broadcast wrote
+  `$TMPDIR/beef-<txid8>.hex` (`std::env::temp_dir()`) on every immediate
+  post, with no condition, no option and no cleanup, a debugging aid left
+  in the hot path. New: no write; the BEEF is still parsed and checked
+  structurally before the post, and the reference has no such write
+  (`createAction.ts`, `processAction.ts` at ts-stack@edf6e03). Host note:
+  the host's temp folder stops filling with these files; any tooling that
+  read them reads the store's `proven_tx_reqs.input_beef` instead.
 - #521, bsv-wallet-cli#376: a header-service fault in discovery was
   answered as no overlay certificates. Old: any `get_chain_tracker` error
   made `discoverByIdentityKey` and `discoverByAttributes` answer an empty
