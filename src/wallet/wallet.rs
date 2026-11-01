@@ -3371,28 +3371,18 @@ fn validate_certificate_hex_arg(value: &str, name: &str) -> bsv_rs::Result<Strin
     Ok(value.to_ascii_lowercase())
 }
 
-/// Normalizes and validates a compressed public key argument with the reference's texts
-/// (ts-stack@edf6e03 validationHelpers.ts:185-191,522-534, WERR_INVALID_PARAMETER.ts:14).
+/// Normalizes and validates a compressed public key argument through bsv-rs's
+/// `validatePublicKey` helper (bsv-rs #579; ts-stack@edf6e03
+/// validationHelpers.ts:185-191,522-534, WERR_INVALID_PARAMETER.ts:14), its
+/// words kept as this gate's `ValidationError`; the text is the key's
+/// lowercase hex, the trimmed value validateHexString returns (533).
 pub(crate) fn validate_public_key_arg(
     value: &str,
     name: &str,
 ) -> bsv_rs::Result<(String, PublicKey)> {
-    let normalized = validate_certificate_hex_arg(value, name)?;
-    if normalized.len() < 66 {
-        return Err(invalid_certificate_argument(name, "at least 66 length."));
-    }
-    if normalized.len() > 66 {
-        return Err(invalid_certificate_argument(
-            name,
-            "no more than 66 length.",
-        ));
-    }
-    let key = match normalized.get(..2) {
-        Some("02" | "03") => super::internalize_args::compressed_key(&normalized),
-        _ => None,
-    }
-    .ok_or_else(|| invalid_certificate_argument(name, "a valid compressed secp256k1 public key"))?;
-    Ok((normalized, key))
+    let key = bsv_rs::wallet::validate_public_key(value, name)
+        .map_err(|refusal| bsv_rs::Error::from(Error::ValidationError(refusal.to_string())))?;
+    Ok((key.to_hex(), key))
 }
 
 // validateBase64String at validationHelpers.ts:439-497 checks structure and

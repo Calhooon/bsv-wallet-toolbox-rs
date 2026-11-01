@@ -217,27 +217,14 @@ fn validate_base64(value: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// validatePublicKey (185-191): validateHexString with 66 to 66 (522-534),
-/// then isValidCompressedPublicKey (Secp256k1Validation.ts:15-22); trimmed
-/// as ECMAScript trims (`label.rs`). Returns the key parsed from the trimmed
-/// value, whose hex is the lowercased value validateHexString returns (533).
+/// validatePublicKey (185-191) through bsv-rs's public helper (bsv-rs #579):
+/// validateHexString with 66 to 66 (522-534), then isValidCompressedPublicKey
+/// (Secp256k1Validation.ts:15-22), trimmed as ECMAScript trims. Its refusal's
+/// words (`The <name> parameter must be ...`) are kept as this door's
+/// `ValidationError`, as before the beta.6 re-pin.
 fn validate_public_key(value: &str, name: &str) -> Result<PublicKey> {
-    let value = label::trim_ecmascript(value);
-    let length = value.encode_utf16().count();
-    let mustbe = if length % 2 == 1 {
-        format!("even length, not {length}.")
-    } else if value.is_empty() || !value.bytes().all(|c| c.is_ascii_hexdigit()) {
-        "hexadecimal string.".to_string()
-    } else if length < 66 {
-        "at least 66 length.".to_string()
-    } else if length > 66 {
-        "no more than 66 length.".to_string()
-    } else if let Some(key) = compressed_key(value) {
-        return Ok(key);
-    } else {
-        "a valid compressed secp256k1 public key".to_string()
-    };
-    Err(invalid_parameter(name, &mustbe))
+    bsv_rs::wallet::validate_public_key(value, name)
+        .map_err(|refusal| Error::ValidationError(refusal.to_string()))
 }
 
 /// The reference's `WERR_INVALID_PARAMETER` text.
@@ -341,13 +328,16 @@ mod tests {
     }
 }
 
-/// `isValidCompressedPublicKey` (ts-stack@edf6e03
-/// `sdk/src/wallet/Secp256k1Validation.ts:15-22`): `02` or `03` and 64 hex
-/// digits naming a point with x below p, read through
-/// `PublicKey::from_bytes`. `PublicKey::from_hex` no longer answers this
-/// since bsv-rs 0.9.0-beta.5: it reads the reference's lenient `fromString`
-/// forms (bsv-rs #498), an x at or above p reduced among them, which every
-/// validator here refuses.
+/// `02` or `03` and 64 hex digits of either case, untrimmed, naming a point
+/// with x below p, read through `PublicKey::from_bytes`: `toBinary`'s subject
+/// and certifier rule (ts-stack@edf6e03 `Certificate.ts:240-254`), which the
+/// issued certificate's keys (`certificate_issuance::certificate_key`) and the
+/// overlay record's keys (`lookup_record.rs`) read. No public bsv-rs helper is
+/// that rule (bsv-rs's own `read_to_binary_key`, #585, is crate-private):
+/// `wallet::validate_public_key` trims a space-padded text `toBinary` refuses,
+/// `auth::assert_auth_identity_key` refuses upper case `toBinary` reads.
+/// `PublicKey::from_hex` reads the reference's lenient `fromString` forms
+/// (bsv-rs #498), an x at or above p reduced among them, which this refuses.
 pub(crate) fn compressed_key(key_hex: &str) -> Option<PublicKey> {
     if key_hex.len() != 66 || !matches!(key_hex.get(..2), Some("02" | "03")) {
         return None;

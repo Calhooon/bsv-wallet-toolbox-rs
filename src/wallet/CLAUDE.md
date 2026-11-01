@@ -1016,7 +1016,15 @@ record/boolean/string shape guarantees. The later privilege validators at
 
 The shared `validate_certificate_base64_arg` and `validate_public_key_arg`
 retain #261/#271's type-before-certifier order, ECMAScript trimming and
-canonical public-key text. The new guards share the argument error constructor
+canonical public-key text. Since the beta.6 re-pin `validate_public_key_arg`
+and the internalize sender's check read the key through bsv-rs's public
+`wallet::validate_public_key` (bsv-rs #579, the reference's `validatePublicKey`,
+`validationHelpers.ts:185-191`), the port's copy retired; its words are kept
+as the toolbox's `ValidationError`, so no verdict or text moves. The issued
+certificate's keys (`certificate_key`) and the overlay record's keys
+(`lookup_record.rs`) stay on `internalize_args::compressed_key`, `toBinary`'s
+rule (`Certificate.ts:240-254`: untrimmed, either case), which no public
+bsv-rs helper names (its `read_to_binary_key`, #585, is crate-private). The new guards share the argument error constructor
 and UTF-8 length helper. URL validation requires exact whitespace, an absolute
 HTTPS URL, no credentials/query/fragment and a public DNS hostname, in that
 order, then removes trailing slashes. Fields permit at most 100000 entries,
