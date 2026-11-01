@@ -2,8 +2,18 @@
 //!
 //! Provides block header lookups and merkle root validation via a remote
 //! Chaintracks server. Also implements the `ChainTracker` trait from bsv-sdk.
+//!
+//! Every request passes the ladder's Retry-After gate, the explorers' own
+//! ([`RateGate`]; rule 28 read by the keeper on 2026-10-31, #148): a 429
+//! from the header service, ours included, closes the rung until its
+//! Retry-After passes, and a call inside that window is
+//! [`Error::RateLimited`] without a request.
+
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::services::providers::http_client::Client;
+use crate::services::providers::pace::{shared_key, RateGate};
 use crate::services::{traits::BlockHeader, Chain};
 use crate::{Error, Result};
 use async_trait::async_trait;
@@ -64,6 +74,10 @@ impl From<CtBlockHeader> for BlockHeader {
     }
 }
 
+/// How long a 429 with no Retry-After closes the rung: WhatsOnChain's and
+/// Bitails' default.
+const CHAINTRACKS_DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(1);
+
 /// Chaintracks HTTP service client.
 ///
 /// Provides block header lookups via a remote Chaintracks server.
@@ -72,6 +86,8 @@ pub struct ChaintracksServiceClient {
     client: Client,
     config: ChaintracksConfig,
     chain: tokio::sync::OnceCell<Chain>,
+    /// The process's gate for this base and key ([`RateGate::shared`]).
+    gate: Arc<RateGate>,
 }
 
 impl ChaintracksServiceClient {
@@ -81,10 +97,28 @@ impl ChaintracksServiceClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
+        let key = shared_key("Chaintracks", &config.url, config.api_key.as_deref());
         Self {
             client,
             config,
             chain: tokio::sync::OnceCell::new(),
+            gate: RateGate::shared(&key, Self::gate),
+        }
+    }
+
+    fn gate() -> RateGate {
+        RateGate::new("Chaintracks", CHAINTRACKS_DEFAULT_RETRY_AFTER)
+    }
+
+    /// A client for `url` with a gate of its own reading now from `clock`:
+    /// a fixture server is recycled, so a gate keyed by its URL would carry
+    /// one test's 429 into the next.
+    #[cfg(test)]
+    pub(crate) fn at_clock(url: &str, clock: crate::services::providers::pace::Clock) -> Self {
+        let gate = Arc::new(Self::gate().with_clock(clock));
+        Self {
+            gate,
+            ..Self::from_url(url)
         }
     }
 
@@ -108,14 +142,23 @@ impl ChaintracksServiceClient {
         req
     }
 
+    /// One GET through the gate: no request inside a Retry-After window,
+    /// and a 429 closes the rung. `what` names the call in a send fault.
+    async fn get(&self, url: &str, what: &str) -> Result<reqwest::Response> {
+        self.gate.admit()?;
+        let response = self
+            .build_request(url)
+            .send()
+            .await
+            .map_err(|e| Error::NetworkError(format!("Chaintracks {}: {}", what, e)))?;
+        self.gate.check(response.status(), response.headers())?;
+        Ok(response)
+    }
+
     /// Get the current blockchain height.
     pub async fn get_present_height(&self) -> Result<u32> {
         let url = self.build_url("/getPresentHeight");
-        let response = self
-            .build_request(&url)
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Chaintracks getPresentHeight: {}", e)))?;
+        let response = self.get(&url, "getPresentHeight").await?;
 
         if !response.status().is_success() {
             return Err(Error::ServiceError(format!(
@@ -144,9 +187,7 @@ impl ChaintracksServiceClient {
     /// Find block header by height.
     pub async fn find_header_for_height(&self, height: u32) -> Result<BlockHeader> {
         let url = self.build_url(&format!("/findHeaderHexForHeight?height={}", height));
-        let response = self.build_request(&url).send().await.map_err(|e| {
-            Error::NetworkError(format!("Chaintracks findHeaderHexForHeight: {}", e))
-        })?;
+        let response = self.get(&url, "findHeaderHexForHeight").await?;
 
         if !response.status().is_success() {
             return Err(Error::ServiceError(format!(
@@ -179,9 +220,7 @@ impl ChaintracksServiceClient {
     /// Find the chain tip header.
     pub async fn find_chain_tip_header(&self) -> Result<BlockHeader> {
         let url = self.build_url("/findChainTipHeaderHex");
-        let response = self.build_request(&url).send().await.map_err(|e| {
-            Error::NetworkError(format!("Chaintracks findChainTipHeaderHex: {}", e))
-        })?;
+        let response = self.get(&url, "findChainTipHeaderHex").await?;
 
         if !response.status().is_success() {
             return Err(Error::ServiceError(format!(
@@ -211,9 +250,7 @@ impl ChaintracksServiceClient {
     /// Find block header by block hash.
     pub async fn find_header_for_block_hash(&self, hash: &str) -> Result<BlockHeader> {
         let url = self.build_url(&format!("/findHeaderHexForBlockHash?hash={}", hash));
-        let response = self.build_request(&url).send().await.map_err(|e| {
-            Error::NetworkError(format!("Chaintracks findHeaderHexForBlockHash: {}", e))
-        })?;
+        let response = self.get(&url, "findHeaderHexForBlockHash").await?;
 
         if !response.status().is_success() {
             return Err(Error::ServiceError(format!(
@@ -256,10 +293,12 @@ impl ChaintracksServiceClient {
         let chain = self
             .chain
             .get_or_try_init(|| async {
+                self.gate.admit()?;
                 let response = self
                     .build_request(&self.build_url("/getChain"))
                     .send()
                     .await?;
+                self.gate.check(response.status(), response.headers())?;
                 let frame: ResponseFrame<Chain> = response.error_for_status()?.json().await?;
                 if !frame.is_success() {
                     return Err(Error::ServiceError("Chaintracks getChain failed".into()));
@@ -289,7 +328,9 @@ impl ChaintracksServiceClient {
         let start = tip.height.saturating_sub(10);
         let count = tip.height - start + 1;
         let url = self.build_url(&format!("/getHeaders?height={start}&count={count}"));
+        self.gate.admit()?;
         let response = self.build_request(&url).send().await?;
+        self.gate.check(response.status(), response.headers())?;
         let frame: ResponseFrame<String> = response.error_for_status()?.json().await?;
         if !frame.is_success() {
             return Err(Error::ServiceError("Chaintracks getHeaders failed".into()));
@@ -502,6 +543,21 @@ mod tests {
     fn test_chaintracks_from_url() {
         let ct = ChaintracksServiceClient::from_url("https://api.calhouninfra.com");
         assert_eq!(ct.config.url, "https://api.calhouninfra.com");
+    }
+
+    /// One gate per base and key in the process: every `Services` built for
+    /// one Chaintracks spends one Retry-After window (no request is made).
+    #[test]
+    fn clients_for_one_base_and_key_share_one_gate() {
+        let config = |api_key: Option<&str>| ChaintracksConfig {
+            url: "http://127.0.0.1:9/chaintracks-gate-key".to_string(),
+            api_key: api_key.map(str::to_string),
+        };
+        let a = ChaintracksServiceClient::new(config(None));
+        let b = ChaintracksServiceClient::new(config(None));
+        let keyed = ChaintracksServiceClient::new(config(Some("k")));
+        assert!(Arc::ptr_eq(&a.gate, &b.gate));
+        assert!(!Arc::ptr_eq(&a.gate, &keyed.gate));
     }
 
     #[test]

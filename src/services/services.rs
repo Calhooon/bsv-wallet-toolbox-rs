@@ -738,20 +738,12 @@ impl Services {
                 api_key: None,
             };
             let primary = ChaintracksServiceClient::new(ct_config);
-            let tracker = if options.break_glass_explorer_headers {
-                tracing::warn!(
-                    marker = "break_glass_explorer_header",
-                    "break-glass: the explorer header fallback is ON; WhatsOnChain and Bitails are asked for merkle roots and headers whenever the header service gives no answer"
-                );
-                FallbackChainTracker::with_break_glass_explorers(
-                    primary,
-                    whatsonchain.base_url(),
-                    bitails.base_url(),
-                )
-            } else {
-                FallbackChainTracker::new(primary)
-            };
-            Some(StdArc::new(tracker))
+            Some(StdArc::new(chain_tracker(
+                &options,
+                primary,
+                whatsonchain.base_url(),
+                bitails.base_url(),
+            )))
         } else {
             None
         };
@@ -920,6 +912,37 @@ impl Services {
             post_beef_mode: PostBeefMode::default(),
             broadcast_memory: RwLock::new(None),
         })
+    }
+
+    /// These services with each configured header service's gate its own,
+    /// reading now from `clock`: fixture servers are recycled, so a gate
+    /// keyed by their URL would carry one scene's 429 into the next, and a
+    /// rung closed for its default second must stay closed for the scene's
+    /// next call however slow the runner (#148, as the explorers' #53).
+    #[cfg(test)]
+    pub(crate) fn with_header_clock(
+        mut self,
+        clock: &crate::services::providers::pace::Clock,
+    ) -> Self {
+        if let Some(url) = self.options.bhs_url.clone() {
+            let config = BhsConfig {
+                url,
+                api_key: self.options.bhs_api_key.clone(),
+            };
+            let bhs = BlockHeaderService::at_clock(config, clock.clone());
+            self.bhs = Some(StdArc::new(bhs));
+        }
+        if let Some(url) = self.options.chaintracks_url.clone() {
+            let primary = ChaintracksServiceClient::at_clock(&url, clock.clone());
+            let tracker = chain_tracker(
+                &self.options,
+                primary,
+                self.whatsonchain.base_url(),
+                self.bitails.base_url(),
+            );
+            self.chaintracks = Some(StdArc::new(tracker));
+        }
+        self
     }
 
     /// Record what `provider_name` just accepted and make it the sticky
@@ -1723,6 +1746,25 @@ impl Services {
             Ok(found) if found.merkle_path.is_some() => SpendEvidence::Proven(spender.to_string()),
             _ => SpendEvidence::Bound(spender.to_string()),
         }
+    }
+}
+
+/// The chain tracker over the header service: the primary alone, or with
+/// the explorers behind it under the break-glass setting (P0-1c).
+fn chain_tracker(
+    options: &ServicesOptions,
+    primary: ChaintracksServiceClient,
+    whatsonchain_base: &str,
+    bitails_base: &str,
+) -> FallbackChainTracker {
+    if options.break_glass_explorer_headers {
+        tracing::warn!(
+            marker = "break_glass_explorer_header",
+            "break-glass: the explorer header fallback is ON; WhatsOnChain and Bitails are asked for merkle roots and headers whenever the header service gives no answer"
+        );
+        FallbackChainTracker::with_break_glass_explorers(primary, whatsonchain_base, bitails_base)
+    } else {
+        FallbackChainTracker::new(primary)
     }
 }
 
