@@ -171,7 +171,7 @@ the oracle path) is green with the flag on: no moved verdict, text or row.
 ## The bench (A8-5)
 
 The census binary built with the flag off and on at ad7b1712 (bsv-rs
-beta.5; the commits after it restructure without a behaviour change), three samply runs a scene and binary, off and on
+beta.5), three samply runs a scene and binary, off and on
 alternated run by run (r1 off then on, r2 on then off, r3 off then on), the
 median. The host is shared with other lanes: round 1 ran at load averages of
 about 106 to 126, round 2 at about 27 to 62, so the shares and times move
@@ -219,6 +219,27 @@ output for internalize; the on-CPU and wall milliseconds per call):
 | process 10 | 0.642 | 0.612 | 2.634 | 2.617 | 11.827 | 13.010 | 5.861 | 5.719 |
 | process 100 | 0.742 | 0.827 | 2.936 | 3.049 | 248.991 | 131.840 | 72.730 | 57.720 |
 <!-- a8-record:doors:end -->
+
+Every median above is ad7b1712's. After it, 6ac4b4ac rewrote the a8 path
+without a behaviour change (one `verify_spends` for both readings, the
+reading an `Option`; the subject scan by iterator), so the internalize 4 MB
+scene ran again at 74994d79, the tip that holds 6ac4b4ac, with the same
+command and iterations (bsv-rs beta.6, rustc 1.98.1, load averages 34 to
+37):
+
+<!-- a8-record:tip:begin -->
+| scene | sha2 % off | sha2 % on | memmove % off | memmove % on | wall ms off | wall ms on | on-CPU ms off | on-CPU ms on |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| beef-internalize 4 MB | 57.88 | 44.74 | 16.53 | 20.73 | 15.66 | 11.33 | 15.49 | 11.18 |
+<!-- a8-record:tip:end -->
+
+At the tip the flag takes the scene's wall time per call from 15.66 to 11.33
+ms and its on-CPU time from 15.49 to 11.18 ms, and the sha2 share from 57.88
+to 44.74; ad7b1712's round 2 gave 66.58 to 46.15 ms wall and 36.99 to 27.38
+ms on CPU. The tip's off build is not ad7b1712's off build (another rustc,
+bsv-rs beta.6, a lock resolved fresh since `Cargo.lock` is not committed, a
+quieter host), so only the off and on of one round compare: the direction
+and the size, about 28 percent on CPU, hold at the tip.
 
 Read: on the internalize door the flag takes the body's hashes from 7 to 4
 and its sha2 share falls (round 2: 56.45 to 43.43, 51.95 to 38.75, 46.13 to

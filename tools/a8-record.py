@@ -26,6 +26,7 @@ TABLES = {
     "round-1": ("bench_round_1_interleaved", True),
     "round-2": ("bench_round_2_interleaved", True),
     "doors": ("bench_other_scenes_round_1", True),
+    "tip": ("bench_tip_74994d79", True),
 }
 FIELDS = (("sha", "sha2 %"), ("memmove", "memmove %"),
           ("ms", "wall ms"), ("cpu_ms", "on-CPU ms"))
