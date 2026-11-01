@@ -470,7 +470,7 @@ pub(super) async fn judge_caller_beef(
     // stream refuses take the oracle below, its texts and its verdict.
     if super::beef_verification::a8_beef_bytes() {
         if let (Ok(caller), Ok(read)) = (read_once(caller), read_once(assembled)) {
-            return judge_read_caller_beef(conn, &caller, &read, word).await;
+            return judge_read_caller_beef(conn, &caller, assembled, &read, word).await;
         }
     }
     // The assembly parsed the caller's bytes already.
@@ -489,15 +489,30 @@ pub(super) async fn judge_caller_beef(
     if judged.is_empty() {
         return Ok(());
     }
-    // A BEEF the wallet did not sign needs headers for its proofs (T2,
-    // #509): with no header source the pre-check holds whatever the era.
+    judge_word(word, assembled, None, &|txid| {
+        judged.contains(&display_hex(txid))
+    })
+    .await
+}
+
+/// The word on the judged set of `bytes`, from the bytes (`read` `None`,
+/// the oracle) or from their reading in hand (`a8-beef-bytes`, #556). A
+/// BEEF the wallet did not sign needs headers for its proofs (T2, #509):
+/// with no header source the pre-check holds whatever the era.
+async fn judge_word(
+    word: &CallerWord<'_>,
+    bytes: &[u8],
+    read: Option<&ReadOnce>,
+    judge: &(dyn Fn(&Hash32) -> bool + Sync),
+) -> Result<()> {
     let tracker =
         super::beef_verification::proofs_tracker(word.tracker, word.services.as_deref()).await?;
     super::beef_verification::verify_beef_word(
-        assembled,
+        bytes,
+        read,
         tracker,
         word.network,
-        &|txid| judged.contains(&display_hex(txid)),
+        judge,
         word.verifier,
     )
     .await
@@ -526,10 +541,12 @@ fn judged_read_set(
 
 /// `judge_caller_beef` on one reading of each BEEF (the `a8-beef-bytes`
 /// path, #556): the same set, the same store read and the same word, the
-/// word pass fed the assembly's elements in hand.
+/// word pass fed the assembly's elements in hand (`assembled`, the
+/// reading of `bytes`).
 async fn judge_read_caller_beef(
     conn: &mut SqliteConnection,
     caller: &ReadOnce,
+    bytes: &[u8],
     assembled: &ReadOnce,
     word: &CallerWord<'_>,
 ) -> Result<()> {
@@ -549,16 +566,7 @@ async fn judge_read_caller_beef(
     if judged.is_empty() {
         return Ok(());
     }
-    let tracker =
-        super::beef_verification::proofs_tracker(word.tracker, word.services.as_deref()).await?;
-    super::beef_verification::verify_read_word(
-        assembled,
-        tracker,
-        word.network,
-        &|txid| judged.contains(txid),
-        word.verifier,
-    )
-    .await
+    judge_word(word, bytes, Some(assembled), &|txid| judged.contains(txid)).await
 }
 
 /// The wire-order hash of a display txid `store_holds` answered.

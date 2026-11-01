@@ -510,7 +510,7 @@ reader and hands the elements by reference to every pass (`read_incoming_once`
 and `verify_spends` with the reading at internalize: the subject scan, the structure pass
 folded into a structure-only `BeefIndex` as `StreamVerifier` folds it, the
 word pass through `live_word::verify_elements`; `judge_read_caller_beef` and
-`verify_read_word` at create's judge), where the oracle reads the same bytes
+`verify_beef_word` with the reading at create's judge), where the oracle reads the same bytes
 four times and bsv-rs's decoder hashes and copies every body each time.
 `a8_beef_bytes()` chooses (a test chooses either path on its thread,
 `A8_PATH`); the differential (`a8_differential.rs`, `a8_beef_bytes_tests.rs`,
