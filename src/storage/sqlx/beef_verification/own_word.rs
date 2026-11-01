@@ -18,7 +18,7 @@ use bsv_rs::script::{NotJudgedCause, ScriptFlags};
 use bsv_rs::transaction::beef_stream::{
     display_hex, ChainTip, Element, Hash32, SpendRefusal, TxBody,
 };
-use bsv_rs::transaction::{Beef, BeefStream, BEEF_V1};
+use bsv_rs::transaction::{Beef, BeefStream, WorkBudget, BEEF_V1};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -145,8 +145,8 @@ pub(super) struct InputJudgements<'a> {
     host_body: Option<Arc<TxBody>>,
     selected: Vec<(SpendRequest, SpendVerificationContext)>,
     /// The transaction's work bound at a door (`WorkBudget::per_transaction`)
-    /// and the work its inputs spent.
-    transaction_work: Option<u64>,
+    /// and the work its inputs spent, charged by bsv-rs's `WorkBudget::charge`.
+    transaction_work: WorkBudget,
     work_spent: u64,
 }
 
@@ -163,7 +163,7 @@ impl<'a> InputJudgements<'a> {
             verifier,
             host_body: None,
             selected: Vec::new(),
-            transaction_work: None,
+            transaction_work: WorkBudget::new(),
             work_spent: 0,
         }
     }
@@ -171,7 +171,7 @@ impl<'a> InputJudgements<'a> {
     /// Bound the transaction's total work over the inputs the interpreter
     /// judges (a door's `WorkBudget::per_transaction`; the signer has none).
     pub(super) fn with_transaction_work(mut self, limit: Option<u64>) -> Self {
-        self.transaction_work = limit;
+        self.transaction_work = WorkBudget::new().with_per_transaction(limit);
         self
     }
 
@@ -205,12 +205,13 @@ impl<'a> InputJudgements<'a> {
         }
         // bsv-rs's rule (`WorkBudget`, bsv-rs #519): each input runs under the
         // per-input bound alone (unbounded with a transaction bound only) and
-        // its work is charged after it; a total above the transaction's bound
-        // is `TransactionWorkBudgetExceeded` at the crossing input.
+        // its work is charged after it by bsv-rs's `WorkBudget::charge` (#567);
+        // a total above the transaction's bound is `TransactionWorkBudgetExceeded`
+        // at the crossing input.
         let budget = work_budget();
         let limit = budget
             .per_input
-            .or(self.transaction_work.map(|_| u64::MAX))
+            .or(self.transaction_work.per_transaction.map(|_| u64::MAX))
             .unwrap_or(u64::MAX);
         let spent = judge_input(
             word,
@@ -221,31 +222,10 @@ impl<'a> InputJudgements<'a> {
             Arc::clone(&self.transaction),
             limit,
         )?;
-        self.charge(vin, spent)
-    }
-
-    /// The work an input spent added to the transaction's total, saturating,
-    /// as bsv-rs's verifier charges it: past the door's bound the crossing
-    /// input is not judged, the bound and the total named.
-    fn charge(&mut self, vin: usize, spent: u64) -> Result<()> {
-        let next = self.work_spent.checked_add(spent);
-        self.work_spent = next.unwrap_or(u64::MAX);
-        match self.transaction_work {
-            Some(limit) if next.is_none() || self.work_spent > limit => {
-                let cause = NotJudgedCause::TransactionWorkBudgetExceeded {
-                    input: u32::try_from(vin).unwrap_or(u32::MAX),
-                    limit,
-                    total: self.work_spent,
-                };
-                Err(no_word_refusal(
-                    self.txid,
-                    self.body,
-                    vin,
-                    NoWord::NotJudged(cause),
-                ))
-            }
-            _ => Ok(()),
-        }
+        let input = u32::try_from(vin).unwrap_or(u32::MAX);
+        self.transaction_work
+            .charge(&mut self.work_spent, input, spent)
+            .map_err(|cause| no_word_refusal(self.txid, self.body, vin, NoWord::NotJudged(cause)))
     }
 
     pub(super) fn finish(self) -> Result<()> {

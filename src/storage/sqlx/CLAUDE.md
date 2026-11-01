@@ -537,9 +537,12 @@ per-input bound alone, its `work_spent` is then added to the total, and a
 total above the transaction bound is
 `NotJudgedCause::TransactionWorkBudgetExceeded { input, limit, total }` at the
 crossing input (`exceeded transaction work budget {limit} units after {total}
-units of work.`). bsv-rs's stream verifier has no host hook and its charge is
-crate-private, so the word pass applies the rule input by input
-(`InputJudgements::charge`). An input past its own bound is
+units of work.`). bsv-rs's stream verifier has no host hook, so the word pass
+judges input by input and charges each input, in input order against the
+transaction's `u64` total, through bsv-rs's own `WorkBudget::charge` (public
+since the beta.6 re-pin, bsv-rs #567); the port's own sum
+(`InputJudgements::charge`, the beta.5 copy of the rule) is retired with no
+cause or text moved. An input past its own bound is
 `NotJudgedCause::WorkBudgetExceeded`; either is refused at a door, and the
 signer, which reads `per_input` alone, skips an input past it. Before the
 beta.5 re-pin the port summed the total itself, ran the crossing input under
