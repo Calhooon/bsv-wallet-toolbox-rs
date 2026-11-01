@@ -33,7 +33,7 @@ impl Default for ObservedWallet {
 
 // Expand the delegation before async_trait transforms the implementation.
 macro_rules! observed_wallet_methods {
-    ($(fn $name:ident(&self $(, $arg:ident: $arg_type:ty)*) -> $result:ty;)*) => {
+    ($($name:ident($($arg:ident: $arg_type:ty)?) -> $result:ty;)*) => {
         #[async_trait::async_trait]
         impl WalletInterface for ObservedWallet {
     async fn verify_hmac(
@@ -62,40 +62,50 @@ macro_rules! observed_wallet_methods {
         }
         self.inner.decrypt(args)
     }
-            $(async fn $name(&self $(, $arg: $arg_type)*) -> $result {
-                WalletInterface::$name(&self.inner $(, $arg)*).await
+            $(async fn $name(
+                &self,
+                $($arg: $arg_type,)?
+                originator: Option<&str>,
+            ) -> bsv_rs::Result<$result> {
+                WalletInterface::$name(&self.inner, $($arg,)? originator).await
             })*
         }
     };
 }
 
 observed_wallet_methods! {
-    fn get_public_key(&self, args: GetPublicKeyArgs, originator: Option<&str>) -> bsv_rs::Result<GetPublicKeyResult>;
-    fn encrypt(&self, args: EncryptArgs, originator: Option<&str>) -> bsv_rs::Result<EncryptResult>;
-    fn create_hmac(&self, args: CreateHmacArgs, originator: Option<&str>) -> bsv_rs::Result<CreateHmacResult>;
-    fn create_signature(&self, args: CreateSignatureArgs, originator: Option<&str>) -> bsv_rs::Result<CreateSignatureResult>;
-    fn verify_signature(&self, args: VerifySignatureArgs, originator: Option<&str>) -> bsv_rs::Result<VerifySignatureResult>;
-    fn reveal_counterparty_key_linkage(&self, args: WalletRevealCounterpartyArgs, originator: Option<&str>) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult>;
-    fn reveal_specific_key_linkage(&self, args: WalletRevealSpecificArgs, originator: Option<&str>) -> bsv_rs::Result<RevealSpecificKeyLinkageResult>;
-    fn create_action(&self, args: CreateActionArgs, originator: Option<&str>) -> bsv_rs::Result<CreateActionResult>;
-    fn sign_action(&self, args: SignActionArgs, originator: Option<&str>) -> bsv_rs::Result<SignActionResult>;
-    fn abort_action(&self, args: AbortActionArgs, originator: Option<&str>) -> bsv_rs::Result<AbortActionResult>;
-    fn list_actions(&self, args: ListActionsArgs, originator: Option<&str>) -> bsv_rs::Result<ListActionsResult>;
-    fn internalize_action(&self, args: InternalizeActionArgs, originator: Option<&str>) -> bsv_rs::Result<InternalizeActionResult>;
-    fn list_outputs(&self, args: ListOutputsArgs, originator: Option<&str>) -> bsv_rs::Result<ListOutputsResult>;
-    fn relinquish_output(&self, args: RelinquishOutputArgs, originator: Option<&str>) -> bsv_rs::Result<RelinquishOutputResult>;
-    fn acquire_certificate(&self, args: AcquireCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<WalletCertificate>;
-    fn list_certificates(&self, args: ListCertificatesArgs, originator: Option<&str>) -> bsv_rs::Result<ListCertificatesResult>;
-    fn prove_certificate(&self, args: ProveCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<ProveCertificateResult>;
-    fn relinquish_certificate(&self, args: RelinquishCertificateArgs, originator: Option<&str>) -> bsv_rs::Result<RelinquishCertificateResult>;
-    fn discover_by_identity_key(&self, args: DiscoverByIdentityKeyArgs, originator: Option<&str>) -> bsv_rs::Result<DiscoverCertificatesResult>;
-    fn discover_by_attributes(&self, args: DiscoverByAttributesArgs, originator: Option<&str>) -> bsv_rs::Result<DiscoverCertificatesResult>;
-    fn is_authenticated(&self, originator: Option<&str>) -> bsv_rs::Result<AuthenticatedResult>;
-    fn wait_for_authentication(&self, originator: Option<&str>) -> bsv_rs::Result<AuthenticatedResult>;
-    fn get_height(&self, originator: Option<&str>) -> bsv_rs::Result<GetHeightResult>;
-    fn get_header_for_height(&self, args: GetHeaderArgs, originator: Option<&str>) -> bsv_rs::Result<GetHeaderResult>;
-    fn get_network(&self, originator: Option<&str>) -> bsv_rs::Result<GetNetworkResult>;
-    fn get_version(&self, originator: Option<&str>) -> bsv_rs::Result<GetVersionResult>;
+    get_public_key(args: GetPublicKeyArgs) -> GetPublicKeyResult;
+    encrypt(args: EncryptArgs) -> EncryptResult;
+    create_hmac(args: CreateHmacArgs) -> CreateHmacResult;
+    create_signature(args: CreateSignatureArgs) -> CreateSignatureResult;
+    verify_signature(args: VerifySignatureArgs) -> VerifySignatureResult;
+    reveal_counterparty_key_linkage(args: WalletRevealCounterpartyArgs) -> RevealCounterpartyKeyLinkageResult;
+    reveal_specific_key_linkage(args: WalletRevealSpecificArgs) -> RevealSpecificKeyLinkageResult;
+    create_action(args: CreateActionArgs) -> CreateActionResult;
+    sign_action(args: SignActionArgs) -> SignActionResult;
+    abort_action(args: AbortActionArgs) -> AbortActionResult;
+    list_actions(args: ListActionsArgs) -> ListActionsResult;
+    internalize_action(args: InternalizeActionArgs) -> InternalizeActionResult;
+    list_outputs(args: ListOutputsArgs) -> ListOutputsResult;
+    relinquish_output(args: RelinquishOutputArgs) -> RelinquishOutputResult;
+    acquire_certificate(args: AcquireCertificateArgs) -> WalletCertificate;
+    list_certificates(args: ListCertificatesArgs) -> ListCertificatesResult;
+    prove_certificate(args: ProveCertificateArgs) -> ProveCertificateResult;
+    relinquish_certificate(args: RelinquishCertificateArgs) -> RelinquishCertificateResult;
+    discover_by_identity_key(args: DiscoverByIdentityKeyArgs) -> DiscoverCertificatesResult;
+    discover_by_attributes(args: DiscoverByAttributesArgs) -> DiscoverCertificatesResult;
+    is_authenticated() -> AuthenticatedResult;
+    wait_for_authentication() -> AuthenticatedResult;
+    get_height() -> GetHeightResult;
+    get_header_for_height(args: GetHeaderArgs) -> GetHeaderResult;
+    get_network() -> GetNetworkResult;
+    get_version() -> GetVersionResult;
+}
+
+/// The compressed public key of the private key `scalar`.
+fn public_hex(scalar: u64) -> String {
+    let private = PrivateKey::from_hex(&format!("{scalar:064x}")).unwrap();
+    private.public_key().to_hex()
 }
 
 async fn response_run(
@@ -305,10 +315,7 @@ async fn type_precedes_subject_and_certifier() {
         |r| {
             r["certificate"]["type"] = json!(BASE64.encode([8; 32]));
             r["certificate"]["subject"] = json!(certifier());
-            r["certificate"]["certifier"] = json!(PrivateKey::from_hex(&format!("{:064x}", 41))
-                .unwrap()
-                .public_key()
-                .to_hex());
+            r["certificate"]["certifier"] = json!(public_hex(41));
         },
         &format!(
             "Invalid certificate type! Expected: {}, Received: {}",
@@ -321,17 +328,11 @@ async fn type_precedes_subject_and_certifier() {
 
 #[tokio::test]
 async fn subject_precedes_certifier() {
-    let identity = PrivateKey::from_hex(&format!("{:064x}", 37))
-        .unwrap()
-        .public_key()
-        .to_hex();
+    let identity = public_hex(37);
     response_error(
         |r| {
             r["certificate"]["subject"] = json!(certifier());
-            r["certificate"]["certifier"] = json!(PrivateKey::from_hex(&format!("{:064x}", 41))
-                .unwrap()
-                .public_key()
-                .to_hex());
+            r["certificate"]["certifier"] = json!(public_hex(41));
         },
         &format!(
             "Invalid certificate subject! Expected: {identity}, Received: {}",
@@ -343,16 +344,10 @@ async fn subject_precedes_certifier() {
 
 #[tokio::test]
 async fn certifier_precedes_revocation() {
-    let other = PrivateKey::from_hex(&format!("{:064x}", 41))
-        .unwrap()
-        .public_key()
-        .to_hex();
+    let other = public_hex(41);
     response_error(
         |r| {
-            r["certificate"]["certifier"] = json!(PrivateKey::from_hex(&format!("{:064x}", 41))
-                .unwrap()
-                .public_key()
-                .to_hex());
+            r["certificate"]["certifier"] = json!(public_hex(41));
             r["certificate"]["revocationOutpoint"] = json!("");
         },
         &format!(
