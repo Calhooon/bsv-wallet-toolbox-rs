@@ -52,7 +52,10 @@ How many times the child's body (the 1 MB transaction) is hashed in one door
 call: a scratch copy of the tree (never this checkout) built against a copy
 of bsv-rs 0.9.0-beta.5 with a counter in `sha256`, `sha256d` and the stream
 decoder's per-transaction hash, logging every hash over 100 kB with its
-backtrace; one call of each scene, the fixture's own hashes left out.
+backtrace; one call of each scene, the fixture's own hashes left out. The
+counter is `bsv-rs-hash-counter.diff` beside this record. Re-counted at
+74994d79 (after 6ac4b4ac) on bsv-rs beta.6 with that patch: the same four
+totals, 7, 4, 15 and 13.
 
 | site | internalize, off | internalize, on | create, off | create, on |
 |---|---|---|---|---|
@@ -250,7 +253,56 @@ copies left are the wallet's parse, the stored rows and SQLite's. On create
 the hashes go from 15 to 13 and the on-CPU time falls 18 to 26 percent in
 round 2, within reach of the noise floor (process at 100 inputs moved 21
 percent with no code difference), so create's figure waits for a quiet host.
-No loss is measured.
+No on-CPU loss is measured on the BEEF scenes: the six scenes' on-CPU time
+per call is lower with the flag on in both rounds and at the tip. Of the
+harness's other scenes two rose within the noise floor (internalize 1
+0.386 to 0.403 ms, process 1 2.049 to 2.129 ms). Wall time is not a claim: round 1, at a load of about 106 to 126, put internalize at 4
+MB at 167.52 ms a call off and 329.93 on (round 2 66.58 to 46.15, the tip
+15.66 to 11.33), and create at 1 MB at 47.30 off and 52.15 on.
+
+## Rerunning a scene
+
+From the repository root, the build out of the checkout
+(`CARGO_TARGET_DIR`), samply 0.13.1 (`cargo install --root <dir> samply
+--version 0.13.1 --locked`):
+
+```bash
+cargo build --release --example a8_census                          # off
+cargo build --release --example a8_census --features a8-beef-bytes # on
+samply record --save-only --unstable-presymbolicate --rate 2000 \
+  -o off-r1.json.gz -- "$CARGO_TARGET_DIR"/release/examples/a8_census \
+  beef-internalize 4 60 > off-r1.out
+python3 benches/a8_census_profile.py off-r1.json.gz off-r1.out > off-r1.profile.json
+```
+
+Copy each build's binary aside before the other build overwrites it. The
+iterations are the census's: `beef-internalize` 200, 60 and 25 at 1, 4 and
+10 MB; `beef-create` 150, 40 and 15; `create` 2000, 500 and 60 at 1, 10
+and 100 inputs; `process` 700, 400 and 50; `internalize 1` 3000. Three runs
+a build, off and on alternated (r1 off then on, r2 on then off, r3 off then
+on). From each profile's json: `sha` is the sum of `share_pct` over the
+`functions` named `sha2::sha256::...compress...` (the symbol is
+`aarch64_sha2::compress` in the census's build and `compress256` at the
+tip's), `memmove` the `share_pct` of `_platform_memmove`, `ms` is
+`door_wall_ms` and `cpu_ms` is `on_cpu_ms`, each over `iterations`; a
+figure is the median of the three runs. The tables above are rendered from
+the json by `python3 tools/a8-record.py` (`--check` holds them).
+
+The counts, in a scratch directory, never this checkout:
+
+```bash
+cp -R ~/.cargo/registry/src/*/bsv-rs-0.9.0-beta.6 "$S"/bsv-rs
+(cd "$S"/bsv-rs && git apply <checkout>/docs/a8/bsv-rs-hash-counter.diff)
+git archive HEAD | tar -x -C "$S"/tree
+printf '\n[patch.crates-io]\nbsv-rs = { path = "%s/bsv-rs" }\n' "$S" >> "$S"/tree/Cargo.toml
+(cd "$S"/tree && cargo build --release --example a8_census)  # and --features a8-beef-bytes
+"$CARGO_TARGET_DIR"/release/examples/a8_census beef-internalize 1 1 2> off.err
+sed -n '/^beef bytes/,$p' off.err | grep -c '^A8HASH'           # 7 off, 4 on
+```
+
+`beef bytes` is printed when the fixture is built, so the lines after it
+are the door call's; `beef-create 1 1` gives 15 off and 13 on. Each
+`A8HASH` line is followed by its backtrace, which names the site.
 
 ## What is left (the next rows)
 
