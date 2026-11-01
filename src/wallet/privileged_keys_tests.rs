@@ -321,3 +321,138 @@ async fn unprivileged_key_calls_stay_with_the_everyday_key() {
     }
     assert_eq!(double.asked(), Vec::<Asked>::new());
 }
+
+/// One of the seven calls with `privileged: true` and no reason, every other
+/// argument valid: the everyday ProtoWallet's validators refuse it before the
+/// route decides, as the reference's substrates run `validateWalletArgs`
+/// ahead of the wallet.
+async fn call_without_reason(wallet: &TestWallet, name: &str) -> bsv_rs::Result<()> {
+    let originator = Some(ORIGINATOR);
+    macro_rules! unreasoned {
+        ($kind:ident { $($field:ident: $value:expr),* $(,)? }) => {
+            $kind {
+                $($field: $value,)*
+                privileged: Some(true),
+                privileged_reason: None,
+                ..Default::default()
+            }
+        };
+    }
+    let key_id = || "1".to_string();
+    match name {
+        "get_public_key" => {
+            let args = unreasoned!(GetPublicKeyArgs { identity_key: true });
+            wallet.get_public_key(args, originator).await.map(drop)
+        }
+        "encrypt" => {
+            let args = unreasoned!(EncryptArgs {
+                plaintext: b"secret".to_vec(),
+                protocol_id: protocol(),
+                key_id: key_id()
+            });
+            wallet.encrypt(args, originator).await.map(drop)
+        }
+        "decrypt" => {
+            let args = unreasoned!(DecryptArgs {
+                ciphertext: b"sealed".to_vec(),
+                protocol_id: protocol(),
+                key_id: key_id()
+            });
+            wallet.decrypt(args, originator).await.map(drop)
+        }
+        "create_hmac" => {
+            let args = unreasoned!(CreateHmacArgs {
+                data: b"data".to_vec(),
+                protocol_id: protocol(),
+                key_id: key_id()
+            });
+            wallet.create_hmac(args, originator).await.map(drop)
+        }
+        "verify_hmac" => {
+            let args = unreasoned!(VerifyHmacArgs {
+                data: b"data".to_vec(),
+                hmac: [0; 32],
+                protocol_id: protocol(),
+                key_id: key_id()
+            });
+            wallet.verify_hmac(args, originator).await.map(drop)
+        }
+        "create_signature" => {
+            let args = unreasoned!(CreateSignatureArgs {
+                data: Some(b"data".to_vec()),
+                protocol_id: protocol(),
+                key_id: key_id()
+            });
+            wallet.create_signature(args, originator).await.map(drop)
+        }
+        "verify_signature" => {
+            let args = unreasoned!(VerifySignatureArgs {
+                data: Some(b"data".to_vec()),
+                signature: vec![1],
+                protocol_id: protocol(),
+                key_id: key_id()
+            });
+            wallet.verify_signature(args, originator).await.map(drop)
+        }
+        other => unreachable!("{other}"),
+    }
+}
+
+fn assert_argument_refusal<T: std::fmt::Debug>(
+    scene: &str,
+    result: bsv_rs::Result<T>,
+    expected: &str,
+) {
+    match result {
+        Err(bsv_rs::Error::WalletRefusal { class, message }) => {
+            assert_eq!(
+                class,
+                bsv_rs::WalletRefusalClass::InvalidParameter,
+                "{scene}"
+            );
+            assert_eq!(message, expected, "{scene}");
+        }
+        other => panic!("{scene}: expected the validator's refusal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_privileged_key_call_without_a_reason_is_the_validators_refusal() {
+    const MISSING_REASON: &str =
+        "The privilegedReason parameter must be a value when 'privileged' is true";
+    let (_dir, mut wallet) = wallet().await;
+    let double = PrivilegedDouble::new();
+    for manager in ["without", "with"] {
+        if manager == "with" {
+            wallet.set_privileged_key_manager(double.clone());
+        }
+        for name in CALLS {
+            let answer = call_without_reason(&wallet, name).await;
+            let scene = format!("{name} {manager} a manager");
+            assert_argument_refusal(&scene, answer, MISSING_REASON);
+        }
+    }
+    // The manager never hears a request its arguments refuse.
+    assert_eq!(double.asked(), Vec::<Asked>::new());
+}
+
+#[tokio::test]
+async fn a_privileged_argument_refusal_after_the_privilege_keeps_its_place() {
+    // A valid privilege and a signature that is no DER: the validator's
+    // later refusal, ahead of the no-manager refusal.
+    let (_dir, wallet) = wallet().await;
+    let args = VerifySignatureArgs {
+        data: Some(b"data".to_vec()),
+        signature: vec![1],
+        protocol_id: protocol(),
+        key_id: "1".to_string(),
+        privileged: Some(true),
+        privileged_reason: Some(REASON.to_string()),
+        ..Default::default()
+    };
+    assert_argument_refusal(
+        "verify_signature",
+        wallet.verify_signature(args, Some(ORIGINATOR)).await,
+        "The signature parameter must be a canonical DER-encoded ECDSA signature",
+    );
+}
