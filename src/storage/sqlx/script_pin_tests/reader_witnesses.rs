@@ -1,13 +1,20 @@
-//! #396: the live internalize door over two bsv-rs 0.9.0-beta.2 reader changes.
+//! #396: the live internalize door over two bsv-rs 0.9.0-beta.2 reader changes,
+//! and #395: the door's stack memory figure (`DOOR_STACK_MEMORY_BYTES`).
 //!
-//! Each witness is a mainnet payment whose parent is proven at Chronicle's
+//! Each door witness is a mainnet payment whose parent is proven at Chronicle's
 //! activation height, the tip six blocks on, so the stream and the live word
 //! both judge the spend in the post-Chronicle era.
 
-use super::{internalize_on, proof, signed_payment, FixtureTracker};
+use super::{internalize_on, payment, proof, signed_payment, FixtureTracker};
+use crate::spend_verifier::DOOR_STACK_MEMORY_BYTES;
+use crate::Error;
+use bsv_rs::block::ChainParams;
+use bsv_rs::primitives::bsv::sighash::{parse_transaction, TxSighashCache};
 use bsv_rs::primitives::Writer;
-use bsv_rs::script::{LockingScript, ProtocolEra, UnlockingScript};
-use bsv_rs::transaction::{Beef, BeefTx, Transaction, TransactionInput, TransactionOutput};
+use bsv_rs::script::{ProtocolEra, ScriptResource, Spend, TxSpendParams, UnlockingScript, Word};
+use bsv_rs::transaction::beef_stream::SpendRefusal;
+use bsv_rs::transaction::{Beef, BeefTx, Transaction};
+use std::sync::Arc;
 
 const HEIGHT: u32 = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
 
@@ -82,48 +89,115 @@ async fn internalize_accepts_a_child_written_ahead_of_its_parent() {
     assert_eq!(rows, expected);
 }
 
-/// One push of `PUSH` bytes, copied by `OP_DUP` `DUPS` times and dropped
-/// again: 331 elements of 100,000 bytes, 33,100,000 bytes on the stack.
+/// The size of the one push the stack copies: 100,000 bytes, 100,032 on the
+/// node's count (its bytes plus 32).
 const PUSH: usize = 100_000;
-const DUPS: usize = 330;
 
-/// bsv-rs #331 (0.9.0-beta.2): the streaming reader runs each input under
-/// `memory_limit: None`, uncapped, where beta.1 declined a stack past
-/// 32,000,000 bytes. The door passes no figure of its own yet, so this spend
-/// is accepted; #395 gives the door its figure (bsv-rs #373's
-/// `set_memory_limit`), and this witness then turns to its refusal.
-#[tokio::test]
-async fn internalize_runs_a_script_past_beta1_memory_cap_until_395() {
-    const { assert!((DUPS + 1) * PUSH > 32_000_000) };
-    let lock = format!("{}{}", "76".repeat(DUPS), "75".repeat(DUPS));
-    let mut parent = Transaction::new();
-    let mut input = TransactionInput::new("11".repeat(32), 0);
-    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(input);
-    parent.outputs.push(TransactionOutput {
-        satoshis: Some(100),
-        locking_script: LockingScript::from_hex(&lock).unwrap(),
-        change: false,
-    });
+/// A payment whose spend pushes `PUSH` bytes and then runs the parent's
+/// `OP_DUP` `dups` times and `OP_DROP` as often: `dups + 1` elements of
+/// `PUSH` bytes at the peak, `(dups + 1) * 100,032` bytes on the node's count.
+fn copies(dups: usize) -> (Transaction, Transaction) {
+    let (parent, mut child) = payment(&format!("{}{}", "76".repeat(dups), "75".repeat(dups)));
     let mut unlock = vec![0x4e];
     unlock.extend(u32::try_from(PUSH).unwrap().to_le_bytes());
     unlock.extend(std::iter::repeat_n(0x01, PUSH));
-    let mut child = Transaction::new();
-    let mut input = TransactionInput::new(parent.id(), 0);
-    input.unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
-    child.inputs.push(input);
-    child.outputs.push(TransactionOutput {
-        satoshis: Some(90),
-        locking_script: LockingScript::from_hex("51").unwrap(),
-        change: false,
-    });
+    child.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
+    (parent, child)
+}
+
+/// The door's verdict and rows on [`copies`]`(dups)`, the parent proven.
+async fn door_on_copies(dups: usize) -> (crate::Result<bool>, Rows) {
+    let (parent, child) = copies(dups);
     let bytes = atomic(
         &child,
         vec![(parent.clone(), Some(0)), (child.clone(), None)],
         &parent,
     );
+    internalize(bytes, &parent).await
+}
 
-    let (accepted, rows) = internalize(bytes, &parent).await;
-    assert!(accepted.unwrap(), "uncapped until #395");
+/// bsv-rs #331 (0.9.0-beta.2) undid beta.1's 32,000,000-byte decline, and the
+/// door judges under the node's policy figure (#395, #539): 331 elements of
+/// 100,000 bytes, 33,110,592 bytes on the node's count, sit under
+/// `DOOR_STACK_MEMORY_BYTES` and are accepted. No reader witness turns to a
+/// refusal under the figure (the keeper's reading of 2026-11-01 10:5xZ).
+#[tokio::test]
+async fn internalize_accepts_a_33_mb_stack_under_the_node_policy_figure() {
+    const DUPS: usize = 330;
+    const { assert!((DUPS + 1) * PUSH > 32_000_000) };
+    const { assert!((DUPS + 1) * (PUSH + 32) < DOOR_STACK_MEMORY_BYTES) };
+    let (accepted, rows) = door_on_copies(DUPS).await;
+    assert!(accepted.unwrap(), "under the node's policy figure");
     assert_eq!(rows.len(), 1);
+}
+
+/// #395 at the line: 999 elements of 100,000 bytes, 99,931,968 bytes on the
+/// node's count, are accepted at the door; 1,000, 100,032,000 bytes, are
+/// refused with bsv-rs's policy verdict, which fires at the door's figure.
+#[tokio::test]
+async fn internalize_judges_the_stack_at_the_node_policy_figure() {
+    const { assert!(999 * (PUSH + 32) == 99_931_968) };
+    const { assert!(1_000 * (PUSH + 32) == 100_032_000) };
+    let (accepted, rows) = door_on_copies(998).await;
+    assert!(accepted.unwrap(), "999 elements, 99,931,968 bytes");
+    assert_eq!(rows.len(), 1);
+
+    let (refused, rows) = door_on_copies(999).await;
+    match refused {
+        Err(Error::SpendRefused {
+            input: Some(0),
+            why: SpendRefusal::Script(message),
+            ..
+        }) => assert_eq!(
+            message,
+            "Stack size limit exceeded: 100032000 bytes, the stack memory policy is 100000000 bytes."
+        ),
+        other => panic!("1,000 elements, 100,032,000 bytes: {other:?}"),
+    }
+    assert!(rows.is_empty());
+}
+
+/// The bite of the explicit figure, at the `Spend` the door builds: the
+/// door's word (the spend at Chronicle + 7, the coin at Chronicle) with
+/// bsv-rs's policy verdict lifted (`set_stack_memory_policy(0)`), so the
+/// local budget alone bounds the stack. `memory_limit` is
+/// `DOOR_STACK_MEMORY_BYTES`, as `judge_input` passes it: 999 elements run,
+/// 1,000 stop with a stack decline at the figure. bsv-rs 0.9.0-beta.5 reads
+/// `None` under a word as the same figure, so only a moved figure, not `None`,
+/// turns this red today.
+#[test]
+fn the_door_memory_figure_declines_the_stack_past_it() {
+    let word = ChainParams::mainnet()
+        .word_for_input(Word::Standard, Some(HEIGHT + 7), Some(HEIGHT))
+        .unwrap();
+    let judge = |dups: usize| {
+        let (parent, child) = copies(dups);
+        let raw = parse_transaction(&child.to_binary()).unwrap();
+        let mut spend = Spend::with_transaction(TxSpendParams {
+            transaction: Arc::new(TxSighashCache::new(
+                raw.version,
+                raw.inputs,
+                raw.outputs,
+                raw.locktime,
+            )),
+            input_index: 0,
+            source_satoshis: 100,
+            locking_script: parent.outputs[0].locking_script.clone(),
+            unlocking_script: child.inputs[0].unlocking_script.clone().unwrap(),
+            memory_limit: Some(DOOR_STACK_MEMORY_BYTES),
+            work_limit: Some(1 << 31),
+        })
+        .unwrap();
+        spend.set_flags(word);
+        spend.set_stack_memory_policy(0);
+        assert_eq!(spend.stack_memory_policy(), None);
+        spend
+            .validate()
+            .map_err(|error| (error.message, error.resource_limit))
+    };
+    assert_eq!(judge(998).map_err(|(message, _)| message), Ok(true));
+    let limit = judge(999).unwrap_err().1.unwrap();
+    assert!(matches!(limit.resource, ScriptResource::Stack));
+    assert_eq!(limit.limit, 100_000_000);
+    assert_eq!(limit.attempted, 100_032_000);
 }

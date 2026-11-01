@@ -140,4 +140,13 @@ mod tests {
         assert_eq!(DOOR_WORK_BUDGET.per_input, Some(2_147_483_648));
         assert_eq!(DOOR_WORK_BUDGET.per_transaction, Some(2_147_483_648));
     }
+
+    /// The keeper's #395 figure, the mainnet node's stack memory policy: a
+    /// drift fails here, where bsv-rs's own policy verdict at the same figure
+    /// would hide it from every door witness.
+    #[cfg(any(feature = "sqlite", feature = "mysql"))]
+    #[test]
+    fn the_door_stack_memory_figure_is_the_node_policy() {
+        assert_eq!(super::DOOR_STACK_MEMORY_BYTES, 100_000_000);
+    }
 }
