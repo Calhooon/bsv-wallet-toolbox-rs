@@ -108,9 +108,11 @@ async fn test_validate_stored_beef_tracker_error_rejects() {
 fn rejected_dumps() -> HashSet<String> {
     std::fs::read_dir(std::env::temp_dir())
         .map(|dir| {
-            dir.filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.starts_with("beef-rejected-") && n.ends_with(".hex"))
+            dir.filter_map(std::result::Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "hex"))
+                .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
+                .filter(|n| n.starts_with("beef-rejected-"))
                 .collect()
         })
         .unwrap_or_default()
