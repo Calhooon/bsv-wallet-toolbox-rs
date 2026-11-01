@@ -627,3 +627,49 @@ async fn internalize_action_answered_465_is_a_hint_not_an_error() {
             .unwrap();
     assert_eq!(kept, 1, "the internalized output is not written off");
 }
+
+/// The `beef-<txid8>.hex` files under the temp folder, with their modified times.
+fn beef_dumps() -> std::collections::HashMap<std::path::PathBuf, std::time::SystemTime> {
+    std::fs::read_dir(std::env::temp_dir())
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("beef-") && name.ends_with(".hex")
+        })
+        .filter_map(|entry| Some((entry.path(), entry.metadata().ok()?.modified().ok()?)))
+        .collect()
+}
+
+/// An immediate broadcast writes no `beef-<txid8>.hex` under the temp folder
+/// (the beta line's #530, ported with its fix).
+#[tokio::test]
+async fn immediate_broadcast_writes_no_beef_dump() {
+    let (storage, root, _parent) = seed().await;
+    let wallet = Wallet::new(Some(root), storage, posting(word("rejected", true, None)))
+        .await
+        .expect("wallet");
+    let before = beef_dumps();
+    let result = wallet
+        .create_action(pay_args(true), "test.local")
+        .await
+        .expect("created");
+    let txid = hex::encode(result.txid.expect("the txid"));
+    assert_eq!(wallet.services().call_count("post_beef"), 1);
+
+    let name = format!("beef-{}.hex", &txid[..8]);
+    let written: Vec<_> = beef_dumps()
+        .into_iter()
+        .filter(|(path, modified)| {
+            path.file_name().is_some_and(|file| file == name.as_str())
+                && before.get(path) != Some(modified)
+        })
+        .map(|(path, _)| path)
+        .collect();
+    // Only a file this run created is removed; one it overwrote is left.
+    for path in written.iter().filter(|path| !before.contains_key(*path)) {
+        let _ = std::fs::remove_file(path);
+    }
+    assert!(written.is_empty(), "the broadcast wrote {written:?}");
+}
