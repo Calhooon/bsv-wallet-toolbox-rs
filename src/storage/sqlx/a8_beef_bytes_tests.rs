@@ -22,6 +22,7 @@ use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, Trans
 use bsv_rs::wallet::{BasketInsertion, InternalizeActionArgs, InternalizeOutput};
 use sqlx::{Column, Row, TypeInfo, ValueRef};
 use std::collections::HashSet;
+use std::fmt::Write;
 
 const CENSUS_COIN: u64 = 1_000_000;
 
@@ -44,7 +45,7 @@ impl Drop for Path {
 /// The census's scene (`examples/a8_census.rs`, `big_beef`): a proven parent
 /// paying `CENSUS_COIN` to a P2PKH key, and a child spending it with one
 /// ALL|FORKID P2PKH input, output 0 a 10,000-satoshi P2PKH coin and output 1
-/// an `OP_FALSE OP_RETURN` of `bytes` data. Returns the child's AtomicBEEF,
+/// an `OP_FALSE OP_RETURN` of `bytes` data. Returns the child's `AtomicBEEF`,
 /// its txid and the parent's.
 pub(crate) fn census_beef(bytes: usize) -> (Vec<u8>, String, String) {
     census_beef_signed_by(bytes, 7)
@@ -177,7 +178,7 @@ pub(crate) async fn stored_rows(storage: &StorageSqlx, masked: &[&str]) -> Vec<S
                         _ => row.try_get::<String, _>(name).expect("text"),
                     }
                 };
-                line.push_str(&format!(" {name}={value}"));
+                write!(line, " {name}={value}").expect("a string takes the text");
             }
             rows.push(line);
         }

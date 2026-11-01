@@ -11,7 +11,6 @@ use crate::storage::sqlx::internalize_action::a8_beef_bytes_tests::{
 };
 use crate::storage::sqlx::internalize_action::a8_differential::Headers;
 use crate::storage::traits::WalletStorageWriter;
-use bsv_rs::wallet::{CreateActionInput, CreateActionOptions, CreateActionOutput, Outpoint};
 
 /// The judge on one path: its answer's form and text.
 async fn judge_on(
@@ -59,13 +58,7 @@ async fn the_judge_reads_the_corpus_the_same_on_both_paths() {
     let mut refused = 0;
     for (tip, headers) in [
         ("tip", Headers::census(None)),
-        (
-            "no tip",
-            Headers {
-                tip: None,
-                roots: None,
-            },
-        ),
+        ("no tip", Headers::no_tip()),
     ] {
         for network in ["main", "test"] {
             let word = CallerWord {
@@ -86,37 +79,22 @@ async fn the_judge_reads_the_corpus_the_same_on_both_paths() {
     assert!(refused >= 4, "{refused} refusals");
 }
 
-/// createAction spending the census child's coin from the caller's BEEF.
+/// createAction spending the census child's coin from the caller's BEEF,
+/// signed later (`noSend`, no `signAndProcess`).
 fn spend_of(beef: &[u8], child: &str) -> bsv_rs::wallet::CreateActionArgs {
-    let mut txid = [0u8; 32];
-    hex::decode_to_slice(child, &mut txid).unwrap();
-    bsv_rs::wallet::CreateActionArgs {
-        description: "census caller beef".into(),
-        input_beef: Some(beef.to_vec()),
-        inputs: Some(vec![CreateActionInput {
-            outpoint: Outpoint::new(txid, 0),
-            input_description: "census caller input".into(),
-            unlocking_script: None,
-            unlocking_script_length: Some(108),
-            sequence_number: None,
-        }]),
-        outputs: Some(vec![CreateActionOutput {
-            locking_script: vec![0x51],
-            satoshis: 1_000,
-            output_description: "census output".into(),
-            basket: None,
-            custom_instructions: None,
-            tags: None,
-        }]),
-        lock_time: None,
-        version: None,
-        labels: None,
-        options: Some(CreateActionOptions {
-            sign_and_process: Some(false),
-            no_send: Some(true),
-            ..Default::default()
-        }),
-    }
+    let mut args: bsv_rs::wallet::CreateActionArgs = serde_json::from_value(serde_json::json!({
+        "description": "census caller beef",
+        "inputs": [{
+            "outpoint": format!("{child}.0"),
+            "inputDescription": "census caller input",
+            "unlockingScriptLength": 108
+        }],
+        "outputs": [{ "lockingScript": "51", "satoshis": 1000, "outputDescription": "census output" }],
+        "options": { "signAndProcess": false, "noSend": true }
+    }))
+    .unwrap();
+    args.input_beef = Some(beef.to_vec());
+    args
 }
 
 /// The create door on a fresh store, on one path: its answer and rows.
