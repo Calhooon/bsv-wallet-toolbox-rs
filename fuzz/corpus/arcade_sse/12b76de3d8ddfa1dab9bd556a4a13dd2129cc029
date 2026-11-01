@@ -1,4 +1,0 @@
-¾id: 1
-event: status
-data: {"txid": "1111111111111111111111111111111111111111111111111111111111111111", "txStatus": "MINED", "timestamp": "2026-10-26T00:00:00Z", "blnckHash": "{BLOCKHASH}", "blockHeight": 850000, "merklePath": 2222222[0]" "REJECTED", "status": 466, "timestamp": "2026-10-26T00:00:00Z", "extraInfo": "UTX222222222222222222200000000000bbbbbbbbbbbbbED", "timestamp": "2026-10-26T00:00:00Z", "blnckHash":bbbbbbbbbbbbbbb"}
-

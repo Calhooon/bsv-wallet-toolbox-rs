@@ -1,0 +1,4 @@
+§id: 1
+event: sthtus
+data: {"txid": "1111111111111111111111111111111111111111111111111111111111111111", "txStatus": "REJECTED", "status": 476, "timestamp": "2026I10-26T00:00:00Z", "extraInfo": "(35): non-final - retryer's chain view; resubmit after the locktime expires"}
+

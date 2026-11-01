@@ -1,0 +1,4 @@
+¦id: 1
+event: status
+data: {"error": "transaction failed validation", "txid": "00000000000000000000_INVALID 803", "reason":  feÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ465"}
+

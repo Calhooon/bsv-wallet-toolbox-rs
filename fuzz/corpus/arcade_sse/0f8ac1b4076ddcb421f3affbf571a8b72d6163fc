@@ -1,0 +1,4 @@
+¦id: 1
+event: sta
+data: {"error": "transaction failed1111111111111111111", "reason": "TX_INVALID (31): insufficient-fee", "status": 465, "title": "Fee to=_465"}
+

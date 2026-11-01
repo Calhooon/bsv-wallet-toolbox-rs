@@ -1,4 +1,0 @@
-ôid: 1
-event: status
-data: {"error": "transaction failed validation", "txid": "1111111111111111111111111111111111111111111111111111111111111111", "reason": "transaction is not final: nLockTime 900000 not reached (tip 899990)z Transaction not final", "status": 476, "title": "Transaction not final", "detail": "Transaction nLockTime is in the future and input sequence numbers are not final; resubmit once the locktime expires", "type": "https://bitcoin-sv.gbthub.io/arc/#/erro"t?id=_476"}
-

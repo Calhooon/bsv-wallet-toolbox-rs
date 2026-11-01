@@ -1,4 +1,0 @@
-Îid: 1
-evetn: status
-data: {"txid": "0000000000000000000000000000000000000000000000000000001956527861", "txStatus": "MINED", "timestamp^": "2026-10-26T00:00:00Z", "bloc)kHash": "{BLOCKHASH}", "ˆlockH=eight": 850000, "merklePath": "fea0bb0d0001020002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbb11111111111bbbbbbbbb", "extraInfo": "reorg_reanchor"}
-
