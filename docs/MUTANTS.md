@@ -112,8 +112,8 @@ every target once; the table and the figures before and after the widening are
 The 45 door mutants run as their own shard group, `doors`, two round-robin
 shards. The five targets add five test binaries to each mutant's build and about
 13 s to its test run beside the lib's (the `fixtures` suite 11.7 s on the lane
-host), so a door mutant costs a little over a lib mutant (about 2.8 minutes on
-the runners, mostly the build): 23 mutants a shard is about 70 minutes, inside
+host), so a door mutant costs about what a lib mutant costs (about 2.8 minutes on
+the runners, mostly the build): 23 mutants a shard is about 64 minutes, inside
 the 330 minute limit with room to spare. The rest of the inventory stays on
 `--lib` as ruled (the ratchet). Other create-door files are entered by
 integration targets as well (the record's second probe); widening them is not
