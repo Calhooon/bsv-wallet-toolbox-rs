@@ -1,0 +1,68 @@
+{
+  "about": "Chaintracks and BHS 429 with Retry-After: the ladder names both rungs' faults, and the second call asks neither (#148).",
+  "ladder": "get_chain_tip_header",
+  "providers": [
+    {
+      "name": "Chaintracks",
+      "routes": [
+        {
+          "route": "GET /findChainTipHeaderHex",
+          "answers": [
+            {
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "BHS",
+      "routes": [
+        {
+          "route": "GET /api/v1/chain/header/tip",
+          "answers": [
+            {
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "WhatsOnChain",
+      "routes": []
+    },
+    {
+      "name": "Bitails",
+      "routes": []
+    }
+  ],
+  "calls": [
+    {},
+    {}
+  ],
+  "expected": {
+    "results": [
+      {
+        "err": "Service error: get_chain_tip_header: no header service answered (chaintracks: Rate limited: Chaintracks: retry after 30s; bhs: Rate limited: BHS: retry after 30s)"
+      },
+      {
+        "err": "Service error: get_chain_tip_header: no header service answered (chaintracks: Rate limited: Chaintracks: retry after <n>s; bhs: Rate limited: BHS: retry after <n>s)"
+      }
+    ],
+    "requests": {
+      "BHS": {
+        "GET /api/v1/chain/header/tip": 1
+      },
+      "Chaintracks": {
+        "GET /findChainTipHeaderHex": 1
+      }
+    }
+  }
+}

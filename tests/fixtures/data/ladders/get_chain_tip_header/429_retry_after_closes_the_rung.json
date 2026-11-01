@@ -1,5 +1,5 @@
 {
-  "about": "Chaintracks 429 with Retry-After: the header ladders hold no gate, so BHS answers and the second call asks Chaintracks again.",
+  "about": "Chaintracks 429 with Retry-After: BHS answers; on the second call Chaintracks' closed rung costs no request (#148).",
   "ladder": "get_chain_tip_header",
   "providers": [
     {
@@ -12,8 +12,7 @@
               "status": 429,
               "headers": {
                 "retry-after": "30"
-              },
-              "times": 2
+              }
             }
           ]
         }
@@ -88,7 +87,7 @@
         "GET /api/v1/chain/header/tip": 2
       },
       "Chaintracks": {
-        "GET /findChainTipHeaderHex": 2
+        "GET /findChainTipHeaderHex": 1
       }
     }
   }

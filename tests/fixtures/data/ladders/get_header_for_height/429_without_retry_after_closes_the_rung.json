@@ -1,5 +1,5 @@
 {
-  "about": "Chaintracks 429 with Retry-After: the header ladders hold no gate, so BHS answers and the second call asks Chaintracks again.",
+  "about": "Chaintracks 429 with no Retry-After: its default window closes the rung; BHS answers and the second call asks Chaintracks nothing (#148).",
   "ladder": "get_header_for_height",
   "providers": [
     {
@@ -9,11 +9,7 @@
           "route": "GET /findHeaderHexForHeight?height=900002",
           "answers": [
             {
-              "status": 429,
-              "headers": {
-                "retry-after": "30"
-              },
-              "times": 2
+              "status": 429
             }
           ]
         }
@@ -74,7 +70,7 @@
         "GET /api/v1/chain/header/byHeight?height=900002": 2
       },
       "Chaintracks": {
-        "GET /findHeaderHexForHeight?height=900002": 2
+        "GET /findHeaderHexForHeight?height=900002": 1
       }
     }
   }

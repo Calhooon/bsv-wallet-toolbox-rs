@@ -1,5 +1,5 @@
 {
-  "about": "Chaintracks 429 with no Retry-After: an error like any, BHS answers.",
+  "about": "Chaintracks and BHS 429 with Retry-After: the ladder names both rungs' faults, and the second call asks neither (#148).",
   "ladder": "get_header_for_height",
   "providers": [
     {
@@ -9,7 +9,10 @@
           "route": "GET /findHeaderHexForHeight?height=900002",
           "answers": [
             {
-              "status": 429
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
             }
           ]
         }
@@ -22,16 +25,9 @@
           "route": "GET /api/v1/chain/header/byHeight?height=900002",
           "answers": [
             {
-              "status": 200,
-              "json": {
-                "bits": 402917821,
-                "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-                "height": 900002,
-                "merkle_root": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                "nonce": 42,
-                "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-                "time": 1700000000,
-                "version": 536870912
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
               }
             }
           ]
@@ -50,12 +46,18 @@
   "calls": [
     {
       "height": 900002
+    },
+    {
+      "height": 900002
     }
   ],
   "expected": {
     "results": [
       {
-        "ok": "000000200000000000000000000000000000000000000000000000000000000000000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00f15365bd0904182a000000"
+        "err": "Service error: get_header_for_height: no header service answered (chaintracks: Rate limited: Chaintracks: retry after 30s; bhs: Rate limited: BHS: retry after 30s)"
+      },
+      {
+        "err": "Service error: get_header_for_height: no header service answered (chaintracks: Rate limited: Chaintracks: retry after <n>s; bhs: Rate limited: BHS: retry after <n>s)"
       }
     ],
     "requests": {
