@@ -113,6 +113,23 @@ mod monitor_integration {
         );
     }
 
+    /// A seeded monitor pair draws one instance id; an unseeded pair two (#191).
+    #[tokio::test]
+    async fn seeded_monitor_pair_draws_equal_ids() {
+        let (storage, services) = setup_storage_and_services(MockWalletServices::new()).await;
+        let seeded = |seed| MonitorOptions {
+            rng_seed: seed,
+            ..all_tasks_disabled()
+        };
+        let id = |seed| {
+            Monitor::with_options(storage.clone(), services.clone(), seeded(seed))
+                .instance_id()
+                .to_string()
+        };
+        assert_eq!(id(Some([3; 32])), id(Some([3; 32])));
+        assert_ne!(id(None), id(None));
+    }
+
     // =========================================================================
     // Test 2: double_start_error
     // =========================================================================
