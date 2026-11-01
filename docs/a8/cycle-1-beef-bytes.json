@@ -383,6 +383,23 @@
    }
   }
  },
+ "bench_tip_74994d79": {
+  "beef-internalize 4 MB": {
+   "off": {
+    "sha": 57.88,
+    "memmove": 16.53,
+    "ms": 15.66,
+    "cpu_ms": 15.49
+   },
+   "on": {
+    "sha": 44.74,
+    "memmove": 20.73,
+    "ms": 11.33,
+    "cpu_ms": 11.18
+   }
+  }
+ },
+ "bench_tip_note": "the 4 MB internalize scene re-run at 74994d79 (after 6ac4b4ac: one verify_spends for both readings, the scan by iterator), bsv-rs 0.9.0-beta.6, rustc 1.98.1, samply 0.13.1 at 2000 Hz, 60 iterations, three runs a build alternated (r1 off then on, r2 on then off, r3 off then on), the median, load averages 34 to 37; the lock resolved fresh (Cargo.lock is not committed), so the tip's off figures are not ad7b1712's and only the off and on of one round compare",
  "fields": {
   "sha": "sha2 compress, percent of on-CPU samples in the door windows",
   "memmove": "_platform_memmove, same",
