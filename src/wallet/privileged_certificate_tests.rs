@@ -3,7 +3,7 @@
 //! through the privileged key manager, as ts-stack@edf6e03
 //! `MasterCertificate.createKeyringForVerifier` decrypts and encrypts with
 //! `privileged` (`MasterCertificate.ts:383-401`, called from
-//! `signer/methods/proveCertificate.ts:32-42`), and the direct acquire takes
+//! `signer/methods/proveCertificate.ts:31-41`), and the direct acquire takes
 //! its subject and proves its keyring under that key (`Wallet.ts:698-724`).
 //! With no manager both are the reference's refusal (`Wallet.ts:460-461`),
 //! never a proof under the everyday key.

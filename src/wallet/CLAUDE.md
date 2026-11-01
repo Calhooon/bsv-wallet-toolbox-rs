@@ -174,6 +174,11 @@ prefix, as for the variant mapping above:
   the derivation already parsed.
 - `prove_certificate`'s absent and ambiguous certificate matches are
   `InvalidParameter` (`signer/methods/proveCertificate.ts:28-29`).
+- A privileged request on a wallet with no privileged key manager (the
+  seven key calls, `prove_certificate`, the direct `acquire_certificate`)
+  is `NotImplemented` with the reference's text, `Privileged operations
+  require the Wallet to be configured with a privileged key manager.`
+  (`Wallet.ts:460-461`, a plain `Error` there; #186, #142).
 
 The remaining direct constructors are faults or the SDK reference's plain
 `Error`/`TypeError` paths. They carry no WERR class to preserve. Since the
@@ -339,6 +344,7 @@ today's words).
 | `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1430 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
 | `certificate_issuance_auth.rs` | ~130 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
+| `key_route.rs` | ~150 | The key route (#186, #142): a key call with `privileged: true` to the `PrivilegedKeyManager`, its arguments intact, else the reference's refusal; every other call to the everyday `ProtoWallet`; the route as a `WalletInterface` for bsv-rs's certificate helpers |
 | `direct_acquire.rs` | ~210 | Direct `acquire_certificate` argument validation and normalization, signature verification and keyring decryption proof before storage (#311, #374) |
 | `label.rs` | ~110 | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392), and the BRC-177 module-label matcher both doors call (#363); declared without a feature gate, the sqlx folder imports it as `label` (#420); `normalize_label` and `trim_ecmascript` are public since #505, re-exported as `bsv_wallet_toolbox_rs::wallet::{normalize_label, trim_ecmascript}`, the one definition of the reference's label rule for every host (bsv-wallet-cli#376's spend gate); `is_ecmascript_whitespace` stays private |
 | `discovery_search.rs` | ~320 | The reference's attribute matcher (`identityUtils.ts:140-280`): search normalization, legacy `/gi` literals, the five-class tokenizer and stop words, the NFD and Mn fold (#474) |
@@ -378,7 +384,7 @@ Generic wallet implementation parameterized by:
 
 The `user_id` field is resolved during construction via `storage.find_or_insert_user()` and used to build `AuthId` for all storage calls.
 
-The `privileged_key_manager` field is optional; when set via `set_privileged_key_manager()`, crypto operations at SecurityLevel >= 2 are routed through it for two-factor authentication.
+The `privileged_key_manager` field is optional; when set via `set_privileged_key_manager()`, a key call with `privileged: true` is routed through it (see Privileged key route below).
 
 The `permissions_manager` field is optional; when set via `set_permissions_manager()`, wallet operations check BRC-98/99 permissions (protocol, basket, certificate, spending) before proceeding.
 
@@ -521,7 +527,38 @@ pub trait PrivilegedKeyManager: Send + Sync {
 }
 ```
 
-For two-factor authentication where crypto operations at SecurityLevel >= 2 are routed through a separate key manager. The wallet stores an optional `Arc<dyn PrivilegedKeyManager>` and provides `set_privileged_key_manager()` / `privileged_key_manager()` accessors.
+The privileged keyring of BRC-100's `privileged` flag. The wallet stores an optional `Arc<dyn PrivilegedKeyManager>` and provides `set_privileged_key_manager()` / `privileged_key_manager()` accessors.
+
+#### Privileged key route (#186, #142)
+
+As ts-stack@edf6e03 `Wallet.ts:455-570`: `get_public_key`, `encrypt`,
+`decrypt`, `create_hmac`, `verify_hmac`, `create_signature` and
+`verify_signature` with `privileged: Some(true)` go to the manager with the
+caller's arguments intact (`privileged`, `privileged_reason`,
+`seek_permission`) and the caller's originator (`""` when absent); with
+none configured each is `WalletRefusal { class: NotImplemented, message }`,
+the message `Privileged operations require the Wallet to be configured with
+a privileged key manager.` byte for byte (`:460-461`). `None` or
+`Some(false)` is the everyday `ProtoWallet`, as before. The BRC-98/99
+protocol check runs first and is unchanged (it still judges the request as
+unprivileged). `key_route.rs` holds the route; the wallet's seven calls and
+the certificate paths share it.
+
+`prove_certificate` with `privileged: true` derives the verifier's keyring
+through the manager (`create_keyring_for_verifier` decrypts and encrypts
+with the caller's `privileged` and `privileged_reason`, as
+`MasterCertificate.ts:383-401` does); with no manager the refusal comes
+after the stored row is found and before any key is used, where the
+reference's `decryptField` would catch it as `Failed to decrypt certificate
+field!` (`MasterCertificate.ts:564-623`): the owner's word (23.2) asks for
+the refusal. The direct `acquire_certificate` takes its subject from
+`get_public_key { identity_key: true }` with the caller's fields and proves
+the keyring under the same route (`Wallet.ts:698-724`), so with no manager
+it is the refusal before the proof, nothing stored. The issuance path reads
+no privileged key, as the reference's does not (`Wallet.ts:769-824`).
+The two linkage calls stay with the everyday key: the trait has no linkage
+methods, a public shape for the owner's word. Witnesses:
+`privileged_keys_tests.rs`, `privileged_certificate_tests.rs`.
 
 ### LookupResolver (legacy stub)
 
@@ -591,7 +628,7 @@ Default implementation that queries overlay `/lookup` endpoints via HTTP POST. F
 
 The `Wallet` implements all 28 methods from `WalletInterface`:
 
-### Cryptographic Operations (delegated to ProtoWallet)
+### Cryptographic Operations (the everyday ProtoWallet, or the privileged key manager for `privileged: true`)
 
 | Method | Description |
 |--------|-------------|
@@ -940,8 +977,7 @@ The wallet maintains an in-memory cache of unsigned transactions:
 
 ### ProtoWallet Delegation
 
-Cryptographic methods delegate to `ProtoWallet` with type conversions:
-- `proto_get_public_key`, `proto_encrypt`/`proto_decrypt`, `proto_create_hmac`/`proto_verify_hmac`, `proto_create_signature`/`proto_verify_signature`
+The seven key methods answer through `key_route(originator)` (`key_route.rs`): the everyday `ProtoWallet` with the caller's arguments intact, or the privileged key manager for `privileged: true`.
 - Key linkage methods parse hex public keys back to `PublicKey` for result structs
 
 ## Helper Functions (wallet.rs)
@@ -954,8 +990,8 @@ Internal helper functions in `wallet.rs`:
 | `compute_txid(raw_tx: &[u8])` | Computes txid (double SHA256, reversed) from raw transaction |
 | `build_unsigned_transaction(result, key_deriver)` | Builds unsigned transaction bytes from storage result; optionally derives P2PKH locking scripts for change outputs via BRC-29 |
 | `direct_acquire::validate_acquire_direct_args(args)` | The direct acquire's argument checks (`validationHelpers.ts:1405-1439`) and the normalized certificate, verifier and keyring (#311) |
-| `direct_acquire::verify_acquire_direct(proto_wallet, certificate, keyring, args)` | Builds a `MasterCertificate`, verifies its signature and decrypts all fields through the wallet's internal crypto before storage (`Wallet.ts:705-731`); no caller protocol permission is needed; discards the plaintext (#374) |
-| `create_keyring_for_verifier(...)` | Creates verifier-specific keyring for selective field disclosure (BRC-52/53) |
+| `direct_acquire::verify_acquire_direct(keys, certificate, keyring, args)` | Builds a `MasterCertificate`, verifies its signature and decrypts all fields through the key route before storage (`Wallet.ts:705-731`), the privileged key manager for `privileged: true` (#142); no caller protocol permission is needed; discards the plaintext (#374) |
+| `create_keyring_for_verifier(keys, ..., privileged, privileged_reason)` | Creates verifier-specific keyring for selective field disclosure (BRC-52/53), under the key route (#142) |
 | `address_to_p2pkh_script(address: &str)` | Decodes Base58Check BSV address to P2PKH locking script bytes (used by `sweep_to_address`) |
 
 ### Certificate Field Encryption (prove_certificate)
@@ -972,7 +1008,7 @@ reads the plaintext as UTF-8. The keyring does not carry the field plaintext.
 1. **Validate arguments** - After permission, check privilegedReason, the `certificate.fields` names (1478-1480), type, serial, certifier, subject, revocation outpoint, signature, the 100000-item array bound, requested name lengths, verifier, then the 100-name count and uniqueness before the lookup (`ts-stack@edf6e03 validationHelpers.ts:1477-1518`)
 2. **Query certificate** - Finds unique certificate matching normalized args via `list_certificates`
 3. **Validate keyring** - Ensures storage has master keyring for decryption
-4. **Create verifier keyring** - For each field to reveal:
+4. **Create verifier keyring** - Under the key route: the privileged key manager for `privileged: true`, else the everyday key; with `privileged: true` and no manager the reference's refusal (#142). For each field to reveal:
    - Decrypts master symmetric key using certifier as counterparty with key_id = field_name
    - Re-encrypts for verifier using key_id = "{serial_number} {field_name}"
 5. **Return keyring** - Field names mapped to base64-encoded encrypted symmetric keys
@@ -1419,7 +1455,8 @@ difference from JavaScript's numeric-key order.
 
 For #374, after validation and before storage, the direct arm builds bsv-rs's
 `MasterCertificate` from those normalized values, requires `verify()` to
-succeed, then calls `decrypt_fields` through `self.proto_wallet`,
+succeed, then calls `decrypt_fields` through the key route (the everyday
+`ProtoWallet`, or the privileged key manager for `privileged: true`, #142),
 with the certificate's certifier, `privileged`, `privilegedReason` and the
 originator omitted. The proof uses the subject's identity key and the SDK's
 certificate field encryption protocol without a caller protocol prompt or
