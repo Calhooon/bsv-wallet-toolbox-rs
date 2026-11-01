@@ -401,3 +401,196 @@ async fn a_privileged_argument_refusal_after_the_privilege_keeps_its_place() {
         "The signature parameter must be a canonical DER-encoded ECDSA signature",
     );
 }
+
+// =========================================================================
+// The permission check under the request's `privileged` (#186): a
+// permissions manager that differentiates privileged operations keys its
+// grants on the flag, as the reference passes `requestArgs.privileged` to
+// `ensureProtocolPermission` (ts-stack@edf6e03
+// `WalletPermissionsManager.ts:5165-5350`, `:1515`).
+// =========================================================================
+
+/// The six key calls the permission check guards.
+const GUARDED: [&str; 6] = [
+    "get_public_key",
+    "encrypt",
+    "decrypt",
+    "create_hmac",
+    "verify_hmac",
+    "create_signature",
+];
+
+/// The handler's refusal as the wallet answers it.
+const PERMISSION_REFUSAL: &str = "Access denied: Protocol permission refused by the test";
+
+/// The prompts the handler saw (each request's `privileged`) and the flags it
+/// grants; every other prompt it refuses.
+#[derive(Default)]
+struct Prompts {
+    seen: StdMutex<Vec<Option<bool>>>,
+    grants: StdMutex<Vec<bool>>,
+}
+
+impl Prompts {
+    fn seen(&self) -> Vec<Option<bool>> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+type Permissions = Arc<crate::managers::WalletPermissionsManager>;
+
+/// A wallet with the privileged double and a permissions manager that
+/// differentiates privileged operations and holds an everyday grant for the
+/// witness protocol; its handler refuses every later prompt.
+async fn guarded_wallet() -> (
+    tempfile::TempDir,
+    TestWallet,
+    Arc<PrivilegedDouble>,
+    Permissions,
+    Arc<Prompts>,
+) {
+    let (dir, mut wallet) = wallet().await;
+    let double = PrivilegedDouble::new();
+    wallet.set_privileged_key_manager(double.clone());
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    assert!(config.differentiate_privileged_operations);
+    let manager = Arc::new(crate::managers::WalletPermissionsManager::new(
+        Arc::new(wallet.proto_wallet.clone()),
+        "wallet.admin".to_string(),
+        config,
+    ));
+    let prompts = Arc::new(Prompts::default());
+    let handler_prompts = Arc::clone(&prompts);
+    manager
+        .set_permission_request_handler(Arc::new(move |request| {
+            handler_prompts
+                .seen
+                .lock()
+                .unwrap()
+                .push(request.privileged);
+            let flag = request.privileged.unwrap_or(false);
+            let granted = handler_prompts.grants.lock().unwrap().contains(&flag);
+            Box::pin(async move {
+                if !granted {
+                    return Err(crate::Error::AccessDenied(
+                        "Protocol permission refused by the test".to_string(),
+                    ));
+                }
+                Ok(crate::managers::PermissionToken {
+                    txid: String::new(),
+                    tx: Vec::new(),
+                    output_index: 0,
+                    output_script: String::new(),
+                    satoshis: 1,
+                    originator: request.originator,
+                    expiry: chrono::Utc::now().timestamp() as u64 + 3600,
+                    privileged: request.privileged,
+                    protocol: None,
+                    security_level: None,
+                    counterparty: None,
+                    basket_name: None,
+                    cert_type: None,
+                    cert_fields: None,
+                    verifier: None,
+                    authorized_amount: None,
+                })
+            })
+        }))
+        .await;
+    grant(&manager, &prompts, false).await;
+    wallet.set_permissions_manager(manager.clone());
+    (dir, wallet, double, manager, prompts)
+}
+
+/// The user grants the witness protocol to `ORIGINATOR` once, privileged or
+/// everyday, through the manager's own prompt; the prompt is not counted.
+async fn grant(manager: &Permissions, prompts: &Prompts, privileged: bool) {
+    *prompts.grants.lock().unwrap() = vec![privileged];
+    manager
+        .ensure_protocol_permission(
+            ORIGINATOR,
+            privileged,
+            &protocol(),
+            None,
+            None,
+            crate::managers::PermissionUsageType::Generic,
+        )
+        .await
+        .unwrap();
+    prompts.grants.lock().unwrap().clear();
+    prompts.seen.lock().unwrap().clear();
+}
+
+/// One of the six guarded calls; `get_public_key` names the witness
+/// protocol so the check runs.
+async fn guarded_call(
+    wallet: &TestWallet,
+    name: &str,
+    privileged: Option<bool>,
+) -> bsv_rs::Result<String> {
+    if name != "get_public_key" {
+        return call(wallet, name, privileged).await;
+    }
+    let args = args!(
+        GetPublicKeyArgs {
+            identity_key: false,
+            protocol_id: Some(protocol()),
+            key_id: Some("1".to_string())
+        },
+        privileged
+    );
+    Ok(format!(
+        "{:?}",
+        wallet.get_public_key(args, Some(ORIGINATOR)).await?
+    ))
+}
+
+#[tokio::test]
+async fn an_everyday_grant_does_not_admit_a_privileged_key_call() {
+    let (_dir, wallet, double, _manager, prompts) = guarded_wallet().await;
+    for name in GUARDED {
+        match guarded_call(&wallet, name, Some(true)).await {
+            Err(bsv_rs::Error::WalletRefusal { class, message }) => {
+                assert_eq!(class, bsv_rs::WalletRefusalClass::Unauthorized, "{name}");
+                assert_eq!(message, PERMISSION_REFUSAL, "{name}");
+            }
+            other => panic!("{name}: expected the permission refusal, got {other:?}"),
+        }
+    }
+    // Each call prompted once for a privileged grant; the manager heard none.
+    assert_eq!(prompts.seen(), vec![Some(true); GUARDED.len()]);
+    assert_eq!(double.asked(), Vec::<Asked>::new());
+}
+
+#[tokio::test]
+async fn a_privileged_grant_admits_a_privileged_key_call() {
+    let (_dir, wallet, double, manager, prompts) = guarded_wallet().await;
+    grant(&manager, &prompts, true).await;
+    for name in GUARDED {
+        let before = double.asked().len();
+        let answer = guarded_call(&wallet, name, Some(true)).await;
+        assert!(answer.is_ok(), "{name}: {answer:?}");
+        // decrypt and verify_hmac make their input through the same route.
+        let made: Vec<Asked> = double.asked().split_off(before);
+        let expected: Vec<Asked> = match name {
+            "decrypt" => vec![asked("encrypt"), asked("decrypt")],
+            "verify_hmac" => vec![asked("create_hmac"), asked("verify_hmac")],
+            _ => vec![asked(name)],
+        };
+        assert_eq!(made, expected, "{name}");
+    }
+    assert_eq!(prompts.seen(), Vec::<Option<bool>>::new());
+}
+
+#[tokio::test]
+async fn an_unprivileged_key_call_under_the_everyday_grant_is_unchanged() {
+    let (_dir, wallet, double, _manager, prompts) = guarded_wallet().await;
+    for privileged in [None, Some(false)] {
+        for name in GUARDED {
+            let answer = guarded_call(&wallet, name, privileged).await;
+            assert!(answer.is_ok(), "{name} {privileged:?}: {answer:?}");
+        }
+    }
+    assert_eq!(prompts.seen(), Vec::<Option<bool>>::new());
+    assert_eq!(double.asked(), Vec::<Asked>::new());
+}
