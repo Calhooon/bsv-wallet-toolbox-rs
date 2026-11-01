@@ -17,11 +17,10 @@ use tokio::sync::RwLock;
 
 use crate::error::{Error, Result};
 
-/// Generate random bytes using the rand crate.
+/// Random bytes from the OS CSPRNG, never seeded (#191).
 fn generate_random_bytes(len: usize) -> Vec<u8> {
-    use rand::RngCore;
     let mut bytes = vec![0u8; len];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    crate::rng::os_fill(&mut bytes);
     bytes
 }
 
@@ -325,6 +324,14 @@ mod tests {
         let encoded = SimpleWalletManager::encode_snapshot(&primary_key).unwrap();
         let decoded = SimpleWalletManager::decode_snapshot(&encoded).unwrap();
         assert_eq!(primary_key, decoded);
+    }
+
+    #[test]
+    fn test_snapshot_keys_differ() {
+        // The snapshot key is an OS draw (#191).
+        let (a, b) = (generate_random_bytes(32), generate_random_bytes(32));
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, b);
     }
 
     #[test]

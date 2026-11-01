@@ -16,7 +16,6 @@ use bsv_rs::auth::transports::{HttpRequest, HttpResponse};
 use bsv_rs::auth::{Peer, PeerOptions};
 use bsv_rs::primitives::PublicKey;
 use bsv_rs::wallet::ProtoWallet;
-use rand::RngCore;
 use tokio::sync::oneshot;
 
 use crate::error::{Error, Result};
@@ -53,7 +52,7 @@ pub(super) async fn post_authenticated(
     // The request nonce, 32 random bytes (`AuthFetch.ts:644-675`); the only
     // header `content-type`, so no caller `x-bsv-*` header is signed or sent.
     let mut request_id = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut request_id);
+    crate::rng::os_fill(&mut request_id);
     let request = HttpRequest {
         request_id,
         method: "POST".to_string(),

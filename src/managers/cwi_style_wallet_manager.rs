@@ -22,11 +22,10 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-/// Generate random bytes using the rand crate.
+/// Random bytes from the OS CSPRNG, never seeded (#191).
 fn generate_random_bytes(len: usize) -> Vec<u8> {
-    use rand::RngCore;
     let mut bytes = vec![0u8; len];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    crate::rng::os_fill(&mut bytes);
     bytes
 }
 
@@ -684,6 +683,15 @@ mod tests {
         assert_eq!(profile.id.len(), PROFILE_ID_LENGTH);
         assert_eq!(profile.primary_pad.len(), PRIMARY_PAD_LENGTH);
         assert_eq!(profile.privileged_pad.len(), PRIVILEGED_PAD_LENGTH);
+    }
+
+    #[test]
+    fn test_profile_salts_differ() {
+        // The profile id is the password salt; each is an OS draw (#191).
+        let (a, b) = (Profile::new("A".into()), Profile::new("A".into()));
+        assert_eq!(a.id.len(), PROFILE_ID_LENGTH);
+        assert_ne!(a.id, b.id);
+        assert_ne!(a.primary_pad, b.primary_pad);
     }
 
     #[test]

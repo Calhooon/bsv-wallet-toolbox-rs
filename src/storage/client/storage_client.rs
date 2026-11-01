@@ -444,8 +444,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
 
         // Generate a unique request ID (32 random bytes)
         let mut request_nonce = [0u8; 32];
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut request_nonce);
+        crate::rng::os_fill(&mut request_nonce);
         let request_nonce_b64 = to_base64(&request_nonce);
 
         // Build the HTTP request payload for the Peer
