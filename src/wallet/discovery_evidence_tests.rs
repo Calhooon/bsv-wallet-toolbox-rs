@@ -252,3 +252,47 @@ async fn a_faulting_header_service_is_the_discover_calls_answer() {
     }
     assert_eq!(host.asked.load(Ordering::SeqCst), 0);
 }
+
+/// The two `WalletInterface` discover methods, as a host calls them, each
+/// answer mapped to the shape a host matches.
+async fn at_the_boundary<V: WalletServices + Send + Sync + 'static>(
+    wallet: &super::Wallet<crate::StorageSqlx, V>,
+) -> [bsv_rs::Result<bsv_rs::wallet::DiscoverCertificatesResult>; 2] {
+    use bsv_rs::wallet::WalletInterface;
+    let (identity, attributes) = requests(wallet);
+    let by_key = wallet.discover_by_identity_key(identity, None).await;
+    let by_name = wallet.discover_by_attributes(attributes, None).await;
+    [by_key, by_name]
+}
+
+/// Through the `WalletInterface` methods (`validate_originator` and the
+/// `?` of `wallet.rs`'s discover doors), the header service's fault reaches
+/// the host as `src/error.rs`'s mapping gives it: the Transport fault
+/// family, the toolbox's Display text byte for byte (#524). A coverage
+/// scene, green on the base.
+#[tokio::test]
+async fn a_faulting_header_service_reaches_the_host_as_a_transport_fault() {
+    let services = Faulting(crate::services::mock::MockWalletServices::new());
+    for answer in at_the_boundary(&wallet_on(services, None).await).await {
+        match answer {
+            Err(bsv_rs::Error::WalletFault(fault)) => assert_eq!(
+                (fault.family, fault.message.as_str()),
+                (
+                    bsv_rs::WalletFaultFamily::Transport,
+                    "Network error: chaintracks: connection refused"
+                )
+            ),
+            other => panic!("expected a Transport fault, got {other:?}"),
+        }
+    }
+}
+
+/// Through the same boundary, services with no header service (the
+/// not-configured answer) still answer an empty overlay part, not a fault.
+#[tokio::test]
+async fn with_no_header_service_the_boundary_answers_no_certificate() {
+    let services = crate::services::Services::mainnet().unwrap();
+    for answer in at_the_boundary(&wallet_on(services, None).await).await {
+        assert!(answer.unwrap().certificates.is_empty());
+    }
+}
