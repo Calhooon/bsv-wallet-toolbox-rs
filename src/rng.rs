@@ -1,4 +1,15 @@
-//! Random streams owned independently by wallets and storage providers.
+//! Random streams owned independently by wallets and storage providers, and
+//! the OS draw for the values that never take a seed.
+
+/// Fills `bytes` from the operating system's CSPRNG, with no stream between.
+///
+/// The auth nonces, request ids and key-file salts draw here, as the
+/// reference draws them from the platform's `crypto.getRandomValues`
+/// (`Random(n)`); no options field or constructor can seed them (#191).
+pub(crate) fn os_fill(bytes: &mut [u8]) {
+    use rand::RngCore;
+    rand::rngs::OsRng.fill_bytes(bytes);
+}
 
 /// An owner-local stream, shared by its handles and never held across an await.
 pub(crate) struct RandomSource {
@@ -39,5 +50,16 @@ impl RandomSource {
         let mut bytes = vec![0; count];
         self.fill_bytes(&mut bytes);
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn os_fill_draws_differ() {
+        let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
+        super::os_fill(&mut a);
+        super::os_fill(&mut b);
+        assert_ne!(a, b);
     }
 }

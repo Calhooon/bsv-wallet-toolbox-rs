@@ -31,7 +31,6 @@ use bsv_rs::wallet::{
     Counterparty, CreateHmacArgs, CreateSignatureArgs, GetPublicKeyArgs, Protocol, SecurityLevel,
     VerifySignatureArgs, WalletInterface,
 };
-use rand::RngCore;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// BRC-31 authentication protocol version.
@@ -184,7 +183,7 @@ pub async fn create_nonce<W: WalletInterface>(
 ) -> Result<String> {
     // Generate 16 random bytes
     let mut random_bytes = [0u8; NONCE_RANDOM_SIZE];
-    rand::thread_rng().fill_bytes(&mut random_bytes);
+    crate::rng::os_fill(&mut random_bytes);
 
     // Compute HMAC of the random bytes
     let protocol = Protocol::new(SecurityLevel::App, NONCE_PROTOCOL_ID);
@@ -220,7 +219,7 @@ pub async fn create_nonce<W: WalletInterface>(
 /// This is a simpler alternative when mutual verification isn't needed.
 pub fn create_simple_nonce() -> String {
     let mut nonce_bytes = [0u8; NONCE_TOTAL_SIZE];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    crate::rng::os_fill(&mut nonce_bytes);
     base64::Engine::encode(&base64::engine::general_purpose::STANDARD, nonce_bytes)
 }
 
@@ -556,6 +555,20 @@ mod tests {
         let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &nonce1);
         assert!(decoded.is_ok());
         assert_eq!(decoded.unwrap().len(), NONCE_TOTAL_SIZE);
+    }
+
+    #[tokio::test]
+    async fn test_create_nonce_random_halves_differ() {
+        // The 16 random bytes lead each nonce and come from the OS (#191).
+        let wallet =
+            bsv_rs::wallet::ProtoWallet::new(Some(bsv_rs::primitives::PrivateKey::random()));
+        let decode = |n: String| {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, n).unwrap()
+        };
+        let a = decode(create_nonce(&wallet, None, None).await.unwrap());
+        let b = decode(create_nonce(&wallet, None, None).await.unwrap());
+        assert_eq!((a.len(), b.len()), (NONCE_TOTAL_SIZE, NONCE_TOTAL_SIZE));
+        assert_ne!(a[..NONCE_RANDOM_SIZE], b[..NONCE_RANDOM_SIZE]);
     }
 
     #[test]
