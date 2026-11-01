@@ -459,7 +459,7 @@ where
     })
 }
 
-// createNonce.ts:21-44 as Wallet.ts:771 calls it: 16 random bytes, their
+// createNonce.ts:21-44 as Wallet.ts:771 calls it: 16 OS bytes (#558), their
 // `[2, 'server hmac']` hmac with the certifier under the TextDecoder text of
 // those bytes, base64 of the 48 bytes (64 characters, no padding). The SDK
 // helper uses another security level and key ID, so it cannot be substituted.
@@ -468,7 +468,8 @@ async fn create_client_nonce<W: WalletInterface + Send + Sync>(
     certifier: &PublicKey,
     originator: Option<&str>,
 ) -> Result<String> {
-    let random: [u8; NONCE_SIZE] = rand::random();
+    let mut random = [0u8; NONCE_SIZE];
+    crate::rng::os_fill(&mut random);
     let hmac = wallet
         .create_hmac(
             CreateHmacArgs {
