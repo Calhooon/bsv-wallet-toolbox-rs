@@ -14,7 +14,7 @@ use bsv_rs::transaction::beef_stream::ChainTip;
 use bsv_rs::transaction::{Beef, ChainTracker, ChainTrackerError, TransactionInput};
 
 use super::super::fixture::{
-    key, proven, proven_at, published, record_json, revealed, token, transaction, HEIGHT,
+    beef, key, proven, proven_at, published, record_json, revealed, token, transaction, HEIGHT,
 };
 use super::{overlay_certificates, OverlayCertificate, EVIDENCE_LIMIT};
 use crate::spend_verifier::{DOOR_WORK_BUDGET, WORK_OVERRIDE};
@@ -215,6 +215,23 @@ async fn an_output_whose_root_is_refused_at_the_opening_is_dropped_before_its_to
     let tracker = flipping(false, true);
     assert!(kept(vec![published(&good)], &tracker).await.is_empty());
     assert_eq!(tracker.asks(), (1, 0));
+}
+
+/// #519, the sibling: an output whose token does not decode (`OP_EQUAL`,
+/// no `PushDrop`), its root refused at the opening, is dropped at the opening
+/// ask, before the tracker's tip is read, and the decode never ran ahead of
+/// it. Red where the token is decoded before the evidence (the pre-#502
+/// order: the decode refuses, no root asked), and red where the opening's
+/// answer is not taken (the tip read, the output then refused at its token).
+#[tokio::test]
+async fn an_undecodable_token_whose_root_is_refused_at_the_opening_is_never_decoded() {
+    let script = LockingScript::from_hex("87").unwrap();
+    assert!(super::super::decode::decode_identity_output(&script).is_err());
+    let tracker = flipping(false, true);
+    assert!(kept(vec![at(beef(script), 0)], &tracker).await.is_empty());
+    assert_eq!(tracker.asks(), (1, 0), "a decode ahead of the opening ask");
+    let tip_read = tracker.tip_read.load(Ordering::SeqCst);
+    assert!(!tip_read, "the opening's refusal not taken");
 }
 
 /// The other way round: a root the tracker holds at the opening and refuses
