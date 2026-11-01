@@ -41,7 +41,7 @@ The monitor module provides a daemon-based task scheduler for running recurring 
 
 ### Multi-Instance Support
 
-Each `Monitor` generates a random 16-byte hex `instance_id` on creation: from a `StdRng` seeded by `MonitorOptions::rng_seed` when set (a replay; two monitors under one seed share an id, so a production host passes `None`), from the OS CSPRNG otherwise (#191). Before each task run, the daemon acquires a distributed task lock via `storage.try_acquire_task_lock(task_name, instance_id, ttl)`. The TTL is set to 2x the task interval so locks auto-expire if an instance crashes. After the task completes, the lock is released via `storage.release_task_lock()`.
+Each `Monitor` generates a random 16-byte hex `instance_id` on creation, drawn from the OS CSPRNG (#191). Before each task run, the daemon acquires a distributed task lock via `storage.try_acquire_task_lock(task_name, instance_id, ttl)`. The TTL is set to 2x the task interval so locks auto-expire if an instance crashes. After the task completes, the lock is released via `storage.release_task_lock()`.
 
 ### Callbacks
 
@@ -137,11 +137,10 @@ pub struct MonitorOptions {
     pub fail_abandoned_timeout: Duration,  // Default: 5 minutes
     pub on_tx_broadcasted: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
     pub on_tx_proven: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
-    pub rng_seed: Option<[u8; 32]>,        // Default: None (the OS)
 }
 ```
 
-Has a custom `Debug` impl that prints `"Some(<callback>)"` for non-None callbacks and `"Some(<seed>)"` for a seed.
+Has a custom `Debug` impl that prints `"Some(<callback>)"` for non-None callbacks.
 
 ### TransactionStatusUpdate
 

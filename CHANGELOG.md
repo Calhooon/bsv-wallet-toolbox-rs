@@ -16,14 +16,15 @@
 
 - #191: the remote client's auth nonces (`create_nonce`,
   `create_simple_nonce`, the request nonce), the certifier request id, the
-  certificate client nonce's 16 bytes (`create_client_nonce`, #558; old:
-  `rand::random()`) and the managers' key-file bytes (the CWI profile id that salts the
-  password, the pads, the snapshot keys) draw from the OS CSPRNG
-  (`rand::rngs::OsRng`) directly, as the reference's `Random(n)` draws
-  from `crypto.getRandomValues`. Old: `rand::thread_rng()`. No seed reaches
-  them through any public shape. Host note (bsv-wallet-cli#386): no wire
-  or file format moves; the nonces and salts are not seedable, the
-  monitor's instance id is.
+  certificate client nonce's 16 bytes (`create_client_nonce`, #558), the
+  managers' key-file bytes (the CWI profile id that salts the password,
+  the pads, the snapshot keys) and the monitor's instance id (the owner
+  its task locks name) draw from the OS CSPRNG (`rand::rngs::OsRng`)
+  directly, as the reference's `Random(n)` draws from
+  `crypto.getRandomValues`. Old: `rand::thread_rng()` (`rand::random()`
+  for the client nonce). No seed reaches them through any public shape.
+  Host note (bsv-wallet-cli#386): no wire or file format moves; the
+  nonces, the salts and the monitor's instance id are not seedable.
 
 - #395, #539 (the keeper's reading of 2026-11-01 10:5xZ): the doors'
   script judge names its stack memory figure. Old: `judge_input` (the
