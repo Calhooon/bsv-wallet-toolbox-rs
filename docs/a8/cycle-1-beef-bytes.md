@@ -9,12 +9,12 @@ path is the tree's path while it is off, and stays in the tree beside it
 are `cycle-1-beef-bytes.json`.
 
 The counts, the profiles and the bench ran on bsv-rs 0.9.0-beta.5 (the
-base, f59fce2b). The lane was then rebased onto `origin/beta` at 8c0d2bf6,
-which pins 0.9.0-beta.6 (#533); the files this cycle reads and mirrors
-(`transaction/beef_stream.rs`, `beef.rs`, `beef_tx.rs`, `beef/`,
-`transaction.rs`, `primitives/hash.rs`, `primitives/bsv/sighash.rs`) are
-byte-identical between the two releases, and the gates and the vectors
-below ran on the rebased tree.
+base, f59fce2b). The lane was then rebased onto `origin/beta` at ed34d83b
+(after the 0.14.0-beta.6 release), which pins 0.9.0-beta.6 (#533); the
+files this cycle reads and mirrors (`transaction/beef_stream.rs`,
+`beef.rs`, `beef_tx.rs`, `beef/`, `transaction.rs`, `primitives/hash.rs`,
+`primitives/bsv/sighash.rs`) are byte-identical between the two releases,
+and the gates and the vectors below ran on the rebased tree.
 
 ## The row (A8-1)
 
@@ -122,7 +122,10 @@ error's form and text or a stored row a failure:
   row) with the flag off and on (A8-4 below);
 - the fuzz target `a8_beef_bytes` (the seam a hidden re-export under the
   feature), seeded from a copy of `fuzz/corpus/beef_door`: 756,374 runs in
-  501 seconds, no difference, the copy grown from 378 to 649 inputs.
+  501 seconds on bsv-rs beta.5 (the copy grown from 378 to 649 inputs), then
+  908,679 runs in 501 seconds on the final a8 code at beta.6 (649 to 863;
+  the tree then at 8c0d2bf6, the rebases onto 4fdcd44f and ed34d83b moving
+  none of the a8 code), no difference either time.
 
 The target found three differences in its opening run, each read: the
 internalize door's reference is drawn at random outside the seeded stream
@@ -139,16 +142,17 @@ back (three internalize tests red); the judged set's unproven test inverted
 ## The vectors on and off (A8-4)
 
 Every suite with the flag off (CI's default) and again with
-`a8-beef-bytes` added, each a fresh compile of this tree, under rule 10's
-proxy variables (the logs in the lane folder's `gates/`):
+`a8-beef-bytes` added, on the final tree rebased onto beta ed34d83b, each a
+fresh compile, under rule 10's proxy variables (the logs in the lane
+folder's `gates-ed34d83b/`):
 
 | command | off | on |
 |---|---|---|
-| `cargo test --lib` | 1,730 passed, 3 ignored | 1,730 passed, 3 ignored |
-| `cargo test --lib --features full` | 1,897 passed, 3 ignored | 1,897 passed, 3 ignored |
-| `cargo test --tests --features sqlite,remote,bench-support` | 38 binaries, 2,365 passed, 14 ignored | 38 binaries, 2,365 passed, 14 ignored |
+| `cargo test --lib` | 1,762 passed, 3 ignored | 1,762 passed, 3 ignored |
+| `cargo test --lib --features full` | 1,931 passed, 3 ignored | 1,931 passed, 3 ignored |
+| `cargo test --tests --features sqlite,remote,bench-support` | 38 binaries, 2,400 passed, 14 ignored | 38 binaries, 2,400 passed, 14 ignored |
 | `cargo test --test test_vectors` | 58 passed | 58 passed |
-| `cargo test --lib --tests --no-default-features --features remote` | 38 binaries green, 797 lib | 38 binaries green, 797 lib |
+| `cargo test --lib --tests --no-default-features --features remote` | 38 binaries, 1,064 passed, 11 ignored | 38 binaries, 1,064 passed, 11 ignored |
 
 The stored fixtures' replay (`replay_storage_fixtures` in `--test
 fixtures`, every recorded answer and every persisted column, recorded on
@@ -156,8 +160,8 @@ the oracle path) is green with the flag on: no moved verdict, text or row.
 
 ## The bench (A8-5)
 
-The tip's census binary built with the flag off and on (ad7b1712; the docs
-commit adds no code), three samply runs a scene and binary, off and on
+The census binary built with the flag off and on at ad7b1712 (bsv-rs
+beta.5; the commits after it restructure without a behaviour change), three samply runs a scene and binary, off and on
 alternated run by run (r1 off then on, r2 on then off, r3 off then on), the
 median. The host is shared with other lanes: round 1 ran at load averages of
 about 106 to 126, round 2 at about 27 to 62, so the shares and times move
