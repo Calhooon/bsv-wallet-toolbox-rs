@@ -467,9 +467,7 @@ impl ChainTracker for ChaintracksServiceClient {
     }
 
     async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
-        self.get_present_height()
-            .await
-            .map_err(|e| ChainTrackerError::NetworkError(e.to_string()))
+        self.present_height().await.map_err(tracker_fault)
     }
 
     async fn mining_tip(&self) -> std::result::Result<Option<ChainTip>, ChainTrackerError> {
