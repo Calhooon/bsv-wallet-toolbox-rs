@@ -165,14 +165,14 @@ impl ChaintracksServiceClient {
         let response = self.get(&url, "getPresentHeight").await?;
 
         if !response.status().is_success() {
-            return Err(Fault::Refused(Error::ServiceError(format!(
+            return Err(Fault::Unread(Error::ServiceError(format!(
                 "Chaintracks getPresentHeight failed: HTTP {}",
                 response.status()
             ))));
         }
 
         let frame: ResponseFrame<u32> = response.json().await.map_err(|e| {
-            Fault::Refused(Error::ServiceError(format!(
+            Fault::Unread(Error::ServiceError(format!(
                 "Chaintracks parse error: {}",
                 e
             )))
@@ -202,14 +202,14 @@ impl ChaintracksServiceClient {
         let response = self.get(&url, "findHeaderHexForHeight").await?;
 
         if !response.status().is_success() {
-            return Err(Fault::Refused(Error::ServiceError(format!(
+            return Err(Fault::Unread(Error::ServiceError(format!(
                 "Chaintracks findHeaderHexForHeight failed: HTTP {}",
                 response.status()
             ))));
         }
 
         let frame: ResponseFrame<CtBlockHeader> = response.json().await.map_err(|e| {
-            Fault::Refused(Error::ServiceError(format!(
+            Fault::Unread(Error::ServiceError(format!(
                 "Chaintracks header parse: {}",
                 e
             )))
@@ -240,14 +240,14 @@ impl ChaintracksServiceClient {
         let response = self.get(&url, "findChainTipHeaderHex").await?;
 
         if !response.status().is_success() {
-            return Err(Fault::Refused(Error::ServiceError(format!(
+            return Err(Fault::Unread(Error::ServiceError(format!(
                 "Chaintracks findChainTipHeaderHex failed: HTTP {}",
                 response.status()
             ))));
         }
 
         let frame: ResponseFrame<CtBlockHeader> = response.json().await.map_err(|e| {
-            Fault::Refused(Error::ServiceError(format!("Chaintracks tip parse: {}", e)))
+            Fault::Unread(Error::ServiceError(format!("Chaintracks tip parse: {}", e)))
         })?;
 
         if !frame.is_success() {
