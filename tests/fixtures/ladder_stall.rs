@@ -16,7 +16,7 @@
 //! and names any request the fixture does not script, and the history says
 //! which rung faulted.
 //!
-//! A scene that differs and reads a runner stall is replayed once more
+//! A scene that differs and reads a runner stall is replayed as many extra times as `LADDER_FIXTURES_STALL_REPLAYS` allows, one when unset,
 //! ([`replay_scene`]) and judged on that replay; the stall and the stalled
 //! attempt's history go to the run's log past the test harness's capture
 //! ([`name_the_retry`]), so a run that passes on the retry still names it.

@@ -77,6 +77,8 @@ jobs:
 
       - name: Run mutation shard
         env:
+          # #513 and #540: a stalled ladder scene gets two extra replays on the shared runners; the mutants' per-mutant `cargo test --lib` runs the ladders too
+          LADDER_FIXTURES_STALL_REPLAYS: "2"
           SHARD: ${{ matrix.shard }}
           CARGO_NET_OFFLINE: 'true'
           HTTP_PROXY: http://127.0.0.1:9
