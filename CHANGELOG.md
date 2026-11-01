@@ -230,13 +230,16 @@
   key-linkage reveals, `reveal_counterparty_key_linkage` and
   `reveal_specific_key_linkage`, stay under the everyday key with
   `privileged: true`; the reference routes them to its manager
-  (`Wallet.ts:467-490`), a trait change on the owner's word, #569. The
+  (`Wallet.ts:467-490`), a trait change on the owner's word, #569;
+  `verify_signature` runs no permission check at all, where the reference
+  asks a signing grant (`WalletPermissionsManager.ts:5359-5384`), #576. The
   argument validators run ahead of the privileged route, so an argument
   refusal (the `privilegedReason` text among them) keeps its text and
   place with and without a manager, as the reference's order has it (its
   substrates validate ahead of `Wallet.ts`); the no-manager refusal
-  answers only a valid privileged request. Host note: a privileged request on a wallet with
-  no manager is now this refusal where it was a silent everyday answer;
+  answers only a valid privileged request. Host note: a privileged request
+  on a wallet with no manager is now this refusal where it was a silent
+  everyday answer;
   the CLI's 501 mapping (its #145) reads it by its class, and a privileged
   prove with no manager is an `Internal` fault with the reference's text,
   not that refusal. A host that sets a permissions manager and held only
