@@ -31,7 +31,17 @@ through createAction's caller BEEF pre-check.
 The base (f59fce2b, this lane's cut of `origin/beta`), three samply runs a
 scene at the census's iteration counts, the median, reproduces the row:
 
-{sec["BASE"]}
+<!-- a8-record:base:begin -->
+| scene | sha2 % | memmove % | wall ms | on-CPU ms |
+|---|---:|---:|---:|---:|
+| beef-internalize 1 MB | 52.81 | 17.55 | 12.04 | 7.53 |
+| beef-internalize 4 MB | 49.74 | 25.66 | 46.58 | 32.49 |
+| beef-internalize 10 MB | 46.29 | 32.68 | 108.31 | 89.02 |
+| beef-create 1 MB | 63.49 | 19.85 | 71.21 | 21.17 |
+| beef-create 4 MB | 56.87 | 37.39 | 202.17 | 73.17 |
+| beef-create 10 MB | 59.58 | 36.60 | 448.69 | 169.60 |
+<!-- a8-record:base:end -->
+
 Shares are percent of the on-CPU samples inside the door calls'
 windows (`benches/a8_census_profile.py`); wall and on-CPU milliseconds are
 per call.
@@ -171,14 +181,45 @@ A gain here is a figure, not a claim.
 
 Round 1 (17:37Z to 17:46Z):
 
-{sec["R1"]}
+<!-- a8-record:round-1:begin -->
+| scene | sha2 % off | sha2 % on | memmove % off | memmove % on | wall ms off | wall ms on | on-CPU ms off | on-CPU ms on |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| beef-internalize 1 MB | 48.51 | 39.41 | 17.59 | 20.23 | 57.12 | 23.49 | 13.15 | 9.00 |
+| beef-internalize 4 MB | 37.68 | 22.23 | 28.23 | 31.83 | 167.52 | 329.93 | 44.70 | 28.38 |
+| beef-internalize 10 MB | 42.50 | 34.16 | 34.18 | 33.58 | 349.19 | 208.73 | 95.20 | 71.88 |
+| beef-create 1 MB | 64.49 | 64.02 | 21.08 | 19.39 | 47.30 | 52.15 | 19.76 | 16.78 |
+| beef-create 4 MB | 58.53 | 70.13 | 35.37 | 22.78 | 272.31 | 165.02 | 65.75 | 61.80 |
+| beef-create 10 MB | 59.02 | 63.92 | 37.46 | 31.54 | 544.32 | 297.58 | 161.37 | 143.20 |
+<!-- a8-record:round-1:end -->
+
 Round 2 (17:53Z to 17:57Z):
 
-{sec["R2"]}
+<!-- a8-record:round-2:begin -->
+| scene | sha2 % off | sha2 % on | memmove % off | memmove % on | wall ms off | wall ms on | on-CPU ms off | on-CPU ms on |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| beef-internalize 1 MB | 56.45 | 43.43 | 17.03 | 20.37 | 13.86 | 11.60 | 8.84 | 6.70 |
+| beef-internalize 4 MB | 51.95 | 38.75 | 26.27 | 31.25 | 66.58 | 46.15 | 36.99 | 27.38 |
+| beef-internalize 10 MB | 46.13 | 40.01 | 32.67 | 31.99 | 250.01 | 84.09 | 97.42 | 67.90 |
+| beef-create 1 MB | 64.92 | 65.33 | 20.05 | 18.42 | 24.86 | 17.77 | 18.65 | 15.33 |
+| beef-create 4 MB | 59.11 | 70.60 | 35.93 | 23.05 | 90.18 | 52.67 | 69.24 | 51.11 |
+| beef-create 10 MB | 58.69 | 59.51 | 37.68 | 36.27 | 325.18 | 204.29 | 159.93 | 130.63 |
+<!-- a8-record:round-2:end -->
+
 The harness's other scenes, round 1 (inputs for create and process, one
 output for internalize; the on-CPU and wall milliseconds per call):
 
-{sec["DOORS"]}
+<!-- a8-record:doors:begin -->
+| scene | sha2 % off | sha2 % on | memmove % off | memmove % on | wall ms off | wall ms on | on-CPU ms off | on-CPU ms on |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| internalize 1 | 0.216 | 0.053 | 1.785 | 1.810 | 1.102 | 0.955 | 0.386 | 0.403 |
+| create 1 | 0.759 | 0.656 | 3.268 | 2.479 | 3.918 | 3.871 | 1.935 | 1.906 |
+| create 10 | 0.743 | 0.742 | 2.229 | 2.765 | 16.446 | 8.624 | 4.993 | 4.581 |
+| create 100 | 1.023 | 0.844 | 2.949 | 3.111 | 147.166 | 140.911 | 60.583 | 54.325 |
+| process 1 | 0.732 | 0.817 | 3.196 | 2.876 | 4.789 | 4.995 | 2.049 | 2.129 |
+| process 10 | 0.642 | 0.612 | 2.634 | 2.617 | 11.827 | 13.010 | 5.861 | 5.719 |
+| process 100 | 0.742 | 0.827 | 2.936 | 3.049 | 248.991 | 131.840 | 72.730 | 57.720 |
+<!-- a8-record:doors:end -->
+
 Read: on the internalize door the flag takes the body's hashes from 7 to 4
 and its sha2 share falls (round 2: 56.45 to 43.43, 51.95 to 38.75, 46.13 to
 40.01); the door's on-CPU time per call falls by about a quarter (round 2:
