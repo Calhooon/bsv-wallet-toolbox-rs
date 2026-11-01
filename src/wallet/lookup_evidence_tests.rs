@@ -217,6 +217,20 @@ async fn an_output_whose_root_is_refused_at_the_opening_is_dropped_before_its_to
     assert_eq!(tracker.asks(), (1, 0));
 }
 
+/// The other way round: a root the tracker holds at the opening and refuses
+/// at the fence drops the output at the fence, one ask in each pass, the
+/// fence reached only past the token's decode and the certificate's crypto.
+#[tokio::test]
+async fn an_output_whose_root_is_held_at_the_opening_is_dropped_at_the_fence() {
+    let good = alice(2).await;
+    let tracker = flipping(true, false);
+    assert_eq!(
+        kept(vec![published(&good)], &tracker).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(tracker.asks(), (1, 1));
+}
+
 /// `MerklePath.verify` (`MerklePath.ts:488-497`): the token's transaction at
 /// its block's offset 0 is kept only 100 blocks deep.
 #[tokio::test]
