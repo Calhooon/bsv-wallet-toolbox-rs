@@ -13,7 +13,7 @@
     "fuzz_hours": 2.01
   },
   "clippy_pedantic": {
-    "total": 3232,
+    "total": 3231,
     "by_lint": {
       "clippy::assigning_clones": 4,
       "clippy::bool_to_int_with_if": 6,
@@ -48,7 +48,7 @@
       "clippy::must_use_candidate": 166,
       "clippy::naive_bytecount": 1,
       "clippy::needless_continue": 3,
-      "clippy::needless_pass_by_value": 8,
+      "clippy::needless_pass_by_value": 7,
       "clippy::needless_raw_string_hashes": 252,
       "clippy::non_std_lazy_statics": 2,
       "clippy::redundant_closure_for_method_calls": 95,
@@ -98,13 +98,13 @@
   "files_over_800": {
     "limit": 800,
     "count": 33,
-    "src_files": 259,
-    "src_lines": 130641,
+    "src_files": 263,
+    "src_lines": 131587,
     "max_lines": 7128,
     "files": {
       "src/wallet/wallet.rs": 7128,
       "src/services/services.rs": 4669,
-      "src/storage/sqlx/internalize_action.rs": 4174,
+      "src/storage/sqlx/internalize_action.rs": 4226,
       "src/storage/sqlx/process_action.rs": 3651,
       "src/storage/sqlx/sync.rs": 3097,
       "src/storage/client/storage_client.rs": 2712,
@@ -122,7 +122,7 @@
       "src/services/providers/bananablocks.rs": 1475,
       "src/wallet/certificate_issuance.rs": 1413,
       "src/services/providers/whatsonchain.rs": 1382,
-      "src/storage/sqlx/beef_verification.rs": 1303,
+      "src/storage/sqlx/beef_verification.rs": 1357,
       "src/services/providers/bitails.rs": 1152,
       "src/wallet/signer.rs": 1081,
       "src/services/broadcast_memory.rs": 1060,
@@ -208,7 +208,7 @@
       "src/storage/sqlx/create_action/mod.rs::step 400",
       "src/storage/sqlx/create_action/outputs.rs::insert_output 63",
       "src/storage/sqlx/internalize_action.rs::broadcast_new_internalized_req 134",
-      "src/storage/sqlx/internalize_action.rs::internalize_action_internal 573",
+      "src/storage/sqlx/internalize_action.rs::internalize_action_internal 578",
       "src/storage/sqlx/internalize_action.rs::mark_user_inputs_spent 63",
       "src/storage/sqlx/locked_inputs.rs::recheck_locked_inputs 155",
       "src/storage/sqlx/poisoned_chain.rs::poisoned_descendants 65",
@@ -320,7 +320,7 @@
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
     "count": 6642,
-    "windows": 100009,
+    "windows": 100737,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:327 (38 lines)",
