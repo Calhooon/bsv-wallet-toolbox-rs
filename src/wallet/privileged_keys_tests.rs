@@ -133,6 +133,23 @@ macro_rules! args {
     };
 }
 
+/// The witness's signing request and the verify of its signature.
+fn signature_args(privileged: Option<bool>) -> CreateSignatureArgs {
+    args!(keyed CreateSignatureArgs { data: Some(b"data".to_vec()) }, privileged)
+}
+
+fn verify_signature_args(signature: Vec<u8>, privileged: Option<bool>) -> VerifySignatureArgs {
+    args!(
+        keyed VerifySignatureArgs {
+            data: Some(b"data".to_vec()),
+            signature: signature,
+            counterparty: Some(Counterparty::Anyone),
+            for_self: Some(true)
+        },
+        privileged
+    )
+}
+
 /// One of the seven calls with `privileged` as given, its answer in words.
 async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_rs::Result<String> {
     let originator = Some(ORIGINATOR);
@@ -140,8 +157,6 @@ async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_
     // call, with the same request encrypt, create_hmac and create_signature send.
     let encrypt_args = || args!(keyed EncryptArgs { plaintext: b"secret".to_vec() }, privileged);
     let hmac_args = || args!(keyed CreateHmacArgs { data: b"data".to_vec() }, privileged);
-    let signature_args =
-        || args!(keyed CreateSignatureArgs { data: Some(b"data".to_vec()) }, privileged);
     let answer = match name {
         "get_public_key" => {
             let args = args!(GetPublicKeyArgs { identity_key: true }, privileged);
@@ -168,23 +183,15 @@ async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_
         }
         "create_signature" => {
             let made = wallet
-                .create_signature(signature_args(), originator)
+                .create_signature(signature_args(privileged), originator)
                 .await?;
             format!("{made:?}")
         }
         "verify_signature" => {
             let made = wallet
-                .create_signature(signature_args(), originator)
+                .create_signature(signature_args(privileged), originator)
                 .await?;
-            let args = args!(
-                keyed VerifySignatureArgs {
-                    data: Some(b"data".to_vec()),
-                    signature: made.signature,
-                    counterparty: Some(Counterparty::Anyone),
-                    for_self: Some(true)
-                },
-                privileged
-            );
+            let args = verify_signature_args(made.signature, privileged);
             format!("{:?}", wallet.verify_signature(args, originator).await?)
         }
         other => unreachable!("{other}"),
@@ -410,9 +417,8 @@ async fn a_privileged_argument_refusal_after_the_privilege_keeps_its_place() {
 // `WalletPermissionsManager.ts:5165-5350`, `:1515`).
 // =========================================================================
 
-/// The six key calls the permission check guards: every one but
-/// `verify_signature`, the last.
-const GUARDED: &[&str] = CALLS.split_last().unwrap().1;
+/// The key calls the permission check guards: all seven (#576).
+const GUARDED: [&str; 7] = CALLS;
 
 /// The handler's refusal as the wallet answers it.
 const PERMISSION_REFUSAL: &str = "Access denied: Protocol permission refused by the test";
@@ -508,13 +514,27 @@ async fn grant(manager: &Permissions, prompts: &Prompts, privileged: bool) {
     prompts.seen.lock().unwrap().clear();
 }
 
-/// One of the six guarded calls; `get_public_key` names the witness
-/// protocol so the check runs.
+/// One of the seven guarded calls; `get_public_key` names the witness
+/// protocol so the check runs. `verify_signature`'s signature is made off
+/// the wallet, under the key the route answers with (the double's for a
+/// privileged call), so the only check and the only ask are the verify's.
 async fn guarded_call(
     wallet: &TestWallet,
+    double: &PrivilegedDouble,
     name: &str,
     privileged: Option<bool>,
 ) -> bsv_rs::Result<String> {
+    if name == "verify_signature" {
+        let key = match privileged {
+            Some(true) => &double.key,
+            _ => &wallet.proto_wallet,
+        };
+        let made = key.create_signature(signature_args(privileged))?;
+        let args = verify_signature_args(made.signature, privileged);
+        let verified = wallet.verify_signature(args, Some(ORIGINATOR)).await?;
+        assert!(verified.valid, "{privileged:?}: {verified:?}");
+        return Ok(format!("{verified:?}"));
+    }
     if name != "get_public_key" {
         return call(wallet, name, privileged).await;
     }
@@ -535,8 +555,8 @@ async fn guarded_call(
 #[tokio::test]
 async fn an_everyday_grant_does_not_admit_a_privileged_key_call() {
     let (_dir, wallet, double, _manager, prompts) = guarded_wallet().await;
-    for &name in GUARDED {
-        match guarded_call(&wallet, name, Some(true)).await {
+    for name in GUARDED {
+        match guarded_call(&wallet, &double, name, Some(true)).await {
             Err(bsv_rs::Error::WalletRefusal { class, message }) => {
                 assert_eq!(class, bsv_rs::WalletRefusalClass::Unauthorized, "{name}");
                 assert_eq!(message, PERMISSION_REFUSAL, "{name}");
@@ -553,9 +573,9 @@ async fn an_everyday_grant_does_not_admit_a_privileged_key_call() {
 async fn a_privileged_grant_admits_a_privileged_key_call() {
     let (_dir, wallet, double, manager, prompts) = guarded_wallet().await;
     grant(&manager, &prompts, true).await;
-    for &name in GUARDED {
+    for name in GUARDED {
         let before = double.asked().len();
-        let answer = guarded_call(&wallet, name, Some(true)).await;
+        let answer = guarded_call(&wallet, &double, name, Some(true)).await;
         assert!(answer.is_ok(), "{name}: {answer:?}");
         // decrypt and verify_hmac make their input through the same route.
         let made: Vec<Asked> = double.asked().split_off(before);
@@ -573,8 +593,8 @@ async fn a_privileged_grant_admits_a_privileged_key_call() {
 async fn an_unprivileged_key_call_under_the_everyday_grant_is_unchanged() {
     let (_dir, wallet, double, _manager, prompts) = guarded_wallet().await;
     for privileged in [None, Some(false)] {
-        for &name in GUARDED {
-            let answer = guarded_call(&wallet, name, privileged).await;
+        for name in GUARDED {
+            let answer = guarded_call(&wallet, &double, name, privileged).await;
             assert!(answer.is_ok(), "{name} {privileged:?}: {answer:?}");
         }
     }
