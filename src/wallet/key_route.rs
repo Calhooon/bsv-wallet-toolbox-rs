@@ -4,6 +4,12 @@
 //! it to `this.privilegedKeyManager`; with none configured it is the
 //! reference's refusal (`Wallet.ts:460-461`). Every other call stays with the
 //! everyday `ProtoWallet`, its arguments intact as before.
+//!
+//! The arguments are validated before the route decides: the reference's
+//! substrates run `validateWalletArgs` ahead of the wallet
+//! (`WalletArgumentValidation.ts`, from `HTTPWalletJSON.ts:48`,
+//! `WalletWireProcessor.ts:21`), so a privileged request with a bad argument
+//! answers the validator's refusal, with or without a manager.
 
 use super::*;
 use bsv_rs::wallet::{
@@ -26,6 +32,23 @@ pub(super) fn privileged_refusal() -> bsv_rs::Error {
     }
 }
 
+/// The everyday `ProtoWallet`'s argument refusal, if its call gave one: its
+/// validators run before any key is touched and are the only source of the
+/// `InvalidParameter` class on the seven calls, so the everyday answer is
+/// discarded and only the refusal kept. bsv-rs keeps the validators
+/// themselves crate-private; the call is how they are reached.
+fn argument_refusal<T>(everyday: bsv_rs::Result<T>) -> bsv_rs::Result<()> {
+    match everyday {
+        Err(
+            refusal @ bsv_rs::Error::WalletRefusal {
+                class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                ..
+            },
+        ) => Err(refusal),
+        _ => Ok(()),
+    }
+}
+
 /// The keys one call is answered under: the everyday `ProtoWallet`, or the
 /// privileged key manager when the call asks for it.
 #[derive(Clone, Copy)]
@@ -35,16 +58,19 @@ pub(super) struct KeyRoute<'a> {
     originator: &'a str,
 }
 
-// One routed method per key call: the manager for `privileged: true`, the
-// everyday ProtoWallet otherwise.
+// One routed method per key call: the manager for `privileged: true` once
+// the everyday ProtoWallet's validators pass the arguments, the everyday
+// ProtoWallet otherwise.
 macro_rules! routed_key_calls {
     ($($name:ident($args:ty) -> $result:ty;)*) => {
         $(
             pub(super) async fn $name(&self, args: $args) -> bsv_rs::Result<$result> {
-                match self.manager(args.privileged)? {
-                    Some(manager) => manager.$name(args, self.originator).await,
-                    None => self.proto.$name(args),
+                if args.privileged != Some(true) {
+                    return self.proto.$name(args);
                 }
+                argument_refusal(self.proto.$name(args.clone()))?;
+                let manager = self.manager.ok_or_else(privileged_refusal)?;
+                manager.$name(args, self.originator).await
             }
         )*
     };
