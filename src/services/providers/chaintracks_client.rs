@@ -417,9 +417,13 @@ fn median_time_past(bytes: &[u8], tip_bytes: &[u8], count: usize) -> Result<u32>
     Ok(times[times.len() / 2])
 }
 
-/// A fault of one read and its class (#554): the service was not read
-/// (`Unread`), or what it answered was refused (`Refused`). The error is
-/// the client's, its text the same whatever the class.
+/// A fault of one read and its class (#554, #565), one class per fault
+/// kind whatever the route: the service was not read (`Unread`: the
+/// Retry-After window, a send fault, a timeout, an HTTP error status, a
+/// body that fails to decode), or it answered a frame the client refuses
+/// after decoding (`Refused`: a status other than success, a missing
+/// value, header bytes that are not hex, a range that does not end at the
+/// tip). The error is the client's, its text the same whatever the class.
 enum Fault {
     Unread(Error),
     Refused(Error),
@@ -441,12 +445,13 @@ impl From<reqwest::Error> for Fault {
     }
 }
 
-/// A client fault in the tracker's error class (#554): a transport-class
-/// fault (the Retry-After window, a send fault, a timeout, an HTTP status
-/// reqwest refused) is `NetworkError`, as the fallback tracker answers the
-/// root check and the height read; a fault in what the service answered (a
-/// frame or header the client refuses) is `Other`. The text is the
-/// client's Display, unchanged.
+/// The one mapping of the client's three `ChainTracker` reads (the root
+/// check, the height read, the tip read) into the tracker's error class
+/// (#554): an `Unread` fault (the Retry-After window, a send fault, a
+/// timeout, an HTTP error status, a body that fails to decode) is
+/// `NetworkError`; a `Refused` one (a frame the client refuses after
+/// decoding: a non-hex header, a missing field, a status other than
+/// success) is `Other`. The text is the client's Display, unchanged.
 fn tracker_fault(fault: Fault) -> ChainTrackerError {
     match fault {
         Fault::Unread(e) => ChainTrackerError::NetworkError(e.to_string()),
