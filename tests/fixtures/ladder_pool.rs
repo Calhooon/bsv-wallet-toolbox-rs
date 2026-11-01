@@ -36,6 +36,7 @@ pub(super) async fn replay_queue_with_witness(
     workers: usize,
     witness: Arc<lock::LockWitness>,
 ) -> Vec<Replayed> {
+    let replays = stall::stall_replays();
     let queue = Arc::new(Mutex::new(scenes.into_iter().collect::<VecDeque<_>>()));
     let mut handles = Vec::new();
     for _ in 0..workers {
@@ -51,11 +52,11 @@ pub(super) async fn replay_queue_with_witness(
                     };
                     let outcome = match fixture {
                         Err(e) => Err(e),
-                        Ok(fixture) => stall::replay_scene(&fixture, &fixture, &mut servers)
+                        Ok(fixture) => stall::replay_scene(&fixture, &[], replays, &mut servers)
                             .await
-                            .map(|(actual, history, retried)| {
-                                if let Some(note) = retried {
-                                    stall::name_the_retry(&path, &note);
+                            .map(|(actual, history, retries)| {
+                                for note in &retries {
+                                    stall::name_the_retry(&path, note);
                                 }
                                 (fixture, (actual, history))
                             }),
