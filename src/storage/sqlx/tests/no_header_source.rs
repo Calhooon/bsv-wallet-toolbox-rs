@@ -361,13 +361,12 @@ async fn create_asks_no_header_service_for_a_beef_with_no_caller_root() {
     beef.merge_raw_tx(parent.to_binary(), None);
     let (storage, asks, error) = create_unreachable(&parent, &beef.to_binary()).await;
     eprintln!("no caller root: {error}; asks={asks}");
-    // The text up to the rejected bytes' dump path, which names the hour.
     let (gp, p) = (grandparent.id(), parent.id());
     let structure = format!(
         "Validation error: inputBEEF: BEEF structure is invalid: ancestor(s) not stored, \
          and createAction fetches none: [{gp}]; roots [{}]; missing inputs [{}]; \
          transactions with missing inputs [{}]; not valid [none]; txid-only [none]; \
-         1 tx(s), 0 bump(s), 68 bytes; dump ",
+         1 tx(s), 0 bump(s), 68 bytes",
         &p[..16],
         &gp[..16],
         &p[..16]

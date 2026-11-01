@@ -1,11 +1,9 @@
 use super::beef_storage::parse_input_txids;
 use crate::error::Result;
 use bsv_rs::transaction::{Beef, ChainTracker, MerklePath};
-use chrono::Utc;
 use sqlx::sqlite::{SqliteConnection, SqlitePool};
 use sqlx::Row;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Validate a stored BEEF's merkle proofs against ChainTracker.
 ///
@@ -136,14 +134,12 @@ pub(super) fn merge_beef_linked(beef: &mut Beef, other: &Beef) {
     link_txids_carried_by_bumps(beef);
 }
 
-/// Why a BEEF failed structural validation, in one line, and the rejected
-/// bytes on disk. "BEEF structure is invalid" alone cost a seat a day of
-/// diagnosis (LOW p25, 2026-09-04): the sorter knows exactly which inputs
-/// are missing and which entries it could not place, so say so, and write
-/// the hex to `beef-rejected-<millis>-<pid>-<n>.hex` under
-/// `std::env::temp_dir()` (`$TMPDIR`) for a repro. The process id and the
-/// process-wide counter `n` keep two dumps in one millisecond, in one process
-/// or two, out of each other's file (#336).
+/// Why a BEEF failed structural validation, in one line. "BEEF structure is
+/// invalid" alone cost a seat a day of diagnosis (LOW p25, 2026-09-04): the
+/// sorter knows exactly which inputs are missing and which entries it could
+/// not place, so say so. Nothing is written to disk (#546; the reference has
+/// no such write, `createAction.ts` at ts-stack@edf6e03): the repro is this
+/// text and the caller's own bytes.
 pub(in crate::storage::sqlx) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String {
     let sr = beef.sort_txs();
     let short = |v: &[String]| -> String {
@@ -156,21 +152,9 @@ pub(in crate::storage::sqlx) fn describe_invalid_beef(beef: &mut Beef, roots: &[
                 .join(",")
         }
     };
-    let bytes = beef.to_binary();
-    static DUMPS: AtomicU64 = AtomicU64::new(0);
-    let dump = std::env::temp_dir().join(format!(
-        "beef-rejected-{}-{}-{}.hex",
-        Utc::now().timestamp_millis(),
-        std::process::id(),
-        DUMPS.fetch_add(1, Ordering::Relaxed)
-    ));
-    let dumped = match std::fs::write(&dump, hex::encode(&bytes)) {
-        Ok(()) => dump.display().to_string(),
-        Err(e) => format!("not written ({e})"),
-    };
     format!(
         "roots [{}]; missing inputs [{}]; transactions with missing inputs [{}]; \
-         not valid [{}]; txid-only [{}]; {} tx(s), {} bump(s), {} bytes; dump {}",
+         not valid [{}]; txid-only [{}]; {} tx(s), {} bump(s), {} bytes",
         short(roots),
         short(&sr.missing_inputs),
         short(&sr.with_missing_inputs),
@@ -178,8 +162,7 @@ pub(in crate::storage::sqlx) fn describe_invalid_beef(beef: &mut Beef, roots: &[
         short(&sr.txid_only),
         beef.txs.len(),
         beef.bumps.len(),
-        bytes.len(),
-        dumped
+        beef.to_binary().len()
     )
 }
 
