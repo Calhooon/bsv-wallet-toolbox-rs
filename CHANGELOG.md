@@ -55,6 +55,27 @@
     authentication error: Authentication identityKey must be a valid
     compressed public key.` The client's live path is bsv-rs's `Peer`,
     strict since bsv-rs #582; this is the public helper's verdict.
+  - The wallet wire's `sendWithResults` status byte is BRC-100's and the
+    reference's, 1 `unproven`, 2 `sending`, 3 `failed` (bsv-rs #590; was
+    0/1/2), another byte refused as `Unknown sendWith result status code:
+    N`. No toolbox code moves: the toolbox maps the status by name
+    (`wallet.rs`, the create and sign doors; `json_rpc.rs`, the error
+    body's results). A host on the binary wire reads the right status once
+    both ends are on this pin; a toolbox on beta.5 and a host on beta.6 (or
+    the reverse) disagree on the byte until both take it: on beta.5's wire
+    a TypeScript wallet's `sending` read as `failed` and its `failed` was
+    refused, and a client at this pin reads beta.5's codes off by one
+    (`00` refused, `01` as `unproven`, `02` as `sending`).
+  - bsv-rs #585, #587, #588, #545, #558, #559, #566, #568 (the identity
+    parsers, `get_verifiable_certificates`' certifier set, the private
+    result-key copies, PushDrop's key bytes, the contact conversions) and
+    #582's `validate_result_public_key`: no toolbox path calls them, and no
+    toolbox site copies the result validator's key rule (the toolbox writes
+    wallet results; it reads none back), so no verdict moves here.
+  - bsv-rs #571: `serde_json`'s floor is 1.0.125; the toolbox's lock
+    resolves 1.0.154. R56 (bsv-rs #491) is unchanged at this tag and
+    ts-stack #1451 is open, so beta.5's line stands. bsv-rs #604 (an
+    abort refusal's kind) is not in this tag.
 
 ### Fixed
 
