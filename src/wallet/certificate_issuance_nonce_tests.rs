@@ -115,12 +115,18 @@ async fn nonce_key_id_is_textdecoder_lossy_utf8() {
     assert!(valid.await.unwrap());
 }
 
-// #558: the 16 nonce bytes are the OS draw, fresh on every call.
+// #558: the 16 nonce bytes are one OS draw, fresh on every call; the draw
+// count tells os_fill from thread_rng, which freshness alone cannot.
 #[tokio::test]
 async fn client_nonce_draws_sixteen_fresh_os_bytes() {
     let wallet = wallet().await;
     let certifier_key = PublicKey::from_hex(&certifier()).unwrap();
-    let draw = || create_client_nonce(&wallet, &certifier_key, Some(ORIGINATOR));
+    let draw = || async {
+        let before = crate::rng::os_draws();
+        let nonce = create_client_nonce(&wallet, &certifier_key, Some(ORIGINATOR)).await;
+        assert_eq!(crate::rng::os_draws() - before, 1);
+        nonce
+    };
     let (a, b) = (draw().await.unwrap(), draw().await.unwrap());
     let (a, b) = (
         decode_issuance_base64(&a).unwrap(),

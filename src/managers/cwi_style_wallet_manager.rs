@@ -687,8 +687,11 @@ mod tests {
 
     #[test]
     fn test_profile_salts_differ() {
-        // The profile id is the password salt; each is an OS draw (#191).
+        // The profile id is the password salt; each is an OS draw (#191), one
+        // for the id and one for each pad.
+        let before = crate::rng::os_draws();
         let (a, b) = (Profile::new("A".into()), Profile::new("A".into()));
+        assert_eq!(crate::rng::os_draws() - before, 6);
         assert_eq!(a.id.len(), PROFILE_ID_LENGTH);
         assert_ne!(a.id, b.id);
         assert_ne!(a.primary_pad, b.primary_pad);
