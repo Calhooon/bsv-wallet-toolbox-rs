@@ -189,7 +189,7 @@ GorillaPool's independent explorer, the third of the read ladders beside WhatsOn
 
 ### Rate gate (`pace.rs`, 0.12.0)
 
-`RateGate::new(provider, default_retry_after)` (`.with_per_minute(n)` for a token bucket): `admit()` before a request, `check(status, headers)` after. A 429 closes the rung for its `Retry-After` (seconds or an HTTP date, held to 600 s) and returns `Error::RateLimited`; the ladder records it with code `RATE_LIMITED` and moves on. `RateGate::shared(key, make)` hands every provider built in the process for one key (base URL, and the API key's fingerprint where the budget is a key's) the same gate, so several `Services` spend one budget. Used by WhatsOnChain, BananaBlocks and Bitails (each `rate_gate()`); their test constructors take a gate of their own, because fixture servers are recycled.
+`RateGate::new(provider, default_retry_after)` (`.with_per_minute(n)` for a token bucket): `admit()` before a request, `check(status, headers)` after. A 429 closes the rung for its `Retry-After` (seconds or an HTTP date, held to 600 s) and returns `Error::RateLimited`; the ladder records it with code `RATE_LIMITED` and moves on. `RateGate::shared(key, make)` hands every provider built in the process for one key (base URL, and the API key's fingerprint where the budget is a key's) the same gate, so several `Services` spend one budget. Used by WhatsOnChain, BananaBlocks and Bitails (each `rate_gate()`), and by the header services Chaintracks and BHS (#148, not exposed; `pace::shared_key` names their gates); their test constructors take a gate of their own, because fixture servers are recycled.
 
 ---
 
