@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- #576, bsv-wallet-cli#386 (the keeper's reading of 2026-11-01 21:5xZ,
+  23.2): `verify_signature` asked no protocol permission. Old: under a
+  `WalletPermissionsManager` it was the one key call of seven with no
+  check, so any caller verified under any key, privileged or not. New:
+  it asks the grant with the request's `privileged` and the signing
+  usage type ahead of the route, as its six siblings do and as the
+  reference's `verifySignature` does
+  (`WalletPermissionsManager.ts:5359-5384`). A wallet with no
+  permissions manager is unchanged; no public type moves. Host note: a
+  host whose verify ran under no grant now sees the prompt, or the
+  manager's `Unauthorized` refusal when the prompt is refused.
+
 ## [0.14.0-beta.6] - 2026-11-01
 ### Added
 
@@ -231,8 +245,10 @@
   `reveal_specific_key_linkage`, stay under the everyday key with
   `privileged: true`; the reference routes them to its manager
   (`Wallet.ts:467-490`), a trait change on the owner's word, #569;
-  `verify_signature` runs no permission check at all, where the reference
-  asks a signing grant (`WalletPermissionsManager.ts:5359-5384`), #576. The
+  `verify_signature` ran no permission check at all in this release,
+  where the reference asks a signing grant
+  (`WalletPermissionsManager.ts:5359-5384`); #576 closed that gap after
+  it, under `[Unreleased]`. The
   argument validators run ahead of the privileged route, so an argument
   refusal (the `privilegedReason` text among them) keeps its text and
   place with and without a manager, as the reference's order has it (its

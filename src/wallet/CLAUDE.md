@@ -547,8 +547,11 @@ protocol check runs ahead of it with the request's flag
 (`WalletPermissionsManager.ts:5165-5350`): under a manager with
 `differentiate_privileged_operations` on, a privileged key call needs a
 privileged grant and an everyday grant does not admit it (before #568's
-fix round it judged every request as unprivileged). `verify_signature`
-has no permission check here, where the reference's has one (`:5378`).
+fix round it judged every request as unprivileged). All seven ask it:
+`get_public_key` (PublicKey, when it names a protocol), `encrypt` and
+`decrypt` (Encrypting), `create_hmac` and `verify_hmac` (Hmac),
+`create_signature` and `verify_signature` (Signing; `verify_signature`
+since #576, as the reference's `:5359-5384`).
 The argument validators run ahead of the privileged route,
 so an argument refusal (the `privilegedReason` text among them) keeps its
 text and place with and without a manager, as the reference's order has
