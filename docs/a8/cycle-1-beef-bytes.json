@@ -1,0 +1,444 @@
+{
+ "cycle": "A8 cycle 1 of bsv-wallet-toolbox-rs: the BEEF path's bytes",
+ "issue": 556,
+ "word": "the owner's word of 2026-11-01 14:1xZ, the keeper's reading 22.9 (a)",
+ "flag": "a8-beef-bytes (cargo feature, off by default, not in full)",
+ "base": "f59fce2b",
+ "bench_build": "ad7b1712 (the read-once path and the differential; the docs commit adds no code)",
+ "machine": "Apple M1 Max, rustc 1.95.0, samply at 2000 Hz, the host shared with other lanes (load averages logged per round)",
+ "census_row": {
+  "beef-internalize 1 MB": {
+   "sha2_compress_pct": 51.82,
+   "memmove_pct": 17.71
+  },
+  "beef-internalize 4 MB": {
+   "sha2_compress_pct": 49.27,
+   "memmove_pct": 24.98
+  },
+  "beef-internalize 10 MB": {
+   "sha2_compress_pct": 46.56,
+   "memmove_pct": 31.03
+  },
+  "beef-create 1 MB": {
+   "sha2_compress_pct": 68.87,
+   "memmove_pct": 19.97
+  },
+  "beef-create 4 MB": {
+   "sha2_compress_pct": 59.73,
+   "memmove_pct": 35.53
+  },
+  "beef-create 10 MB": {
+   "sha2_compress_pct": 59.65,
+   "memmove_pct": 36.87
+  }
+ },
+ "hashes_of_the_subject_body_per_door_call": {
+  "method": "a scratch copy of the tree built against bsv-rs 0.9.0-beta.5 with a counter in sha256, sha256d and the stream decoder's per-transaction hash (every hash over 100 kB logged with its backtrace), one call of each scene at 1 MB; fixture setup hashes excluded",
+  "beef-internalize": {
+   "before": 7,
+   "after": 4,
+   "before_sites": {
+    "wallet: Beef::from_binary": 1,
+    "wallet: find_atomic_transaction (Transaction::hash)": 1,
+    "storage: read_incoming_payment": 1,
+    "storage: verify_stream_structure": 1,
+    "storage: word pass, two readings": 2,
+    "sighash hashOutputs": 1
+   },
+   "after_sites": {
+    "wallet: Beef::from_binary": 1,
+    "wallet: find_atomic_transaction (Transaction::hash)": 1,
+    "storage: read_once": 1,
+    "sighash hashOutputs": 1
+   }
+  },
+  "beef-create": {
+   "before": 15,
+   "after": 13,
+   "before_sites": {
+    "wallet: refuse_invalid_beef_bytes": 1,
+    "door: refuse_invalid_beef_bytes": 1,
+    "tracker::caller_beef_roots": 1,
+    "inputs::validate_and_extend_inputs (pre-check, step)": 2,
+    "assemble_input_beef from_binary (pre-check, step)": 2,
+    "merge_beef_linked (bsv-rs merge_raw_tx, pre-check, step)": 2,
+    "judge_caller_beef: two Beef::from_binary": 2,
+    "judge: word pass, two readings": 2,
+    "sighash hashOutputs": 1,
+    "wallet: create_action_at Beef::from_binary": 1
+   },
+   "after_sites": {
+    "judge_caller_beef: two read_once": 2,
+    "the other thirteen less the judge's four": 11
+   }
+  }
+ },
+ "bench_base_f59fce2b": {
+  "beef-internalize 1 MB": {
+   "sha": 52.81,
+   "memmove": 17.55,
+   "ms": 12.04,
+   "cpu_ms": 7.53
+  },
+  "beef-internalize 4 MB": {
+   "sha": 49.74,
+   "memmove": 25.66,
+   "ms": 46.58,
+   "cpu_ms": 32.49
+  },
+  "beef-internalize 10 MB": {
+   "sha": 46.29,
+   "memmove": 32.68,
+   "ms": 108.31,
+   "cpu_ms": 89.02
+  },
+  "beef-create 1 MB": {
+   "sha": 63.49,
+   "memmove": 19.85,
+   "ms": 71.21,
+   "cpu_ms": 21.17
+  },
+  "beef-create 4 MB": {
+   "sha": 56.87,
+   "memmove": 37.39,
+   "ms": 202.17,
+   "cpu_ms": 73.17
+  },
+  "beef-create 10 MB": {
+   "sha": 59.58,
+   "memmove": 36.6,
+   "ms": 448.69,
+   "cpu_ms": 169.6
+  }
+ },
+ "bench_round_1_interleaved": {
+  "beef-internalize 1 MB": {
+   "off": {
+    "sha": 48.51,
+    "memmove": 17.59,
+    "ms": 57.12,
+    "cpu_ms": 13.15
+   },
+   "on": {
+    "sha": 39.41,
+    "memmove": 20.23,
+    "ms": 23.49,
+    "cpu_ms": 9.0
+   }
+  },
+  "beef-internalize 4 MB": {
+   "off": {
+    "sha": 37.68,
+    "memmove": 28.23,
+    "ms": 167.52,
+    "cpu_ms": 44.7
+   },
+   "on": {
+    "sha": 22.23,
+    "memmove": 31.83,
+    "ms": 329.93,
+    "cpu_ms": 28.38
+   }
+  },
+  "beef-internalize 10 MB": {
+   "off": {
+    "sha": 42.5,
+    "memmove": 34.18,
+    "ms": 349.19,
+    "cpu_ms": 95.2
+   },
+   "on": {
+    "sha": 34.16,
+    "memmove": 33.58,
+    "ms": 208.73,
+    "cpu_ms": 71.88
+   }
+  },
+  "beef-create 1 MB": {
+   "off": {
+    "sha": 64.49,
+    "memmove": 21.08,
+    "ms": 47.3,
+    "cpu_ms": 19.76
+   },
+   "on": {
+    "sha": 64.02,
+    "memmove": 19.39,
+    "ms": 52.15,
+    "cpu_ms": 16.78
+   }
+  },
+  "beef-create 4 MB": {
+   "off": {
+    "sha": 58.53,
+    "memmove": 35.37,
+    "ms": 272.31,
+    "cpu_ms": 65.75
+   },
+   "on": {
+    "sha": 70.13,
+    "memmove": 22.78,
+    "ms": 165.02,
+    "cpu_ms": 61.8
+   }
+  },
+  "beef-create 10 MB": {
+   "off": {
+    "sha": 59.02,
+    "memmove": 37.46,
+    "ms": 544.32,
+    "cpu_ms": 161.37
+   },
+   "on": {
+    "sha": 63.92,
+    "memmove": 31.54,
+    "ms": 297.58,
+    "cpu_ms": 143.2
+   }
+  }
+ },
+ "bench_round_2_interleaved": {
+  "beef-internalize 1 MB": {
+   "off": {
+    "sha": 56.45,
+    "memmove": 17.03,
+    "ms": 13.86,
+    "cpu_ms": 8.84
+   },
+   "on": {
+    "sha": 43.43,
+    "memmove": 20.37,
+    "ms": 11.6,
+    "cpu_ms": 6.7
+   }
+  },
+  "beef-internalize 4 MB": {
+   "off": {
+    "sha": 51.95,
+    "memmove": 26.27,
+    "ms": 66.58,
+    "cpu_ms": 36.99
+   },
+   "on": {
+    "sha": 38.75,
+    "memmove": 31.25,
+    "ms": 46.15,
+    "cpu_ms": 27.38
+   }
+  },
+  "beef-internalize 10 MB": {
+   "off": {
+    "sha": 46.13,
+    "memmove": 32.67,
+    "ms": 250.01,
+    "cpu_ms": 97.42
+   },
+   "on": {
+    "sha": 40.01,
+    "memmove": 31.99,
+    "ms": 84.09,
+    "cpu_ms": 67.9
+   }
+  },
+  "beef-create 1 MB": {
+   "off": {
+    "sha": 64.92,
+    "memmove": 20.05,
+    "ms": 24.86,
+    "cpu_ms": 18.65
+   },
+   "on": {
+    "sha": 65.33,
+    "memmove": 18.42,
+    "ms": 17.77,
+    "cpu_ms": 15.33
+   }
+  },
+  "beef-create 4 MB": {
+   "off": {
+    "sha": 59.11,
+    "memmove": 35.93,
+    "ms": 90.18,
+    "cpu_ms": 69.24
+   },
+   "on": {
+    "sha": 70.6,
+    "memmove": 23.05,
+    "ms": 52.67,
+    "cpu_ms": 51.11
+   }
+  },
+  "beef-create 10 MB": {
+   "off": {
+    "sha": 58.69,
+    "memmove": 37.68,
+    "ms": 325.18,
+    "cpu_ms": 159.93
+   },
+   "on": {
+    "sha": 59.51,
+    "memmove": 36.27,
+    "ms": 204.29,
+    "cpu_ms": 130.63
+   }
+  }
+ },
+ "bench_other_scenes_round_1": {
+  "internalize 1": {
+   "off": {
+    "sha": 0.216,
+    "memmove": 1.785,
+    "ms": 1.102,
+    "cpu_ms": 0.386
+   },
+   "on": {
+    "sha": 0.053,
+    "memmove": 1.81,
+    "ms": 0.955,
+    "cpu_ms": 0.403
+   }
+  },
+  "create 1": {
+   "off": {
+    "sha": 0.759,
+    "memmove": 3.268,
+    "ms": 3.918,
+    "cpu_ms": 1.935
+   },
+   "on": {
+    "sha": 0.656,
+    "memmove": 2.479,
+    "ms": 3.871,
+    "cpu_ms": 1.906
+   }
+  },
+  "create 10": {
+   "off": {
+    "sha": 0.743,
+    "memmove": 2.229,
+    "ms": 16.446,
+    "cpu_ms": 4.993
+   },
+   "on": {
+    "sha": 0.742,
+    "memmove": 2.765,
+    "ms": 8.624,
+    "cpu_ms": 4.581
+   }
+  },
+  "create 100": {
+   "off": {
+    "sha": 1.023,
+    "memmove": 2.949,
+    "ms": 147.166,
+    "cpu_ms": 60.583
+   },
+   "on": {
+    "sha": 0.844,
+    "memmove": 3.111,
+    "ms": 140.911,
+    "cpu_ms": 54.325
+   }
+  },
+  "process 1": {
+   "off": {
+    "sha": 0.732,
+    "memmove": 3.196,
+    "ms": 4.789,
+    "cpu_ms": 2.049
+   },
+   "on": {
+    "sha": 0.817,
+    "memmove": 2.876,
+    "ms": 4.995,
+    "cpu_ms": 2.129
+   }
+  },
+  "process 10": {
+   "off": {
+    "sha": 0.642,
+    "memmove": 2.634,
+    "ms": 11.827,
+    "cpu_ms": 5.861
+   },
+   "on": {
+    "sha": 0.612,
+    "memmove": 2.617,
+    "ms": 13.01,
+    "cpu_ms": 5.719
+   }
+  },
+  "process 100": {
+   "off": {
+    "sha": 0.742,
+    "memmove": 2.936,
+    "ms": 248.991,
+    "cpu_ms": 72.73
+   },
+   "on": {
+    "sha": 0.827,
+    "memmove": 3.049,
+    "ms": 131.84,
+    "cpu_ms": 57.72
+   }
+  }
+ },
+ "fields": {
+  "sha": "sha2 compress, percent of on-CPU samples in the door windows",
+  "memmove": "_platform_memmove, same",
+  "cpu_ms": "on-CPU samples times the interval, per call",
+  "ms": "door wall per call"
+ },
+ "runs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-556-a8-beef-bytes/ (base/, bench/, bench2/, counts/, the binaries in bin/, the scripts run_profiles.sh, run_interleaved.sh, table.py, sites.py, counts.py, chains.sh)",
+ "vectors_on_and_off": {
+  "cargo test --lib": {
+   "off": "1730 passed, 3 ignored",
+   "on": "1730 passed, 3 ignored"
+  },
+  "cargo test --lib --features full": {
+   "off": "1897 passed, 3 ignored",
+   "on": "1897 passed, 3 ignored"
+  },
+  "cargo test --tests --features sqlite,remote,bench-support": {
+   "off": "38 binaries, 2365 passed, 14 ignored",
+   "on": "38 binaries, 2365 passed, 14 ignored"
+  },
+  "cargo test --test test_vectors": {
+   "off": "58 passed",
+   "on": "58 passed"
+  },
+  "cargo test --lib --tests --no-default-features --features remote": {
+   "off": "38 binaries green, 797 lib",
+   "on": "38 binaries green, 797 lib"
+  }
+ },
+ "differential": {
+  "corpus_inputs": 378,
+  "contexts": 4,
+  "census_scenes_mb": [
+   1,
+   4,
+   10
+  ],
+  "door_refusals": [
+   "wrong key",
+   "moved data byte",
+   "cut stream",
+   "uncarried root"
+  ],
+  "judge_inputs_that_parse": "206 of 382",
+  "fuzz": {
+   "target": "a8_beef_bytes",
+   "runs": 756374,
+   "seconds": 501,
+   "corpus_from": 378,
+   "corpus_to": 649,
+   "differences": 0
+  },
+  "planted_reds": [
+   "one byte of the subject body the new path hands back: three internalize tests red",
+   "the judged set unproven test inverted: both create tests red"
+  ]
+ },
+ "pin_note": "counts, profiles and bench on bsv-rs 0.9.0-beta.5 (base f59fce2b); rebased onto origin/beta 8c0d2bf6 (bsv-rs 0.9.0-beta.6, #533), whose beef_stream.rs, beef.rs, beef_tx.rs, beef/, transaction.rs, primitives/hash.rs and primitives/bsv/sighash.rs are byte-identical to beta.5's; the gates ran on the rebased tree"
+}

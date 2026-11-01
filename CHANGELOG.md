@@ -15,6 +15,20 @@
   permissions manager is unchanged; no public type moves. Host note: a
   host whose verify ran under no grant now sees the prompt, or the
   manager's `Unauthorized` refusal when the prompt is refused.
+### Added
+
+- #556 (the owner's word of 2026-11-01 14:1xZ, the keeper's reading 22.9
+  (a)): the `a8-beef-bytes` cargo feature, off by default and not part of
+  `full`. With it on, the internalize door reads the AtomicBEEF once for
+  its subject scan, structure pass and word pass (the oracle path reads it
+  four times, each reading a SHA-256 and a copy of every body in bsv-rs's
+  decoder), create's judge of the caller's `inputBEEF` reads the caller's
+  BEEF and the assembly once each (four readings before), and the assembly
+  keeps the caller's parsed BEEF instead of cloning it. The verdicts, the
+  texts and the stored rows are the oracle's (a differential test and the
+  fuzz target `a8_beef_bytes` run both paths on the same bytes). With it
+  off nothing changes; it turns on for a line only on the owner's word
+  (A8-6). The counts and the bench are `docs/a8/cycle-1-beef-bytes.md`.
 
 ## [0.14.0-beta.6] - 2026-11-01
 ### Added
