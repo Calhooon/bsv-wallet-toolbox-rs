@@ -4,7 +4,7 @@
  "word": "the owner's word of 2026-11-01 14:1xZ, the keeper's reading 22.9 (a)",
  "flag": "a8-beef-bytes (cargo feature, off by default, not in full)",
  "base": "f59fce2b",
- "bench_build": "ad7b1712 (the read-once path and the differential; the docs commit adds no code)",
+ "bench_build": "ad7b1712 on bsv-rs 0.9.0-beta.5 (the commits after it restructure without a behaviour change)",
  "machine": "Apple M1 Max, rustc 1.95.0, samply at 2000 Hz, the host shared with other lanes (load averages logged per round)",
  "census_row": {
   "beef-internalize 1 MB": {
@@ -391,25 +391,26 @@
  },
  "runs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-556-a8-beef-bytes/ (base/, bench/, bench2/, counts/, the binaries in bin/, the scripts run_profiles.sh, run_interleaved.sh, table.py, sites.py, counts.py, chains.sh)",
  "vectors_on_and_off": {
+  "tree": "final, rebased onto beta ed34d83b (bsv-rs 0.9.0-beta.6)",
   "cargo test --lib": {
-   "off": "1730 passed, 3 ignored",
-   "on": "1730 passed, 3 ignored"
+   "off": "1762 passed, 3 ignored",
+   "on": "1762 passed, 3 ignored"
   },
   "cargo test --lib --features full": {
-   "off": "1897 passed, 3 ignored",
-   "on": "1897 passed, 3 ignored"
+   "off": "1931 passed, 3 ignored",
+   "on": "1931 passed, 3 ignored"
   },
   "cargo test --tests --features sqlite,remote,bench-support": {
-   "off": "38 binaries, 2365 passed, 14 ignored",
-   "on": "38 binaries, 2365 passed, 14 ignored"
+   "off": "38 binaries, 2400 passed, 14 ignored",
+   "on": "38 binaries, 2400 passed, 14 ignored"
   },
   "cargo test --test test_vectors": {
    "off": "58 passed",
    "on": "58 passed"
   },
   "cargo test --lib --tests --no-default-features --features remote": {
-   "off": "38 binaries green, 797 lib",
-   "on": "38 binaries green, 797 lib"
+   "off": "38 binaries, 1064 passed, 11 ignored",
+   "on": "38 binaries, 1064 passed, 11 ignored"
   }
  },
  "differential": {
@@ -427,18 +428,28 @@
    "uncarried root"
   ],
   "judge_inputs_that_parse": "206 of 382",
-  "fuzz": {
-   "target": "a8_beef_bytes",
-   "runs": 756374,
-   "seconds": 501,
-   "corpus_from": 378,
-   "corpus_to": 649,
-   "differences": 0
-  },
+  "fuzz": [
+   {
+    "tree": "ad7b1712, bsv-rs beta.5",
+    "runs": 756374,
+    "seconds": 501,
+    "corpus_from": 378,
+    "corpus_to": 649,
+    "differences": 0
+   },
+   {
+    "tree": "the final a8 code, bsv-rs beta.6 (the tree then at 8c0d2bf6; the rebases onto 4fdcd44f and ed34d83b moved none of the a8 code)",
+    "runs": 908679,
+    "seconds": 501,
+    "corpus_from": 649,
+    "corpus_to": 863,
+    "differences": 0
+   }
+  ],
   "planted_reds": [
    "one byte of the subject body the new path hands back: three internalize tests red",
    "the judged set unproven test inverted: both create tests red"
   ]
  },
- "pin_note": "counts, profiles and bench on bsv-rs 0.9.0-beta.5 (base f59fce2b); rebased onto origin/beta 8c0d2bf6 (bsv-rs 0.9.0-beta.6, #533), whose beef_stream.rs, beef.rs, beef_tx.rs, beef/, transaction.rs, primitives/hash.rs and primitives/bsv/sighash.rs are byte-identical to beta.5's; the gates ran on the rebased tree"
+ "pin_note": "counts, profiles and bench on bsv-rs 0.9.0-beta.5 (base f59fce2b); rebased onto origin/beta ed34d83b (bsv-rs 0.9.0-beta.6, #533; after the 0.14.0-beta.6 release), whose beef_stream.rs, beef.rs, beef_tx.rs, beef/, transaction.rs, primitives/hash.rs and primitives/bsv/sighash.rs are byte-identical to beta.5's; the gates ran on the rebased tree"
 }
