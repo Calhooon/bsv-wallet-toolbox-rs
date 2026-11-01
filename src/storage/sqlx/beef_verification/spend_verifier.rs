@@ -95,6 +95,23 @@ pub(crate) const DOOR_WORK_BUDGET: WorkBudget = WorkBudget::new()
     .with_per_input(Some(1 << 31))
     .with_per_transaction(Some(1 << 31));
 
+/// The stack memory figure at the doors, in bytes on the node's count: one
+/// budget over the main and the alt stack, each element its bytes plus 32
+/// (bsv-rs's `STACK_ELEMENT_OVERHEAD`). It is the SV mainnet node's default
+/// `-maxstackmemoryusagepolicy` (`src/policy/policy.h:153`), a policy limit
+/// of the node and never a consensus constant: a door judges an unmined spend
+/// under the node's word at tip+1, the policy era, so it takes the stricter
+/// mainnet node's policy (Teranode's is 104,857,600). The operator's
+/// `-maxstackmemoryusageconsensus` knob judges a mined spend and stays
+/// outside the door. Passed explicitly as `SpendParams::memory_limit`, where
+/// bsv-rs 0.9.0-beta.5 reads `None` under a word as this same figure, so a
+/// later bsv-rs reading of `None` cannot move the door; the keeper's reading
+/// of 2026-11-01 10:5xZ (#395). Under the mempool word bsv-rs tests its
+/// policy verdict at the same figure before it, so no verdict moved. Read by
+/// the storage's doors alone, so built with them.
+#[cfg(any(feature = "sqlite", feature = "mysql"))]
+pub(crate) const DOOR_STACK_MEMORY_BYTES: usize = 100_000_000;
+
 #[cfg(test)]
 thread_local! {
     /// The witnesses' budget in place of [`DOOR_WORK_BUDGET`], which no test
