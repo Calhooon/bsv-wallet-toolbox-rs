@@ -596,3 +596,131 @@ async fn ladder_fixtures_a_fault_at_the_deadline_is_replayed_once_more() {
         );
     }
 }
+
+/// The merkle path scene a stall is planted in.
+const STALLING_SCENE: &str = "get_merkle_path/429_retry_after_closes_the_rung.json";
+
+/// The scene replayed with its opening `stalls` attempts stood up with
+/// Bitails's one answer held past the deadline and `replays` replays
+/// allowed: the difference left, if any, and the retries named, each
+/// written to the run's log as the pool writes it.
+async fn stalled_attempts(stalls: usize, replays: usize) -> (Option<String>, Vec<String>) {
+    let path = fixture_root().join(STALLING_SCENE);
+    let fixture = pool::load(path.clone()).1.unwrap();
+    let loaded: Vec<Fixture> = (0..stalls)
+        .map(|_| held_past_the_deadline(&fixture, "Bitails", 1))
+        .collect();
+    let mut servers = Servers::new().await;
+    let (actual, history, retries) = replay_scene(&fixture, &loaded, replays, &mut servers)
+        .await
+        .unwrap();
+    for note in &retries {
+        name_the_retry(&path, note);
+    }
+    (difference(&fixture, &actual, &history), retries)
+}
+
+/// Each retry names its count and the stall it was replayed for.
+fn assert_named(retries: &[String], replays: usize) {
+    for (at, note) in retries.iter().enumerate() {
+        let opening = format!(
+            "retry {} of {replays}: replayed once more for a RUNNER STALL, not a ladder \
+             verdict: Bitails's answer in call 1 faulted",
+            at + 1
+        );
+        assert!(note.starts_with(&opening), "{note}");
+    }
+}
+
+/// The knob (#513): unset is one replay, a count is that count, anything
+/// else is refused rather than read as the default.
+#[test]
+fn ladder_fixtures_the_stall_replays_knob_reads_a_count() {
+    use std::env::VarError;
+    assert_eq!(stall_replays_from(Err(VarError::NotPresent)), Ok(1));
+    assert_eq!(stall_replays_from(Ok("2".into())), Ok(2));
+    assert_eq!(stall_replays_from(Ok(" 2\n".into())), Ok(2));
+    assert_eq!(stall_replays_from(Ok("0".into())), Ok(0));
+    for text in ["", "two", "-1"] {
+        let refused = stall_replays_from(Ok(text.into())).unwrap_err();
+        assert!(
+            refused.starts_with("LADDER_FIXTURES_STALL_REPLAYS="),
+            "{refused}"
+        );
+    }
+}
+
+/// Under the knob at two (CI, #513): a scene that stalls twice agrees on
+/// its third replay, and the log names both retries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ladder_fixtures_two_stalls_pass_on_the_third_replay_under_two() {
+    let (left, retries) = stalled_attempts(2, 2).await;
+    if let Some(difference) = left {
+        panic!("two stalls failed the scene under two replays:\n{difference}");
+    }
+    assert_eq!(retries.len(), 2, "{retries:#?}");
+    assert_named(&retries, 2);
+}
+
+/// Under the knob at two: a third stall fails the scene with the reading
+/// at the head of its message, after both retries are named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ladder_fixtures_a_third_stall_fails_under_two() {
+    let (left, retries) = stalled_attempts(3, 2).await;
+    let difference = left.expect("a third stall fails the scene");
+    let head = difference.lines().nth(1).unwrap_or_default();
+    assert!(
+        head.starts_with("RUNNER STALL, not a ladder verdict: Bitails's answer in call 1"),
+        "{difference}"
+    );
+    assert_eq!(retries.len(), 2, "{retries:#?}");
+    assert_named(&retries, 2);
+}
+
+/// Under the default (the local run, unchanged): one stall is retried and
+/// agrees; a second stall fails the scene with the reading at its head.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ladder_fixtures_the_default_retries_one_stall() {
+    let (left, retries) = stalled_attempts(1, STALL_REPLAYS_DEFAULT).await;
+    assert_eq!(left, None);
+    assert_eq!(retries.len(), 1, "{retries:#?}");
+    assert_named(&retries, 1);
+
+    let (left, retries) = stalled_attempts(2, STALL_REPLAYS_DEFAULT).await;
+    let difference = left.expect("a second stall fails the scene");
+    let head = difference.lines().nth(1).unwrap_or_default();
+    assert!(
+        head.starts_with("RUNNER STALL, not a ladder verdict"),
+        "{difference}"
+    );
+    assert_eq!(retries.len(), 1, "{retries:#?}");
+}
+
+/// A difference that is the ladder's, not a stall, is never retried, under
+/// the knob at two as under the default: the planted request count, and
+/// the late answer a fixture scripts (a timeout, the fixture's verdict).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ladder_fixtures_a_ladder_difference_is_never_retried() {
+    let mut planted = recorded_scene();
+    let expected = planted.expected.as_mut().unwrap();
+    *expected
+        .requests
+        .get_mut("Bitails")
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap() = 3;
+    let mut scripted = late_second_answer();
+    scripted.expected = recorded_scene().expected;
+    let mut servers = Servers::new().await;
+    for (scene, fixture) in [("planted count", planted), ("scripted late", scripted)] {
+        for replays in [STALL_REPLAYS_DEFAULT, 2] {
+            let (actual, history, retries) = replay_scene(&fixture, &[], replays, &mut servers)
+                .await
+                .unwrap();
+            assert!(retries.is_empty(), "{scene}, {replays}: {retries:#?}");
+            let message = difference(&fixture, &actual, &history).expect("the scene differs");
+            assert!(!message.contains("RUNNER STALL"), "{scene}: {message}");
+        }
+    }
+}
