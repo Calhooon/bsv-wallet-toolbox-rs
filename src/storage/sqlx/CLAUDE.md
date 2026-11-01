@@ -729,7 +729,12 @@ door: 999 elements of 100,000 bytes (99,931,968) accepted, 1,000 (100,032,000)
 refused with `Stack size limit exceeded: 100032000 bytes, the stack memory
 policy is 100000000 bytes.`; `the_door_memory_figure_declines_the_stack_past_it`
 lifts bsv-rs's policy verdict at the `Spend` the door builds and shows the
-figure declining the 1,000-element stack.
+figure declining the 1,000-element stack: a pin of the figure, not a proof
+that the explicit argument differs from `None`, since bsv-rs 0.9.0-beta.5
+reads `None` under a word as the same 100,000,000 (no witness turns red with
+`None` planted at the judge or in that test); the explicit argument and the
+constant's pin test are the guards against a later bsv-rs reading `None`
+otherwise.
 
 ## Create Action Implementation
 
