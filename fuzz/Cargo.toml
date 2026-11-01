@@ -17,7 +17,7 @@ chrono = "0.4"
 
 [dependencies.bsv-wallet-toolbox-rs]
 path = ".."
-features = ["bench-support"]
+features = ["bench-support", "a8-beef-bytes"]
 
 # Kept out of the root crate's workspace.
 [workspace]
@@ -29,6 +29,13 @@ debug = 1
 [[bin]]
 name = "beef_door"
 path = "fuzz_targets/beef_door.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "a8_beef_bytes"
+path = "fuzz_targets/a8_beef_bytes.rs"
 test = false
 doc = false
 bench = false

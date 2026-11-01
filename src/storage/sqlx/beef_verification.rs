@@ -19,6 +19,8 @@ mod live_word;
 mod own_word;
 mod read_once;
 pub(crate) use own_word::{verify_own, SourceTx};
+#[cfg(test)]
+pub(crate) use read_once::A8_PATH;
 pub(crate) use read_once::{a8_beef_bytes, read_once, ReadOnce};
 
 /// The store's `chain` word's activation heights (`main`, `test`,

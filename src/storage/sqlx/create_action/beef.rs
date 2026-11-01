@@ -627,3 +627,7 @@ mod beef_ancestry;
 #[cfg(test)]
 #[path = "tests/beef_stubs.rs"]
 mod beef_stubs;
+
+#[cfg(test)]
+#[path = "tests/beef_read_once.rs"]
+mod beef_read_once;

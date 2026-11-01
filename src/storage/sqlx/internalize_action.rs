@@ -4233,3 +4233,11 @@ mod stored_label_tests;
 #[cfg(test)]
 #[path = "internalize_no_header_tests.rs"]
 mod no_header_tests;
+
+#[cfg(any(test, feature = "a8-beef-bytes"))]
+#[path = "a8_differential.rs"]
+pub(super) mod a8_differential;
+
+#[cfg(test)]
+#[path = "a8_beef_bytes_tests.rs"]
+pub(super) mod a8_beef_bytes_tests;
