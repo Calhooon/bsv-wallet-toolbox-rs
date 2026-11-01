@@ -4,12 +4,13 @@
 //! (ts-stack@edf6e03 `identityUtils.ts:600-635`); before #502 the door read
 //! the token from any BEEF and asked no tracker.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use bsv_rs::block::ChainParams;
 use bsv_rs::overlay::OutputListItem;
 use bsv_rs::script::LockingScript;
+use bsv_rs::transaction::beef_stream::ChainTip;
 use bsv_rs::transaction::{Beef, ChainTracker, ChainTrackerError, TransactionInput};
 
 use super::super::fixture::{
@@ -69,7 +70,7 @@ fn at(beef: Vec<u8>, output_index: u32) -> OutputListItem {
 }
 
 /// The serials the door keeps from `outputs` against `tracker`.
-async fn kept(outputs: Vec<OutputListItem>, tracker: &Tracker) -> Vec<String> {
+async fn kept(outputs: Vec<OutputListItem>, tracker: &dyn ChainTracker) -> Vec<String> {
     let answer = overlay_certificates(outputs, tracker, &ChainParams::mainnet()).await;
     let serial = |c: OverlayCertificate| c.serial_number;
     answer.unwrap().into_iter().map(serial).collect()
@@ -151,6 +152,69 @@ async fn an_output_whose_root_is_gone_at_the_fence_is_dropped() {
         kept(vec![published(&good)], &always).await,
         vec![good.serial_number]
     );
+}
+
+/// Answers a root ask by its pass: `opening` until the evidence reads the
+/// tracker's mining tip, which it does once its opening pass has held every
+/// root (`held_roots`), and `fence` after; counts each pass's asks.
+struct Flipping {
+    opening: bool,
+    fence: bool,
+    tip_read: AtomicBool,
+    asks: [AtomicUsize; 2],
+}
+
+fn flipping(opening: bool, fence: bool) -> Flipping {
+    Flipping {
+        opening,
+        fence,
+        tip_read: AtomicBool::new(false),
+        asks: Default::default(),
+    }
+}
+
+impl Flipping {
+    /// The asks of the opening pass and of the fence.
+    fn asks(&self) -> (usize, usize) {
+        let [opening, fence] = &self.asks;
+        (opening.load(Ordering::SeqCst), fence.load(Ordering::SeqCst))
+    }
+}
+
+#[async_trait]
+impl ChainTracker for Flipping {
+    async fn is_valid_root_for_height(
+        &self,
+        _root: &str,
+        _height: u32,
+    ) -> std::result::Result<bool, ChainTrackerError> {
+        let fenced = self.tip_read.load(Ordering::SeqCst);
+        self.asks[usize::from(fenced)].fetch_add(1, Ordering::SeqCst);
+        Ok(if fenced { self.fence } else { self.opening })
+    }
+
+    async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
+        Ok(HEIGHT + 1000)
+    }
+
+    async fn mining_tip(&self) -> std::result::Result<Option<ChainTip>, ChainTrackerError> {
+        self.tip_read.store(true, Ordering::SeqCst);
+        Ok(None)
+    }
+}
+
+/// #519: the opening ask's own witness. A root the tracker refuses at the
+/// opening pass, and would hold at the fence, drops the output at the
+/// opening: one ask, the fence never asked, so the read never reached the
+/// identity token (the fence follows the token's decode and the
+/// certificate's crypto). Red where the opening's answer is not taken,
+/// since the fence would then hold the root and keep the output.
+#[tokio::test]
+async fn an_output_whose_root_is_refused_at_the_opening_is_dropped_before_its_token() {
+    let good = alice(2).await;
+    let tracker = flipping(false, true);
+    assert!(kept(vec![published(&good)], &tracker).await.is_empty());
+    assert_eq!(tracker.asks(), (1, 0));
 }
 
 /// `MerklePath.verify` (`MerklePath.ts:488-497`): the token's transaction at
