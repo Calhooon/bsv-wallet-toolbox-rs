@@ -13,7 +13,7 @@
     "fuzz_hours": 2.01
   },
   "clippy_pedantic": {
-    "total": 3237,
+    "total": 3234,
     "by_lint": {
       "clippy::assigning_clones": 4,
       "clippy::bool_to_int_with_if": 6,
@@ -25,7 +25,7 @@
       "clippy::cast_sign_loss": 66,
       "clippy::checked_conversions": 1,
       "clippy::default_trait_access": 38,
-      "clippy::doc_markdown": 729,
+      "clippy::doc_markdown": 731,
       "clippy::duration_suboptimal_units": 37,
       "clippy::enum_glob_use": 1,
       "clippy::explicit_iter_loop": 3,
@@ -45,7 +45,7 @@
       "clippy::missing_errors_doc": 200,
       "clippy::missing_fields_in_debug": 1,
       "clippy::missing_panics_doc": 8,
-      "clippy::must_use_candidate": 168,
+      "clippy::must_use_candidate": 166,
       "clippy::naive_bytecount": 1,
       "clippy::needless_continue": 3,
       "clippy::needless_pass_by_value": 8,
@@ -63,7 +63,7 @@
       "clippy::struct_field_names": 6,
       "clippy::too_many_lines": 62,
       "clippy::trivially_copy_pass_by_ref": 1,
-      "clippy::uninlined_format_args": 640,
+      "clippy::uninlined_format_args": 637,
       "clippy::unnecessary_wraps": 2,
       "clippy::unreadable_literal": 322,
       "clippy::unused_async": 1,
@@ -99,11 +99,11 @@
     "limit": 800,
     "count": 33,
     "src_files": 255,
-    "src_lines": 128423,
+    "src_lines": 128768,
     "max_lines": 7153,
     "files": {
       "src/wallet/wallet.rs": 7153,
-      "src/services/services.rs": 4627,
+      "src/services/services.rs": 4669,
       "src/storage/sqlx/internalize_action.rs": 4174,
       "src/storage/sqlx/process_action.rs": 3651,
       "src/storage/sqlx/sync.rs": 3097,
@@ -187,7 +187,7 @@
       "src/services/services.rs::skippable_ancestors 106",
       "src/services/services.rs::utxo_ladder 163",
       "src/services/services.rs::utxo_leads 88",
-      "src/services/services.rs::with_explorers 255",
+      "src/services/services.rs::with_explorers 247",
       "src/services/traits.rs::provider_verdicts 66",
       "src/storage/broadcast.rs::classify_broadcast_results 80",
       "src/storage/broadcast.rs::validate_beef_for_broadcast 87",
@@ -320,7 +320,7 @@
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
     "count": 6660,
-    "windows": 98375,
+    "windows": 98619,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:327 (38 lines)",
