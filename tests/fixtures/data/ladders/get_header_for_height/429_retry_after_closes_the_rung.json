@@ -1,15 +1,18 @@
 {
-  "about": "Chaintracks 429 with no Retry-After: an error like any, BHS answers.",
-  "ladder": "get_chain_tip_header",
+  "about": "Chaintracks 429 with Retry-After: BHS answers; on the second call Chaintracks' closed rung costs no request (#148).",
+  "ladder": "get_header_for_height",
   "providers": [
     {
       "name": "Chaintracks",
       "routes": [
         {
-          "route": "GET /findChainTipHeaderHex",
+          "route": "GET /findHeaderHexForHeight?height=900002",
           "answers": [
             {
-              "status": 429
+              "status": 429,
+              "headers": {
+                "retry-after": "30"
+              }
             }
           ]
         }
@@ -19,7 +22,7 @@
       "name": "BHS",
       "routes": [
         {
-          "route": "GET /api/v1/chain/header/tip",
+          "route": "GET /api/v1/chain/header/byHeight?height=900002",
           "answers": [
             {
               "status": 200,
@@ -32,7 +35,8 @@
                 "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
                 "time": 1700000000,
                 "version": 536870912
-              }
+              },
+              "times": 2
             }
           ]
         }
@@ -48,29 +52,28 @@
     }
   ],
   "calls": [
-    {}
+    {
+      "height": 900002
+    },
+    {
+      "height": 900002
+    }
   ],
   "expected": {
     "results": [
       {
-        "ok": {
-          "bits": 402917821,
-          "hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-          "height": 900002,
-          "merkle_root": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-          "nonce": 42,
-          "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-          "time": 1700000000,
-          "version": 536870912
-        }
+        "ok": "000000200000000000000000000000000000000000000000000000000000000000000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00f15365bd0904182a000000"
+      },
+      {
+        "ok": "000000200000000000000000000000000000000000000000000000000000000000000000cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00f15365bd0904182a000000"
       }
     ],
     "requests": {
       "BHS": {
-        "GET /api/v1/chain/header/tip": 1
+        "GET /api/v1/chain/header/byHeight?height=900002": 2
       },
       "Chaintracks": {
-        "GET /findChainTipHeaderHex": 1
+        "GET /findHeaderHexForHeight?height=900002": 1
       }
     }
   }
