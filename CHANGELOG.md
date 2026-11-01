@@ -21,6 +21,18 @@
 
 ### Fixed
 
+- #546, bsv-wallet-cli#386: a refused BEEF graph wrote its bytes as hex
+  to the temp folder. Old: when the create door refused a graph's
+  structure, `describe_invalid_beef` wrote
+  `$TMPDIR/beef-rejected-<millis>-<pid>-<n>.hex` (`std::env::temp_dir()`)
+  and named the path at the end of the refusal text (`; dump <path>`),
+  with no option and no cleanup. New: no write; the text alone, which
+  still names the roots, the missing inputs, the transactions that need
+  them, the entries the sorter could not place and the sizes, and now
+  ends at the byte count. The reference has no such write
+  (`createAction.ts` at ts-stack@edf6e03). Host note: the host's temp
+  folder stops gaining these files; a host wanting the bytes keeps the
+  BEEF it passed.
 - #530, bsv-wallet-cli#386: every immediate broadcast wrote its BEEF as
   hex to the temp folder. Old: the create door's broadcast wrote
   `$TMPDIR/beef-<txid8>.hex` (`std::env::temp_dir()`) on every immediate
