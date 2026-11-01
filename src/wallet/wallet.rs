@@ -1892,6 +1892,15 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<VerifySignatureResult> {
         validate_originator(originator)?;
+        // BRC-98/99: Check protocol permission for signature verification
+        let privileged = args.privileged == Some(true);
+        self.check_protocol_permission(
+            originator,
+            privileged,
+            &args.protocol_id,
+            crate::managers::PermissionUsageType::Signing,
+        )
+        .await?;
         self.key_route(originator).verify_signature(args).await
     }
 
