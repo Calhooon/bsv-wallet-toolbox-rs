@@ -75,6 +75,10 @@ pub use beef_verification::{
 pub use broadcast_seen::{
     SqlxBroadcastMemory, MIGRATION_002_BROADCAST_SEEN_NAME, MIGRATION_002_BROADCAST_SEEN_SQL,
 };
+/// The A8 differential's seam for the fuzz target `a8_beef_bytes` (#556).
+#[cfg(feature = "a8-beef-bytes")]
+#[doc(hidden)]
+pub use internalize_action::a8_differential::differential as a8_beef_bytes_differential;
 pub use locked_inputs::{
     locked_input_backoff_minutes, LockedInputCheck, LockedInputReport, LockedInputVerdict,
     LOCKED_INPUT_BACKOFF_CAP_MINUTES, LOCKED_VERDICT_SPENT_HINT, LOCKED_VERDICT_SPENT_PROVEN,

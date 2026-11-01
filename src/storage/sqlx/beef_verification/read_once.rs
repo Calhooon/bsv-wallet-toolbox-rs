@@ -11,8 +11,9 @@
 //! Chosen by [`a8_beef_bytes`]: the `a8-beef-bytes` feature, off by default,
 //! so the oracle path is the published behaviour until the owner's word turns
 //! it on for a line (A8-6). The verdicts, the texts and the stored rows are
-//! the oracle's (the differential target, `tests/a8_beef_bytes.rs` in this
-//! module's test file).
+//! the oracle's: the differential target (`a8_differential.rs`,
+//! `a8_beef_bytes_tests.rs`, `create_action/tests/beef_read_once.rs`, the
+//! fuzz target `a8_beef_bytes`) runs both paths on the same bytes.
 
 use super::{stream_error, verification_result, VerificationHeaders};
 use crate::Result;
