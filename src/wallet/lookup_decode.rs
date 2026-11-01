@@ -60,9 +60,11 @@ pub(super) fn decode_identity_output(script: &LockingScript) -> Result<OverlayCe
     if !shaped {
         return Err(dropped("not the identity token's chunks"));
     }
-    // `toUTF8Strict`, then `certificateRecord`.
+    // `toUTF8Strict`, then `certificateRecord`: a fatal `TextDecoder`, which
+    // drops one leading byte-order mark (`primitives/utils.ts:224-228`).
     let json = std::str::from_utf8(certificate)
         .map_err(|e| crate::Error::ServiceError(format!("Invalid UTF-8 in certificate: {e}")))?;
+    let json = json.strip_prefix('\u{feff}').unwrap_or(json);
     let record = record::parse(json)?;
     let subject = Counterparty::Other(
         PublicKey::from_hex(&record.subject).map_err(|_| dropped("a subject not a key"))?,

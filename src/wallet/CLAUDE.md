@@ -1060,7 +1060,19 @@ the subject and certifier equal the request's validated keys ahead of it
 overlay record's subject and certifier are refused in those forms at the
 record's own compressed-key check (`lookup_record.rs`), where the reference
 drops the entry at `verify()`
-(`a_lenient_subject_text_is_dropped_as_the_reference_drops_it`). So does a signature bsv-rs's
+(`a_lenient_subject_text_is_dropped_as_the_reference_drops_it`). Read
+against bsv-rs #553/#585/#566 at the beta.6 re-pin (the identity client's
+parsers of the same record): the eight properties, the field and keyring
+bounds, `type`/`serialNumber`'s canonical base64, the outpoint grammar, the
+field values as strings and the keys under `toBinary`'s rule agree. The
+record's text is read as `toUTF8Strict` reads it, one leading byte-order mark
+dropped (`primitives/utils.ts:224-228`), where before beta.6 the record
+behind one was dropped
+(`a_record_behind_a_byte_order_mark_is_read_as_the_reference_reads_it`). One
+stated residue: a lone surrogate escape (`\ud800` unpaired), which
+`JSON.parse` keeps (`identityUtils.ts:88`) and bsv-rs reads since #566, is
+refused by `serde_json` here, so such a record is dropped where the reference
+reads it. So does a signature bsv-rs's
 `Certificate::verify` answers `Ok(false)` to (absent, non-DER, wrong signer;
 bsv-rs #299, BRC-52's derived key from #251), as `Wallet.ts:816` (#188).
 `Wallet::reverify_stored_certificates` re-reads every stored certificate

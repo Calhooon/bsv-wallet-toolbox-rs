@@ -168,3 +168,21 @@ async fn a_lenient_subject_text_is_dropped_as_the_reference_drops_it() {
         only_the_good_token(script, &good).await;
     }
 }
+
+/// `certificateRecord` reads the record through `toUTF8Strict`
+/// (ts-stack@edf6e03 `identityUtils.ts:88`; `primitives/utils.ts:224-228`),
+/// a `TextDecoder` that drops one leading byte-order mark (`ignoreBOM` false),
+/// so a record behind one is read and kept (bsv-rs #553 reads it so); a
+/// second mark is the text's and `JSON.parse` refuses it. Before the beta.6
+/// re-pin the decode kept the mark and `serde_json` refused the record.
+#[tokio::test]
+async fn a_record_behind_a_byte_order_mark_is_read_as_the_reference_reads_it() {
+    let record = alice(7).await;
+    let marked = [b"\xef\xbb\xbf".as_slice(), &record_json(&record)].concat();
+    let decoded = decode_identity_output(&token(&key(SUBJECT), marked.clone())).unwrap();
+    assert_eq!(record_json(&decoded), record_json(&record));
+    let kept = answered(vec![token(&key(SUBJECT), marked.clone())]).await;
+    assert_eq!(kept, vec![record.serial_number.clone()]);
+    let twice = [b"\xef\xbb\xbf".as_slice(), &marked].concat();
+    assert!(decode_identity_output(&token(&key(SUBJECT), twice)).is_err());
+}
