@@ -144,107 +144,122 @@ impl ChaintracksServiceClient {
 
     /// One GET through the gate: no request inside a Retry-After window,
     /// and a 429 closes the rung. `what` names the call in a send fault.
-    async fn get(&self, url: &str, what: &str) -> Result<reqwest::Response> {
-        self.gate.admit()?;
-        let response = self
-            .build_request(url)
-            .send()
-            .await
-            .map_err(|e| Error::NetworkError(format!("Chaintracks {}: {}", what, e)))?;
-        self.gate.check(response.status(), response.headers())?;
+    async fn get(&self, url: &str, what: &str) -> std::result::Result<reqwest::Response, Fault> {
+        self.gate.admit().map_err(Fault::Unread)?;
+        let response = self.build_request(url).send().await.map_err(|e| {
+            Fault::Unread(Error::NetworkError(format!("Chaintracks {}: {}", what, e)))
+        })?;
+        self.gate
+            .check(response.status(), response.headers())
+            .map_err(Fault::Unread)?;
         Ok(response)
     }
 
     /// Get the current blockchain height.
     pub async fn get_present_height(&self) -> Result<u32> {
+        Ok(self.present_height().await?)
+    }
+
+    async fn present_height(&self) -> std::result::Result<u32, Fault> {
         let url = self.build_url("/getPresentHeight");
         let response = self.get(&url, "getPresentHeight").await?;
 
         if !response.status().is_success() {
-            return Err(Error::ServiceError(format!(
+            return Err(Fault::Refused(Error::ServiceError(format!(
                 "Chaintracks getPresentHeight failed: HTTP {}",
                 response.status()
-            )));
+            ))));
         }
 
-        let frame: ResponseFrame<u32> = response
-            .json()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Chaintracks parse error: {}", e)))?;
+        let frame: ResponseFrame<u32> = response.json().await.map_err(|e| {
+            Fault::Refused(Error::ServiceError(format!(
+                "Chaintracks parse error: {}",
+                e
+            )))
+        })?;
 
         if !frame.is_success() {
-            return Err(Error::ServiceError(format!(
+            return Err(Fault::Refused(Error::ServiceError(format!(
                 "Chaintracks getPresentHeight: status={}",
                 frame.status
-            )));
+            ))));
         }
 
         frame.value.ok_or_else(|| {
-            Error::ServiceError("Chaintracks getPresentHeight: missing value".to_string())
+            Fault::Refused(Error::ServiceError(
+                "Chaintracks getPresentHeight: missing value".to_string(),
+            ))
         })
     }
 
     /// Find block header by height.
     pub async fn find_header_for_height(&self, height: u32) -> Result<BlockHeader> {
+        Ok(self.header_for_height(height).await?)
+    }
+
+    async fn header_for_height(&self, height: u32) -> std::result::Result<BlockHeader, Fault> {
         let url = self.build_url(&format!("/findHeaderHexForHeight?height={}", height));
         let response = self.get(&url, "findHeaderHexForHeight").await?;
 
         if !response.status().is_success() {
-            return Err(Error::ServiceError(format!(
+            return Err(Fault::Refused(Error::ServiceError(format!(
                 "Chaintracks findHeaderHexForHeight failed: HTTP {}",
                 response.status()
-            )));
+            ))));
         }
 
-        let frame: ResponseFrame<CtBlockHeader> = response
-            .json()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Chaintracks header parse: {}", e)))?;
+        let frame: ResponseFrame<CtBlockHeader> = response.json().await.map_err(|e| {
+            Fault::Refused(Error::ServiceError(format!(
+                "Chaintracks header parse: {}",
+                e
+            )))
+        })?;
 
         if !frame.is_success() {
-            return Err(Error::ServiceError(format!(
+            return Err(Fault::Refused(Error::ServiceError(format!(
                 "Chaintracks findHeaderHexForHeight: status={}",
                 frame.status
-            )));
+            ))));
         }
 
-        frame
-            .value
-            .map(BlockHeader::from)
-            .ok_or_else(|| Error::NotFound {
+        frame.value.map(BlockHeader::from).ok_or_else(|| {
+            Fault::Refused(Error::NotFound {
                 entity: "BlockHeader".to_string(),
                 id: height.to_string(),
             })
+        })
     }
 
     /// Find the chain tip header.
     pub async fn find_chain_tip_header(&self) -> Result<BlockHeader> {
+        Ok(self.chain_tip_header().await?)
+    }
+
+    async fn chain_tip_header(&self) -> std::result::Result<BlockHeader, Fault> {
         let url = self.build_url("/findChainTipHeaderHex");
         let response = self.get(&url, "findChainTipHeaderHex").await?;
 
         if !response.status().is_success() {
-            return Err(Error::ServiceError(format!(
+            return Err(Fault::Refused(Error::ServiceError(format!(
                 "Chaintracks findChainTipHeaderHex failed: HTTP {}",
                 response.status()
-            )));
+            ))));
         }
 
-        let frame: ResponseFrame<CtBlockHeader> = response
-            .json()
-            .await
-            .map_err(|e| Error::ServiceError(format!("Chaintracks tip parse: {}", e)))?;
+        let frame: ResponseFrame<CtBlockHeader> = response.json().await.map_err(|e| {
+            Fault::Refused(Error::ServiceError(format!("Chaintracks tip parse: {}", e)))
+        })?;
 
         if !frame.is_success() {
-            return Err(Error::ServiceError(format!(
+            return Err(Fault::Refused(Error::ServiceError(format!(
                 "Chaintracks findChainTipHeaderHex: status={}",
                 frame.status
-            )));
+            ))));
         }
 
-        frame
-            .value
-            .map(BlockHeader::from)
-            .ok_or_else(|| Error::ServiceError("Chaintracks: no chain tip".to_string()))
+        frame.value.map(BlockHeader::from).ok_or_else(|| {
+            Fault::Refused(Error::ServiceError("Chaintracks: no chain tip".to_string()))
+        })
     }
 
     /// Find block header by block hash.
@@ -282,36 +297,47 @@ impl ChaintracksServiceClient {
 
     /// Validate a merkle root for a given block height.
     pub async fn is_valid_root_for_height(&self, root: &str, height: u32) -> Result<bool> {
-        let header = self.find_header_for_height(height).await?;
+        Ok(self.root_is_valid(root, height).await?)
+    }
+
+    async fn root_is_valid(&self, root: &str, height: u32) -> std::result::Result<bool, Fault> {
+        let header = self.header_for_height(height).await?;
         Ok(header.merkle_root == root)
     }
 
     // Network metadata is stable for this service. Header context is read anew
     // for each verification: one tip and one range of at most eleven headers.
     /// The network, read once per client (`/getChain`) and kept.
-    async fn verifier_chain(&self) -> Result<Chain> {
+    async fn verifier_chain(&self) -> std::result::Result<Chain, Fault> {
         let chain = self
             .chain
             .get_or_try_init(|| async {
-                self.gate.admit()?;
+                self.gate.admit().map_err(Fault::Unread)?;
                 let response = self
                     .build_request(&self.build_url("/getChain"))
                     .send()
-                    .await?;
-                self.gate.check(response.status(), response.headers())?;
+                    .await
+                    .map_err(|e| Fault::Unread(e.into()))?;
+                self.gate
+                    .check(response.status(), response.headers())
+                    .map_err(Fault::Unread)?;
                 let frame: ResponseFrame<Chain> = response.error_for_status()?.json().await?;
                 if !frame.is_success() {
-                    return Err(Error::ServiceError("Chaintracks getChain failed".into()));
+                    return Err(Fault::Refused(Error::ServiceError(
+                        "Chaintracks getChain failed".into(),
+                    )));
                 }
                 frame.value.ok_or_else(|| {
-                    Error::ServiceError("Chaintracks getChain: missing value".into())
+                    Fault::Refused(Error::ServiceError(
+                        "Chaintracks getChain: missing value".into(),
+                    ))
                 })
             })
             .await?;
         Ok(*chain)
     }
 
-    async fn verifier_tip(&self) -> Result<ChainTip> {
+    async fn verifier_tip(&self) -> std::result::Result<ChainTip, Fault> {
         let chain = self.verifier_chain().await?;
         // The activation heights are bsv-rs's ChainParams (#440, the node's
         // chainparams.cpp); the CSV heights, which ChainParams does not carry,
@@ -324,26 +350,35 @@ impl ChaintracksServiceClient {
             Chain::Test => (bsv_rs::block::ChainParams::testnet(), 770_112),
             Chain::Regtest => (bsv_rs::block::ChainParams::regtest(), 576),
         };
-        let tip = self.find_chain_tip_header().await?;
+        let tip = self.chain_tip_header().await?;
         let start = tip.height.saturating_sub(10);
         let count = tip.height - start + 1;
         let url = self.build_url(&format!("/getHeaders?height={start}&count={count}"));
-        self.gate.admit()?;
-        let response = self.build_request(&url).send().await?;
-        self.gate.check(response.status(), response.headers())?;
+        self.gate.admit().map_err(Fault::Unread)?;
+        let response = self
+            .build_request(&url)
+            .send()
+            .await
+            .map_err(|e| Fault::Unread(e.into()))?;
+        self.gate
+            .check(response.status(), response.headers())
+            .map_err(Fault::Unread)?;
         let frame: ResponseFrame<String> = response.error_for_status()?.json().await?;
         if !frame.is_success() {
-            return Err(Error::ServiceError("Chaintracks getHeaders failed".into()));
+            return Err(Fault::Refused(Error::ServiceError(
+                "Chaintracks getHeaders failed".into(),
+            )));
         }
         let bytes = frame
             .value
             .and_then(|s| hex::decode(s).ok())
             .ok_or_else(|| {
-                Error::ServiceError(
+                Fault::Refused(Error::ServiceError(
                     "Chaintracks getHeaders: missing or invalid header bytes".into(),
-                )
+                ))
             })?;
-        let median_time_past = median_time_past(&bytes, &tip.to_binary(), count as usize)?;
+        let median_time_past =
+            median_time_past(&bytes, &tip.to_binary(), count as usize).map_err(Fault::Refused)?;
         // A historical pre-CSV timestamp lock requires a candidate block
         // time. A header service cannot supply that future fact; hold it.
         Ok(crate::services::chain_tip(
@@ -382,18 +417,40 @@ fn median_time_past(bytes: &[u8], tip_bytes: &[u8], count: usize) -> Result<u32>
     Ok(times[times.len() / 2])
 }
 
+/// A fault of one read and its class (#554): the service was not read
+/// (`Unread`), or what it answered was refused (`Refused`). The error is
+/// the client's, its text the same whatever the class.
+enum Fault {
+    Unread(Error),
+    Refused(Error),
+}
+
+impl From<Fault> for Error {
+    fn from(fault: Fault) -> Self {
+        match fault {
+            Fault::Unread(e) | Fault::Refused(e) => e,
+        }
+    }
+}
+
+/// reqwest's own fault (a send fault, a timeout, a status
+/// `error_for_status` refused, a body that fails to decode) is unread.
+impl From<reqwest::Error> for Fault {
+    fn from(e: reqwest::Error) -> Self {
+        Fault::Unread(e.into())
+    }
+}
+
 /// A client fault in the tracker's error class (#554): a transport-class
 /// fault (the Retry-After window, a send fault, a timeout, an HTTP status
 /// reqwest refused) is `NetworkError`, as the fallback tracker answers the
 /// root check and the height read; a fault in what the service answered (a
 /// frame or header the client refuses) is `Other`. The text is the
 /// client's Display, unchanged.
-fn tracker_fault(e: &Error) -> ChainTrackerError {
-    match e {
-        Error::RateLimited { .. } | Error::NetworkError(_) | Error::HttpError(_) => {
-            ChainTrackerError::NetworkError(e.to_string())
-        }
-        _ => ChainTrackerError::Other(e.to_string()),
+fn tracker_fault(fault: Fault) -> ChainTrackerError {
+    match fault {
+        Fault::Unread(e) => ChainTrackerError::NetworkError(e.to_string()),
+        Fault::Refused(e) => ChainTrackerError::Other(e.to_string()),
     }
 }
 
@@ -404,9 +461,9 @@ impl ChainTracker for ChaintracksServiceClient {
         root: &str,
         height: u32,
     ) -> std::result::Result<bool, ChainTrackerError> {
-        ChaintracksServiceClient::is_valid_root_for_height(self, root, height)
+        self.root_is_valid(root, height)
             .await
-            .map_err(|e| tracker_fault(&e))
+            .map_err(tracker_fault)
     }
 
     async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
@@ -416,10 +473,7 @@ impl ChainTracker for ChaintracksServiceClient {
     }
 
     async fn mining_tip(&self) -> std::result::Result<Option<ChainTip>, ChainTrackerError> {
-        self.verifier_tip()
-            .await
-            .map(Some)
-            .map_err(|e| tracker_fault(&e))
+        self.verifier_tip().await.map(Some).map_err(tracker_fault)
     }
 }
 
