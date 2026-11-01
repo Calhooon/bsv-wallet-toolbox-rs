@@ -198,6 +198,21 @@
   transaction the store does not hold (`judge_caller_beef`, #509) still
   read the services' header service and hold on its fault as before.
 
+### CI
+
+- #535, #534 (the owner's word of 2026-11-01 14:1xZ and 14:4xZ): the
+  Mutants workflow measures the doors that judge under the node's word
+  (`create_action/must_spend.rs`, `own_word.rs`, `review_beef.rs`) under
+  `.cargo/mutants-doors.toml`, the lib and every integration target that
+  enters a door function (`fixtures`, `caller_complete_funding_tests`,
+  `immediate_broadcast_hint_tests`, `known_ancestor_tests`,
+  `test_vectors`), as a `doors` shard group of two; `.cargo/mutants.toml`
+  excludes them and the scores job reads both catalogues. Old: `--lib`
+  alone, must_spend.rs 0.00% (0 of 19). New: 94.74% (18 of 19);
+  own_word.rs 71.43% and review_beef.rs 100% under both. The three floors
+  are set from the widened figure (80, 71, 80); the record is
+  `docs/census/mutants-oracle-2026-11-01.md`. No behaviour changes.
+
 ## [0.14.0-beta.5] - 2026-10-31
 
 ### Added

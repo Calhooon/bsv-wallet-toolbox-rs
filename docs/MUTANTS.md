@@ -10,9 +10,12 @@ half hours queued every other repository's CI behind them. The schedule returns
 when the run is shaped to finish: the three door files (861 mutants) nightly in
 fewer shards and the full inventory weekly, a cheaper per-mutant build, or both.
 It is informational and must not become a required branch protection context.
+Beside the sixteen shards, the `doors` job runs the three doors that judge under
+the node's word in two shards of their own, under a wider oracle (below, #535).
 Each shard uploads its `mutants.out`, inventory and exit code for 14 days, even
-on failure. `Mutation scores` combines disjoint outcomes and prints the per-file
-table in the job summary. Missing shards, failed baselines, unfinished runs,
+on failure. `Mutation scores` combines disjoint outcomes of both shard groups against the
+two catalogues joined (they are disjoint: `.cargo/mutants.toml` excludes the
+doors) and prints the per-file table in the job summary. Missing shards, failed baselines, unfinished runs,
 duplicate mutants, unsupported outcomes and missing floor entries fail the gate.
 
 `cargo-mutants` 27.1.0 is installed under a separate tool root. The workflow uses
@@ -34,21 +37,26 @@ only when nothing is landing: the shards take every runner slot the account
 has. A dispatch
 against `main` compares main's tree against the floors beta measured, since the
 tool reads `tools/mutants-floor.json` from the tree it checked out. The same
-five files on `beta` (this document, the workflow, `.cargo/mutants.toml`,
-`tools/mutants-score` and `tools/mutants-floor.json`) are the copy that moves
-with the programme; `main` carries them so the dispatch is registered.
+six files on `beta` (this document, the workflow, `.cargo/mutants.toml`,
+`.cargo/mutants-doors.toml`, `tools/mutants-score` and `tools/mutants-floor.json`)
+are the copy that moves with the programme; `main` carries them so the dispatch
+is registered. A change to the workflow lands on `beta` and the captain carries
+it to `main` with the files it reads: a `main` workflow that names
+`.cargo/mutants-doors.toml` needs that file on `main` too.
 
 ## Measurement
 
 `.cargo/mutants.toml` selects the three storage doors, the services orchestrator,
-all providers and all monitor tasks. Both mutation build and test phases use
+all providers and all monitor tasks, less the three files of the door oracle
+below. Both mutation build and test phases use
 `--lib`, so the test command is `cargo test --lib`. The library exercises the
 storage doors with `MockWalletServices` and the providers with `mockito`.
 Integration witnesses in `tests/` are not part of this score. In particular,
 monitor persistence/rollback, broadcaster HTTP bodies, and orchestrator failover
 have additional integration coverage. A miss here is a gap in this measured
 suite, not a claim that every integration witness misses it. Adding integration
-targets changes the measurement and needs a fresh baseline. Ignored tests that
+targets changes the measurement and needs a fresh baseline. The door oracle below
+is the one place the measurement includes them. Ignored tests that
 require private wallet data or external services remain ignored.
 
 The test timeout is three times the baseline test duration with a 20 second
@@ -81,6 +89,35 @@ python3 tools/mutants-score --catalog "$evidence/catalog.json" \
 
 `--report-only` displays partial evidence but never enforces floors. A sampled
 floor is provisional until a complete nightly measures that file.
+
+## The door oracle (#535, 2026-11-01)
+
+The owner's word of 2026-11-01 (14:1xZ, 23.5 (c), and 14:4xZ) puts the doors
+that judge under the node's word, `create_action/must_spend.rs`,
+`create_action/own_word.rs` and `create_action/review_beef.rs`, at an 80 percent
+gate, measured with their real witnesses: `must_spend.rs`'s live in the
+`fixtures` suite, so `--lib` alone read it at 0 of 19 (#535). Those three files
+run from `.cargo/mutants-doors.toml`: the lib and every integration target that
+enters a door function (`fixtures`, `caller_complete_funding_tests`,
+`immediate_broadcast_hint_tests`, `known_ancestor_tests`, `test_vectors`), with
+the CI integration step's features `sqlite,remote,bench-support`. A target that
+never enters a file's functions cannot kill its mutants, and no integration
+target reads a door file's text, so the oracle is the reach set; a new target
+that enters a door joins the list in both the config and the workflow's compile
+step. The set came from a probe that logs each door function on entry, run over
+every target once; the table and the figures before and after the widening are
+`docs/census/mutants-oracle-2026-11-01.md`, and the door floors in
+`tools/mutants-floor.json` come from the widened figure only.
+
+The 45 door mutants run as their own shard group, `doors`, two round-robin
+shards. The five targets add five test binaries to each mutant's build and about
+13 s to its test run beside the lib's (the `fixtures` suite 11.7 s on the lane
+host), so a door mutant costs a little over a lib mutant (about 2.8 minutes on
+the runners, mostly the build): 23 mutants a shard is about 70 minutes, inside
+the 330 minute limit with room to spare. The rest of the inventory stays on
+`--lib` as ruled (the ratchet). Other create-door files are entered by
+integration targets as well (the record's second probe); widening them is not
+in the ruling.
 
 ## Filters in cargo-mutants 27.1.0
 
