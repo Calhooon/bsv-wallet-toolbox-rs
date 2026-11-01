@@ -20,9 +20,17 @@
 //! ([`replay_scene`]) and judged on that replay; the stall and the stalled
 //! attempt's history go to the run's log past the test harness's capture
 //! ([`name_the_retry`]), so a run that passes on the retry still names it.
-//! A second stall fails the scene with the reading at its head. A scene
-//! that scripts a timeout (`delay_ms` to the deadline) reads no stall:
-//! its fault is the fixture's, never retried.
+//! A stall past the last replay fails the scene with the reading at its
+//! head. A scene that scripts a timeout (`delay_ms` to the deadline) reads
+//! no stall: its fault is the fixture's, never retried.
+//!
+//! How many replays a stalled scene gets is `LADDER_FIXTURES_STALL_REPLAYS`
+//! ([`stall_replays`]), one when unset, so the local run is as it was. CI
+//! sets two on the steps that replay the ladders (#513: push run
+//! 41183213380 stalled one scene twice, 2001 ms then 2106 ms, and the next
+//! push run was green on the same code). A longer deadline would not do:
+//! the scripted timeouts hold their answers 3000 ms against the 2000 ms
+//! deadline, and the reading counts a fault late from that deadline.
 //!
 //! The deadline is reqwest's own timer, set from `timeout_secs` inside the
 //! providers' constructors; the held `Clock` (`pace.rs`) reads only the rate
@@ -40,6 +48,31 @@ use super::*;
 /// the call history's clock (chrono, the system clock) and the client's
 /// timer (tokio, the monotonic clock) part by a little.
 const LATE_SLACK_MS: u64 = 100;
+
+/// The knob that names how many replays a stalled scene gets (#513).
+pub(super) const STALL_REPLAYS_VAR: &str = "LADDER_FIXTURES_STALL_REPLAYS";
+
+/// The replays a stalled scene gets when the knob is unset: the local run.
+pub(super) const STALL_REPLAYS_DEFAULT: usize = 1;
+
+/// The knob's value read: unset is [`STALL_REPLAYS_DEFAULT`], anything but
+/// a count is an error, never a silent default.
+fn stall_replays_from(value: Result<String, std::env::VarError>) -> Result<usize, String> {
+    match value {
+        Err(std::env::VarError::NotPresent) => Ok(STALL_REPLAYS_DEFAULT),
+        Ok(text) => text
+            .trim()
+            .parse()
+            .map_err(|e| format!("{STALL_REPLAYS_VAR}={text:?} is not a count: {e}")),
+        Err(e) => Err(format!("{STALL_REPLAYS_VAR} does not read: {e}")),
+    }
+}
+
+/// How many replays a stalled scene gets in this run, from
+/// `LADDER_FIXTURES_STALL_REPLAYS`.
+pub(super) fn stall_replays() -> usize {
+    stall_replays_from(std::env::var(STALL_REPLAYS_VAR)).unwrap_or_else(|e| panic!("{e}"))
+}
 
 /// One rung the ladder asked, as its call history records it.
 #[derive(Debug, Clone)]
@@ -279,27 +312,36 @@ pub(super) fn difference(fixture: &Fixture, actual: &Expected, history: &[Rung])
     ))
 }
 
-/// A scene replayed on a worker's servers, `opening` stood up for its opening
-/// attempt (the scene itself; in a test, the scene as a loaded runner
-/// serves it): what it recorded, the ladder's call history, and the runner
-/// stall it was replayed once more for.
+/// A scene replayed on a worker's servers, attempt `n` (from 0) stood up as
+/// `loaded[n]` and every attempt past `loaded` as the scene itself (in a
+/// test, `loaded` is the scene as a loaded runner serves it): what the last
+/// attempt recorded, the ladder's call history, and a note for each runner
+/// stall it was replayed once more for, `replays` at most.
 pub(super) async fn replay_scene(
     fixture: &Fixture,
-    opening: &Fixture,
+    loaded: &[Fixture],
+    replays: usize,
     servers: &mut Servers,
-) -> Result<(Expected, Vec<Rung>, Option<String>), String> {
-    assert_eq!(fixture.calls, opening.calls, "one scene's calls");
-    let (actual, history) = replay(opening, servers).await?;
-    let stall = stalled(fixture, &actual, &history);
-    let Some(stall) = stall else {
-        return Ok((actual, history, None));
-    };
-    let note = format!(
-        "replayed once more for a {stall}\nthe stalled attempt's {}",
-        history_text(&history)
-    );
-    let (actual, history) = replay(fixture, servers).await?;
-    Ok((actual, history, Some(note)))
+) -> Result<(Expected, Vec<Rung>, Vec<String>), String> {
+    let mut notes = Vec::new();
+    loop {
+        let attempt = loaded.get(notes.len()).unwrap_or(fixture);
+        assert_eq!(fixture.calls, attempt.calls, "one scene's calls");
+        let (actual, history) = replay(attempt, servers).await?;
+        let stall = if notes.len() < replays {
+            stalled(fixture, &actual, &history)
+        } else {
+            None
+        };
+        let Some(stall) = stall else {
+            return Ok((actual, history, notes));
+        };
+        notes.push(format!(
+            "retry {} of {replays}: replayed once more for a {stall}\nthe stalled attempt's {}",
+            notes.len() + 1,
+            history_text(&history)
+        ));
+    }
 }
 
 /// The runner stall a replay that differs from its fixture reads, if any.
@@ -525,12 +567,20 @@ async fn ladder_fixtures_a_fault_at_the_deadline_is_replayed_once_more() {
              deadline",
             deadline_ms + LATE_SLACK_MS / 2
         );
-        let (actual, history, retried) =
-            replay_scene(&fixture, &loaded, &mut servers).await.unwrap();
+        let (actual, history, retries) = replay_scene(
+            &fixture,
+            std::slice::from_ref(&loaded),
+            STALL_REPLAYS_DEFAULT,
+            &mut servers,
+        )
+        .await
+        .unwrap();
         if let Some(difference) = difference(&fixture, &actual, &history) {
             panic!("{scene}: the loaded runner's fault failed the scene:\n{difference}");
         }
-        let note = retried.expect("the stall is named");
+        let [note] = retries.as_slice() else {
+            panic!("{scene}: one stall named: {retries:#?}");
+        };
         eprintln!("{scene}: {note}");
         assert!(
             note.contains(&format!(
