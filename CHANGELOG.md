@@ -70,6 +70,19 @@
   (`createAction.ts` at ts-stack@edf6e03). Host note: the host's temp
   folder stops gaining these files; a host wanting the bytes keeps the
   BEEF it passed.
+- bsv-rs #553 read at the beta.6 pin: the discovery door reads an overlay
+  identity record behind a leading byte-order mark, as the reference's
+  `certificateRecord` reads it through `toUTF8Strict` (a fatal
+  `TextDecoder`, which drops one mark; ts-stack@edf6e03
+  `identityUtils.ts:88`, `primitives/utils.ts:224-228`). Old: the entry was
+  dropped (`serde_json` refused the mark: `expected value at line 1 column
+  1`). New: it is read and verified as any other; a second mark is the
+  text's and the entry is dropped, as `JSON.parse` refuses it. Host line for
+  bsv-wallet-cli#386: a discovery answer can carry one more certificate.
+  Test: `a_record_behind_a_byte_order_mark_is_read_as_the_reference_reads_it`.
+  Residue: a lone surrogate escape the reference keeps (bsv-rs #566) is
+  still refused here.
+
 - #530, bsv-wallet-cli#386: every immediate broadcast wrote its BEEF as
   hex to the temp folder. Old: the create door's broadcast wrote
   `$TMPDIR/beef-<txid8>.hex` (`std::env::temp_dir()`) on every immediate
