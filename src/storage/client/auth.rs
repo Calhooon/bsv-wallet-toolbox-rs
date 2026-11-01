@@ -565,8 +565,10 @@ mod tests {
         let decode = |n: String| {
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, n).unwrap()
         };
+        let before = crate::rng::os_draws();
         let a = decode(create_nonce(&wallet, None, None).await.unwrap());
         let b = decode(create_nonce(&wallet, None, None).await.unwrap());
+        assert_eq!(crate::rng::os_draws() - before, 2);
         assert_eq!((a.len(), b.len()), (NONCE_TOTAL_SIZE, NONCE_TOTAL_SIZE));
         assert_ne!(a[..NONCE_RANDOM_SIZE], b[..NONCE_RANDOM_SIZE]);
     }

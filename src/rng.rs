@@ -8,7 +8,22 @@
 /// (`Random(n)`); no options field or constructor can seed them (#191).
 pub(crate) fn os_fill(bytes: &mut [u8]) {
     use rand::RngCore;
+    #[cfg(test)]
+    OS_DRAWS.with(|draws| draws.set(draws.get() + 1));
     rand::rngs::OsRng.fill_bytes(bytes);
+}
+
+// Per thread, so a witness counts its own draws while other tests run.
+#[cfg(test)]
+thread_local! {
+    static OS_DRAWS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The `os_fill` calls this thread has made, for a witness that a value went
+/// through the OS draw rather than another stream (#558).
+#[cfg(test)]
+pub(crate) fn os_draws() -> u64 {
+    OS_DRAWS.with(std::cell::Cell::get)
 }
 
 /// An owner-local stream, shared by its handles and never held across an await.
@@ -61,5 +76,13 @@ mod tests {
         super::os_fill(&mut a);
         super::os_fill(&mut b);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn os_draws_counts_each_fill() {
+        let before = super::os_draws();
+        super::os_fill(&mut [0u8; 4]);
+        super::os_fill(&mut []);
+        assert_eq!(super::os_draws() - before, 2);
     }
 }
