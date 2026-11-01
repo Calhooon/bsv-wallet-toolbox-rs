@@ -540,7 +540,7 @@ none configured each is `WalletRefusal { class: NotImplemented, message }`,
 the message `Privileged operations require the Wallet to be configured with
 a privileged key manager.` byte for byte (`:460-461`). `None` or
 `Some(false)` is the everyday `ProtoWallet`, as before. The BRC-98/99
-protocol check runs first and is unchanged (it still judges the request as
+protocol check runs ahead of it and is unchanged (it still judges the request as
 unprivileged). The argument validators run ahead of the privileged route,
 so an argument refusal (the `privilegedReason` text among them) keeps its
 text and place with and without a manager, as the reference's order has
