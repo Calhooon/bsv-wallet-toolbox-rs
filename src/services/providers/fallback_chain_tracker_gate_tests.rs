@@ -228,3 +228,153 @@ async fn client_root_check_inside_the_window_cannot_look() {
     assert_could_not_look(&met, "the 429 itself");
     assert_could_not_look(&inside, "inside the window");
 }
+
+/// A read of the client's `ChainTracker` (#554, #565): the root check,
+/// the height read, the tip read, and the fallback tracker's height read,
+/// which passes the client's class through.
+#[derive(Clone, Copy, Debug)]
+enum Read {
+    Root,
+    Height,
+    FallbackHeight,
+    Tip,
+}
+
+impl Read {
+    const ALL: [Read; 4] = [Read::Root, Read::Height, Read::FallbackHeight, Read::Tip];
+
+    /// The routes the read asks, in order.
+    fn routes(self) -> &'static [&'static str] {
+        match self {
+            Read::Root => &["/findHeaderHexForHeight?height=700"],
+            Read::Height | Read::FallbackHeight => &["/getPresentHeight"],
+            Read::Tip => &[
+                "/getChain",
+                "/findChainTipHeaderHex",
+                "/getHeaders?height=900000&count=11",
+            ],
+        }
+    }
+
+    /// What a route before the faulted one answers.
+    fn answer_for(route: &str) -> serde_json::Value {
+        match route {
+            "/getChain" => serde_json::json!("main"),
+            _ => header_json(900_010, &"11".repeat(32)),
+        }
+    }
+
+    /// The read's answer over a client at `url` on a gate of its own.
+    async fn ask(self, url: &str) -> Result<String, ChainTrackerError> {
+        let client = ChaintracksServiceClient::at_clock(url, Clock::held());
+        match self {
+            Read::Root => ChainTracker::is_valid_root_for_height(&client, &"ab".repeat(32), 700)
+                .await
+                .map(|valid| valid.to_string()),
+            Read::Height => ChainTracker::current_height(&client)
+                .await
+                .map(|height| height.to_string()),
+            Read::FallbackHeight => FallbackChainTracker::new(client)
+                .current_height()
+                .await
+                .map(|height| height.to_string()),
+            Read::Tip => ChainTracker::mining_tip(&client)
+                .await
+                .map(|tip| format!("{tip:?}")),
+        }
+    }
+}
+
+/// A fault one route answers, with what its text names.
+#[derive(Clone, Copy, Debug)]
+enum Fault {
+    /// A 429: the Retry-After window.
+    Limited,
+    /// An HTTP error status.
+    Unavailable,
+    /// A body that fails to decode as JSON.
+    Undecodable,
+    /// A frame the client refuses after decoding.
+    Refused,
+}
+
+impl Fault {
+    async fn serve(self, server: &mut MockServer, route: &str) -> mockito::Mock {
+        match self {
+            Fault::Limited => too_many(server, route, 1).await,
+            Fault::Unavailable => serve(server, route, 503, "Service Unavailable".into(), 1).await,
+            Fault::Undecodable => serve(server, route, 200, "not json".into(), 1).await,
+            Fault::Refused => {
+                let frame = serde_json::json!({"status": "error"});
+                serve(server, route, 200, frame.to_string(), 1).await
+            }
+        }
+    }
+
+    /// The marker the fault's text carries.
+    fn names(self) -> &'static str {
+        match self {
+            Fault::Limited => "Rate limited: Chaintracks",
+            Fault::Unavailable => "503",
+            Fault::Undecodable => "decoding",
+            Fault::Refused => "Chaintracks",
+        }
+    }
+}
+
+/// `fault` on every route of every read: the class `network` names
+/// (`NetworkError` when true, `Other` when false) whatever the route, the
+/// text naming the fault; never an answer.
+async fn one_class_on_every_read_and_route(fault: Fault, network: bool) {
+    for read in Read::ALL {
+        for (at, route) in read.routes().iter().enumerate() {
+            let mut server = crate::services::mock_server().await;
+            let mut before = Vec::new();
+            for earlier in &read.routes()[..at] {
+                before.push(answer(&mut server, earlier, Read::answer_for(earlier), 1).await);
+            }
+            let faulted = fault.serve(&mut server, route).await;
+            let got = read.ask(&server.url()).await;
+            let class = match &got {
+                Err(ChainTrackerError::NetworkError(m)) if m.contains(fault.names()) => Some(true),
+                Err(ChainTrackerError::Other(m)) if m.contains(fault.names()) => Some(false),
+                _ => None,
+            };
+            assert_eq!(
+                class,
+                Some(network),
+                "{fault:?} on {read:?} {route}: {got:?}"
+            );
+            faulted.assert_async().await;
+            for answered in &before {
+                answered.assert_async().await;
+            }
+        }
+    }
+}
+
+/// The Retry-After window is `NetworkError` on every read and route.
+#[tokio::test]
+async fn a_429_is_network_error_on_every_read_and_route() {
+    one_class_on_every_read_and_route(Fault::Limited, true).await;
+}
+
+/// An HTTP error status is `NetworkError` whatever the route (#565): the
+/// tip header's 503 as the network's and the range's.
+#[tokio::test]
+async fn a_503_is_network_error_on_every_read_and_route() {
+    one_class_on_every_read_and_route(Fault::Unavailable, true).await;
+}
+
+/// A body that fails to decode is `NetworkError` whatever the route.
+#[tokio::test]
+async fn an_undecodable_body_is_network_error_on_every_read_and_route() {
+    one_class_on_every_read_and_route(Fault::Undecodable, true).await;
+}
+
+/// A frame the client refuses after decoding keeps `Other` on every read
+/// and route, the height read's among them (#554).
+#[tokio::test]
+async fn a_refused_frame_is_other_on_every_read_and_route() {
+    one_class_on_every_read_and_route(Fault::Refused, false).await;
+}
