@@ -30,6 +30,17 @@
   (`createAction.ts`, `processAction.ts` at ts-stack@edf6e03). Host note:
   the host's temp folder stops filling with these files; any tooling that
   read them reads the store's `proven_tx_reqs.input_beef` instead.
+- #148, bsv-wallet-cli#386: the header services shared no Retry-After
+  gate. Old: after a 429 with Retry-After from Chaintracks or BHS, the
+  next call asked that header service again at once. New: Chaintracks
+  and BHS pass the ladder's gate, the explorers' own (`RateGate`, one per
+  base and key in the process, 1 s when no Retry-After is sent, held to
+  600 s): the rung is closed for the Retry-After window, a call inside it
+  is `Rate limited: <service>: retry after <n>s` without a request, and
+  the next rung (BHS after Chaintracks) is asked. Rule 28 as the keeper
+  read it on 2026-10-31: a 429 with Retry-After is the server's own word
+  on its load, our own header service included. Host note: a host
+  running its own Chaintracks sees one call per window after a 429.
 - #521, bsv-wallet-cli#376: a header-service fault in discovery was
   answered as no overlay certificates. Old: any `get_chain_tracker` error
   made `discoverByIdentityKey` and `discoverByAttributes` answer an empty
