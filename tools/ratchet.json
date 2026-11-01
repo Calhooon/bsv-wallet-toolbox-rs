@@ -6,7 +6,7 @@
   "measured_at": "2026-11-01",
   "metrics": {
     "files_over_800": 33,
-    "max_file_lines": 7153,
+    "max_file_lines": 7148,
     "unwraps_outside_tests": 61,
     "undocumented_public_items": 308,
     "mutation_score_pct": 60.24,
@@ -98,11 +98,11 @@
   "files_over_800": {
     "limit": 800,
     "count": 33,
-    "src_files": 255,
-    "src_lines": 128768,
-    "max_lines": 7153,
+    "src_files": 256,
+    "src_lines": 129543,
+    "max_lines": 7148,
     "files": {
-      "src/wallet/wallet.rs": 7153,
+      "src/wallet/wallet.rs": 7148,
       "src/services/services.rs": 4669,
       "src/storage/sqlx/internalize_action.rs": 4174,
       "src/storage/sqlx/process_action.rs": 3651,
@@ -128,7 +128,7 @@
       "src/services/broadcast_memory.rs": 1060,
       "src/storage/sqlx/reorg_tests.rs": 1055,
       "src/storage/client/auth.rs": 1005,
-      "src/services/providers/fallback_chain_tracker.rs": 974,
+      "src/services/providers/fallback_chain_tracker.rs": 977,
       "src/monitor/reorg_ops.rs": 954,
       "src/storage/sqlx/broadcast_seen.rs": 893,
       "src/storage/sqlx/proof_root_tests.rs": 876,
@@ -276,7 +276,7 @@
       "src/wallet/wallet.rs::acquire_certificate 97",
       "src/wallet/wallet.rs::address_to_p2pkh_script 65",
       "src/wallet/wallet.rs::build_unsigned_transaction 197",
-      "src/wallet/wallet.rs::create_action_at 680",
+      "src/wallet/wallet.rs::create_action_at 675",
       "src/wallet/wallet.rs::create_keyring_for_verifier 124",
       "src/wallet/wallet.rs::internalize_action 92",
       "src/wallet/wallet.rs::prove_certificate 153",
@@ -319,8 +319,8 @@
   },
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
-    "count": 6660,
-    "windows": 98619,
+    "count": 6646,
+    "windows": 99163,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:327 (38 lines)",
