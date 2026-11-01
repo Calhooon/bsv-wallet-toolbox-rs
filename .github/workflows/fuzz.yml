@@ -29,6 +29,7 @@ jobs:
       matrix:
         target:
           - beef_door
+          - a8_beef_bytes
           - tsc_proof
           - merkle_path
           - broadcast_memory

@@ -15,6 +15,7 @@ The crate is its own workspace (`fuzz/Cargo.toml`); the root crate's
 | target | what it reads | entry points |
 |---|---|---|
 | `beef_door` | a stranger's BEEF, as the internalize and create doors take it | `refuse_invalid_beef_bytes` (bsv-rs's stream verifier), then on bytes it lets through `Beef::from_binary`, `verify_valid`, `validate_beef_for_broadcast`, `beef_to_ef_batch`, `unproven_ancestors_in_beef`, `to_binary_atomic` |
+| `a8_beef_bytes` | a BEEF on the oracle path and on the `a8-beef-bytes` path, the same bytes (A8-3, #556) | `a8_beef_bytes_differential` (the internalize door's reading under four header contexts; any difference in a value, an error or a refusal is a crash, a refusal both paths give is a fine answer); seeded from `corpus/beef_door`; the fuzz crate builds with the feature on |
 | `tsc_proof` | a TSC proof (WhatsOnChain, Bitails) | `tsc_json_to_bump_hex`, `tsc_json_to_bump_binary` (the private `tsc_proof_to_merkle_path`), the BUMP read back; the input's leading four bytes are the block height |
 | `merkle_path` | a BUMP, as the reorg pass and internalize read it | `MerklePath::from_binary`, `from_hex`, `compute_root` for each leaf, the round trip |
 | `broadcast_memory` | `broadcast_seen` rows as text, `txid,provider,status,seconds` per line | `BroadcastStatus::parse`, the ladder (`InMemoryBroadcastMemory::record_broadcast_status_at`), `seen_set_from_records`, `oldest_stale_ancestor`, `unproven_ancestors_in_beef` |
