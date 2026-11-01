@@ -52,10 +52,6 @@ pub struct MonitorOptions {
     pub on_tx_broadcasted: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
     /// Callback invoked when a transaction proof has been obtained.
     pub on_tx_proven: Option<Arc<dyn Fn(TransactionStatusUpdate) + Send + Sync>>,
-    /// Seed for the monitor's own random draws (its instance id), so a run
-    /// can be replayed. `None` (default) draws from the OS; a production host
-    /// passes `None`, since two monitors under one seed share a lock owner.
-    pub rng_seed: Option<[u8; 32]>,
 }
 
 impl std::fmt::Debug for MonitorOptions {
@@ -71,7 +67,6 @@ impl std::fmt::Debug for MonitorOptions {
                 "on_tx_proven",
                 &self.on_tx_proven.as_ref().map(|_| "Some(<callback>)"),
             )
-            .field("rng_seed", &self.rng_seed.map(|_| "Some(<seed>)"))
             .finish()
     }
 }
@@ -84,7 +79,6 @@ impl Default for MonitorOptions {
             arcade: None,
             on_tx_broadcasted: None,
             on_tx_proven: None,
-            rng_seed: None,
         }
     }
 }

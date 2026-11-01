@@ -20,16 +20,6 @@ use super::tasks::{
     UnfailTask,
 };
 
-/// Random bytes from a stream seeded by `seed` for replay, or from the OS
-/// CSPRNG when `None` (#191).
-fn rand_bytes(seed: Option<[u8; 32]>, buf: &mut [u8]) {
-    use rand::{RngCore, SeedableRng};
-    match seed {
-        Some(seed) => rand::rngs::StdRng::from_seed(seed).fill_bytes(buf),
-        None => crate::rng::os_fill(buf),
-    }
-}
-
 /// Health status for an individual monitor task.
 #[derive(Debug, Clone, Default)]
 pub struct TaskHealth {
@@ -139,7 +129,7 @@ where
     pub fn with_options(storage: Arc<S>, services: Arc<V>, options: MonitorOptions) -> Self {
         // Generate a random 16-byte hex string as instance ID
         let mut bytes = [0u8; 16];
-        rand_bytes(options.rng_seed, &mut bytes);
+        crate::rng::os_fill(&mut bytes);
         let instance_id = hex::encode(bytes);
 
         // The storage's persisted broadcast memory drives the reduced sends
@@ -718,15 +708,19 @@ mod tests {
 
     #[test]
     fn test_monitor_instance_id_is_unique() {
-        // Two unseeded draws differ over 32 bytes; a seeded pair is equal.
-        let draw = |seed| {
-            let mut bytes = [0u8; 32];
-            rand_bytes(seed, &mut bytes);
-            bytes
+        // Two OS draws should produce different values (#191)
+        let id1 = {
+            let mut bytes = [0u8; 16];
+            crate::rng::os_fill(&mut bytes);
+            hex::encode(bytes)
         };
-        assert_ne!(draw(None), draw(None));
-        assert_eq!(draw(Some([7; 32])), draw(Some([7; 32])));
-        assert_ne!(draw(Some([7; 32])), draw(Some([8; 32])));
+        let id2 = {
+            let mut bytes = [0u8; 16];
+            crate::rng::os_fill(&mut bytes);
+            hex::encode(bytes)
+        };
+        assert_ne!(id1, id2);
+        assert_eq!(id1.len(), 32); // 16 bytes = 32 hex chars
     }
 
     #[test]
