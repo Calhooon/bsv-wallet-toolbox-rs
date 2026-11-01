@@ -79,6 +79,40 @@ async fn the_judge_reads_the_corpus_the_same_on_both_paths() {
     assert!(refused >= 4, "{refused} refusals");
 }
 
+#[tokio::test]
+async fn the_judge_leaves_a_held_ancestor_unjudged_on_both_paths() {
+    let storage = StorageSqlx::in_memory().await.unwrap();
+    storage.migrate("a8-judge-held", "a8").await.unwrap();
+    storage.make_available().await.unwrap();
+    let (bytes, child, _) = census_beef_signed_by(1_000, 8);
+    let headers = Headers::census(None);
+    let word = CallerWord {
+        tracker: Some(&headers),
+        services: None,
+        network: "main",
+        verifier: None,
+    };
+    let mut conn = storage.pool().acquire().await.unwrap();
+    let bare = judge_on(false, &mut conn, &bytes, &bytes, &word).await;
+    assert_ne!(
+        bare, "Ok",
+        "the wrong key's spend is judged on a bare store"
+    );
+    assert_eq!(bare, judge_on(true, &mut conn, &bytes, &bytes, &word).await);
+    // The store holds the child: `held` is not empty, the judged set is.
+    sqlx::query("INSERT INTO proven_tx_reqs (txid, raw_tx) VALUES (?1, x'00')")
+        .bind(&child)
+        .execute(storage.writer())
+        .await
+        .unwrap();
+    let oracle = judge_on(false, &mut conn, &bytes, &bytes, &word).await;
+    assert_eq!(oracle, "Ok");
+    assert_eq!(
+        oracle,
+        judge_on(true, &mut conn, &bytes, &bytes, &word).await
+    );
+}
+
 /// createAction spending the census child's coin from the caller's BEEF,
 /// signed later (`noSend`, no `signAndProcess`).
 fn spend_of(beef: &[u8], child: &str) -> bsv_rs::wallet::CreateActionArgs {
