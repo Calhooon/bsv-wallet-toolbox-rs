@@ -8,11 +8,12 @@
 use std::sync::Mutex as StdMutex;
 
 use super::busy_door_tests::wallet;
+use super::key_route::key_calls;
 use super::*;
 use crate::services::mock::MockWalletServices;
 use crate::StorageSqlx;
 
-const ORIGINATOR: &str = "privileged.example.com";
+pub(super) const ORIGINATOR: &str = "privileged.example.com";
 const REASON: &str = "privileged witness";
 const REFUSAL: &str =
     "Privileged operations require the Wallet to be configured with a privileged key manager.";
@@ -37,6 +38,23 @@ pub(super) struct Asked {
     pub(super) privileged_reason: Option<String>,
     pub(super) seek_permission: Option<bool>,
     pub(super) originator: String,
+}
+
+impl Asked {
+    /// A privileged request from `ORIGINATOR` as the double records it.
+    pub(super) fn privileged(
+        call: &'static str,
+        reason: &str,
+        seek_permission: Option<bool>,
+    ) -> Self {
+        Self {
+            call,
+            privileged: Some(true),
+            privileged_reason: Some(reason.to_string()),
+            seek_permission,
+            originator: ORIGINATOR.to_string(),
+        }
+    }
 }
 
 /// A privileged key manager that records each request and answers under its
@@ -89,15 +107,7 @@ macro_rules! recorded {
     };
 }
 
-recorded! {
-    get_public_key(GetPublicKeyArgs) -> GetPublicKeyResult;
-    encrypt(EncryptArgs) -> EncryptResult;
-    decrypt(DecryptArgs) -> DecryptResult;
-    create_hmac(CreateHmacArgs) -> CreateHmacResult;
-    verify_hmac(VerifyHmacArgs) -> VerifyHmacResult;
-    create_signature(CreateSignatureArgs) -> CreateSignatureResult;
-    verify_signature(VerifySignatureArgs) -> VerifySignatureResult;
-}
+key_calls!(recorded);
 
 fn protocol() -> Protocol {
     Protocol::new(SecurityLevel::App, "privileged witness")
@@ -119,116 +129,88 @@ macro_rules! args {
 /// One of the seven calls with `privileged` as given, its answer in words.
 async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_rs::Result<String> {
     let originator = Some(ORIGINATOR);
-    let key_id = "1".to_string();
+    let key_id = || "1".to_string();
+    // decrypt, verify_hmac and verify_signature first make their input with
+    // the same request encrypt, create_hmac and create_signature send.
+    let encrypt_args = || {
+        args!(
+            EncryptArgs {
+                plaintext: b"secret".to_vec(),
+                protocol_id: protocol(),
+                key_id: key_id()
+            },
+            privileged
+        )
+    };
+    let hmac_args = || {
+        args!(
+            CreateHmacArgs {
+                data: b"data".to_vec(),
+                protocol_id: protocol(),
+                key_id: key_id()
+            },
+            privileged
+        )
+    };
+    let signature_args = || {
+        args!(
+            CreateSignatureArgs {
+                data: Some(b"data".to_vec()),
+                protocol_id: protocol(),
+                key_id: key_id()
+            },
+            privileged
+        )
+    };
     let answer = match name {
         "get_public_key" => {
             let args = args!(GetPublicKeyArgs { identity_key: true }, privileged);
             format!("{:?}", wallet.get_public_key(args, originator).await?)
         }
-        "encrypt" => {
-            let args = args!(
-                EncryptArgs {
-                    plaintext: b"secret".to_vec(),
-                    protocol_id: protocol(),
-                    key_id: key_id
-                },
-                privileged
-            );
-            format!("{:?}", wallet.encrypt(args, originator).await?)
-        }
+        "encrypt" => format!("{:?}", wallet.encrypt(encrypt_args(), originator).await?),
         "decrypt" => {
             // Sealed under the key the call is answered with, so it opens.
-            let sealed = wallet
-                .encrypt(
-                    args!(
-                        EncryptArgs {
-                            plaintext: b"secret".to_vec(),
-                            protocol_id: protocol(),
-                            key_id: key_id.clone()
-                        },
-                        privileged
-                    ),
-                    originator,
-                )
-                .await?
-                .ciphertext;
+            let sealed = wallet.encrypt(encrypt_args(), originator).await?;
             let args = args!(
                 DecryptArgs {
-                    ciphertext: sealed,
+                    ciphertext: sealed.ciphertext,
                     protocol_id: protocol(),
-                    key_id: key_id
+                    key_id: key_id()
                 },
                 privileged
             );
             format!("{:?}", wallet.decrypt(args, originator).await?)
         }
-        "create_hmac" => {
-            let args = args!(
-                CreateHmacArgs {
-                    data: b"data".to_vec(),
-                    protocol_id: protocol(),
-                    key_id: key_id
-                },
-                privileged
-            );
-            format!("{:?}", wallet.create_hmac(args, originator).await?)
-        }
+        "create_hmac" => format!("{:?}", wallet.create_hmac(hmac_args(), originator).await?),
         "verify_hmac" => {
-            let made = wallet
-                .create_hmac(
-                    args!(
-                        CreateHmacArgs {
-                            data: b"data".to_vec(),
-                            protocol_id: protocol(),
-                            key_id: key_id.clone()
-                        },
-                        privileged
-                    ),
-                    originator,
-                )
-                .await?;
+            let made = wallet.create_hmac(hmac_args(), originator).await?;
             let args = args!(
                 VerifyHmacArgs {
                     data: b"data".to_vec(),
                     hmac: made.hmac,
                     protocol_id: protocol(),
-                    key_id: key_id
+                    key_id: key_id()
                 },
                 privileged
             );
             format!("{:?}", wallet.verify_hmac(args, originator).await?)
         }
         "create_signature" => {
-            let args = args!(
-                CreateSignatureArgs {
-                    data: Some(b"data".to_vec()),
-                    protocol_id: protocol(),
-                    key_id: key_id
-                },
-                privileged
-            );
-            format!("{:?}", wallet.create_signature(args, originator).await?)
+            let made = wallet
+                .create_signature(signature_args(), originator)
+                .await?;
+            format!("{made:?}")
         }
         "verify_signature" => {
             let made = wallet
-                .create_signature(
-                    args!(
-                        CreateSignatureArgs {
-                            data: Some(b"data".to_vec()),
-                            protocol_id: protocol(),
-                            key_id: key_id.clone()
-                        },
-                        privileged
-                    ),
-                    originator,
-                )
+                .create_signature(signature_args(), originator)
                 .await?;
             let args = args!(
                 VerifySignatureArgs {
                     data: Some(b"data".to_vec()),
                     signature: made.signature,
                     protocol_id: protocol(),
-                    key_id: key_id,
+                    key_id: key_id(),
                     counterparty: Some(Counterparty::Anyone),
                     for_self: Some(true)
                 },
@@ -242,13 +224,7 @@ async fn call(wallet: &TestWallet, name: &str, privileged: Option<bool>) -> bsv_
 }
 
 fn asked(call: &'static str) -> Asked {
-    Asked {
-        call,
-        privileged: Some(true),
-        privileged_reason: Some(REASON.to_string()),
-        seek_permission: Some(false),
-        originator: ORIGINATOR.to_string(),
-    }
+    Asked::privileged(call, REASON, Some(false))
 }
 
 pub(super) fn assert_privileged_refusal<T: std::fmt::Debug>(

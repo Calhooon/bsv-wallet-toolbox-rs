@@ -9,7 +9,9 @@
 //! never a proof under the everyday key.
 
 use super::busy_door_tests::{certificate_rows, wallet};
-use super::privileged_keys_tests::{assert_privileged_refusal, Asked, PrivilegedDouble};
+use super::privileged_keys_tests::{
+    assert_privileged_refusal, Asked, PrivilegedDouble, ORIGINATOR,
+};
 use super::*;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bsv_rs::auth::certificates::MasterCertificate;
@@ -20,7 +22,6 @@ use crate::services::mock::MockWalletServices;
 use crate::storage::WalletStorageWriter;
 use crate::StorageSqlx;
 
-const ORIGINATOR: &str = "privileged.example.com";
 const REASON: &str = "privileged proof";
 
 type TestWallet = Wallet<StorageSqlx, MockWalletServices>;
@@ -168,13 +169,7 @@ fn verifier_reads(master: &MasterCertificate, keyring: &IndexMap<String, String>
 }
 
 fn asked(call: &'static str) -> Asked {
-    Asked {
-        call,
-        privileged: Some(true),
-        privileged_reason: Some(REASON.to_string()),
-        seek_permission: None,
-        originator: ORIGINATOR.to_string(),
-    }
+    Asked::privileged(call, REASON, None)
 }
 
 #[tokio::test]
