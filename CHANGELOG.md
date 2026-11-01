@@ -3,8 +3,26 @@
 ## [Unreleased]
 
 ## [0.14.0-beta.6] - 2026-11-01
+### Added
+
+- #191 (the owner's word of 2026-11-01 14:1xZ, 23.2):
+  `MonitorOptions::rng_seed: Option<[u8; 32]>`, `None` the default. The
+  monitor's one random draw (its instance id, the owner its task locks
+  name) comes from a stream seeded by it, for replay; `None` draws from
+  the OS. A struct-literal `MonitorOptions` without `..Default::default()`
+  names the field.
 
 ### Changed
+
+- #191: the remote client's auth nonces (`create_nonce`,
+  `create_simple_nonce`, the request nonce), the certifier request id and
+  the managers' key-file bytes (the CWI profile id that salts the
+  password, the pads, the snapshot keys) draw from the OS CSPRNG
+  (`rand::rngs::OsRng`) directly, as the reference's `Random(n)` draws
+  from `crypto.getRandomValues`. Old: `rand::thread_rng()`. No seed reaches
+  them through any public shape. Host note (bsv-wallet-cli#386): no wire
+  or file format moves; the nonces and salts are not seedable, the
+  monitor's instance id is.
 
 - #395, #539 (the keeper's reading of 2026-11-01 10:5xZ): the doors'
   script judge names its stack memory figure. Old: `judge_input` (the
