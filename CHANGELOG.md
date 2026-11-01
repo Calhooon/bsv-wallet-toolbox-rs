@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.6] - 2026-11-01
+
 ### Changed
 
 - #395, #539 (the keeper's reading of 2026-11-01 10:5xZ): the doors'
