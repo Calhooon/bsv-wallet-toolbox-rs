@@ -205,10 +205,12 @@ impl ChainTracker for Flipping {
 
 /// #519: the opening ask's own witness. A root the tracker refuses at the
 /// opening pass, and would hold at the fence, drops the output at the
-/// opening: one ask, the fence never asked, so the read never reached the
-/// identity token (the fence follows the token's decode and the
-/// certificate's crypto). Red where the opening's answer is not taken,
-/// since the fence would then hold the root and keep the output.
+/// opening: one ask, the fence never asked (asks (1, 0)). That no decode ran
+/// before the opening ask is the undecodable-token sibling's; that none runs
+/// after the refusal is the code's order (`verify(..)?` returns early),
+/// which no test counts without a decode seam. Red where the opening's
+/// answer is not taken, since the fence would then hold the root and keep
+/// the output.
 #[tokio::test]
 async fn an_output_whose_root_is_refused_at_the_opening_is_dropped_before_its_token() {
     let good = alice(2).await;
