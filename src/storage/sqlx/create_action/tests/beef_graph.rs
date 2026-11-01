@@ -104,8 +104,24 @@ async fn test_validate_stored_beef_tracker_error_rejects() {
     );
 }
 
+/// The `beef-rejected-*.hex` names under `std::env::temp_dir()`.
+fn rejected_dumps() -> HashSet<String> {
+    std::fs::read_dir(std::env::temp_dir())
+        .map(|dir| {
+            dir.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("beef-rejected-") && n.ends_with(".hex"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// #546: a refused graph is described, never written to disk. The text
+/// names what the sorter knows; no new `beef-rejected-*.hex` appears under
+/// the temp folder (the reference has no such write).
 #[test]
 fn test_describe_invalid_beef_names_the_missing_parent() {
+    let before = rejected_dumps();
     let chain = synth_chain(3); // a <- b <- c
     let mut beef = Beef::new();
     // c spends b, and b is absent: the BEEF cannot be valid.
@@ -129,6 +145,9 @@ fn test_describe_invalid_beef_names_the_missing_parent() {
         text.contains(&format!("roots [{c16}]")),
         "names the root: {text}"
     );
+    let new: Vec<String> = rejected_dumps().difference(&before).cloned().collect();
+    assert!(new.is_empty(), "a refused graph wrote {new:?}: {text}");
+    assert!(!text.contains("beef-rejected-"), "names no dump: {text}");
 }
 
 #[test]
