@@ -2745,15 +2745,17 @@ where
         // 1. For each field to reveal, decrypt the master key
         // 2. Re-encrypt the symmetric key for the verifier
         let keyring_for_verifier = create_keyring_for_verifier(
-            &self.proto_wallet,
+            &key_route::KeyRoute::new(&self.proto_wallet, None, originator),
             &certifier,
             &verifier,
             &storage_cert.certificate.fields,
             &args.fields_to_reveal,
             master_keyring,
             &storage_cert.certificate.serial_number,
-            originator,
-        )?;
+            None,
+            None,
+        )
+        .await?;
 
         Ok(ProveCertificateResult {
             keyring_for_verifier,
@@ -3542,27 +3544,30 @@ fn validate_certificate_signature_arg(value: &str, name: &str) -> bsv_rs::Result
 /// 3. Re-encrypt the symmetric key for the verifier with a verifiable key ID
 ///
 /// # Arguments
-/// * `subject_wallet` - The subject's wallet (implements encryption/decryption)
+/// * `keys` - The subject's keys: the everyday ProtoWallet, or the privileged
+///   key manager when `privileged` is true (`MasterCertificate.ts:383-401`)
 /// * `certifier` - The certifier's public key, validated as an argument before the lookup
 /// * `verifier` - The verifier's public key who will receive the keyring, validated likewise
 /// * `fields` - All encrypted field values from the certificate (base64 encoded)
 /// * `fields_to_reveal` - Field names to include in the verifier keyring
 /// * `master_keyring` - The master keyring containing encrypted symmetric keys (base64 encoded)
 /// * `serial_number` - Certificate serial number (base64 encoded)
-/// * `_originator` - Application originator string (unused by ProtoWallet but kept for API consistency)
+/// * `privileged`, `privileged_reason` - The caller's, on every decrypt and
+///   encrypt, as `MasterCertificate.createKeyringForVerifier` passes them
 ///
 /// # Returns
 /// A keyring for the verifier: field_name -> base64 encoded encrypted symmetric key
 #[allow(clippy::too_many_arguments)]
-fn create_keyring_for_verifier(
-    subject_wallet: &ProtoWallet,
+async fn create_keyring_for_verifier(
+    keys: &key_route::KeyRoute<'_>,
     certifier: &PublicKey,
     verifier: &PublicKey,
     fields: &IndexMap<String, String>,
     fields_to_reveal: &[String],
     master_keyring: &IndexMap<String, String>,
     serial_number: &str,
-    _originator: Option<&str>,
+    privileged: Option<bool>,
+    privileged_reason: Option<&str>,
 ) -> bsv_rs::Result<IndexMap<String, String>> {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use bsv_rs::primitives::SymmetricKey;
@@ -3634,14 +3639,17 @@ fn create_keyring_for_verifier(
 
         // Decrypt the master symmetric key using the certifier as counterparty
         // Key ID for master is just the field name
-        let decrypted = subject_wallet
+        let decrypted = keys
             .decrypt(ProtoDecryptArgs {
                 ciphertext: master_key_ciphertext,
                 protocol_id: protocol.clone(),
                 key_id: field_name.clone(),
                 counterparty: Some(Counterparty::Other(certifier.clone())),
+                privileged,
+                privileged_reason: privileged_reason.map(str::to_string),
                 ..Default::default()
             })
+            .await
             .map_err(|_| decryption_error())?;
 
         // Match MasterCertificate.decryptField before releasing the key to a
@@ -3663,13 +3671,17 @@ fn create_keyring_for_verifier(
         // Key ID for verifiable is: "{serial_number} {field_name}"
         let verifiable_key_id = format!("{} {}", serial_number, field_name);
 
-        let re_encrypted = subject_wallet.encrypt(ProtoEncryptArgs {
-            plaintext: symmetric_key.as_bytes().to_vec(),
-            protocol_id: protocol.clone(),
-            key_id: verifiable_key_id,
-            counterparty: Some(Counterparty::Other(verifier.clone())),
-            ..Default::default()
-        })?;
+        let re_encrypted = keys
+            .encrypt(ProtoEncryptArgs {
+                plaintext: symmetric_key.as_bytes().to_vec(),
+                protocol_id: protocol.clone(),
+                key_id: verifiable_key_id,
+                counterparty: Some(Counterparty::Other(verifier.clone())),
+                privileged,
+                privileged_reason: privileged_reason.map(str::to_string),
+                ..Default::default()
+            })
+            .await?;
 
         // Encode the re-encrypted symmetric key as base64
         let encrypted_base64 = BASE64.encode(&re_encrypted.ciphertext);
@@ -3821,6 +3833,32 @@ fn validate_named_input_unlocking_scripts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The keyring helper under the everyday key, as its tests call it: the
+    /// route never awaits on that path, so the future is ready at once.
+    #[allow(clippy::too_many_arguments)]
+    fn create_keyring_for_verifier(
+        subject_wallet: &ProtoWallet,
+        certifier: &PublicKey,
+        verifier: &PublicKey,
+        fields: &IndexMap<String, String>,
+        fields_to_reveal: &[String],
+        master_keyring: &IndexMap<String, String>,
+        serial_number: &str,
+        originator: Option<&str>,
+    ) -> bsv_rs::Result<IndexMap<String, String>> {
+        futures::executor::block_on(super::create_keyring_for_verifier(
+            &key_route::KeyRoute::new(subject_wallet, None, originator),
+            certifier,
+            verifier,
+            fields,
+            fields_to_reveal,
+            master_keyring,
+            serial_number,
+            None,
+            None,
+        ))
+    }
 
     // Its consumers are the SQL-store door tests below (#429).
     #[cfg(feature = "sqlite")]
