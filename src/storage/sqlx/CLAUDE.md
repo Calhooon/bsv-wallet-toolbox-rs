@@ -516,8 +516,16 @@ context could not answer Finality`, `... CoinbaseMaturity`). Witnesses:
 `no_tip_word.rs` (create's pre-check and the signAction route),
 `internalize_verifier_judges_at_the_latest_era_without_a_tip`.
 
-The judge passes `memory_limit: None`, uncapped (beta.1's 32,000,000-byte
-decline undone by bsv-rs #331), and `work_limit: Some(2^31)` units per input
+The judge passes `memory_limit: Some(100_000_000)`
+(`spend_verifier::DOOR_STACK_MEMORY_BYTES`, #395): the SV mainnet node's stack
+memory policy on the node's count, one budget over both stacks with 32 bytes an
+element over its bytes, a policy limit; the operator's consensus knob
+(`-maxstackmemoryusageconsensus`) judges a mined spend and stays outside the
+door. Before #395 it passed `None`, which bsv-rs 0.9.0-beta.5 reads under a
+word as the same figure; the figure is explicit so a later reading of `None`
+cannot move the door, and no verdict moved (the mempool word's policy verdict
+at the same figure is tested before it; the keeper's reading of 2026-11-01 10:5xZ).
+It passes `work_limit: Some(2^31)` units per input
 (#487: one unit per opcode reached plus each byte hashed; at the beta.3 pin
 the costliest corpus input spends 661, and a P2PKH input of a 10 MB standard
 transaction 10,000,235); at the doors the transaction's inputs share a total
@@ -712,10 +720,16 @@ Two witnesses in `script_pin_tests/reader_witnesses.rs` (#396) pin bsv-rs
 mainnet, the parent proven at Chronicle's height): a BEEF with a child ahead
 of its parent is accepted through the stream and the live word with the
 output rows of its in-order twin (bsv-rs #240; beta.1 refused it `InputNamesNoElement`), and
-a spend holding 33,100,000 bytes on its stack is accepted, the stream running
-it under no memory cap (bsv-rs #331; beta.1 declined past 32,000,000 bytes).
-The door passes no figure of its own until #395 (bsv-rs #373's
-`set_memory_limit`); that witness then turns to the door's refusal.
+a spend holding 33,100,000 bytes on its stack (33,110,592 on the node's count)
+is accepted under the door's stack memory figure
+(`internalize_accepts_a_33_mb_stack_under_the_node_policy_figure`; bsv-rs #331
+undid beta.1's 32,000,000-byte decline). Beside them (#395, #539),
+`internalize_judges_the_stack_at_the_node_policy_figure` holds the line at the
+door: 999 elements of 100,000 bytes (99,931,968) accepted, 1,000 (100,032,000)
+refused with `Stack size limit exceeded: 100032000 bytes, the stack memory
+policy is 100000000 bytes.`; `the_door_memory_figure_declines_the_stack_past_it`
+lifts bsv-rs's policy verdict at the `Spend` the door builds and shows the
+figure declining the 1,000-element stack.
 
 ## Create Action Implementation
 

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Changed
+
+- #395, #539 (the keeper's reading of 2026-11-01 10:5xZ): the doors'
+  script judge names its stack memory figure. Old: `judge_input` (the
+  internalize word pass, the create pre-check and the signer's
+  `verify_own`) passed `memory_limit: None`, which bsv-rs 0.9.0-beta.5
+  reads under the mempool word as the node's policy figure, and the
+  module docs described it as uncapped. New: it passes
+  `Some(100_000_000)`, the SV mainnet node's stack memory policy on the
+  node's count (both stacks, 32 bytes an element over its bytes), a
+  policy limit; the operator's consensus knob stays outside the door. The
+  figure is explicit so a later bsv-rs reading of `None` cannot move the
+  door. Verdicts unchanged: 1,000 elements of 100,000 bytes are still
+  refused (`Stack size limit exceeded: 100032000 bytes, the stack memory
+  policy is 100000000 bytes.`), 999 and the 33.1 MB reader witness still
+  accepted. Host note (bsv-wallet-cli#386): no verdict moves at any door.
+
 ### Fixed
 
 - #521, bsv-wallet-cli#376: a header-service fault in discovery was
