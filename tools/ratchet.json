@@ -3,7 +3,7 @@
   "rustc": "1.98.1",
   "toolchain": "clippy 0.1.98 (48a229ceae 2026-09-01)",
   "features": "default",
-  "measured_at": "2026-10-31",
+  "measured_at": "2026-11-01",
   "metrics": {
     "files_over_800": 33,
     "max_file_lines": 7153,
@@ -97,7 +97,7 @@
     "limit": 800,
     "count": 33,
     "src_files": 255,
-    "src_lines": 128296,
+    "src_lines": 128423,
     "max_lines": 7153,
     "files": {
       "src/wallet/wallet.rs": 7153,
@@ -318,7 +318,7 @@
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
     "count": 6660,
-    "windows": 98278,
+    "windows": 98375,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:327 (38 lines)",
