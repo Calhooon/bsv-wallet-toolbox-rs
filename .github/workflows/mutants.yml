@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 1981 mutants at about 90 s each (build plus the whole lib suite) need 16
+        # 2183 mutants at about 90 s each (build plus the whole lib suite) need 16
         # shards to stay under the job limit. The three doors that judge under the
         # node's word are not in this set; the doors job measures them (#535).
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
