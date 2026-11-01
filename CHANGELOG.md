@@ -144,6 +144,21 @@
   Test: `a_record_behind_a_byte_order_mark_is_read_as_the_reference_reads_it`.
   Residue: a lone surrogate escape the reference keeps (bsv-rs #566) is
   still refused here.
+- #554, bsv-wallet-cli#386: the tip read answered the header service's
+  Retry-After window in another error class than the tracker's other two
+  reads. Old: `FallbackChainTracker::mining_tip` (and the Chaintracks
+  client's own `ChainTracker` root check and tip read) answered a 429
+  inside the window (`Rate limited: Chaintracks: retry after <n>s`), a
+  send fault or a timeout as `ChainTrackerError::Other`, where the
+  fallback tracker's root check and height read answer
+  `NetworkError`. New: `NetworkError` with the client's text unchanged,
+  so bsv-rs's Display prefix reads `network error: ` where it read
+  `chain tracker error: `; a frame or header the client refuses (header
+  bytes that are not hex, a range that does not end at the tip) stays
+  `Other`. Host note: a host matching `ChainTrackerError::Other` for the
+  tip read's rate limit or transport fault now sees `NetworkError`; no
+  verdict moves (the wallet reads a tip fault as no tip, the latest era,
+  #464, and no code of ours matches on the class).
 
 - #530, bsv-wallet-cli#386: every immediate broadcast wrote its BEEF as
   hex to the temp folder. Old: the create door's broadcast wrote

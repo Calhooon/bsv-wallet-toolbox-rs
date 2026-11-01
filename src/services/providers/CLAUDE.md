@@ -191,6 +191,8 @@ GorillaPool's independent explorer, the third of the read ladders beside WhatsOn
 
 `RateGate::new(provider, default_retry_after)` (`.with_per_minute(n)` for a token bucket): `admit()` before a request, `check(status, headers)` after. A 429 closes the rung for its `Retry-After` (seconds or an HTTP date, held to 600 s) and returns `Error::RateLimited`; the ladder records it with code `RATE_LIMITED` and moves on. `RateGate::shared(key, make)` hands every provider built in the process for one key (base URL, and the API key's fingerprint where the budget is a key's) the same gate, so several `Services` spend one budget. Used by WhatsOnChain, BananaBlocks and Bitails (each `rate_gate()`), and by the header services Chaintracks and BHS (#148, not exposed; `pace::shared_key` names their gates); their test constructors take a gate of their own, because fixture servers are recycled.
 
+**Chaintracks' tracker class (#554):** the client's `ChainTracker` root check and tip read map a fault through one function, `tracker_fault` (`chaintracks_client.rs`): the Retry-After window, a send fault, a timeout or an HTTP status reqwest refused is `ChainTrackerError::NetworkError`, a frame or header the client refuses `Other`, the text unchanged; its height read and `FallbackChainTracker`'s root check and height read answer `NetworkError` for every fault, and the fallback's `mining_tip` passes the client's class through.
+
 ---
 
 ### BlockHeaderService (`bhs.rs`)
