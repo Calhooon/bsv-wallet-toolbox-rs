@@ -444,7 +444,8 @@ pub(super) fn no_word_refusal(txid: Hash32, body: &TxBody, vin: usize, why: NoWo
 }
 
 /// One input under the node's word for it (`input_word`): the per-input
-/// judge every route shares, under `work_limit` units of work. Answers the
+/// judge every route shares, under `work_limit` units of work and the doors'
+/// stack memory figure (`DOOR_STACK_MEMORY_BYTES`). Answers the
 /// work it spent. A refusal names the input's offset; exhausted work is not
 /// judged (`NotJudgedCause::WorkBudgetExceeded`, bsv-rs #472), never invalid.
 pub(super) fn judge_input(
@@ -470,7 +471,7 @@ pub(super) fn judge_input(
         source_satoshis: source.satoshis,
         locking_script,
         unlocking_script,
-        memory_limit: None,
+        memory_limit: Some(crate::spend_verifier::DOOR_STACK_MEMORY_BYTES),
         work_limit: Some(work_limit),
     })
     .map_err(|error| script_error(error.to_string()))?;
