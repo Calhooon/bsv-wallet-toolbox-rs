@@ -42,6 +42,8 @@ METRICS = {
         "Unwrap/expect outside tests (count)", "0; #55, #56", 1),
     "mutation_score_pct": (
         "Door and ladders mutation score (%)", ">= 80; #57", 1),
+    "fuzz_hours": (
+        "Fuzz hours, twelve targets, last census (h)", "No crash, corpus grows; #58", 1),
     "undocumented_public_items": (
         "Undocumented public items (count)", "0; #55", 1),
     "dependent_pin_min": (
