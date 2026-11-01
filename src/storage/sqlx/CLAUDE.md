@@ -596,8 +596,10 @@ assembly), and only a host with none anywhere holds a caller root with that
 text rather than skip it (#511). The services are asked only when the
 caller's BEEF carries a caller root (a BUMP whose root computes,
 `caller_beef_roots`): a BEEF with none asks nothing, so a services fault
-other than not-configured holds only a create with a root to verify, with
-`header_fault`'s text (#515); the store's own proofs, checked when stored,
+other than not-configured holds, on this check, only a create with a root to
+verify, with `header_fault`'s text (#515; the own-transaction tip and the
+pre-check's word for an unproven caller transaction still read the services'
+header service, #450, #506, #509); the store's own proofs, checked when stored,
 are not asked again. The set is stated once, on `judged_set`
 (`create_action/beef.rs`). Create calls the one verifier through the
 `verify_beef_word` seam (`beef_verification.rs`): the tracker's tip

@@ -30,8 +30,12 @@
   text where no header service is configured (#511). Host note: the real
   `Services` gives no other error, so `CHAINTRACKS_URL=off` and a
   configured header service answer as before; a host with its own
-  `WalletServices` whose header service faults is no longer refused a
-  create whose `inputBEEF` carries no root.
+  `WalletServices` whose header service faults is no longer refused by
+  the caller-roots check for a create whose `inputBEEF` carries no root;
+  the own-transaction tip (`own_word_tip`, every create the wallet signs,
+  #450 and #506) and the pre-check's word for an unproven caller
+  transaction the store does not hold (`judge_caller_beef`, #509) still
+  read the services' header service and hold on its fault as before.
 
 ## [0.14.0-beta.5] - 2026-10-31
 
