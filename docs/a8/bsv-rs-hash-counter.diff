@@ -1,0 +1,48 @@
+diff --git a/src/primitives/hash.rs b/src/primitives/hash.rs
+index 9f2d225..7d82748 100644
+--- a/src/primitives/hash.rs
++++ b/src/primitives/hash.rs
+@@ -144,6 +144,7 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
+ /// );
+ /// ```
+ pub fn sha256(data: &[u8]) -> [u8; 32] {
++    a8_count("sha256", data.len());
+     let mut hasher = Sha256::new();
+     hasher.update(data);
+     hasher.finalize()
+@@ -322,6 +323,7 @@ pub fn ripemd160(data: &[u8]) -> [u8; 20] {
+ /// // The result is SHA256(SHA256("hello"))
+ /// ```
+ pub fn sha256d(data: &[u8]) -> [u8; 32] {
++    a8_count("sha256d", data.len());
+     let mut hasher = Sha256d::new();
+     hasher.update(data);
+     hasher.finalize()
+@@ -1384,3 +1386,15 @@ mod tests {
+         assert_ne!(a, b);
+     }
+ }
++
++/// A8 count (a scratch copy of bsv-rs only): every hash over 100 kB, with its
++/// site and backtrace, on stderr.
++#[doc(hidden)]
++pub fn a8_count(site: &str, len: usize) {
++    if len > 100_000 {
++        eprintln!(
++            "A8HASH {site} {len}\n{}\nA8END",
++            std::backtrace::Backtrace::force_capture()
++        );
++    }
++}
+diff --git a/src/transaction/beef_stream.rs b/src/transaction/beef_stream.rs
+index 527ac9b..aa35b5f 100644
+--- a/src/transaction/beef_stream.rs
++++ b/src/transaction/beef_stream.rs
+@@ -1150,6 +1150,7 @@ impl BeefDecoder {
+                 let v1 = self.frame.version == BEEF_V1;
+                 let tx = self.tx.as_mut().expect("a transaction is in hand");
+                 tx.lock_time = lock_time;
++                crate::primitives::hash::a8_count("beef_stream", tx.raw.len());
+                 let once: [u8; 32] = tx.hasher.finalize_reset().into();
+                 tx.txid = Sha256::digest(once).into();
+                 if v1 {
