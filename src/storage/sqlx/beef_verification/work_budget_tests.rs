@@ -170,7 +170,8 @@ async fn the_door_refuses_an_input_past_its_work_budget() {
 /// and the total including its whole charge. A P2PKH input spends a few
 /// hundred units (#487's corpus: 546 at most), so 600 admits one and not two.
 /// Before the beta.5 re-pin the port's own sum answered `WorkBudgetExceeded`
-/// with the total as its budget, the crossing input run under what was left.
+/// with the total as its budget, the crossing input run under what was left;
+/// since the beta.6 re-pin the charge is bsv-rs's `WorkBudget::charge` (#567).
 #[test]
 fn the_word_pass_bounds_the_transactions_total_work() {
     let (parent, child) = p2pkh_spends(2);

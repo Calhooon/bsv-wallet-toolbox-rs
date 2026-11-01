@@ -19,6 +19,18 @@
   policy is 100000000 bytes.`), 999 and the 33.1 MB reader witness still
   accepted. Host note (bsv-wallet-cli#386): no verdict moves at any door.
 
+- Pin `bsv-rs =0.9.0-beta.6` (the tag at `c90299ee`) in `Cargo.toml` and
+  `fuzz/Cargo.toml`, retaining `full` and `http`; the build moves no
+  compile surface (bsv-rs: no api-break since beta.5). Host lines for
+  bsv-wallet-cli#386 (the beta.6 pin intake):
+  - The doors' per-transaction work charge is bsv-rs's public
+    `WorkBudget::charge(self, &mut total, input, work)` (bsv-rs #567), called
+    once per judged input in input order against the transaction's `u64`
+    total; the port's copy of the rule (`InputJudgements::charge`) is
+    retired. No cause and no text moves: `... input I not judged: exceeded
+    transaction work budget 2147483648 units after T units of work.`
+    (`TransactionWorkBudgetExceeded { input, limit, total }`) as at beta.5.
+
 ### Fixed
 
 - #546, bsv-wallet-cli#386: a refused BEEF graph wrote its bytes as hex
