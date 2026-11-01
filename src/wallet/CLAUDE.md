@@ -541,8 +541,15 @@ none configured each is `WalletRefusal { class: NotImplemented, message }`,
 the message `Privileged operations require the Wallet to be configured with
 a privileged key manager.` byte for byte (`:460-461`). `None` or
 `Some(false)` is the everyday `ProtoWallet`, as before. The BRC-98/99
-protocol check runs ahead of it and is unchanged (it still judges the request as
-unprivileged). The argument validators run ahead of the privileged route,
+protocol check runs ahead of it with the request's flag
+(`args.privileged == Some(true)`), as the reference passes
+`requestArgs.privileged` to `ensureProtocolPermission`
+(`WalletPermissionsManager.ts:5165-5350`): under a manager with
+`differentiate_privileged_operations` on, a privileged key call needs a
+privileged grant and an everyday grant does not admit it (before #568's
+fix round it judged every request as unprivileged). `verify_signature`
+has no permission check here, where the reference's has one (`:5378`).
+The argument validators run ahead of the privileged route,
 so an argument refusal (the `privilegedReason` text among them) keeps its
 text and place with and without a manager, as the reference's order has
 it: its substrates run `validateWalletArgs` ahead of `Wallet.ts`
@@ -568,8 +575,9 @@ the keyring under the same route (`Wallet.ts:698-724`), so with no manager
 it is the refusal before the proof, nothing stored. The issuance path reads
 no privileged key, as the reference's does not (`Wallet.ts:769-824`).
 The two linkage calls stay with the everyday key: the trait has no linkage
-methods, a public shape for the owner's word. Witnesses:
-`privileged_keys_tests.rs`, `privileged_certificate_tests.rs`.
+methods, a public shape for the owner's word (#569). Witnesses:
+`privileged_keys_tests.rs` (the grant separation among them),
+`privileged_certificate_tests.rs`.
 
 ### LookupResolver (legacy stub)
 
@@ -715,7 +723,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 ### Permission Check Helpers (internal)
 
 When `permissions_manager` is set, operations automatically check permissions:
-- `check_protocol_permission(originator, protocol, counterparty, usage_type)` - DPACP enforcement
+- `check_protocol_permission(originator, privileged, protocol, counterparty, usage_type)` - DPACP enforcement, `privileged` the request's
 - `check_basket_permission(originator, basket, usage_type)` - DBAP enforcement
 - `check_spending_permission(originator, satoshis)` - DSAP enforcement
 - `check_certificate_permission(originator, privileged, verifier, cert_type, fields, usage_type)` - DCAP enforcement

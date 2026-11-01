@@ -207,20 +207,41 @@
   `privileged_reason` and `seek_permission`; `prove_certificate` derives
   the keyring through it (`MasterCertificate.ts:383-401`) and the direct
   acquire takes the manager's identity key as subject and proves the
-  keyring under it (`Wallet.ts:698-724`). With no manager each is
-  `WalletRefusal { class: NotImplemented, message }`, the message the
-  reference's text byte for byte: `Privileged operations require the
-  Wallet to be configured with a privileged key manager.` No public type
-  moves. Unprivileged calls are unchanged, the permission check stays
-  ahead of the route, and issuance reads no privileged key, as the
-  reference's does not. The argument validators run ahead of the
-  privileged route, so an argument refusal (the `privilegedReason` text
-  among them) keeps its text and place with and without a manager, as
-  the reference's order has it (its substrates validate ahead of
-  `Wallet.ts`); the no-manager refusal answers only a valid privileged
-  request. Host note: a privileged request on a wallet with
+  keyring under it (`Wallet.ts:698-724`). With no manager the seven and
+  the direct acquire are `WalletRefusal { class: NotImplemented, message }`,
+  the message the reference's text byte for byte: `Privileged operations
+  require the Wallet to be configured with a privileged key manager.`; a
+  privileged `prove_certificate` with no manager has no guard of its own,
+  as `signer/methods/proveCertificate.ts:31-41` has none, and answers the
+  keyring helper's decrypt catch, `WalletFault { family: Internal,
+  message: "Failed to decrypt certificate field!" }`
+  (`MasterCertificate.ts:564-623`), an empty `fieldsToReveal` an empty
+  keyring and a field the certificate lacks the subset text. No public
+  type moves. Unprivileged calls are unchanged, the permission check
+  stays ahead of the route, and issuance reads no privileged key, as the
+  reference's does not. The permission check now judges the request's
+  `privileged` (`WalletPermissionsManager.ts:5165-5350`): under a
+  `WalletPermissionsManager` with `differentiate_privileged_operations`
+  on (its default), a privileged key call needs a privileged grant for
+  the protocol. Before this change it was judged as unprivileged, so an
+  everyday grant admitted it and the everyday key answered; now an
+  everyday grant prompts for a privileged one, and a refused prompt is
+  the manager's `Unauthorized` refusal, the manager not asked. The two
+  key-linkage reveals, `reveal_counterparty_key_linkage` and
+  `reveal_specific_key_linkage`, stay under the everyday key with
+  `privileged: true`; the reference routes them to its manager
+  (`Wallet.ts:467-490`), a trait change on the owner's word, #569. The
+  argument validators run ahead of the privileged route, so an argument
+  refusal (the `privilegedReason` text among them) keeps its text and
+  place with and without a manager, as the reference's order has it (its
+  substrates validate ahead of `Wallet.ts`); the no-manager refusal
+  answers only a valid privileged request. Host note: a privileged request on a wallet with
   no manager is now this refusal where it was a silent everyday answer;
-  the CLI's 501 mapping (its #145) reads it by its class.
+  the CLI's 501 mapping (its #145) reads it by its class, and a privileged
+  prove with no manager is an `Internal` fault with the reference's text,
+  not that refusal. A host that sets a permissions manager and held only
+  everyday grants sees a privileged key call prompt for a privileged
+  grant (bsv-wallet-cli#386).
 - #530, bsv-wallet-cli#386: every immediate broadcast wrote its BEEF as
   hex to the temp folder. Old: the create door's broadcast wrote
   `$TMPDIR/beef-<txid8>.hex` (`std::env::temp_dir()`) on every immediate
