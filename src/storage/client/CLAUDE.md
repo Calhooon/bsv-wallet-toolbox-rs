@@ -460,6 +460,8 @@ The signature covers: `method || path || SHA256(body) || timestamp || nonce`
 
 The HMAC nonce format is: `base64(random_16_bytes || hmac_16_bytes)` where HMAC uses BRC-42 key derivation.
 
+Every random byte here (both nonces' random parts and the request nonce) comes from the OS CSPRNG through `crate::rng::os_fill` (`rand::rngs::OsRng`), as the reference's `Random(n)`; no constructor or option seeds them (#191).
+
 ### Timestamp Validation
 
 - Must be within 5 minutes of current time (300,000 ms)

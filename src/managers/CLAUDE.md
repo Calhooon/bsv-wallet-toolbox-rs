@@ -576,4 +576,4 @@ All managers use `tokio::sync::RwLock` for async-safe interior mutability. The s
 
 ### Encryption
 
-Managers use `bsv_sdk::primitives::SymmetricKey` for AES encryption of snapshots and exports. Keys are randomly generated per operation. The `CWIStyleWalletManager` additionally uses `zeroize::Zeroizing` for derived key material memory safety.
+Managers use `bsv_sdk::primitives::SymmetricKey` for AES encryption of snapshots and exports. Keys are randomly generated per operation. Every random byte the managers draw (the CWI profile id that salts the password, the pads, the snapshot keys) comes from the OS CSPRNG through `crate::rng::os_fill`, never a seed (#191). The `CWIStyleWalletManager` additionally uses `zeroize::Zeroizing` for derived key material memory safety.
