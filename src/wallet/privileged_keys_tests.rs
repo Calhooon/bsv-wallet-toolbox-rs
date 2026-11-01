@@ -410,15 +410,9 @@ async fn a_privileged_argument_refusal_after_the_privilege_keeps_its_place() {
 // `WalletPermissionsManager.ts:5165-5350`, `:1515`).
 // =========================================================================
 
-/// The six key calls the permission check guards.
-const GUARDED: [&str; 6] = [
-    "get_public_key",
-    "encrypt",
-    "decrypt",
-    "create_hmac",
-    "verify_hmac",
-    "create_signature",
-];
+/// The six key calls the permission check guards: every one but
+/// `verify_signature`, the last.
+const GUARDED: &[&str] = CALLS.split_last().unwrap().1;
 
 /// The handler's refusal as the wallet answers it.
 const PERMISSION_REFUSAL: &str = "Access denied: Protocol permission refused by the test";
@@ -476,24 +470,17 @@ async fn guarded_wallet() -> (
                         "Protocol permission refused by the test".to_string(),
                     ));
                 }
-                Ok(crate::managers::PermissionToken {
-                    txid: String::new(),
-                    tx: Vec::new(),
-                    output_index: 0,
-                    output_script: String::new(),
-                    satoshis: 1,
-                    originator: request.originator,
-                    expiry: chrono::Utc::now().timestamp() as u64 + 3600,
-                    privileged: request.privileged,
-                    protocol: None,
-                    security_level: None,
-                    counterparty: None,
-                    basket_name: None,
-                    cert_type: None,
-                    cert_fields: None,
-                    verifier: None,
-                    authorized_amount: None,
-                })
+                let token = serde_json::json!({
+                    "txid": "",
+                    "tx": [],
+                    "outputIndex": 0,
+                    "outputScript": "",
+                    "satoshis": 1,
+                    "originator": request.originator,
+                    "expiry": chrono::Utc::now().timestamp() as u64 + 3600,
+                    "privileged": request.privileged,
+                });
+                Ok(serde_json::from_value(token).unwrap())
             })
         }))
         .await;
@@ -548,7 +535,7 @@ async fn guarded_call(
 #[tokio::test]
 async fn an_everyday_grant_does_not_admit_a_privileged_key_call() {
     let (_dir, wallet, double, _manager, prompts) = guarded_wallet().await;
-    for name in GUARDED {
+    for &name in GUARDED {
         match guarded_call(&wallet, name, Some(true)).await {
             Err(bsv_rs::Error::WalletRefusal { class, message }) => {
                 assert_eq!(class, bsv_rs::WalletRefusalClass::Unauthorized, "{name}");
@@ -566,7 +553,7 @@ async fn an_everyday_grant_does_not_admit_a_privileged_key_call() {
 async fn a_privileged_grant_admits_a_privileged_key_call() {
     let (_dir, wallet, double, manager, prompts) = guarded_wallet().await;
     grant(&manager, &prompts, true).await;
-    for name in GUARDED {
+    for &name in GUARDED {
         let before = double.asked().len();
         let answer = guarded_call(&wallet, name, Some(true)).await;
         assert!(answer.is_ok(), "{name}: {answer:?}");
@@ -586,7 +573,7 @@ async fn a_privileged_grant_admits_a_privileged_key_call() {
 async fn an_unprivileged_key_call_under_the_everyday_grant_is_unchanged() {
     let (_dir, wallet, double, _manager, prompts) = guarded_wallet().await;
     for privileged in [None, Some(false)] {
-        for name in GUARDED {
+        for &name in GUARDED {
             let answer = guarded_call(&wallet, name, privileged).await;
             assert!(answer.is_ok(), "{name} {privileged:?}: {answer:?}");
         }
