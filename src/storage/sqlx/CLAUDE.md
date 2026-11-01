@@ -503,6 +503,23 @@ decide it since beta.4 (bsv-rs #451). It retains only referenced outputs,
 shares one sighash cache per transaction, and releases transactions waiting
 for parents in wire order.
 
+The `a8-beef-bytes` feature (#556, the A8 cycle of the BEEF path's bytes,
+off by default) chooses a second path beside this one, the oracle:
+`beef_verification/read_once.rs` reads a BEEF once with bsv-rs's stream
+reader and hands the elements by reference to every pass (`read_incoming_once`
+and `verify_read_spends` at internalize: the subject scan, the structure pass
+folded into a structure-only `BeefIndex` as `StreamVerifier` folds it, the
+word pass through `live_word::verify_elements`; `judge_read_caller_beef` and
+`verify_read_word` at create's judge), where the oracle reads the same bytes
+four times and bsv-rs's decoder hashes and copies every body each time.
+`a8_beef_bytes()` chooses (a test chooses either path on its thread,
+`A8_PATH`); the differential (`a8_differential.rs`, `a8_beef_bytes_tests.rs`,
+`create_action/tests/beef_read_once.rs`, the fuzz target `a8_beef_bytes`)
+refuses any difference in value, error, refusal or stored row. The read-once
+path holds the reading until the verdict (about the BEEF's size again); the
+oracle keeps only referenced outputs. Counts and bench:
+`docs/a8/cycle-1-beef-bytes.md`.
+
 `live_word::input_word(network, tip, proven_height)` is the one place the word
 is chosen, and bsv-rs composes it: every spender takes tip+1, the block it
 would be mined in; a mined parent's coin its verified BUMP height, an unproven
