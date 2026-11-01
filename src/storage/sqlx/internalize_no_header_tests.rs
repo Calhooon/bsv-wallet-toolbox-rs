@@ -39,9 +39,12 @@ async fn internalize(
 
 #[tokio::test]
 async fn internalize_holds_for_the_proofs_want_of_headers() {
-    // The text itself is pinned at the create door's scene
-    // (`tests/no_header_source.rs`); both doors hold with the one text.
-    let held = super::super::beef_verification::no_header_source().to_string();
+    // The literal, as the create door's scene (`tests/no_header_source.rs`)
+    // pins it: both doors hold with the one text, and a drift in
+    // `no_header_source` is a red here too (#515).
+    let held = "Service error: ChainTracker verification failed: \
+        the merkle proofs of a BEEF the wallet did not sign need headers, and no header \
+        service is configured (no chain tracker, no chaintracks_url)";
     for services in [true, false] {
         let (storage, result) = internalize(false, services).await;
         let error = result.unwrap_err();
