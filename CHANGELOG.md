@@ -49,8 +49,10 @@
   a failed unlock writes nothing. A wrong password on a v3 profile is now
   `Error::AccessDenied` (v1 built another wallet). The public shapes that
   move: `UmpToken` (the reference's fields, `to_bytes`/`from_bytes`, no
-  `new`), `WalletSnapshot` (the reference's layout, a 16-byte
-  `active_profile_id`), the new `PasswordKdf` and `KdfAlgorithm`, and
+  `new`), `WalletSnapshot` (the reference's layout, `active_profile_id`
+  and `new`'s second argument 16 bytes where they were a `String`; both
+  types drop `Serialize`/`Deserialize`, their form being the reference's
+  bytes), the new `PasswordKdf` and `KdfAlgorithm`, and
   `open_key_file`, `save_key_file`, `recovery_key`; exports carry the
   token. argon2id parses and is refused at derivation until it has a
   dependency (stage two). Design: `docs/design/ump-token-format.md`.
