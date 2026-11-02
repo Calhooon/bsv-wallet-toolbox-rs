@@ -30,7 +30,7 @@
   off nothing changes; it turns on for a line only on the owner's word
   (A8-6). The counts and the bench are `docs/a8/cycle-1-beef-bytes.md`.
 
-### Changed
+### Changed, breaking
 
 - #569, bsv-wallet-cli#386 (the owner's word of 2026-11-02 13:2xZ),
   api-break: `reveal_counterparty_key_linkage` and
@@ -38,9 +38,9 @@
   everyday key. Old: both answered from the wallet's own `ProtoWallet`
   whatever the flag, after the seven key calls had moved to the privileged
   key manager (#186). New: both take the key route the seven take, as the
-  reference's `Wallet.ts:467-490` does: the argument validators ahead of the route,
-  then the manager with the caller's `privileged`, `privilegedReason` and
-  originator; with no manager the reference's refusal,
+  reference's `Wallet.ts:467-490` does: the argument validators ahead of
+  the route, then the manager with the caller's `privileged`,
+  `privilegedReason` and originator; with no manager the reference's refusal,
   `WalletRefusal { class: NotImplemented }` with the text `Privileged
   operations require the Wallet to be configured with a privileged key
   manager.` byte for byte. An unprivileged reveal is unchanged. The public

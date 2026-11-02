@@ -258,8 +258,8 @@ also pinned in `tests/proto_validator_pin.rs`.
 
 Both linkage methods delegate through ProtoWallet's `WalletInterface`
 adapter (through the key route since #569), retaining `privileged` and
-`privilegedReason` for its beta.3 validator. The inherent argument types omit those fields. Missing, short
-and long reasons use the same three refusal texts above, before any
+`privilegedReason` for its beta.3 validator. The inherent argument types
+omit those fields. Missing, short and long reasons use the same three refusal texts above, before any
 linkage cryptography; the returned counterparty keys remain compressed.
 
 ## HMAC and the result rows at beta.4 (#488)

@@ -1,7 +1,8 @@
 //! The key route of the seven key calls and the two key-linkage reveals
 //! (#186, #142, #569): a call with `privileged: true` goes to the wallet's
 //! `PrivilegedKeyManager` with the caller's arguments intact, as
-//! ts-stack@edf6e03 `Wallet.ts:455-570` sends it to `this.privilegedKeyManager`; with none configured it is the
+//! ts-stack@edf6e03 `Wallet.ts:455-570` sends it to
+//! `this.privilegedKeyManager`; with none configured it is the
 //! reference's refusal (`Wallet.ts:460-461`). Every other call stays with the
 //! everyday `ProtoWallet`, its arguments intact as before.
 //!
@@ -58,8 +59,9 @@ pub(super) struct KeyRoute<'a> {
     originator: &'a str,
 }
 
-/// The seven key calls, each with its arguments and result: the one list the
-/// route, its `WalletInterface` impl and the tests' doubles are built from.
+/// The seven key calls, each with its arguments and result: the list the
+/// route, its `WalletInterface` impl and the tests' doubles are built from
+/// (the two key-linkage reveals, #569, sit beside it at those three sites).
 /// `key_calls!(then)` invokes `then!` on the list; `key_calls!(then { .. })`
 /// puts the braced tokens ahead of it.
 macro_rules! key_calls {
