@@ -415,10 +415,8 @@ impl WalletSnapshot {
             _ => return Err(token_error("unsupported snapshot version")),
         };
         let snapshot_key = r.take(32)?.to_vec();
-        let mut active_profile_id = r.take(id_len)?.to_vec();
-        if version == 1 {
-            active_profile_id = vec![0; 16];
-        }
+        let mut active_profile_id = vec![0; 16];
+        active_profile_id[..id_len].copy_from_slice(r.take(id_len)?);
         Ok(Self {
             version,
             snapshot_key,
@@ -620,27 +618,32 @@ const KEY_FILE_VERSION: u32 = 3;
 
 /// A profile's reference UMP token and the presentation key that opens it with
 /// the password.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct UmpEntry {
     pub(crate) presentation_key: Zeroizing<Vec<u8>>,
     pub(crate) token: UmpToken,
 }
 
-/// A profile of the key file: its clear index and, once migrated, its token;
-/// `ump: None` is a v1 record, salted with the profile id, until its unlock.
+/// A profile of the key file: its clear index, its token, and its v1 pad
+/// while the v1 record is kept (4.3): `ump: None` is a v1 record not yet
+/// unlocked; both set, a token no unlock has opened yet.
 #[derive(Clone)]
 pub(crate) struct Entry {
     pub(crate) profile: Profile,
     pub(crate) ump: Option<UmpEntry>,
+    pub(crate) v1_pad: Option<Zeroizing<Vec<u8>>>,
 }
 
-/// `Entry` on disk: the profile's fields with an `ump` object beside them.
+/// `Entry` on disk: the profile's fields with an `ump` object beside them,
+/// and the kept v1 record's pad under `v1`.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct EntryRecord {
     #[serde(flatten)]
     pub(crate) profile: Profile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) ump: Option<UmpRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) v1: Option<V1Record>,
 }
 
 /// The token's record; the presentation key is zeroed on drop.
@@ -654,28 +657,59 @@ pub(crate) struct UmpRecord {
     pub(crate) token: Vec<u8>,
 }
 
+/// The v1 record kept beside a token: its pad, salted with the profile id.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct V1Record {
+    #[serde(with = "super::cwi_style_wallet_manager::base64_bytes")]
+    pub(crate) primary_pad: Zeroizing<Vec<u8>>,
+}
+
 impl Entry {
+    /// A v1 record not yet unlocked.
+    pub(crate) fn v1(profile: Profile) -> Self {
+        let v1_pad = Some(Zeroizing::new(profile.primary_pad.clone()));
+        Self {
+            profile,
+            ump: None,
+            v1_pad,
+        }
+    }
+
+    /// The same record as `other`: the unlock read this one, so a commit
+    /// installs its successor only while nothing has replaced it.
+    pub(crate) fn is_same_record(&self, other: &Self) -> bool {
+        self.profile.id == other.profile.id
+            && self.profile.primary_pad == other.profile.primary_pad
+            && self.profile.updated_at == other.profile.updated_at
+            && self.ump == other.ump
+            && self.v1_pad == other.v1_pad
+    }
+
     pub(crate) fn to_record(&self) -> EntryRecord {
+        let ump = self.ump.as_ref().map(|u| UmpRecord {
+            presentation_key: u.presentation_key.clone(),
+            token: u.token.to_bytes(),
+        });
+        let v1 = ump.as_ref().and(self.v1_pad.as_ref());
         EntryRecord {
             profile: self.profile.clone(),
-            ump: self.ump.as_ref().map(|u| UmpRecord {
-                presentation_key: u.presentation_key.clone(),
-                token: u.token.to_bytes(),
-            }),
+            v1: v1.cloned().map(|primary_pad| V1Record { primary_pad }),
+            ump,
         }
     }
 
     pub(crate) fn from_record(record: EntryRecord) -> Result<Self> {
-        let ump = match record.ump {
-            Some(u) => Some(UmpEntry {
-                presentation_key: u.presentation_key,
-                token: UmpToken::from_bytes(&u.token)?,
-            }),
-            None => None,
+        let Some(u) = record.ump else {
+            return Ok(Self::v1(record.profile));
         };
         Ok(Self {
             profile: record.profile,
-            ump,
+            ump: Some(UmpEntry {
+                presentation_key: u.presentation_key,
+                token: UmpToken::from_bytes(&u.token)?,
+            }),
+            v1_pad: record.v1.map(|v| v.primary_pad),
         })
     }
 }
@@ -736,15 +770,14 @@ pub(crate) fn decode_key_file(data: &[u8]) -> Result<(Entries, Option<Vec<u8>>)>
             let entry = Entry::from_record(record)?;
             entries.insert(entry.profile.id.clone(), entry);
         }
-        let default_id = match file.default_profile_id {
-            Some(id) => Some(
-                b64()
-                    .decode(id)
-                    .map_err(|e| Error::InvalidArgument(e.to_string()))?,
-            ),
-            None => None,
-        };
-        return Ok((entries, default_id));
+        let default_id = file
+            .default_profile_id
+            .map(|id| b64().decode(id))
+            .transpose();
+        return Ok((
+            entries,
+            default_id.map_err(|e| Error::InvalidArgument(e.to_string()))?,
+        ));
     }
     if data.len() < 33 {
         return Err(Error::InvalidArgument("Snapshot too short".to_string()));
@@ -757,7 +790,7 @@ pub(crate) fn decode_key_file(data: &[u8]) -> Result<(Entries, Option<Vec<u8>>)>
     let entries = legacy
         .profiles
         .into_iter()
-        .map(|profile| (profile.id.clone(), Entry { profile, ump: None }))
+        .map(|profile| (profile.id.clone(), Entry::v1(profile)))
         .collect();
     Ok((entries, legacy.default_profile_id))
 }

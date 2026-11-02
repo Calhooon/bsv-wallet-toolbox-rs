@@ -271,16 +271,18 @@ fn the_rust_written_vector_still_opens_in_rust() {
 #[ignore = "records the Rust-written vector"]
 fn record_a_rust_written_token_for_the_reference() {
     let draw = || {
-        Zeroizing::new(crate::managers::cwi_style_wallet_manager::draw_for_vector(
-            32,
-        ))
+        let mut bytes = Zeroizing::new(vec![0u8; 32]);
+        crate::rng::os_fill(&mut bytes);
+        bytes
     };
     let password = "rust vector password #560";
     let salt = draw().to_vec();
     let kdf = PasswordKdf::pbkdf2(PBKDF2_NUM_ROUNDS);
     let mut k = factors(password, &salt, Some(&kdf));
     (k.presentation_key, k.recovery_key, k.root_primary) = (draw(), draw(), draw());
-    k.root_privileged = crate::managers::cwi_style_wallet_manager::draw_scalar_for_vector();
+    k.root_privileged = std::iter::repeat_with(draw)
+        .find(|k| PrivateKey::from_bytes(k).is_ok())
+        .unwrap();
     let p = RefProfile {
         name: "Rust".into(),
         id: draw()[..16].to_vec(),
@@ -315,9 +317,10 @@ fn the_records_key_material_is_zeroed_on_drop() {
     fn zeroed_on_drop<T: ZeroizeOnDrop>() {}
     zeroed_on_drop::<RefProfile>();
     zeroed_on_drop::<Zeroizing<Vec<u8>>>();
-    // The record's key field is that type; the compiler holds it to it.
+    // The records' key fields are that type; the compiler holds them to it.
+    let pad: fn(&V1Record) -> &Zeroizing<Vec<u8>> = |r| &r.primary_pad;
     let key: fn(&UmpRecord) -> &Zeroizing<Vec<u8>> = |r| &r.presentation_key;
-    let _ = key;
+    let _ = (pad, key);
     let bytes: fn(&Entries) -> Result<Zeroizing<Vec<u8>>> = |e| encode_key_file(e, None);
     let _ = bytes;
 }
