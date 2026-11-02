@@ -88,10 +88,10 @@
   and, with a key file open (`open_key_file`), the file is re-written (a
   sibling, a sync, a rename, the directory synced); the v1 record stays
   until a later unlock opens the token, whose GCM tag proves the same
-  password both times, and then leaves. A wrong password at the migrating
-  unlock (v1 has no password check) therefore loses nothing: the right
-  password still opens through v1, and a wrong password at the second
-  unlock leaves the file byte-identical. A failed unlock writes nothing. A
+  password both times, and then leaves. A token that refuses beside the
+  v1 record is re-sealed under the arriving password and written, the v1
+  record unchanged (#594 (ii), the keeper's reading of 2026-11-02
+  19:5xZ). A failed unlock writes nothing. A
   wrong password on a token alone is `Error::AccessDenied` (v1 built
   another wallet). An interrupted write's sibling is zeroed and removed at
   the next open; key material is zeroed on drop. The public shapes that
@@ -107,8 +107,17 @@
   (#593). Design: `docs/design/ump-token-format.md`. Host note: the
   file's version moves at that unlock (or the next save), and an older
   toolbox cannot read it after; a host that may roll back keeps a copy of
-  its v1 file. A host that never unlocks a migrated profile twice keeps
-  the profile-id salt in its file, and the v1 record beside the token.
+  its v1 file. A wrong password while the v1 record is present (v1 has
+  no password check) re-seals the token under it and changes nothing
+  else; the right password opens afterwards, through v1, and re-seals.
+  The v1 record leaves only when a token opens, so the same wrong
+  password at two consecutive unlocks drops it and the right password is
+  refused after; a host closes that in its wallet builder, which runs
+  before the write, by checking the derived identity key against its
+  storage's users and returning an error (design 4.3). A host that never
+  unlocks a migrated profile twice keeps the profile-id salt in its file,
+  and the v1 record beside the token. No host in this stack unlocks
+  through this manager today.
   The file is one factor (the presentation key sits beside the token), so
   a holder of the file can test a password guess offline at one PBKDF2 of
   7777 rounds (design 4.3).
