@@ -1,0 +1,10 @@
+{
+  "description": "A v1 CWIStyleWalletManager key file (save_snapshot bytes) written by the toolbox's own code before #560, at origin/beta b2aa3684 (0.14.0-beta.6 line), with one profile created and unlocked by create_profile and switch_profile; the profile's wallet key is what the wallet builder received.",
+  "writtenBy": "bsv-wallet-toolbox-rs b2aa3684, cwi_style_wallet_manager.rs save_snapshot (v1: 32-byte key | AES-256-GCM(JSON {profiles, default_profile_id}))",
+  "password": "correct horse battery",
+  "profileName": "Legacy",
+  "profileIdHex": "6903217f28c78a18a7cddaf6b6d093f6",
+  "profileKeyHex": "95c1c1cefd335025e4afeed10cf68adb0d51a28415ecd9930c840b4b32b86cab",
+  "passwordRounds": 7777,
+  "fileHex": "13b8ccabe52bc604ab41ac4a98760a09713bc9280328bbf550e6f061caa3db010c61548c86e3b0014a3c5bcb1fd06aec98d710c8ba724aed573f7bb89a1779411eb4bf3769b9df74a2fa257a06b0e03142d884a9044ec98edf5c299676559a62ff6f54e9a79b42204fa6f4429c4f938e1ed42891cec5bf8df22b751108e2e39d49a97a56a3516007ad9d72055c960b4d9bb35346e5762b612ad423f77b204aec74520d178e6139476211604ab05410d95abb546b5da035d2b4d20bf7fa4ed86b66933171875394ae8a69fbafc014f4cf4f4c104f9c3bef9ee9ce7334f92a068ca56fcc645c6d4f80dddd0878518de77609604b6f4c0274e01d2dd1a6d925072eef4b2d8ba62ce6445477423300c2b5addcd7f031a6979c400e1601f8e729132816a631efc5b3e8848c001c6f8a5be343ca073b3b758f0664f754cd157660a005445eb2a6f59b13330349d2fb00bba8c41078d01160ad956749c09a1233a8e8d15102c37bda4394ce2c9d3814833203454543b5083859f616651fa82829215f863c3aeb3a0cca45b8b6ebaf42289ea7f15cba666dbe1115829b30d9e401ba877524312594016c0125df20d9444857158a3e"
+}

@@ -47,6 +47,7 @@ mod storage_manager;
 // CWI and permissions implementations
 mod cwi_style_wallet_manager;
 mod permissions_manager;
+mod ump_token;
 
 // Authentication manager
 mod auth_manager;
@@ -61,9 +62,8 @@ pub use simple_wallet_manager::SimpleWalletManager;
 
 pub use storage_manager::{ManagedStorage, WalletStorageManager};
 
-pub use cwi_style_wallet_manager::{
-    CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile, UmpToken, WalletSnapshot,
-};
+pub use cwi_style_wallet_manager::{CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile};
+pub use ump_token::{KdfAlgorithm, PasswordKdf, UmpToken, WalletSnapshot};
 
 pub use permissions_manager::{
     BasketUsageType, CertificateUsageType, GroupedPermissions, PermissionRequest,
