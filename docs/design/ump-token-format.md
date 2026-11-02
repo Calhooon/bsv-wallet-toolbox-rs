@@ -282,7 +282,11 @@ old file or the new one and the rename survives a crash. A sibling of
 that shape left by an interrupted write holds key material, so
 `open_key_file` overwrites it with zeros in place, syncs it and removes it
 (best effort on a copy-on-write file system, where the overwrite may land
-on new blocks).
+on new blocks). A writer in the key directory can already replace the key
+file, so the cleanup never follows a link and never writes through a
+shared inode: a symlink, or on unix a regular file with more than one
+link, is removed by name alone, and off unix, where std gives no link
+count, every sibling is removed unzeroed.
 
 Key material in memory: the derived keys, the five factors, the opened
 root, the presentation key (`UmpEntry` and the on-disk `UmpRecord`), the
