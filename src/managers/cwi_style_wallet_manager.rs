@@ -52,13 +52,9 @@ fn generate_scalar() -> Zeroizing<Vec<u8>> {
 /// Default number of PBKDF2 rounds (matches TypeScript).
 pub const DEFAULT_PASSWORD_ROUNDS: u32 = 7777;
 
-/// Profile ID length in bytes.
+/// The profile id's length, and the primary and privileged pads', in bytes.
 const PROFILE_ID_LENGTH: usize = 16;
-
-/// Primary pad length in bytes.
 const PRIMARY_PAD_LENGTH: usize = 32;
-
-/// Privileged pad length in bytes.
 const PRIVILEGED_PAD_LENGTH: usize = 32;
 
 /// Configuration for the CWI-style wallet manager.
@@ -278,17 +274,12 @@ pub type CWIWalletBuilder = Arc<
 /// let result = wallet.create_action(args, "app.example.com").await?;
 /// ```
 pub struct CWIStyleWalletManager {
-    /// Configuration.
     config: CWIStyleWalletManagerConfig,
     /// All profiles by ID, with their tokens.
     entries: RwLock<Entries>,
-    /// Default profile ID.
     default_profile_id: RwLock<Option<Vec<u8>>>,
-    /// Currently active profile ID.
     active_profile_id: RwLock<Option<Vec<u8>>>,
-    /// Admin originator.
     admin_originator: String,
-    /// Wallet builder function.
     wallet_builder: CWIWalletBuilder,
     /// Underlying wallet (built after authentication).
     underlying: RwLock<Option<Arc<dyn WalletInterface + Send + Sync>>>,
@@ -411,8 +402,6 @@ impl CWIStyleWalletManager {
         let mut profile = Profile::new(name.to_string());
         let root = Zeroizing::new(generate_random_bytes(32));
         let ump = self.seal(&mut profile, root, password)?;
-
-        // Store profile
         let mut entries = self.entries.write().await;
         let entry = Entry {
             profile: profile.clone(),
@@ -420,12 +409,9 @@ impl CWIStyleWalletManager {
             v1_pad: None,
         };
         entries.insert(profile.id.clone(), entry);
-
-        // Set as default if first profile
         if entries.len() == 1 {
             *self.default_profile_id.write().await = Some(profile.id.clone());
         }
-
         Ok(profile)
     }
 
@@ -543,23 +529,19 @@ impl CWIStyleWalletManager {
     pub async fn switch_profile(&self, profile_id: &[u8], password: &str) -> Result<()> {
         let entry = self.entry(profile_id).await?;
         let (primary_key, next) = self.unlock_entry(&entry, password)?;
-
         let pkm = self
             .privileged_key_manager
             .read()
             .await
             .clone()
             .ok_or(Error::AuthenticationRequired)?;
-
         // Build wallet (the builder takes its own copy of the key)
         let wallet = (self.wallet_builder)(primary_key.to_vec(), pkm).await?;
         if let Some(next) = next {
             self.commit_entry(&entry, next).await?;
         }
-
         *self.underlying.write().await = Some(wallet);
         *self.active_profile_id.write().await = Some(profile_id.to_vec());
-
         Ok(())
     }
 
@@ -589,29 +571,22 @@ impl CWIStyleWalletManager {
     /// Deletes a profile by ID.
     pub async fn delete_profile(&self, profile_id: &[u8]) -> Result<()> {
         let mut entries = self.entries.write().await;
-
         if !entries.contains_key(profile_id) {
             return Err(Error::NotFound {
                 entity: "Profile".to_string(),
                 id: hex::encode(profile_id),
             });
         }
-
-        // Can't delete the active profile
         if self.active_profile_id.read().await.as_deref() == Some(profile_id) {
             return Err(Error::InvalidOperation(
                 "Cannot delete the active profile".to_string(),
             ));
         }
-
         entries.remove(profile_id);
-
-        // Update default if needed
         if self.default_profile_id.read().await.as_deref() == Some(profile_id) {
             let new_default = entries.keys().next().cloned();
             *self.default_profile_id.write().await = new_default;
         }
-
         Ok(())
     }
 
@@ -639,7 +614,6 @@ impl CWIStyleWalletManager {
                 id: hex::encode(profile_id),
             });
         }
-
         *self.default_profile_id.write().await = Some(profile_id);
         Ok(())
     }
@@ -647,7 +621,6 @@ impl CWIStyleWalletManager {
     /// Exports a profile as encrypted bytes (its fields and its UMP token).
     pub async fn export_profile(&self, profile_id: &[u8]) -> Result<Vec<u8>> {
         let json = self.export_profile_json(profile_id).await?;
-
         // Encrypt with random key (key is prepended to output)
         let key = generate_random_bytes(32);
         let sym_key = SymmetricKey::from_bytes(&key)
@@ -655,7 +628,6 @@ impl CWIStyleWalletManager {
         let encrypted = sym_key
             .encrypt(&json)
             .map_err(|e| Error::InvalidOperation(format!("Encryption failed: {:?}", e)))?;
-
         let mut result = key;
         result.extend_from_slice(&encrypted);
         Ok(result)
@@ -666,16 +638,13 @@ impl CWIStyleWalletManager {
         if data.len() < 33 {
             return Err(Error::InvalidArgument("Export data too short".to_string()));
         }
-
         let key = &data[0..32];
         let encrypted = &data[32..];
-
         let sym_key = SymmetricKey::from_bytes(key)
             .map_err(|e| Error::InvalidOperation(format!("Failed to create key: {:?}", e)))?;
         let decrypted = sym_key
             .decrypt(encrypted)
             .map_err(|e| Error::InvalidOperation(format!("Decryption failed: {:?}", e)))?;
-
         self.import_profile_json(&decrypted).await
     }
 
@@ -719,12 +688,10 @@ impl CWIStyleWalletManager {
             .into_iter()
             .map(Entry::from_record)
             .collect::<Result<Vec<_>>>()?;
-
         let mut entries = self.entries.write().await;
         for entry in &restored {
             entries.insert(entry.profile.id.clone(), entry.clone());
         }
-
         Ok(restored.into_iter().map(|e| e.profile).collect())
     }
 
