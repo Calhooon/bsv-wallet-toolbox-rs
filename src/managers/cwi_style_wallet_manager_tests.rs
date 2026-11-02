@@ -438,6 +438,21 @@ async fn a_profile_replaced_or_deleted_during_its_unlock_refuses_the_commit() {
 }
 
 #[tokio::test]
+async fn opening_a_key_file_removes_a_stale_write_sibling() {
+    let (_, _, v1, _) = v1_parts();
+    let scratch = scratch_file("w.keys", &v1);
+    let dir = scratch.0.parent().unwrap();
+    let stale = dir.join("w.keys.tmp-0123456789abcdef");
+    let other = dir.join("w.keys.tmp-not-ours");
+    std::fs::write(&stale, b"key material").unwrap();
+    std::fs::write(&other, b"kept").unwrap();
+    let (m, _) = manager();
+    m.open_key_file(&scratch.0).await.unwrap();
+    assert!(!stale.exists(), "the interrupted write's sibling is gone");
+    assert!(other.exists(), "a name not of the write's shape is left");
+}
+
+#[tokio::test]
 async fn exports_carry_the_token_and_a_v1_export_reads_as_v1() {
     let (m, seen) = manager();
     m.provide_privileged_key_manager(PrivateKey::random()).await;
