@@ -354,6 +354,70 @@ async fn a_wrong_password_beside_v1_reseals_the_token_and_changes_nothing_else()
     assert_eq!(v1_pad(&right), v1_pad(&both));
 }
 
+/// (w3) The loss condition, as it is (design 4.3): the same wrong password at
+/// two consecutive unlocks seals the token under it, then opens that token,
+/// which drops the v1 record; the right password is refused afterwards. At
+/// the migrating unlock and after a right one alike.
+#[tokio::test]
+async fn the_loss_condition_the_same_wrong_password_twice_drops_v1_and_the_right_one_is_refused() {
+    let (id, key, v1, password) = v1_parts();
+    for right_first in [false, true] {
+        let scratch = scratch_file("loss.keys", &v1);
+        let path = scratch.0.as_path();
+        let (m, seen) = opened(path).await;
+        if right_first {
+            m.switch_profile(&id, &password).await.unwrap();
+        }
+        m.switch_profile(&id, "same wrong").await.unwrap();
+        assert!(v1_pad(&std::fs::read(path).unwrap()).is_some(), "v1 kept");
+        m.switch_profile(&id, "same wrong").await.unwrap();
+        let lost = std::fs::read(path).unwrap();
+        assert_eq!(v1_pad(&lost), None, "the wrong token opened, so v1 left");
+        assert!(token_key(&lost, "same wrong").is_ok());
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(usize::from(right_first))
+            .all(|k| *k != key));
+        let refused = m.switch_profile(&id, &password).await;
+        assert!(matches!(refused, Err(Error::AccessDenied(_))));
+        let (n, _) = opened(path).await;
+        let refused = n.switch_profile(&id, &password).await;
+        assert!(
+            matches!(refused, Err(Error::AccessDenied(_))),
+            "and after a restart"
+        );
+    }
+}
+
+/// (w4) Two manager instances over one key file, each opening it before its
+/// unlock, as two processes in turn: typo, right, right completes the
+/// migration and the recovered primary key is the v1 primary.
+#[tokio::test]
+async fn typo_right_right_across_two_instances_completes_the_migration() {
+    let (id, key, v1, password) = v1_parts();
+    let scratch = scratch_file("two.keys", &v1);
+    let path = scratch.0.as_path();
+    let ((a, seen_a), (b, seen_b)) = (manager(), manager());
+    for m in [&a, &b] {
+        m.provide_privileged_key_manager(PrivateKey::random()).await;
+    }
+    for (m, pw) in [
+        (&a, "a typo"),
+        (&b, password.as_str()),
+        (&a, password.as_str()),
+    ] {
+        m.open_key_file(path).await.unwrap();
+        m.switch_profile(&id, pw).await.unwrap();
+    }
+    assert_eq!(seen_b.lock().unwrap()[0], key, "b opened through v1");
+    assert_eq!(seen_a.lock().unwrap()[1], key, "a opened b's token");
+    let done = std::fs::read(path).unwrap();
+    assert_eq!(v1_pad(&done), None, "the token alone");
+    assert_eq!(*token_key(&done, &password).unwrap(), key, "the v1 primary");
+}
+
 #[tokio::test]
 async fn a_migrated_file_derives_at_its_new_salt_alone() {
     let (id, key, v1, password) = v1_parts();
@@ -528,6 +592,16 @@ async fn a_reference_written_token_opens_through_switch_profile() {
     let wrong = m.switch_profile(&profile.id, "not the password").await;
     assert!(matches!(wrong, Err(Error::AccessDenied(_))));
     assert_eq!(std::fs::read(&scratch.0).unwrap(), saved, "untouched");
+    // (w5) Nor does (ii) touch it: wrong, wrong, right, right in another instance.
+    let (n, _) = opened(&scratch.0).await;
+    for pw in ["not the password", "not the password", password, password] {
+        let _ = n.switch_profile(&profile.id, pw).await;
+    }
+    assert_eq!(
+        std::fs::read(&scratch.0).unwrap(),
+        saved,
+        "untouched by (ii)"
+    );
     let (_, token) = only_token(&saved);
     assert_eq!(
         token.to_bytes(),
