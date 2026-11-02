@@ -127,6 +127,7 @@ workflow's set at base `42559923` under the `--lib` oracle, 59.22 percent of
 2026-11-02 10:4xZ. The rule per entry:
 
 - the floor is the measured figure rounded down to a whole percent: a floor
+No cap applies: a file measured above 80 carries its measured figure as its floor (fees 100, beef_graph 92), and a single new survivor there turns the scores job red, which is the ratchet's meaning.
   moves when a floors lane writes it from a record, never by a measurement alone,
   and never falls;
 - a file on the paths that judge the node's word and the chain's evidence that
