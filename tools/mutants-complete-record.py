@@ -442,6 +442,9 @@ def build(ledger):
         "problems": problems + ([f"catalog indices with no outcome: {len(missing)}"] if missing else []),
         "standing": [
             f"The base is {base}.",
+            "Beta carries floors for the three door files since 133b8707 (#571: must_spend 80, own_word 71, "
+            "review_beef 80, from the widened oracle alone), so their `no floor entry` in this record is the "
+            "base's: a floor lane writes no `--lib` floor for them.",
             "The artifact cannot recur on beta past #563 (merged as 6afdfe47; its d4f86b7c removed the dump "
             "from describe_invalid_beef), and the repair's driver gives each worker its own TMPDIR.",
             f"The figure {overall} is the base's complete figure under the stated method: every catalogued "
@@ -701,9 +704,15 @@ def verify(record, md_text):
         if r is None:
             continue
         c = Counter(VERDICT[m["verdict"]] for m in ms)
+        listed = r["verdict"] != "no floor entry"
+        caught = c + Counter({"caught": c["timeout"], "timeout": -c["timeout"]})
+        left_out = c - Counter({"timeout": c["timeout"]})
         want = {**{k: c[k] for k in KEYS}, "mutants": len(ms), "score": pct(c),
                 "hosts": dict(sorted(Counter(m["host"] for m in ms).items())),
-                "verdict": floor_verdict(c, r["mutants"], r["floor"], r["verdict"] != "no floor entry")}
+                "verdict": floor_verdict(c, r["mutants"], r["floor"], listed),
+                "score_timeouts_left_out": pct(left_out), "score_timeouts_caught": pct(caught),
+                "verdict_rests_on_timeouts": c["timeout"] > 0 and floor_verdict(
+                    caught, r["mutants"], r["floor"], listed) != floor_verdict(c, r["mutants"], r["floor"], listed)}
         out += [f"{f}: {k} {r[k]} in the json, {v} from the per-mutant list" for k, v in want.items() if r[k] != v]
     c = Counter(VERDICT[m["verdict"]] for m in rows)
     head = record["cells"][0]

@@ -7,6 +7,7 @@ The figure is the repaired one, 59.22%: the run before the repair scored 50.76%,
 ## Standing
 
 - The base is 42559923ef206442c9dd0e680fd0d3bcaa15dc35.
+- Beta carries floors for the three door files since 133b8707 (#571: must_spend 80, own_word 71, review_beef 80, from the widened oracle alone), so their `no floor entry` in this record is the base's: a floor lane writes no `--lib` floor for them.
 - The artifact cannot recur on beta past #563 (merged as 6afdfe47; its d4f86b7c removed the dump from describe_invalid_beef), and the repair's driver gives each worker its own TMPDIR.
 - The figure 59.22 is the base's complete figure under the stated method: every catalogued mutant has one verdict, every timeout of the artifact run was run again under the restored environment, and a slow folder can only turn a verdict into a timeout, so the caught and missed verdicts of the rounds the pile reached stand.
 - The scoreboard cell `mutation_score_pct` in docs/NORTH-STAR.md reads measured 2026-11-01: tools/scoreboard-write stamps every cell with tools/ratchet.json's one top-level measured_at, not the mutation_score section's 2026-11-02; a limit of scoreboard-write, filed as #587.
