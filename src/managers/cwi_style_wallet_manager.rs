@@ -328,15 +328,7 @@ impl CWIStyleWalletManager {
         self.underlying.read().await.is_some()
     }
 
-    /// Gets the underlying wallet if authenticated.
-    ///
-    /// # Returns
-    ///
-    /// The underlying wallet implementation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if not authenticated.
+    /// The underlying wallet; `Error::AuthenticationRequired` before an unlock.
     pub async fn wallet(&self) -> Result<Arc<dyn WalletInterface + Send + Sync>> {
         self.underlying
             .read()
@@ -363,10 +355,7 @@ impl CWIStyleWalletManager {
         &self.admin_originator
     }
 
-    /// The v1 derivation: PBKDF2 salted with the profile id.
-    ///
-    /// Returns a `Zeroizing<Vec<u8>>` that is automatically zeroed on drop,
-    /// preventing sensitive derived key material from lingering in memory.
+    /// The v1 derivation: PBKDF2 salted with the profile id, zeroed on drop.
     fn derive_key_from_password(&self, password: &str, salt: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         if self.config.use_pbkdf2 {
             return ump_token::pbkdf2_sha512(password, salt, self.config.password_rounds);
