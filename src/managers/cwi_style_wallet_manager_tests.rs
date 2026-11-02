@@ -87,7 +87,11 @@ fn manager() -> (CWIStyleWalletManager, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
             Ok(Arc::new(wallet) as Arc<dyn WalletInterface + Send + Sync>)
         })
     });
-    let m = CWIStyleWalletManager::new("admin.test".into(), builder, Default::default());
+    let m = CWIStyleWalletManager::new(
+        "admin.test".into(),
+        builder,
+        CWIStyleWalletManagerConfig::default(),
+    );
     (m, seen)
 }
 
