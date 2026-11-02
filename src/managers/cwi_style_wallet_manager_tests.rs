@@ -581,6 +581,31 @@ async fn a_hard_link_sibling_is_unlinked_and_its_target_untouched() {
     assert!(!link.exists(), "the sibling's name is gone");
 }
 
+/// A planted sibling of the write's shape the process cannot open for write
+/// (mode 0400, as another uid's leftover would be) is unlinked unzeroed and
+/// the open proceeds (#609).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_sibling_the_process_cannot_open_is_unlinked_and_the_open_proceeds() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_, _, v1, _) = v1_parts();
+    let scratch = scratch_file("r.keys", &v1);
+    let stale = scratch.0.with_file_name("r.keys.tmp-0123456789abcdef");
+    std::fs::write(&stale, b"key material").unwrap();
+    std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o400)).unwrap();
+    assert!(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .is_err(),
+        "the plant: the sibling refuses a write open"
+    );
+    let (m, _) = manager();
+    m.open_key_file(&scratch.0).await.unwrap();
+    assert_eq!(m.get_profiles().await.len(), 1, "the profiles load");
+    assert!(!stale.exists(), "the sibling's name is gone");
+}
+
 /// A key file whose directory is absent is no profiles, as an absent file is;
 /// the stale-sibling scan is skipped, and a save then fails at the write.
 #[tokio::test]
