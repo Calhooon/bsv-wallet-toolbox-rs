@@ -157,16 +157,51 @@ pub(super) mod base64_bytes {
     }
 }
 
-/// Writes `bytes` over `path` atomically: a sibling in the same directory,
-/// synced, then renamed over the file (owner-only on unix).
-async fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
+/// The prefix of a key file's write sibling, `<name>.tmp-<16 hex>`.
+fn tmp_prefix(path: &Path) -> Result<String> {
     let name = path
         .file_name()
         .ok_or_else(|| Error::InvalidArgument("Key file path has no file name".into()))?;
+    Ok(format!("{}.tmp-", name.to_string_lossy()))
+}
+
+fn parent_dir(path: &Path) -> &Path {
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+    dir.unwrap_or(Path::new("."))
+}
+
+/// Removes the write siblings an interrupted write left beside `path`,
+/// each overwritten with zeros in place and synced before removal: their bytes are
+/// key material (on a copy-on-write file system the overwrite is best effort).
+async fn remove_stale_siblings(path: &Path) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let prefix = tmp_prefix(path)?;
+    let stale = |tag: &str| tag.len() == 16 && tag.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut dir = tokio::fs::read_dir(parent_dir(path)).await?;
+    while let Some(item) = dir.next_entry().await? {
+        let name = item.file_name().to_string_lossy().into_owned();
+        if name.strip_prefix(&prefix).is_some_and(stale) {
+            let len = usize::try_from(item.metadata().await?.len()).unwrap_or(0);
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .open(item.path())
+                .await?;
+            file.write_all(&vec![0u8; len]).await?;
+            file.sync_all().await?;
+            tokio::fs::remove_file(item.path()).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes `bytes` over `path` atomically: a sibling in the same directory,
+/// synced, renamed over the file (owner-only on unix), and the directory
+/// synced so the rename survives a crash.
+async fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
     let tmp = path.with_file_name(format!(
-        "{}.tmp-{}",
-        name.to_string_lossy(),
+        "{}{}",
+        tmp_prefix(path)?,
         hex::encode(generate_random_bytes(8))
     ));
     let mut options = tokio::fs::OpenOptions::new();
@@ -183,7 +218,13 @@ async fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
     if written.is_err() {
         let _ = tokio::fs::remove_file(&tmp).await;
     }
-    Ok(written?)
+    written?;
+    #[cfg(unix)]
+    tokio::fs::File::open(parent_dir(path))
+        .await?
+        .sync_all()
+        .await?;
+    Ok(())
 }
 
 /// A profile's key and the record that follows its unlock, with whether the
@@ -719,13 +760,15 @@ impl CWIStyleWalletManager {
     }
 
     /// Opens the key file at `path` (v3 or v1; an absent file is no profiles)
-    /// and remembers it: `save_key_file` and a migrating unlock write it.
+    /// and remembers it: `save_key_file` and a migrating unlock write it. A
+    /// write sibling an interrupted write left beside it is zeroed and removed.
     ///
     /// # Errors
     ///
     /// An I/O error other than not-found, or a file neither version reads.
     pub async fn open_key_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref().to_path_buf();
+        remove_stale_siblings(&path).await?;
         match tokio::fs::read(&path).await.map(Zeroizing::new) {
             Ok(data) => self.load_snapshot(&data).await?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
