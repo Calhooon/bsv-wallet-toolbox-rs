@@ -151,6 +151,19 @@ def openings(ledger):
     return out
 
 
+def over_time(run):
+    """The tests a run's log names as running over 60 seconds, those of them with no result line before
+    the 270 s timeout, and what the log shows: a test that never finished, where the unmutated base's
+    whole lib pass took ENVIRONMENT's lib_s, is a loop or a wait the mutation made; one that finished
+    is a slow test."""
+    lines = "".join(p.read_text(errors="replace") for p in sorted((run / "mutants.out/log").glob("*.log"))).splitlines()
+    over = [l[len("test "):].split(" has been running")[0] for l in lines if "has been running for over 60" in l]
+    unfinished = [t for t in over if not any(l.startswith(f"test {t} ... ") for l in lines)]
+    kind = ("the log names no test over 60 s" if not over
+            else "a loop or a wait the mutation made" if unfinished else "a slow test")
+    return {"tests_over_60s": over, "unfinished": unfinished, "kind": kind}
+
+
 def verdicts_of(documents):
     out = {}
     for _, doc in documents:
@@ -259,7 +272,7 @@ def build(ledger):
                     "n": m["n"], "name": m["name"], "host": m["host"], "lane": segs[m["segment"]]["lane"],
                     "repair": m["n"] in moved, "round_opened": iso(m["round_opened"]),
                     "round_load": m["round_load"], "load_1m": m["load_1m"], "seconds": m["seconds"],
-                    "finished": iso(m["finished"])})
+                    "finished": iso(m["finished"]), **over_time(ledger / "runs" / f"i{m['n']}")})
         return dict(sorted(out.items()))
 
     studio = [m for m in art if m["host"] == "studio" and m["verdict"] == "Timeout"]
@@ -273,9 +286,15 @@ def build(ledger):
         wanted = sum(1 for v in expected.values() if v == f)
         floor = floors.get(f, {}).get("floor")
         hosts = Counter(m["host"] for m in mutants if m["file"] == f)
+        # A verdict rests on the file's timeouts when it changes with them counted as caught.
+        caught = c + Counter({"caught": c["timeout"], "timeout": -c["timeout"]})
+        left_out = c - Counter({"timeout": c["timeout"]})
         files.append({"file": f, "mutants": wanted, **{k: c[k] for k in KEYS}, "score": pct(c), "floor": floor,
                       "verdict": floor_verdict(c, wanted, floor, f in floors),
-                      "hosts": dict(sorted(hosts.items(), key=lambda kv: str(kv[0])))})
+                      "hosts": dict(sorted(hosts.items(), key=lambda kv: str(kv[0]))),
+                      "score_timeouts_left_out": pct(left_out), "score_timeouts_caught": pct(caught),
+                      "verdict_rests_on_timeouts": c["timeout"] > 0 and floor_verdict(
+                          caught, wanted, floor, f in floors) != floor_verdict(c, wanted, floor, f in floors)})
         verdict = floor_verdict(a, wanted, floor, f in floors)
 
         # Below the floor by the Studio's timeouts alone: at or above it with them left out.
@@ -489,6 +508,16 @@ def render_md(record):
         out.append(f"| `{r['file']}`{door} | {host} | {r['mutants']} | {r['caught']} | {r['missed']} | "
                    f"{r['timeout']} | {r['unviable']} | {cell(r['score'])} | "
                    f"{'none' if r['floor'] is None else r['floor']} | {r['verdict']} |")
+    rests = [r for r in files if r["verdict_rests_on_timeouts"]]
+    out += ["", "A verdict rests on timeouts when it changes with the file's timeouts counted as caught (the "
+            "json's `verdict_rests_on_timeouts`, beside `score_timeouts_left_out` and `score_timeouts_caught`). "
+            + (" ".join(f"`{r['file']}` is {r['verdict']} at {cell(r['score'])} with its {r['timeout']} "
+                        f"timeouts ({sum(t['repair'] for t in record['timeouts'][r['file']])} of them the repair "
+                        f"segment's), {cell(r['score_timeouts_left_out'])} with them left out and "
+                        f"{cell(r['score_timeouts_caught'])} with them caught, against a floor of {r['floor']}: "
+                        "its verdict rests on those timeouts alone." for r in rests)
+               if rests else "No file's verdict rests on its timeouts.")
+            + " Every other file's verdict stands with its timeouts counted either way."]
     out += ["", "## The door files beside #571", "",
             "The three door files under this run's `--lib` oracle (base `42559923`), beside "
             f"[{Path(ORACLE).name}]({Path(ORACLE).name}) (#571, base `83a5b049`): its `--lib` run and its widened "
@@ -510,12 +539,20 @@ def render_md(record):
     rows = [t for ts in record["timeouts"].values() for t in ts]
     out += [f"Of the {len(rows)}: {sum(t['repair'] for t in rows)} from the repair segment, every one on "
             + " and ".join(sorted({THE[t["host"]] for t in rows})) + "; the round loads run from "
-            f"{min(t['round_load'] for t in rows)} to {max(t['round_load'] for t in rows)}.", ""] if rows else []
+            f"{min(t['round_load'] for t in rows)} to {max(t['round_load'] for t in rows)}. By each run's log "
+            "(`runs/iN/mutants.out/log`), a test the log names as running over 60 s with no result line before "
+            "the 270 s timeout, where the unmutated base's whole `cargo test --lib` took "
+            f"{record['artifact']['environment']['lib_s']} s in the restored environment, is a loop or a wait the "
+            "mutation made; one with its result line is a slow test: "
+            + counted(Counter(t["kind"] for t in rows)) + ". The test named is the log's first that never "
+            "finished (every name in the json's `tests_over_60s` and `unfinished`).", ""] if rows else []
     for f, rows in record["timeouts"].items():
         out.append(f"- `{f}` ({len(rows)}):")
         out += [f"  - `{short(t['name'])}`, catalog {t['n']}: {t['host']}, lane `{t['lane']}`"
                 f"{' (the repair segment)' if t['repair'] else ''}; round opened {t['round_opened']} at load "
-                f"{t['round_load']} ({t['load_1m']} in `logs/load.log`); {t['seconds']} s, done {t['finished']}"
+                f"{t['round_load']} ({t['load_1m']} in `logs/load.log`); {t['seconds']} s, done {t['finished']}; "
+                f"{t['kind']}" + (f": `{t['unfinished'][0]}` never finished ({len(t['tests_over_60s'])} over 60 s, "
+                                  f"{len(t['unfinished'])} unfinished)" if t["unfinished"] else "")
                 for t in rows]
     out += [] if record["timeouts"] else ["None."]
     out += ["", "## Survivors", "",
