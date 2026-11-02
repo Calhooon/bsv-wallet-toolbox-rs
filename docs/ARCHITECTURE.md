@@ -304,6 +304,27 @@ it (`UnspendableCoin`).
 | ECMAScript trimming retains U+0085 around either key argument, which refuses with the reference's hexadecimal-string text | `ts-stack@edf6e03 validationHelpers.ts:524,527-528`; toolbox #249 | `test_prove_certificate_ecmascript_trim_rejects_0085` |
 | equal and empty plaintext fields receive distinct 32-byte keys across fields and issuances | `ts-stack@edf6e03 MasterCertificate.ts:277-293`; toolbox #203 | `issuance_uses_fresh_keys_for_equal_and_empty_plaintexts` |
 
+### The CWI key file (#560)
+
+`CWIStyleWalletManager`'s key file holds one reference UMP token per
+profile (`docs/design/ump-token-format.md`); the vectors are
+`test_vectors/keys/ump-token-reference.json` (written by the reference
+under Node) and `ump-token-rust.json` with the reference's reading of it
+in `ump-token-rust.result.json`.
+
+| invariant | charter | test |
+|-----------|---------|------|
+| a new profile's token carries a 32-byte OS-drawn `passwordSalt` distinct from the profile id, `umpVersion` 3 and `pbkdf2-sha512` at 7777; a wrong password is `AccessDenied` | `ts-stack@edf6e03 CWIStyleWalletManager.ts:1832-1876`; toolbox #560, #191 | `a_new_profile_carries_a_random_32_byte_salt_and_ump_version_3` |
+| a v1 file (salted with the profile id) opens with its key unchanged; its unlock re-writes it as v3 (sibling, then rename) with a fresh salt, and the key still decrypts from the token | toolbox #560 | `a_v1_file_opens_and_its_unlock_rewrites_it_as_v3_with_a_fresh_salt` |
+| a failed unlock (no privileged key manager on v1, a wrong password on v3) leaves the file byte-identical | toolbox #560 | `a_failed_unlock_leaves_the_file_byte_identical` |
+| the token is the reference's binary layout, its v3 form re-serializing byte for byte | `ts-stack@edf6e03 CWIStyleWalletManager.ts:2648-2716`; toolbox #560 | `a_v3_token_round_trips_in_the_reference_layout` |
+| the reader refuses what the reference's refuses: version, zero-length field, non-minimal varint, malformed outpoint, unsafe KDF params | `ts-stack@edf6e03 CWIStyleWalletManager.ts:103-122,2721-2817`; toolbox #560 | `the_reference_bounds_refuse_what_its_reader_refuses` |
+| a reference-written v3 token opens to its recorded root primary and privileged keys, recovery key and profile key | `ts-stack@edf6e03 CWIStyleWalletManager.ts:303-358,1805-1830`; toolbox #560 | `the_reference_written_v3_token_opens_to_its_recorded_root_keys` |
+| a reference legacy token (no KDF metadata) opens at 7777 rounds and not at another count | `ts-stack@edf6e03 CWIStyleWalletManager.ts:83,319-328`; toolbox #560 | `the_reference_legacy_token_opens_at_7777_rounds` |
+| a reference-written token opens through `switch_profile`, the pad read from the token | `ts-stack@edf6e03 CWIStyleWalletManager.ts:2267-2316`; toolbox #560 | `a_reference_written_token_opens_through_switch_profile` |
+| the Rust-written vector the reference opened under Node still opens in Rust | toolbox #560; `test_vectors/keys/ump-token-rust.result.json` | `the_rust_written_vector_still_opens_in_rust` |
+| an argon2id token parses and is refused at derivation until stage two | `ts-stack@edf6e03 CWIStyleWalletManager.ts:330-350`; toolbox #560 | `argon2id_parses_and_is_refused_at_derivation_until_stage_two` |
+
 ## 2. The writer and the pool
 
 `StorageSqlx` (`src/storage/sqlx/storage_sqlx.rs`) holds two pools over one

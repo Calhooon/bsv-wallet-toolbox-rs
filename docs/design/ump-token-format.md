@@ -203,7 +203,8 @@ token:
   "defaultProfileId": "<base64 16 bytes>" | null,
   "profiles": [
     {
-      "profile": { "name", "id", "primaryPad", "privilegedPad", "createdAt", "updatedAt" },
+      "name": "...", "id": "<base64 16>", "primaryPad": "<base64 32>",
+      "privilegedPad": "<base64 32>", "createdAt": "<RFC 3339>", "updatedAt": "<RFC 3339>",
       "ump": { "presentationKey": "<base64 32>", "token": "<base64 serializeUMPToken>" }
     }
   ]
@@ -230,10 +231,13 @@ token:
   builds still takes the host's privileged key manager
   (`provide_privileged_key_manager`), unchanged; the token's privileged
   key wraps fields 8 to 10 and serves the reference's flows.
-- `profile` is the clear index v1 already had (name, id, pads, times):
+- The profile's fields are the clear index v1 already had (name, id, pads, times):
   `get_profiles` lists before an unlock. At an unlock the pads are read
   from the decrypted `profilesEncrypted`, never the clear copy.
-- `"ump"` absent marks a v1 record carried until its own unlock (4.3).
+- `"ump"` absent marks a v1 record carried until its own unlock (4.3). The
+  exports (`export_profile`, `export_profile_json`, `backup_all_profiles`)
+  write the same record, so an exported v3 profile keeps its token; a v1
+  export (no `"ump"`) imports as a v1 record.
 - New tokens: `pbkdf2-sha512` at `config.password_rounds` (default 7777,
   the reference's `PBKDF2_NUM_ROUNDS`), `umpVersion` 3, a 32-byte salt
   from `crate::rng::os_fill` (#191), and every key above drawn the same
