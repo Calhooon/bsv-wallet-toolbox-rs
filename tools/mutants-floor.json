@@ -35,7 +35,7 @@
     },
     "src/monitor/tasks/new_header.rs": {
       "floor": 84,
-      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 84.21% (16 caught, 3 missed, 0 timeout, 2 unviable). The figure rounded down is 84 (the floor was 80). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 5, the new_header row, and section 4 step 3 (the proof gate))."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 84.21% (16 caught, 3 missed, 0 timeout, 2 unviable). The figure rounded down is 84 (the floor was 80). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 5, the new_header row, and section 4 step 3 (the proof gate)). Its witnesses include tests/monitor_tests.rs run_once_empty_storage (every task with default options), so the --lib figure is a lower bound under the complete record's oracle."
     },
     "src/monitor/tasks/purge.rs": {
       "floor": 0,
@@ -171,7 +171,7 @@
     },
     "src/storage/sqlx/create_action/signing.rs": {
       "floor": 81,
-      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 81.33% (61 caught, 13 missed, 1 timeout, 1 unviable). The figure rounded down is 81 (the floor was 64). Its 1 timeouts under the restored environment count as not caught (the record's Timeouts section, each a loop or a wait the mutation made): 68:11: replace += with *= in script_pushes."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 81.33% (61 caught, 13 missed, 1 timeout, 1 unviable). The figure rounded down is 81 (the floor was 64). Its one timeout under the restored environment count as not caught (the record's Timeouts section, each a loop or a wait the mutation made): 68:11: replace += with *= in script_pushes."
     },
     "src/storage/sqlx/create_action/tracker.rs": {
       "floor": 85,
