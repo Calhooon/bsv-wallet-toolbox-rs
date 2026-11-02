@@ -238,3 +238,36 @@ async fn exports_carry_the_token_and_a_v1_export_reads_as_v1() {
         .ump
         .is_none());
 }
+
+#[tokio::test]
+async fn a_reference_written_token_opens_through_switch_profile() {
+    use base64::Engine;
+    let v: serde_json::Value = serde_json::from_str(include_str!(
+        "../../test_vectors/keys/ump-token-reference.json"
+    ))
+    .unwrap();
+    let b64 = |key: &str, path: &[&str]| {
+        let s = path.iter().fold(&v, |v, k| &v[*k])[key].as_str().unwrap();
+        base64::engine::general_purpose::STANDARD.encode(hex::decode(s).unwrap())
+    };
+    let record = serde_json::json!({
+        "name": "Work", "id": b64("profileIdHex", &["expected"]),
+        "primaryPad": "", "createdAt": "2026-11-02T00:00:00Z", "updatedAt": "2026-11-02T00:00:00Z",
+        "ump": { "presentationKey": b64("presentationKeyHex", &["inputs"]), "token": b64("tokenV3Hex", &[]) },
+    });
+    let (m, seen) = manager();
+    m.provide_privileged_key_manager(PrivateKey::random()).await;
+    let profile = m
+        .import_profile_json(record.to_string().as_bytes())
+        .await
+        .unwrap();
+    m.switch_profile(&profile.id, v["inputs"]["password"].as_str().unwrap())
+        .await
+        .unwrap();
+    let want = hex::decode(v["expected"]["profilePrimaryKeyHex"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        seen.lock().unwrap()[0],
+        want,
+        "the pad is read from the token, not the clear index"
+    );
+}

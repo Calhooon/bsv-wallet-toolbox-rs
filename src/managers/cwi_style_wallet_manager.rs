@@ -734,3 +734,13 @@ impl CWIStyleWalletManager {
 #[cfg(test)]
 #[path = "cwi_style_wallet_manager_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn draw_for_vector(len: usize) -> Vec<u8> {
+    generate_random_bytes(len)
+}
+
+#[cfg(test)]
+pub(crate) fn draw_scalar_for_vector() -> Zeroizing<Vec<u8>> {
+    generate_scalar()
+}
