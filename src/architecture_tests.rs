@@ -32,7 +32,6 @@ const CONFIG_MODULES: &[&str] = &["src/services/mod.rs", "src/monitor/config.rs"
 // The create_action and storage_sqlx splits retain each original budget
 // across their destination paths; moving code cannot mint a new allowance.
 const PANIC_CEILINGS: &[(&str, usize)] = &[
-    ("src/managers/cwi_style_wallet_manager.rs", 1),
     ("src/managers/storage_manager.rs", 11),
     ("src/services/mock.rs", 24),
     ("src/services/providers/arc.rs", 7),

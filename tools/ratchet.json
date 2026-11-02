@@ -7,7 +7,7 @@
   "metrics": {
     "files_over_800": 33,
     "max_file_lines": 7128,
-    "unwraps_outside_tests": 61,
+    "unwraps_outside_tests": 60,
     "undocumented_public_items": 308,
     "mutation_score_pct": 59.22,
     "fuzz_hours": 2.01
@@ -75,11 +75,10 @@
     }
   },
   "unwraps_outside_tests": {
-    "total": 61,
-    "unwrap": 58,
+    "total": 60,
+    "unwrap": 57,
     "expect": 3,
     "by_file": {
-      "src/managers/cwi_style_wallet_manager.rs": 1,
       "src/managers/storage_manager.rs": 11,
       "src/services/mock.rs": 24,
       "src/services/providers/arc.rs": 7,
