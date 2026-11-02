@@ -45,7 +45,7 @@ SEGMENTS = (
 # driver as it stands at its opening.
 THREADS = (("RUST_TEST_THREADS=2 (the box load rule)", 2), ("RUST_TEST_THREADS=2 removed", None),
            ("RUST_TEST_THREADS=2 put back", 2))
-# The first burst of beef-rejected-*.hex dumps into $TMPDIR (pid 93567, 22:18:42Z to 22:23:05Z;
+# The opening burst of beef-rejected-*.hex dumps into $TMPDIR (pid 93567, 22:18:42Z to 22:23:05Z;
 # pid 41370 wrote the second, 23:21:07Z to 23:24:40Z, by the dumps' own millisecond stamps):
 # about 1.3 million files, so a test that reads the folder whole runs minutes from then on.
 DUMPS_FROM = datetime.datetime(2026, 11, 1, 22, 18, 42, tzinfo=datetime.timezone.utc)
@@ -78,7 +78,7 @@ def pct(c):
     return round(100 * c["caught"] / d, 2) if d else None
 
 
-def first(text):
+def head_line(text):
     return text.strip().splitlines()[0]
 
 
@@ -248,9 +248,9 @@ def main():
         "segments": [{"host": s["host"], "cores": s["cores"], "lane": s["lane"], "start": iso(s["start"]),
                       "end": iso(s["end"]), "mutants": s["mutants"],
                       "verdicts": dict(sorted(s["verdicts"].items()))} for s in segs],
-        "toolchain": "box: " + first(subprocess.run(["rustc", "-V"], capture_output=True, text=True).stdout)
+        "toolchain": "box: " + head_line(subprocess.run(["rustc", "-V"], capture_output=True, text=True).stdout)
                      + "; the Studio's toolchain is not in the ledger",
-        "tool_version": first(subprocess.run(["cargo", "mutants", "--version"], capture_output=True,
+        "tool_version": head_line(subprocess.run(["cargo", "mutants", "--version"], capture_output=True,
                                              text=True).stdout),
         "lockfile": "Cargo.lock (no lock is committed; resolved once by cargo fetch, copied to every worker)",
         "logs": str(ledger) + ": logs/rounds.log, logs/load.log, logs/baseline.log, runs/i<N>.log, "
