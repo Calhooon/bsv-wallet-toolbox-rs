@@ -257,8 +257,8 @@ processed them. The public-key, cipher and encoded-counterparty cases are
 also pinned in `tests/proto_validator_pin.rs`.
 
 Both linkage methods delegate through ProtoWallet's `WalletInterface`
-adapter, retaining `privileged` and `privilegedReason` for its beta.3
-validator. The inherent argument types omit those fields. Missing, short
+adapter (through the key route since #569), retaining `privileged` and
+`privilegedReason` for its beta.3 validator. The inherent argument types omit those fields. Missing, short
 and long reasons use the same three refusal texts above, before any
 linkage cryptography; the returned counterparty keys remain compressed.
 
@@ -345,7 +345,7 @@ today's words).
 | `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1430 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
 | `certificate_issuance_auth.rs` | ~130 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
-| `key_route.rs` | ~150 | The key route (#186, #142): a key call with `privileged: true` to the `PrivilegedKeyManager`, its arguments intact, else the reference's refusal; every other call to the everyday `ProtoWallet`; the route as a `WalletInterface` for bsv-rs's certificate helpers |
+| `key_route.rs` | ~190 | The key route (#186, #142, #569): a key call or a key-linkage reveal with `privileged: true` to the `PrivilegedKeyManager`, its arguments intact, else the reference's refusal; every other call to the everyday `ProtoWallet`; the route as a `WalletInterface` for bsv-rs's certificate helpers |
 | `direct_acquire.rs` | ~210 | Direct `acquire_certificate` argument validation and normalization, signature verification and keyring decryption proof before storage (#311, #374) |
 | `label.rs` | ~110 | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392), and the BRC-177 module-label matcher both doors call (#363); declared without a feature gate, the sqlx folder imports it as `label` (#420); `normalize_label` and `trim_ecmascript` are public since #505, re-exported as `bsv_wallet_toolbox_rs::wallet::{normalize_label, trim_ecmascript}`, the one definition of the reference's label rule for every host (bsv-wallet-cli#376's spend gate); `is_ecmascript_whitespace` stays private |
 | `discovery_search.rs` | ~320 | The reference's attribute matcher (`identityUtils.ts:140-280`): search normalization, legacy `/gi` literals, the five-class tokenizer and stop words, the NFD and Mn fold (#474) |
@@ -519,6 +519,8 @@ Input metadata required for signing. Passed from storage results to the signer.
 #[async_trait]
 pub trait PrivilegedKeyManager: Send + Sync {
     async fn get_public_key(...) -> Result<GetPublicKeyResult>;
+    async fn reveal_counterparty_key_linkage(...) -> Result<RevealCounterpartyKeyLinkageResult>;
+    async fn reveal_specific_key_linkage(...) -> Result<RevealSpecificKeyLinkageResult>;
     async fn encrypt(...) -> Result<EncryptResult>;
     async fn decrypt(...) -> Result<DecryptResult>;
     async fn create_hmac(...) -> Result<CreateHmacResult>;
@@ -528,15 +530,20 @@ pub trait PrivilegedKeyManager: Send + Sync {
 }
 ```
 
-The privileged keyring of BRC-100's `privileged` flag. The wallet stores an optional `Arc<dyn PrivilegedKeyManager>` and provides `set_privileged_key_manager()` / `privileged_key_manager()` accessors.
+The privileged keyring of BRC-100's `privileged` flag, the reference's nine
+methods (ts-stack@edf6e03 `PrivilegedKeyManager.ts:343-385`), every one
+required (the two reveals since #569). The wallet stores an optional `Arc<dyn PrivilegedKeyManager>` and provides `set_privileged_key_manager()` / `privileged_key_manager()` accessors.
 
-#### Privileged key route (#186, #142)
+#### Privileged key route (#186, #142, #569)
 
 As ts-stack@edf6e03 `Wallet.ts:455-570`: `get_public_key`, `encrypt`,
-`decrypt`, `create_hmac`, `verify_hmac`, `create_signature` and
-`verify_signature` with `privileged: Some(true)` go to the manager with the
+`decrypt`, `create_hmac`, `verify_hmac`, `create_signature`,
+`verify_signature` and the two reveals, `reveal_counterparty_key_linkage`
+and `reveal_specific_key_linkage` (`:467-490`, #569), with
+`privileged: Some(true)` go to the manager with the
 caller's arguments intact (`privileged`, `privileged_reason`,
-`seek_permission`) and the caller's originator (`""` when absent); with
+`seek_permission`; the reveals' arguments carry no `seek_permission`, in
+the reference as in bsv-rs) and the caller's originator (`""` when absent); with
 none configured each is `WalletRefusal { class: NotImplemented, message }`,
 the message `Privileged operations require the Wallet to be configured with
 a privileged key manager.` byte for byte (`:460-461`). `None` or
@@ -558,8 +565,12 @@ text and place with and without a manager, as the reference's order has
 it: its substrates run `validateWalletArgs` ahead of `Wallet.ts`
 (`WalletArgumentValidation.ts`, from `HTTPWalletJSON.ts:48`,
 `WalletWireProcessor.ts:21`). The no-manager refusal answers only a valid
-privileged request. `key_route.rs` holds the route; the wallet's seven
-calls and the certificate paths share it.
+privileged request; the reveals' validators are reached through the
+ProtoWallet's `WalletInterface` adapter, which checks the `privileged` and
+`privilegedReason` its inherent types omit. `key_route.rs` holds the route;
+the wallet's nine calls and the certificate paths share it. The reveals ask
+no BRC-98/99 check of the wallet's own; the reference's permissions manager
+asks one (`linkageRevelation`, `WalletPermissionsManager.ts:5190-5221`).
 
 `prove_certificate` with `privileged: true` derives the verifier's keyring
 through the manager (`create_keyring_for_verifier` decrypts and encrypts
@@ -577,10 +588,10 @@ the `NotImplemented` refusal there. The direct `acquire_certificate` takes its s
 the keyring under the same route (`Wallet.ts:698-724`), so with no manager
 it is the refusal before the proof, nothing stored. The issuance path reads
 no privileged key, as the reference's does not (`Wallet.ts:769-824`).
-The two linkage calls stay with the everyday key: the trait has no linkage
-methods, a public shape for the owner's word (#569). Witnesses:
+The two linkage calls no longer stay with the everyday key: the gap #569
+named closed with the trait's two reveal methods. Witnesses:
 `privileged_keys_tests.rs` (the grant separation among them),
-`privileged_certificate_tests.rs`.
+`privileged_linkage_tests.rs`, `privileged_certificate_tests.rs`.
 
 ### LookupResolver (legacy stub)
 
@@ -999,7 +1010,7 @@ The wallet maintains an in-memory cache of unsigned transactions:
 
 ### ProtoWallet Delegation
 
-The seven key methods answer through `key_route(originator)` (`key_route.rs`): the everyday `ProtoWallet` with the caller's arguments intact, or the privileged key manager for `privileged: true`.
+The seven key methods and the two key-linkage reveals answer through `key_route(originator)` (`key_route.rs`, #569): the everyday `ProtoWallet` with the caller's arguments intact, or the privileged key manager for `privileged: true`.
 - Key linkage methods parse hex public keys back to `PublicKey` for result structs
 
 ## Helper Functions (wallet.rs)

@@ -30,6 +30,27 @@
   off nothing changes; it turns on for a line only on the owner's word
   (A8-6). The counts and the bench are `docs/a8/cycle-1-beef-bytes.md`.
 
+### Changed
+
+- #569, bsv-wallet-cli#386 (the owner's word of 2026-11-02 13:2xZ),
+  api-break: `reveal_counterparty_key_linkage` and
+  `reveal_specific_key_linkage` with `privileged: true` derived under the
+  everyday key. Old: both answered from the wallet's own `ProtoWallet`
+  whatever the flag, after the seven key calls had moved to the privileged
+  key manager (#186). New: both take the key route the seven take, as the
+  reference's `Wallet.ts:467-490` does: the argument validators first,
+  then the manager with the caller's `privileged`, `privilegedReason` and
+  originator; with no manager the reference's refusal,
+  `WalletRefusal { class: NotImplemented }` with the text `Privileged
+  operations require the Wallet to be configured with a privileged key
+  manager.` byte for byte. An unprivileged reveal is unchanged. The public
+  shape: `PrivilegedKeyManager` gains both methods as required methods (no
+  default body), bsv-rs's interface argument and result types, so the
+  trait is the reference's nine (`PrivilegedKeyManager.ts:343-385`); an
+  implementor adds both (none exists in this repository or the CLI beyond
+  the test double). Host note: a privileged reveal on a wallet with no
+  manager is now this refusal where it was an everyday answer.
+
 ## [0.14.0-beta.6] - 2026-11-01
 ### Added
 
