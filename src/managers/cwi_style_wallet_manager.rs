@@ -293,18 +293,13 @@ pub type CWIWalletBuilder = Arc<
 ///     CWIStyleWalletManagerConfig::default(),
 /// );
 ///
-/// // Provide privileged key manager first
 /// manager.provide_privileged_key_manager(pkm_key).await;
 ///
 /// // Open (or start) the key file, then create a new profile
 /// manager.open_key_file("wallet.keys").await?;
 /// let profile = manager.create_profile("Work", "password123").await?;
 /// manager.save_key_file().await?;
-///
-/// // Switch to the profile
 /// manager.switch_profile(&profile.id, "password123").await?;
-///
-/// // Now authenticated - access the wallet
 /// let wallet = manager.wallet().await?;
 /// let result = wallet.create_action(args, "app.example.com").await?;
 /// ```
