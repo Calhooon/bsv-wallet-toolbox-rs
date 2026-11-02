@@ -82,11 +82,31 @@ impl PrivilegedDouble {
 }
 
 // Each method records its arguments' three fields, then answers through the
-// double's own ProtoWallet.
+// double's own ProtoWallet; a reveal's arguments carry no `seek_permission`,
+// and its answer is the ProtoWallet's `WalletInterface` adapter's.
 macro_rules! recorded {
-    ($($name:ident($args:ty) -> $result:ty;)*) => {
+    (
+        reveals { $($reveal:ident($reveal_args:ty) -> $reveal_result:ty;)* }
+        $($name:ident($args:ty) -> $result:ty;)*
+    ) => {
         #[async_trait]
         impl PrivilegedKeyManager for PrivilegedDouble {
+            $(
+                async fn $reveal(
+                    &self,
+                    args: $reveal_args,
+                    originator: &str,
+                ) -> std::result::Result<$reveal_result, bsv_rs::Error> {
+                    self.asked.lock().unwrap().push(Asked {
+                        call: stringify!($reveal),
+                        privileged: args.privileged,
+                        privileged_reason: args.privileged_reason.clone(),
+                        seek_permission: None,
+                        originator: originator.to_string(),
+                    });
+                    WalletInterface::$reveal(&self.key, args, Some(originator)).await
+                }
+            )*
             $(
                 async fn $name(
                     &self,
@@ -107,7 +127,12 @@ macro_rules! recorded {
     };
 }
 
-key_calls!(recorded);
+key_calls!(recorded {
+    reveals {
+        reveal_counterparty_key_linkage(InterfaceRevealCounterpartyArgs) -> RevealCounterpartyKeyLinkageResult;
+        reveal_specific_key_linkage(InterfaceRevealSpecificArgs) -> RevealSpecificKeyLinkageResult;
+    }
+});
 
 fn protocol() -> Protocol {
     Protocol::new(SecurityLevel::App, "privileged witness")

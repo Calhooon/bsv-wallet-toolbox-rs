@@ -109,8 +109,12 @@ const PENDING_TRANSACTION_TTL_SECS: i64 = 24 * 60 * 60;
 /// Trait for privileged key management operations: the privileged keyring of
 /// BRC-100's `privileged` flag. A key call with `privileged: true` goes here
 /// with the caller's arguments intact (ts-stack@edf6e03 `Wallet.ts:455-570`;
-/// `key_route.rs`, #186), as do the certificate keyring and subject the
-/// caller names (#142).
+/// `key_route.rs`, #186, #569), as do the certificate keyring and subject the
+/// caller names (#142). Its nine methods are the reference's nine
+/// (`PrivilegedKeyManager.ts:343-385`): `getPublicKey`,
+/// `revealCounterpartyKeyLinkage`, `revealSpecificKeyLinkage`, `encrypt`,
+/// `decrypt`, `createHmac`, `verifyHmac`, `createSignature`,
+/// `verifySignature`.
 #[async_trait]
 pub trait PrivilegedKeyManager: Send + Sync {
     async fn get_public_key(
@@ -118,6 +122,20 @@ pub trait PrivilegedKeyManager: Send + Sync {
         args: GetPublicKeyArgs,
         originator: &str,
     ) -> std::result::Result<GetPublicKeyResult, bsv_rs::Error>;
+    /// The linkage with a counterparty under the privileged key
+    /// (`revealCounterpartyKeyLinkage`, #569).
+    async fn reveal_counterparty_key_linkage(
+        &self,
+        args: InterfaceRevealCounterpartyArgs,
+        originator: &str,
+    ) -> std::result::Result<RevealCounterpartyKeyLinkageResult, bsv_rs::Error>;
+    /// One derived key's linkage under the privileged key
+    /// (`revealSpecificKeyLinkage`, #569).
+    async fn reveal_specific_key_linkage(
+        &self,
+        args: InterfaceRevealSpecificArgs,
+        originator: &str,
+    ) -> std::result::Result<RevealSpecificKeyLinkageResult, bsv_rs::Error>;
     async fn encrypt(
         &self,
         args: EncryptArgs,
