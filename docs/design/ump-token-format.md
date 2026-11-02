@@ -348,8 +348,9 @@ page cache, and what bsv-rs and `ring` hold inside their own types.
   password at two consecutive unlocks seals the token under it at the
   earlier and opens it at the later, which drops the v1 record, and the
   right password is refused afterwards. A host closes it in its wallet
-  builder: the builder (`switch_profile`, `cwi_style_wallet_manager.rs`)
-  runs after the derivation and before the write, so a builder that
+  builder: `switch_profile`'s call of the builder
+  (`cwi_style_wallet_manager.rs`) comes between the derivation and the
+  write, so a builder that
   checks the derived identity key against the storage's users and
   returns an error refuses the unlock with nothing written.
   With a key file open each write is a sibling, sync, rename and
