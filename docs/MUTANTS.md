@@ -68,10 +68,9 @@ Score is `100 * caught / (caught + missed + timeout)`. A timeout is reported
 separately and does not count as caught. Unviable mutants are excluded from the
 denominator. No generated mutants means `N/A`; an all-unviable file fails rather
 than appearing fully tested. Comparisons use integer arithmetic, without rounding
-a score up to a floor. Each measured floor is the smaller of 80 and the observed
-score rounded down; every floor in `tools/mutants-floor.json` is a measured one
-(the door floors from the 1/8 sample, provisional). JSON `_comment` fields give
-the measured score and name the follow-up issue to file for each file below 80.
+a score up to a floor. The floors come from the complete figure by the rule
+below (the floors from the complete figure); JSON `_comment` fields give each
+entry's record, figure, date and oracle.
 A null floor still fails enforcement when that file has viable mutants, so a new
 file cannot pass unmeasured.
 
@@ -118,6 +117,68 @@ the 330 minute limit with room to spare. The rest of the inventory stays on
 `--lib` as ruled (the ratchet). Other create-door files are entered by
 integration targets as well (the record's second probe); widening them is not
 in the ruling.
+
+## The floors from the complete figure (#534, 2026-11-02)
+
+`tools/mutants-floor.json` holds an entry for every file the complete record
+catalogues (`docs/census/mutants-complete-2026-11-02.{md,json}`: the Mutants
+workflow's set at base `42559923` under the `--lib` oracle, 59.22 percent of
+1,974 viable), written by the owner's 23.5 (c) word and the keeper's reading of
+2026-11-02 10:4xZ. The rule per entry:
+
+- the floor is the measured figure rounded down to a whole percent: a floor
+  moves when a floors lane writes it from a record, never by a measurement alone,
+  and never falls;
+- a file on the paths that judge the node's word and the chain's evidence that
+  measures below 80 is raised to 80: red by design, with one triage issue per
+  file for its survivors (a test, or an equivalent mutant with its reason). The
+  files placed there, each by its `docs/ARCHITECTURE.md` row (named in its
+  entry's comment): the create door's BEEF judging (`create_action/beef.rs`,
+  `beef_graph.rs`, `beef_storage.rs`, `beef_walk.rs`, `tracker.rs` and the door's
+  pre-check in `mod.rs`), the internalize door (`internalize_action.rs`), the
+  process door's root check (`process_action.rs`), the reorg and review passes
+  (`monitor/tasks/reorg.rs`, `review_proven_txs.rs`), the proof gate
+  (`new_header.rs`) and the header services' verdicts (`bhs.rs`,
+  `chaintracks_client.rs`, `fallback_chain_tracker.rs`);
+- a file whose figure fell below its existing floor keeps the floor, and is a
+  finding;
+- the three doors keep the floors #571 wrote from the widened figure (80, 71, 80);
+- each comment names the record, the figure, the date and the oracle, and a file
+  whose figure carries a timeout under the restored environment names it.
+
+The oracle before a finding. The complete record's oracle is `--lib`, and a file
+whose witnesses live in an integration target reads low under it (must_spend:
+0 of 19 under `--lib`, 18 of 19 widened). A node's-word or evidence file below
+80 whose functions an integration target enters is measured again under the
+widened oracle before its finding is filed, and the finding stands on that
+figure; its entry's comment names both figures and calls the `--lib` one a lower
+bound. The floor stays the `--lib` rule's (80 for these files), since the
+workflow scores them under `--lib`; a low score never blocks a landing.
+
+The widened re-measure of 2026-11-02 (lane p5-mutants-floors) runs each `--lib`
+survivor of the eight path files below 80 once more (217 mutants, none a timeout
+under `--lib`), one mutant per `cargo mutants --no-config --file F --re '^NAME$'
+--in-diff LINE --in-place --baseline skip --timeout 270 --build-timeout 900` call
+(`LINE` a one-line diff naming the mutant's line, which keeps the struct-field
+deletions of other lines out, below) in scratch
+copies of the base with the record's lockfile, features
+`sqlite,remote,bench-support`, building the lib and the file's integration
+targets (the reach of #571's second probe for the create, process and
+internalize files; `git grep` of the task types for the monitor files;
+the `fixtures` ladders for `bhs.rs`). A mutant the lib caught stays caught under
+a wider oracle, and the lib's verdict on each survivor under the default features
+is the record's, so each run selects by exact name every test of those targets
+and the 167 lib tests the widened features add (the remote client's and two
+wallet tests); the rest of the lib already missed it. The widened figure is the
+record's caught plus the survivors a selected test caught. Leaving the lib's
+other tests out of the run also leaves out
+`a_wallet_and_a_monitor_over_one_store_share_the_writer`, which under the host's
+load (one-minute 37) took 122 s alone and held the lib pass to 309 s, past the
+270 s timeout. The ledger, every run's `mutants.out` and log, the queue and the
+driver are under `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-mutants-floors/`.
+The host's load held the run at the files named complete in their entries when
+these floors were written; an entry whose re-measure is not complete says so, and
+its finding waits on that figure.
 
 ## Filters in cargo-mutants 27.1.0
 

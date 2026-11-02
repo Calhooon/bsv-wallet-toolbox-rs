@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- #534 (the owner's 23.5 (c) word; the keeper's reading of 2026-11-02
+  10:4xZ): `tools/mutants-floor.json` takes its floors from the complete
+  Mutants record (`docs/census/mutants-complete-2026-11-02`, 59.22
+  percent of 1,974 viable at base `42559923`): an entry for every
+  catalogued file, `http_client.rs` among them, each the figure rounded
+  down, never under an existing floor, and 80 for the files on the paths
+  that judge the node's word and the chain's evidence (red by design
+  until their survivors are triaged); the doors keep #571's floors.
+  `docs/MUTANTS.md` states the rule and the oracle note. Measurement
+  only: no host behaviour moves.
+
 ### Fixed
 
 - #576, bsv-wallet-cli#386 (the keeper's reading of 2026-11-01 21:5xZ,
