@@ -105,12 +105,39 @@ The three door files under this run's `--lib` oracle (base `42559923`), beside [
 
 ## Timeouts
 
-Each named here took longer than the 270 s test timeout under its mutation in the restored environment (a slow test or a loop the mutation made); counted as not caught.
+Each named here took longer than the 270 s test timeout under its mutation in the restored environment; counted as not caught. Each carries its host segment, the round it ran in (its opening by `logs/rounds.log`) and the one-minute load at that opening (the `round start` line's figure, with `logs/load.log`'s uptime beside it), its run time (`state/done/N`) and its completion (that file's mtime). A timeout from the repair segment says so.
 
-- `src/services/providers/pace.rs`: `103:9 replace TokenBucket::take -> std::result::Result<(), Duration> with Ok(())`; `107:25 replace -= with += in TokenBucket::take`; `107:25 replace -= with /= in TokenBucket::take`; `173:9 replace RateGate::admit -> Result<()> with Ok(())`; `177:9 replace RateGate::admit_at -> Result<()> with Ok(())`
-- `src/storage/sqlx/create_action/allocation.rs`: `134:9 replace ChangePick<'a>::must_spend -> &'a[i64] with Vec::leak(vec![1])`; `219:9 replace PickReservation::unavailable -> Vec<i64> with vec![]`; `219:9 replace PickReservation::unavailable -> Vec<i64> with vec![0]`; `219:9 replace PickReservation::unavailable -> Vec<i64> with vec![1]`; `219:9 replace PickReservation::unavailable -> Vec<i64> with vec![-1]`; `229:9 replace PickReservation::try_take -> bool with true`; `229:9 replace PickReservation::try_take -> bool with false`; `229:37 replace && with || in PickReservation::try_take`; `229:12 delete ! in PickReservation::try_take`; `371:20 delete ! in allocate_change_input_by`; `483:5 replace placeholders -> String with String::new()`; `665:34 replace == with != in Door<'_>::precheck`
-- `src/storage/sqlx/create_action/change.rs`: `341:9 replace && with || in generate_change`; `341:23 replace > with < in generate_change`; `457:42 replace && with || in generate_change`; `511:38 replace && with || in generate_change`; `511:52 replace > with >= in generate_change`; `516:46 replace < with <= in generate_change`; `528:24 replace -= with /= in generate_change`
-- `src/storage/sqlx/create_action/signing.rs`: `68:11 replace += with *= in script_pushes`
+Of the 25: 25 from the repair segment, every one on the box; the round loads run from 11 to 51.
+
+- `src/services/providers/pace.rs` (5):
+  - `103:9 replace TokenBucket::take -> std::result::Result<(), Duration> with Ok(())`, catalog 1110: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T07:51:38Z at load 11 (11.35 in `logs/load.log`); 306.4 s, done 2026-11-02T07:56:44Z
+  - `107:25 replace -= with += in TokenBucket::take`, catalog 1116: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T07:51:38Z at load 11 (11.35 in `logs/load.log`); 308.0 s, done 2026-11-02T07:56:46Z
+  - `107:25 replace -= with /= in TokenBucket::take`, catalog 1117: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T07:51:38Z at load 11 (11.35 in `logs/load.log`); 307.6 s, done 2026-11-02T07:56:46Z
+  - `173:9 replace RateGate::admit -> Result<()> with Ok(())`, catalog 1124: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T07:51:38Z at load 11 (11.35 in `logs/load.log`); 309.1 s, done 2026-11-02T07:56:48Z
+  - `177:9 replace RateGate::admit_at -> Result<()> with Ok(())`, catalog 1125: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T07:57:00Z at load 23 (23.2 in `logs/load.log`); 320.5 s, done 2026-11-02T08:02:23Z
+- `src/storage/sqlx/create_action/allocation.rs` (12):
+  - `134:9 replace ChangePick<'a>::must_spend -> &'a[i64] with Vec::leak(vec![1])`, catalog 1613: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T07:57:00Z at load 23 (23.2 in `logs/load.log`); 321.0 s, done 2026-11-02T08:02:25Z
+  - `219:9 replace PickReservation::unavailable -> Vec<i64> with vec![]`, catalog 1636: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T07:57:00Z at load 23 (23.2 in `logs/load.log`); 321.0 s, done 2026-11-02T08:02:27Z
+  - `219:9 replace PickReservation::unavailable -> Vec<i64> with vec![0]`, catalog 1637: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T07:57:00Z at load 23 (23.2 in `logs/load.log`); 321.4 s, done 2026-11-02T08:02:29Z
+  - `219:9 replace PickReservation::unavailable -> Vec<i64> with vec![1]`, catalog 1638: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:02:44Z at load 46 (46.28 in `logs/load.log`); 309.7 s, done 2026-11-02T08:07:55Z
+  - `219:9 replace PickReservation::unavailable -> Vec<i64> with vec![-1]`, catalog 1639: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:02:44Z at load 46 (46.28 in `logs/load.log`); 313.4 s, done 2026-11-02T08:08:05Z
+  - `229:9 replace PickReservation::try_take -> bool with true`, catalog 1640: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:02:44Z at load 46 (46.28 in `logs/load.log`); 313.5 s, done 2026-11-02T08:08:07Z
+  - `229:9 replace PickReservation::try_take -> bool with false`, catalog 1641: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:02:44Z at load 46 (46.28 in `logs/load.log`); 315.2 s, done 2026-11-02T08:08:11Z
+  - `229:37 replace && with || in PickReservation::try_take`, catalog 1642: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:08:19Z at load 51 (51.12 in `logs/load.log`); 305.9 s, done 2026-11-02T08:13:27Z
+  - `229:12 delete ! in PickReservation::try_take`, catalog 1643: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:08:19Z at load 51 (51.12 in `logs/load.log`); 306.6 s, done 2026-11-02T08:13:29Z
+  - `371:20 delete ! in allocate_change_input_by`, catalog 1665: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:08:19Z at load 51 (51.12 in `logs/load.log`); 307.2 s, done 2026-11-02T08:13:31Z
+  - `483:5 replace placeholders -> String with String::new()`, catalog 1666: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:08:19Z at load 51 (51.12 in `logs/load.log`); 305.2 s, done 2026-11-02T08:13:31Z
+  - `665:34 replace == with != in Door<'_>::precheck`, catalog 1677: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:13:44Z at load 44 (44.0 in `logs/load.log`); 327.5 s, done 2026-11-02T08:19:14Z
+- `src/storage/sqlx/create_action/change.rs` (7):
+  - `341:9 replace && with || in generate_change`, catalog 1901: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:32:56Z at load 20 (19.65 in `logs/load.log`); 303.8 s, done 2026-11-02T08:39:20Z
+  - `341:23 replace > with < in generate_change`, catalog 1903: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:32:56Z at load 20 (19.65 in `logs/load.log`); 345.6 s, done 2026-11-02T08:41:13Z
+  - `457:42 replace && with || in generate_change`, catalog 1936: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:42:00Z at load 29 (28.65 in `logs/load.log`); 305.2 s, done 2026-11-02T08:47:06Z
+  - `511:38 replace && with || in generate_change`, catalog 1962: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:51:10Z at load 28 (28.08 in `logs/load.log`); 307.5 s, done 2026-11-02T08:56:18Z
+  - `511:52 replace > with >= in generate_change`, catalog 1966: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T08:51:10Z at load 28 (28.08 in `logs/load.log`); 364.7 s, done 2026-11-02T08:58:40Z
+  - `516:46 replace < with <= in generate_change`, catalog 1972: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T09:00:13Z at load 40 (39.91 in `logs/load.log`); 311.1 s, done 2026-11-02T09:05:24Z
+  - `528:24 replace -= with /= in generate_change`, catalog 1984: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T09:00:13Z at load 40 (39.91 in `logs/load.log`); 322.9 s, done 2026-11-02T09:06:55Z
+- `src/storage/sqlx/create_action/signing.rs` (1):
+  - `68:11 replace += with *= in script_pushes`, catalog 2145: box, lane `p5-mutants-complete-box-d` (the repair segment); round opened 2026-11-02T09:49:44Z at load 48 (47.76 in `logs/load.log`); 311.5 s, done 2026-11-02T09:56:34Z
 
 ## Survivors
 

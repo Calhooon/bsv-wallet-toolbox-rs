@@ -88,6 +88,7 @@ ENVIRONMENT = {
 }
 HOSTS = {"box": "the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK)",
          "studio": "the Studio (10 cores, its default toolchain and SDK)"}
+THE = {"box": "the box", "studio": "the Studio"}
 KEYS = ("caught", "missed", "timeout", "unviable")
 
 
@@ -145,7 +146,8 @@ def openings(ledger):
         near = [v for s, v in loads if abs((s - t).total_seconds()) <= 5]
         words = l.split()
         logged = float(words[words.index("load") + 1].rstrip(",")) if "load" in words else None
-        out.append({"stamp": t, "load_1m": near[0] if near else logged})
+        out.append({"stamp": t, "load_1m": near[0] if near else logged,
+                    "round_load": None if logged is None else int(logged)})
     return out
 
 
@@ -210,11 +212,15 @@ def build(ledger):
         seg = next((i for i, s in enumerate(segs) if s["start"] <= t <= s["end"]), None)
         if seg is None:
             problems.append(f"catalog index {n} finished at {iso(t)}, outside every host segment")
-        o = max((o for o in opens if o["stamp"] <= t), key=lambda o: o["stamp"])
+        # The round a run ran in is the last opened by its start (its completion less its seconds): the box
+        # lane's early driver wrote state/done at the round's end, the next round's opening stamp.
+        seconds = float(path.read_text().split()[1])
+        began = t - datetime.timedelta(seconds=seconds)
+        o = max((o for o in opens if o["stamp"] <= began), key=lambda o: o["stamp"])
         return {"n": n, "file": m["file"], "name": m["name"], "verdict": verdict,
-                "seconds": float(path.read_text().split()[1]), "finished": t, "segment": seg,
+                "seconds": seconds, "finished": t, "segment": seg,
                 "host": segs[seg]["host"] if seg is not None else None,
-                "round_opened": o["stamp"], "load_1m": o["load_1m"],
+                "round_opened": o["stamp"], "load_1m": o["load_1m"], "round_load": o["round_load"],
                 "threads": next((v for s, v in reversed(switches) if s <= o["stamp"]), None)}
 
     mutants = [place(n, m, ledger / "state/done" / str(n), verdicts.get(m["name"])) for n, m in enumerate(catalog)]
@@ -222,6 +228,10 @@ def build(ledger):
            if n in moved else mutants[n] for n, m in enumerate(catalog)]
     if None in mutants or None in art:
         raise SystemExit("\n".join(problems))
+    # A run lies inside the round it is placed in: its start (completion less its seconds) is not before
+    # the round's opening.
+    problems += [f"catalog index {m['n']} started before its round opened" for m in mutants
+                 if (m["finished"] - m["round_opened"]).total_seconds() < m["seconds"]]
     problems += [f"artifact index {m['n']} is {m['verdict']}, not Timeout" for m in art
                  if m["n"] in moved and m["verdict"] != "Timeout"]
     problems += [f"Timeout at index {m['n']} not run again" for m in art
@@ -238,6 +248,18 @@ def build(ledger):
         for m in view:
             if m["verdict"] == verdict:
                 out.setdefault(m["file"], []).append(m["name"])
+        return dict(sorted(out.items()))
+
+    def timed_out(view, segs, moved):
+        """Each timeout of the figure, by file, with its host segment and its round's opening load."""
+        out = {}
+        for m in view:
+            if m["verdict"] == "Timeout":
+                out.setdefault(m["file"], []).append({
+                    "n": m["n"], "name": m["name"], "host": m["host"], "lane": segs[m["segment"]]["lane"],
+                    "repair": m["n"] in moved, "round_opened": iso(m["round_opened"]),
+                    "round_load": m["round_load"], "load_1m": m["load_1m"], "seconds": m["seconds"],
+                    "finished": iso(m["finished"])})
         return dict(sorted(out.items()))
 
     studio = [m for m in art if m["host"] == "studio" and m["verdict"] == "Timeout"]
@@ -367,7 +389,7 @@ def build(ledger):
         "doors": doors,
         "artifact": artifact,
         "survivors": by_file(mutants, "MissedMutant"),
-        "timeouts": by_file(mutants, "Timeout"),
+        "timeouts": timed_out(mutants, segs, moved),
         "mutants": [{"n": m["n"], "verdict": m["verdict"], "host": m["host"], "threads": m["threads"] or 0,
                      "seconds": m["seconds"]} | ({"artifact_timeout": True} if m["n"] in moved else {})
                     for m in mutants],
@@ -481,8 +503,21 @@ def render_md(record):
                        f"{c['unviable']} | {cell(c['score'])} |")
     out += ["", "## Timeouts", "",
             "Each named here took longer than the 270 s test timeout under its mutation in the restored "
-            "environment (a slow test or a loop the mutation made); counted as not caught.", ""]
-    out += named(record["timeouts"])
+            "environment; counted as not caught. Each carries its host segment, the round it ran in (its "
+            "opening by `logs/rounds.log`) and the one-minute load at that opening (the `round start` line's "
+            "figure, with `logs/load.log`'s uptime beside it), its run time (`state/done/N`) and its completion "
+            "(that file's mtime). A timeout from the repair segment says so.", ""]
+    rows = [t for ts in record["timeouts"].values() for t in ts]
+    out += [f"Of the {len(rows)}: {sum(t['repair'] for t in rows)} from the repair segment, every one on "
+            + " and ".join(sorted({THE[t["host"]] for t in rows})) + "; the round loads run from "
+            f"{min(t['round_load'] for t in rows)} to {max(t['round_load'] for t in rows)}.", ""] if rows else []
+    for f, rows in record["timeouts"].items():
+        out.append(f"- `{f}` ({len(rows)}):")
+        out += [f"  - `{short(t['name'])}`, catalog {t['n']}: {t['host']}, lane `{t['lane']}`"
+                f"{' (the repair segment)' if t['repair'] else ''}; round opened {t['round_opened']} at load "
+                f"{t['round_load']} ({t['load_1m']} in `logs/load.log`); {t['seconds']} s, done {t['finished']}"
+                for t in rows]
+    out += [] if record["timeouts"] else ["None."]
     out += ["", "## Survivors", "",
             "Every missed mutant, by file, as `line:column` and the mutation (the full names are in the "
             "JSON's `survivors`). A survivor is a figure here; the triage is the hardening lanes' (#534, #535, "
