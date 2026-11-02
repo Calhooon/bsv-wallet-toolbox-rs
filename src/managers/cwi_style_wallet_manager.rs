@@ -170,7 +170,8 @@ fn parent_dir(path: &Path) -> &Path {
 /// directory has none). A writer in the key directory can already replace the key
 /// file, so this never follows a link nor writes through a shared inode: zeroing
 /// (synced; best effort on copy-on-write) is a courtesy for the manager's own
-/// sibling of one link, done only when the open reached it; a link is unlinked.
+/// sibling of one link, done only when the open reached it; a link is unlinked,
+/// as is a sibling the process cannot open (another uid's leftover), unzeroed.
 async fn remove_stale_siblings(path: &Path) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let prefix = tmp_prefix(path)?;
@@ -189,17 +190,16 @@ async fn remove_stale_siblings(path: &Path) -> Result<()> {
         let sole = std::os::unix::fs::MetadataExt::nlink(&meta) == 1;
         #[cfg(not(unix))] // std gives no link count: removed, never zeroed
         let sole = false;
+        let mut open = tokio::fs::OpenOptions::new();
         if meta.is_file() && sole {
-            let mut file = tokio::fs::OpenOptions::new()
-                .write(true)
-                .open(item.path())
-                .await?;
-            if !same_file(&meta, &file.metadata().await?) {
-                continue;
+            if let Ok(mut file) = open.write(true).open(item.path()).await {
+                if !same_file(&meta, &file.metadata().await?) {
+                    continue;
+                }
+                let len = usize::try_from(meta.len()).unwrap_or(0);
+                file.write_all(&vec![0u8; len]).await?;
+                file.sync_all().await?;
             }
-            let len = usize::try_from(meta.len()).unwrap_or(0);
-            file.write_all(&vec![0u8; len]).await?;
-            file.sync_all().await?;
         } else if !meta.is_file() && !meta.file_type().is_symlink() {
             continue;
         }
