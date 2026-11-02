@@ -147,14 +147,21 @@ pub(super) mod base64_bytes {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer, B: AsRef<[u8]>>(
+        bytes: &B,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&STANDARD.encode(bytes))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    /// Into a `Vec<u8>`, or straight into a `Zeroizing<Vec<u8>>` for key material.
+    pub fn deserialize<'de, D: Deserializer<'de>, B: From<Vec<u8>>>(
+        deserializer: D,
+    ) -> Result<B, D::Error> {
         let s = String::deserialize(deserializer)?;
         STANDARD
             .decode(&s)
+            .map(B::from)
             .map_err(|e| serde::de::Error::custom(e.to_string()))
     }
 }
@@ -686,7 +693,8 @@ impl CWIStyleWalletManager {
     pub async fn save_snapshot(&self) -> Result<Vec<u8>> {
         let entries = self.entries.read().await;
         let default_id = self.default_profile_id.read().await;
-        encode_key_file(&entries, default_id.as_deref())
+        let mut bytes = encode_key_file(&entries, default_id.as_deref())?;
+        Ok(std::mem::take(&mut *bytes))
     }
 
     /// Loads a key file's bytes, v3 or v1, replacing the profiles.
@@ -705,7 +713,7 @@ impl CWIStyleWalletManager {
     /// An I/O error other than not-found, or a file neither version reads.
     pub async fn open_key_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref().to_path_buf();
-        match tokio::fs::read(&path).await {
+        match tokio::fs::read(&path).await.map(Zeroizing::new) {
             Ok(data) => self.load_snapshot(&data).await?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),

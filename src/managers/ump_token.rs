@@ -7,11 +7,11 @@
 //! `docs/design/ump-token-format.md`.
 
 use bsv_rs::primitives::{sha256, PrivateKey, SymmetricKey, Writer};
-use bsv_rs::wallet::{DecryptArgs, EncryptArgs, ProtoWallet, Protocol, SecurityLevel};
+use bsv_rs::wallet::{Counterparty, KeyDeriver, Protocol, SecurityLevel};
 use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use super::cwi_style_wallet_manager::Profile;
 use crate::error::{Error, Result};
@@ -429,8 +429,8 @@ impl WalletSnapshot {
 }
 
 /// A profile as the reference stores it inside `profilesEncrypted` (`Profile`,
-/// :361-386): byte arrays as JSON arrays, `createdAt` in seconds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// :361-386): byte arrays as JSON arrays, `createdAt` in seconds; pads zeroed.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RefProfile {
     pub(crate) name: String,
@@ -439,6 +439,15 @@ pub(crate) struct RefProfile {
     pub(crate) privileged_pad: Vec<u8>,
     pub(crate) created_at: i64,
 }
+
+impl Drop for RefProfile {
+    fn drop(&mut self) {
+        self.primary_pad.zeroize();
+        self.privileged_pad.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for RefProfile {}
 
 /// The five keys a token is built from; each is zeroed on drop.
 pub(crate) struct Factors {
@@ -465,26 +474,19 @@ fn open(key: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     Ok(Zeroizing::new(plain))
 }
 
-fn wrapper(root_privileged: &[u8]) -> Result<ProtoWallet> {
-    Ok(ProtoWallet::new(Some(PrivateKey::from_bytes(
-        root_privileged,
-    )?)))
-}
-
-fn wrap_protocol() -> Protocol {
-    Protocol::new(SecurityLevel::Counterparty, WRAP_PROTOCOL)
+/// The BRC-42 key `ProtoWallet::encrypt` derives under `[2, 'admin key
+/// wrapping']`, key `1`, counterparty self, taken here so the plaintext is
+/// borrowed, never copied into an `EncryptArgs` that drops it unzeroed.
+fn wrapping_key(root_privileged: &[u8]) -> Result<SymmetricKey> {
+    let deriver = KeyDeriver::new(Some(PrivateKey::from_bytes(root_privileged)?));
+    let protocol = Protocol::new(SecurityLevel::Counterparty, WRAP_PROTOCOL);
+    Ok(deriver.derive_symmetric_key(&protocol, WRAP_KEY_ID, &Counterparty::Self_)?)
 }
 
 /// `PrivilegedKeyManager.encrypt` under `[2, 'admin key wrapping']`, key `1`,
 /// counterparty self (:1856-1858).
 fn wrap(root_privileged: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
-    let args = EncryptArgs {
-        plaintext: plaintext.to_vec(),
-        protocol_id: wrap_protocol(),
-        key_id: WRAP_KEY_ID.into(),
-        ..Default::default()
-    };
-    Ok(wrapper(root_privileged)?.encrypt(args)?.ciphertext)
+    Ok(wrapping_key(root_privileged)?.encrypt(plaintext)?)
 }
 
 /// The reference's `getFactor` (:2456-2510): a wrapped copy opened with the
@@ -493,14 +495,8 @@ pub(crate) fn unwrap_factor(
     root_privileged: &[u8],
     ciphertext: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>> {
-    let args = DecryptArgs {
-        ciphertext: ciphertext.to_vec(),
-        protocol_id: wrap_protocol(),
-        key_id: WRAP_KEY_ID.into(),
-        ..Default::default()
-    };
     Ok(Zeroizing::new(
-        wrapper(root_privileged)?.decrypt(args)?.plaintext,
+        wrapping_key(root_privileged)?.decrypt(ciphertext)?,
     ))
 }
 
@@ -647,11 +643,12 @@ pub(crate) struct EntryRecord {
     pub(crate) ump: Option<UmpRecord>,
 }
 
+/// The token's record; the presentation key is zeroed on drop.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UmpRecord {
     #[serde(with = "super::cwi_style_wallet_manager::base64_bytes")]
-    pub(crate) presentation_key: Vec<u8>,
+    pub(crate) presentation_key: Zeroizing<Vec<u8>>,
     /// The reference's `serializeUMPToken` bytes.
     #[serde(with = "super::cwi_style_wallet_manager::base64_bytes")]
     pub(crate) token: Vec<u8>,
@@ -662,7 +659,7 @@ impl Entry {
         EntryRecord {
             profile: self.profile.clone(),
             ump: self.ump.as_ref().map(|u| UmpRecord {
-                presentation_key: u.presentation_key.to_vec(),
+                presentation_key: u.presentation_key.clone(),
                 token: u.token.to_bytes(),
             }),
         }
@@ -671,7 +668,7 @@ impl Entry {
     pub(crate) fn from_record(record: EntryRecord) -> Result<Self> {
         let ump = match record.ump {
             Some(u) => Some(UmpEntry {
-                presentation_key: Zeroizing::new(u.presentation_key),
+                presentation_key: u.presentation_key,
                 token: UmpToken::from_bytes(&u.token)?,
             }),
             None => None,
@@ -705,7 +702,13 @@ fn b64() -> base64::engine::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
-pub(crate) fn encode_key_file(entries: &Entries, default_id: Option<&[u8]>) -> Result<Vec<u8>> {
+/// The key file's bytes, zeroed on drop. The buffer is sized ahead (8 KiB a
+/// profile; a token's record is under 3 KiB) so serde does not grow it and
+/// leave a freed copy behind.
+pub(crate) fn encode_key_file(
+    entries: &Entries,
+    default_id: Option<&[u8]>,
+) -> Result<Zeroizing<Vec<u8>>> {
     use base64::Engine;
     let mut profiles: Vec<&Entry> = entries.values().collect();
     profiles.sort_by(|a, b| a.profile.id.cmp(&b.profile.id));
@@ -714,7 +717,9 @@ pub(crate) fn encode_key_file(entries: &Entries, default_id: Option<&[u8]>) -> R
         default_profile_id: default_id.map(|id| b64().encode(id)),
         profiles: profiles.into_iter().map(Entry::to_record).collect(),
     };
-    Ok(serde_json::to_vec_pretty(&file)?)
+    let mut out = Zeroizing::new(Vec::with_capacity(1024 + 8192 * file.profiles.len()));
+    serde_json::to_writer_pretty(&mut *out, &file)?;
+    Ok(out)
 }
 
 /// Reads a v3 key file, else a v1 one.
@@ -746,6 +751,7 @@ pub(crate) fn decode_key_file(data: &[u8]) -> Result<(Entries, Option<Vec<u8>>)>
     }
     let decrypted = SymmetricKey::from_bytes(&data[0..32])
         .and_then(|key| key.decrypt(&data[32..]))
+        .map(Zeroizing::new)
         .map_err(|e| Error::InvalidOperation(format!("Decryption failed: {e:?}")))?;
     let legacy: LegacySnapshot = serde_json::from_slice(&decrypted)?;
     let entries = legacy
