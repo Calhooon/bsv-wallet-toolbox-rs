@@ -28,6 +28,38 @@
   permissions manager is unchanged; no public type moves. Host note: a
   host whose verify ran under no grant now sees the prompt, or the
   manager's `Unauthorized` refusal when the prompt is refused.
+### Changed
+
+- #560, bsv-wallet-cli#386 (the owner's word of 2026-11-02 13:2xZ): the
+  `CWIStyleWalletManager` key file is the reference's UMP token format.
+  Old: the toolbox's own layout (`save_snapshot`: a 32-byte key and the
+  profiles' JSON under it), each profile's key `primary_pad XOR
+  PBKDF2-SHA512(password, salt = the 16-byte profile id)`; `UmpToken {
+  version: 1, key_encrypted, profiles_encrypted }` and `WalletSnapshot`
+  were unused shapes. New: version 3, one reference UMP token per profile
+  (`CWIStyleWalletManager.ts:415-498` at ts-stack edf6e03, its binary
+  `serializeUMPToken` layout) with a random 32-byte `passwordSalt` from
+  the OS, `passwordKdf` metadata (`pbkdf2-sha512` at the configured
+  rounds, 7777 by default; a reference token with no metadata opens at
+  7777), `umpVersion` 3, and the reference's password, presentation and
+  recovery blobs and encrypted profiles; the profile's wallet key is
+  unchanged. A v1 file still opens; at its next successful unlock the
+  profile is re-sealed with a fresh salt and, with a key file open
+  (`open_key_file`), the file is re-written (a sibling, then a rename);
+  a failed unlock writes nothing. A wrong password on a v3 profile is now
+  `Error::AccessDenied` (v1 built another wallet). The public shapes that
+  move: `UmpToken` (the reference's fields, `to_bytes`/`from_bytes`, no
+  `new`), `WalletSnapshot` (the reference's layout, a 16-byte
+  `active_profile_id`), the new `PasswordKdf` and `KdfAlgorithm`, and
+  `open_key_file`, `save_key_file`, `recovery_key`; exports carry the
+  token. argon2id parses and is refused at derivation until it has a
+  dependency (stage two). Design: `docs/design/ump-token-format.md`.
+  Host note: the file's version moves at that unlock (or the next save),
+  and an older toolbox cannot read it after; a host that may roll back
+  keeps a copy of its v1 file. v1 has no password check, so a mistyped
+  password at the migrating unlock re-keys that profile to another root
+  (design 4.3).
+
 ### Added
 
 - #556 (the owner's word of 2026-11-01 14:1xZ, the keeper's reading 22.9

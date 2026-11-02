@@ -29,7 +29,8 @@ This module provides manager components that sit above the core storage, service
 |------|-------|---------|
 | `mod.rs` | 317 | Module declarations, re-exports, `WalletLogger`, `SetupWalletOptions`, `setup_wallet()` |
 | `storage_manager.rs` | 1392 | Multi-storage orchestration with active/backup semantics, lock queues, MonitorStorage impl with task locking, sync-safe cached settings/services |
-| `cwi_style_wallet_manager.rs` | 765 | CWI-compatible multi-profile manager with PBKDF2 password derivation, UMP tokens, snapshots, JSON import/export |
+| `cwi_style_wallet_manager.rs` | 746 | CWI-compatible multi-profile manager: the v3 key file, the v1 read and migration, JSON import/export (tests in `cwi_style_wallet_manager_tests.rs`) |
+| `ump_token.rs` | 776 | The reference's UMP token and snapshot layouts, the KDF, the key-file records (tests in `ump_token_tests.rs`) |
 | `permissions_manager.rs` | 1978 | BRC-98/99 permission enforcement with DPACP/DBAP/DCAP/DSAP, in-memory cache (5-min TTL), permission request handler |
 | `settings_manager.rs` | 354 | Persistent wallet settings with mainnet/testnet defaults and string serialization |
 | `simple_wallet_manager.rs` | 336 | Two-factor authentication manager (primary key + privileged key) |
@@ -50,10 +51,8 @@ pub use storage_manager::{ManagedStorage, WalletStorageManager};
 
 ```rust
 pub use simple_wallet_manager::SimpleWalletManager;
-pub use cwi_style_wallet_manager::{
-    CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile,
-    UmpToken, WalletSnapshot,
-};
+pub use cwi_style_wallet_manager::{CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile};
+pub use ump_token::{KdfAlgorithm, PasswordKdf, UmpToken, WalletSnapshot};
 pub use auth_manager::WalletAuthenticationManager;
 ```
 
@@ -61,8 +60,9 @@ pub use auth_manager::WalletAuthenticationManager;
 - `CWIStyleWalletManager` - Multi-profile wallet with PBKDF2 password-based key derivation
 - `WalletAuthenticationManager` - WAB integration wrapper over `CWIStyleWalletManager`
 - `Profile` - Profile data with name, ID, primary pad, privileged pad, and timestamps
-- `UmpToken` - Universal Message Protocol token for cross-device wallet transfer
-- `WalletSnapshot` - Encrypted wallet state for persistence and recovery (version 2)
+- `UmpToken` - the reference's User Management Protocol token, binary layout (#560)
+- `PasswordKdf` / `KdfAlgorithm` - the token's `passwordKdf` metadata
+- `WalletSnapshot` - the reference's state snapshot layout (version 2)
 
 ### Settings Management
 
@@ -215,11 +215,13 @@ Snapshot format: `[32-byte key][encrypted payload]` where payload is `[1-byte ve
 
 ### PBKDF2 Key Derivation
 
-Uses `ring::pbkdf2` with SHA-512 and configurable rounds (default: 7777). Derived key material is wrapped in `zeroize::Zeroizing<Vec<u8>>` to ensure automatic zeroing on drop, preventing sensitive key material from lingering in memory:
+Uses `ring::pbkdf2` with SHA-512 (default 7777 rounds, the reference's `PBKDF2_NUM_ROUNDS`). Derived key material is wrapped in `zeroize::Zeroizing<Vec<u8>>` to ensure automatic zeroing on drop, preventing sensitive key material from lingering in memory:
 ```rust
-// Password -> derived_key (32 bytes, Zeroizing<Vec<u8>>)
-// primary_key = primary_pad XOR derived_key
-// Salt = profile.id (16 bytes)
+// v3 (#560): password_key = PBKDF2(password, token.password_salt, token.password_kdf.iterations)
+// Salt = the token's passwordSalt (32 bytes from rng::os_fill), never the profile id
+// root_primary = open(token.password_presentation_primary, presentation_key XOR password_key)
+// profile key  = root_primary XOR primary_pad (the pad read from the token's profilesEncrypted)
+// v1 (read only, migrated at its next unlock): primary_key = primary_pad XOR PBKDF2(password, salt = profile.id)
 ```
 
 ### Profile Management
@@ -256,19 +258,32 @@ Profile {
 
 The `privileged_pad` field uses `serde(default)` for backward compatibility with older profiles that lack it.
 
-### UMP Token & Wallet Snapshot
+### UMP Token & Wallet Snapshot (`ump_token.rs`)
 
 ```rust
-UmpToken { version: u32, key_encrypted, profiles_encrypted }  // Cross-device transfer
-WalletSnapshot { version: u8, snapshot_key, active_profile_id, encrypted_payload }  // V2 persistence
+UmpToken { password_salt, password_presentation_primary, password_recovery_primary,
+           presentation_recovery_primary, password_primary_privileged,
+           presentation_recovery_privileged, presentation_hash, recovery_hash,
+           presentation_key_encrypted, password_key_encrypted, recovery_key_encrypted,
+           profiles_encrypted, ump_version, password_kdf, current_outpoint }
+UmpToken::to_bytes() / from_bytes()   // the reference's serializeUMPToken layout (v1-v3 read)
+PasswordKdf { algorithm: KdfAlgorithm, iterations, memory_kib, parallelism, hash_length }
+WalletSnapshot { version, snapshot_key, active_profile_id (16 bytes), encrypted_payload }  // the reference's saveSnapshot layout
 ```
 
-### Snapshot System
+The reference's `UMPToken` (ts-stack edf6e03 `CWIStyleWalletManager.ts:415-498`) field for field, in its binary layout; the design is `docs/design/ump-token-format.md`. Each profile of the key file is one reference token (the toolbox's profiles carry their own passwords); the presentation key is held in the file beside it, the recovery key is `recovery_key(id, password)`. The host's privileged key manager still builds the wallet; the token's root privileged key wraps its factor copies. argon2id parses and is refused at derivation (stage two, a dependency).
+
+### Key File
 
 ```rust
-save_snapshot() -> Result<Vec<u8>>   // Encrypt all profiles + default_profile_id
-load_snapshot(data) -> Result<()>    // Restore profile collection
+save_snapshot() -> Result<Vec<u8>>   // the v3 key file: {"keyFileVersion":3, "defaultProfileId", "profiles":[{...profile, "ump":{presentationKey, token}}]}
+load_snapshot(data) -> Result<()>    // v3, or v1 (32-byte key | GCM(JSON {profiles, default_profile_id}))
+open_key_file(path) -> Result<()>    // read (absent = empty) and remember the path
+save_key_file() -> Result<()>        // sibling `<name>.tmp-<hex>`, sync, rename (0600 on unix)
+recovery_key(id, password) -> Result<Zeroizing<Vec<u8>>>
 ```
+
+A v1 record opens with the profile-id salt; once its wallet is built it is re-sealed as a token with a fresh salt and, with a key file open, the file is written before the wallet is installed. A failed unlock writes nothing. v1 has no password check, so a mistyped migrating unlock re-keys the record to another root (design doc 4.3). An older toolbox cannot read a v3 file. Exports (`export_profile*`, `backup_all_profiles`) carry the `ump` record beside the profile's fields.
 
 ## WalletAuthenticationManager
 
@@ -576,4 +591,4 @@ All managers use `tokio::sync::RwLock` for async-safe interior mutability. The s
 
 ### Encryption
 
-Managers use `bsv_sdk::primitives::SymmetricKey` for AES encryption of snapshots and exports. Keys are randomly generated per operation. Every random byte the managers draw (the CWI profile id that salts the password, the pads, the snapshot keys) comes from the OS CSPRNG through `crate::rng::os_fill`, never a seed (#191). The `CWIStyleWalletManager` additionally uses `zeroize::Zeroizing` for derived key material memory safety.
+Managers use `bsv_sdk::primitives::SymmetricKey` for AES encryption of snapshots and exports. Keys are randomly generated per operation. Every random byte the managers draw (the CWI token's 32-byte password salt and keys, the profile id, the pads, the snapshot keys) comes from the OS CSPRNG through `crate::rng::os_fill`, never a seed (#191). The `CWIStyleWalletManager` additionally uses `zeroize::Zeroizing` for derived key material memory safety.
