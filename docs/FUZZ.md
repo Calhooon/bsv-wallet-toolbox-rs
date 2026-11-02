@@ -16,7 +16,8 @@ The feature is on for every target in the crate, so it also chooses the path
 of any door a target reaches. It switches three places: internalize's read
 of the AtomicBEEF, create's assembly of the caller's BEEF and create's judge.
 No target but `a8_beef_bytes` reaches one today (`beef_door`'s entry points,
-`refuse_invalid_beef_bytes` and the rest, are none of them). A later target that drives the internalize or
+`refuse_invalid_beef_bytes` and the rest, are none of them). A later target that
+drives the internalize or
 create door would fuzz the `a8-beef-bytes` path alone, not the oracle the
 default build ships; such a target says which path it means, and a target for
 the oracle needs a fuzz crate built without the feature.
