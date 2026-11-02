@@ -177,9 +177,9 @@ other tests out of the run also leaves out
 load (one-minute 37) took 122 s alone and held the lib pass to 309 s, past the
 270 s timeout. The ledger, every run's `mutants.out` and log, the queue and the
 driver are under `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-mutants-floors/`.
-The host's load held the run at the files named complete in their entries when
-these floors were written; an entry whose re-measure is not complete says so, and
-its finding waits on that figure.
+The host's load held the floors lane's run at 13 of the 217 survivors; the
+re-measure lane finished the rest on the box (`docs/census/mutants-paths-widened-2026-11-02`),
+so every path entry's comment carries its widened figure and its finding rests on it.
 
 ## Filters in cargo-mutants 27.1.0
 
