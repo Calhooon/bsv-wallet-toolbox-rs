@@ -26,11 +26,11 @@ The workers, by segment and by the rounds that opened in it (`logs/rounds.log`; 
 The hosts, by segment (a mutant's host is the segment holding its completion time, the mtime of its `state/done/N`):
 
 - the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK), lane `p5-mutants-complete-box`, 2026-11-01T16:54:56Z to 2026-11-02T01:26:09Z: 1794 mutants (926 CaughtMutant, 639 MissedMutant, 229 Unviable)
-- the Studio (10 cores, its default toolchain and SDK), lane `p5-mutants-complete-studio-b`, 2026-11-02T01:41:43Z to 2026-11-02T03:56:08Z: 89 mutants (44 CaughtMutant, 37 MissedMutant, 8 Unviable)
+- the Studio (10 cores, rustc 1.95.0 by a reading after the run, its default SDK), lane `p5-mutants-complete-studio-b`, 2026-11-02T01:41:43Z to 2026-11-02T03:56:08Z: 89 mutants (44 CaughtMutant, 37 MissedMutant, 8 Unviable)
 - the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK), lane `p5-mutants-complete-box-c`, 2026-11-02T04:03:59Z to 2026-11-02T07:51:33Z: 57 mutants (32 CaughtMutant, 8 MissedMutant, 17 Unviable)
 - the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK), lane `p5-mutants-complete-box-d`, 2026-11-02T07:51:33Z to 2026-11-02T10:23:32Z: 288 mutants (167 CaughtMutant, 96 MissedMutant, 25 Timeout)
 
-Toolchain: box: rustc 1.98.1 (48a229cea 2026-09-01); the Studio's toolchain is not in the ledger.
+Toolchain: box: rustc 1.98.1 (48a229cea 2026-09-01); the Studio: rustc 1.95.0, not in the ledger: `rustc --version` read on the Studio after the run (2026-11-02), and the version the record of #571 (docs/census/mutants-oracle-2026-11-01.md) names for its run on the same host on 2026-11-01.
 
 ## Totals
 
@@ -211,7 +211,7 @@ The re-run of the 288: 167 CaughtMutant, 96 MissedMutant, 25 Timeout. A mutant t
 The artifact run's hosts, by segment:
 
 - the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK), lane `p5-mutants-complete-box`, 2026-11-01T16:54:56Z to 2026-11-02T01:26:09Z: 1838 mutants (926 CaughtMutant, 639 MissedMutant, 44 Timeout, 229 Unviable)
-- the Studio (10 cores, its default toolchain and SDK), lane `p5-mutants-complete-studio-b`, 2026-11-02T01:41:43Z to 2026-11-02T03:56:08Z: 125 mutants (44 CaughtMutant, 37 MissedMutant, 36 Timeout, 8 Unviable)
+- the Studio (10 cores, rustc 1.95.0 by a reading after the run, its default SDK), lane `p5-mutants-complete-studio-b`, 2026-11-02T01:41:43Z to 2026-11-02T03:56:08Z: 125 mutants (44 CaughtMutant, 37 MissedMutant, 36 Timeout, 8 Unviable)
 - the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK), lane `p5-mutants-complete-box-c`, 2026-11-02T04:03:59Z to 2026-11-02T07:51:33Z: 265 mutants (32 CaughtMutant, 8 MissedMutant, 208 Timeout, 17 Unviable)
 
 The three door files in the artifact run: `src/storage/sqlx/create_action/must_spend.rs` 0 caught, 0 survivors, 19 timeout; `src/storage/sqlx/create_action/own_word.rs` 0 caught, 0 survivors, 7 timeout; `src/storage/sqlx/create_action/review_beef.rs` 0 caught, 0 survivors, 13 timeout.

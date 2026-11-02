@@ -99,7 +99,11 @@ RULES = {
 # the captain's throttle line (THREADS[0]) and four after it.
 FIXED = (8, 4)
 HOSTS = {"box": "the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK)",
-         "studio": "the Studio (10 cores, its default toolchain and SDK)"}
+         "studio": "the Studio (10 cores, rustc 1.95.0 by a reading after the run, its default SDK)"}
+# The ledger did not record the Studio's toolchain; this is the host's own reading after the run.
+STUDIO_RUSTC = ("rustc 1.95.0, not in the ledger: `rustc --version` read on the Studio after the run "
+                "(2026-11-02), and the version the record of #571 (docs/census/mutants-oracle-2026-11-01.md) "
+                "names for its run on the same host on 2026-11-01")
 THE = {"box": "the box", "studio": "the Studio"}
 KEYS = ("caught", "missed", "timeout", "unviable")
 
@@ -394,7 +398,7 @@ def build(ledger):
         "test_threads": [{"from": iso(s), "RUST_TEST_THREADS": v or "default"} for s, v in switches],
         "segments": seg_rows(mutants),
         "toolchain": "box: " + head_line(subprocess.run(["rustc", "-V"], capture_output=True, text=True).stdout)
-                     + "; the Studio's toolchain is not in the ledger",
+                     + "; the Studio: " + STUDIO_RUSTC,
         "tool_version": head_line(subprocess.run(["cargo", "mutants", "--version"], capture_output=True,
                                                  text=True).stdout),
         "lockfile": "Cargo.lock (no lock is committed; resolved once by cargo fetch, copied to every worker)",
