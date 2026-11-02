@@ -1,161 +1,165 @@
 {
-  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. Floor = 80 for a file at or above 80, else the score measured by lane oracle-57-mutants-d (2026-10-24, beta fc343d6) rounded down. Door floors come from a 1/8 sample and are provisional until the nightly has run once. The doors that judge under the node's word (create_action/must_spend.rs, own_word.rs, review_beef.rs; the owner's word of 2026-11-01 14:1xZ and 14:4xZ, #535) are measured under the door oracle (.cargo/mutants-doors.toml: the lib and every integration target that enters a door function) and their floors come from that widened figure only, never the --lib one (docs/census/mutants-oracle-2026-11-01.md, base 83a5b049).",
+  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. The floors come from the complete record docs/census/mutants-complete-2026-11-02.{md,json} (base 42559923, the --lib oracle of .cargo/mutants.toml) by the owner's 23.5 (c) word and the keeper's reading of 2026-11-02 10:4xZ (#534): each the figure rounded down, never below an existing floor (a fall keeps the floor and is a finding), and 80 for a file on the paths that judge the node's word and the chain's evidence that measures below 80 (red by design, one triage issue per file). A --lib figure is a lower bound where an integration target also enters the file; each path file's comment says so and, below 80, gives its widened figure. The doors that judge under the node's word (create_action/must_spend.rs, own_word.rs, review_beef.rs; #535) run under the door oracle (.cargo/mutants-doors.toml) and keep the floors #571 wrote from that widened figure (docs/census/mutants-oracle-2026-11-01.md, base 83a5b049). The rule and the oracle note: docs/MUTANTS.md.",
   "files": {
     "src/monitor/tasks/arcade_events.rs": {
-      "floor": 47,
-      "_comment": "Measured 47.50% (19/40). Issue to file: raise src/monitor/tasks/arcade_events.rs from 47 to 80 (#57 follow-up)."
+      "floor": 52,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 52.50% (21 caught, 19 missed, 0 timeout, 1 unviable). The figure rounded down is 52 (the floor was 47)."
     },
     "src/monitor/tasks/check_for_proofs.rs": {
       "floor": 28,
-      "_comment": "Measured 28.57% (4/14). Issue to file: raise src/monitor/tasks/check_for_proofs.rs from 28 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 28.57% (4 caught, 10 missed, 0 timeout, 1 unviable). The figure rounded down is 28, the floor before."
     },
     "src/monitor/tasks/check_no_sends.rs": {
-      "floor": 0,
-      "_comment": "Measured 0.00% (0/12). Issue to file: raise src/monitor/tasks/check_no_sends.rs from 0 to 80 (#57 follow-up)."
+      "floor": 8,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 8.33% (1 caught, 11 missed, 0 timeout, 0 unviable). The figure rounded down is 8 (the floor was 0)."
     },
     "src/monitor/tasks/clock.rs": {
       "floor": 42,
-      "_comment": "Measured 42.86% (6/14). Issue to file: raise src/monitor/tasks/clock.rs from 42 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 42.86% (6 caught, 8 missed, 0 timeout, 0 unviable). The figure rounded down is 42, the floor before."
     },
     "src/monitor/tasks/compact_beef.rs": {
       "floor": 0,
-      "_comment": "Measured 0.00% (0/9). Issue to file: raise src/monitor/tasks/compact_beef.rs from 0 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 0.00% (0 caught, 9 missed, 0 timeout, 0 unviable). The figure rounded down is 0, the floor before."
     },
     "src/monitor/tasks/fail_abandoned.rs": {
       "floor": 0,
-      "_comment": "Measured 0.00% (0/6). Issue to file: raise src/monitor/tasks/fail_abandoned.rs from 0 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 0.00% (0 caught, 6 missed, 0 timeout, 0 unviable). The figure rounded down is 0, the floor before."
     },
     "src/monitor/tasks/mod.rs": {
       "floor": 80,
-      "_comment": "Measured 80.00% (4/5)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 80.00% (4 caught, 1 missed, 0 timeout, 0 unviable). The figure rounded down is 80, the floor before."
     },
     "src/monitor/tasks/monitor_call_history.rs": {
       "floor": 13,
-      "_comment": "Measured 13.16% (5/38). Issue to file: raise src/monitor/tasks/monitor_call_history.rs from 13 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 13.16% (5 caught, 33 missed, 0 timeout, 0 unviable). The figure rounded down is 13, the floor before."
     },
     "src/monitor/tasks/new_header.rs": {
-      "floor": 80,
-      "_comment": "Measured 84.21% (16/19)."
+      "floor": 84,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 84.21% (16 caught, 3 missed, 0 timeout, 2 unviable). The figure rounded down is 84 (the floor was 80). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 5, the new_header row, and section 4 step 3 (the proof gate))."
     },
     "src/monitor/tasks/purge.rs": {
       "floor": 0,
-      "_comment": "Measured 0.00% (0/10). Issue to file: raise src/monitor/tasks/purge.rs from 0 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 0.00% (0 caught, 10 missed, 0 timeout, 1 unviable). The figure rounded down is 0, the floor before."
     },
     "src/monitor/tasks/reorg.rs": {
-      "floor": 8,
-      "_comment": "Measured 8.33% (2/24). Issue to file: raise src/monitor/tasks/reorg.rs from 8 to 80 (#57 follow-up)."
+      "floor": 80,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 8.33% (2 caught, 22 missed, 0 timeout, 2 unviable). The figure rounded down is 8, the floor before. On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 5, the reorg row, and section 4 (a checked row is demoted only by the reorg and review tasks)). Raised to 80 by the owner's 23.5 (c) word: red by design until its survivors are killed or declared equivalent; its triage issue is filed at landing. Integration targets also enter it (monitor_tests, reorg_tests), so the --lib figure is a lower bound; its widened re-measure (22 --lib survivors, docs/MUTANTS.md) is not complete at this entry, so its finding waits on that figure."
     },
     "src/monitor/tasks/review_proven_txs.rs": {
-      "floor": 12,
-      "_comment": "Measured 12.00% (3/25). Issue to file: raise src/monitor/tasks/review_proven_txs.rs from 12 to 80 (#57 follow-up)."
+      "floor": 80,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 12.00% (3 caught, 22 missed, 0 timeout, 1 unviable). The figure rounded down is 12, the floor before. On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 5, the review_proven_txs row, and section 4 (a checked row is demoted only by the reorg and review tasks)). Raised to 80 by the owner's 23.5 (c) word: red by design until its survivors are killed or declared equivalent; its triage issue is filed at landing. Integration targets also enter it (monitor_tests), so the --lib figure is a lower bound; its widened re-measure (22 --lib survivors, docs/MUTANTS.md) is not complete at this entry, so its finding waits on that figure."
     },
     "src/monitor/tasks/review_status.rs": {
       "floor": 0,
-      "_comment": "Measured 0.00% (0/8). Issue to file: raise src/monitor/tasks/review_status.rs from 0 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 0.00% (0 caught, 8 missed, 0 timeout, 0 unviable). The figure rounded down is 0, the floor before."
     },
     "src/monitor/tasks/send_waiting.rs": {
       "floor": 0,
-      "_comment": "Measured 0.00% (0/9). Issue to file: raise src/monitor/tasks/send_waiting.rs from 0 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 0.00% (0 caught, 9 missed, 0 timeout, 0 unviable). The figure rounded down is 0, the floor before."
     },
     "src/monitor/tasks/sync_when_idle.rs": {
       "floor": 53,
-      "_comment": "Measured 53.85% (7/13). Issue to file: raise src/monitor/tasks/sync_when_idle.rs from 53 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 53.85% (7 caught, 6 missed, 0 timeout, 0 unviable). The figure rounded down is 53, the floor before."
     },
     "src/monitor/tasks/unfail.rs": {
       "floor": 0,
-      "_comment": "Measured 0.00% (0/6). Issue to file: raise src/monitor/tasks/unfail.rs from 0 to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 0.00% (0 caught, 6 missed, 0 timeout, 0 unviable). The figure rounded down is 0, the floor before."
     },
     "src/services/providers/arc.rs": {
-      "floor": 15,
-      "_comment": "Measured 15.93% (18/113). Issue to file: raise src/services/providers/arc.rs from 15 to 80 (#57 follow-up)."
+      "floor": 18,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 18.58% (21 caught, 92 missed, 0 timeout, 22 unviable). The figure rounded down is 18 (the floor was 15)."
     },
     "src/services/providers/arcade.rs": {
-      "floor": 36,
-      "_comment": "Measured 36.28% (41/113). Issue to file: raise src/services/providers/arcade.rs from 36 to 80 (#57 follow-up)."
+      "floor": 53,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 53.98% (61 caught, 52 missed, 0 timeout, 18 unviable). The figure rounded down is 53 (the floor was 36)."
     },
     "src/services/providers/bananablocks.rs": {
-      "floor": 80,
-      "_comment": "Measured 85.14% (63/74)."
+      "floor": 87,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 87.84% (65 caught, 9 missed, 0 timeout, 17 unviable). The figure rounded down is 87 (the floor was 80)."
     },
     "src/services/providers/bhs.rs": {
-      "floor": 50,
-      "_comment": "Measured 50.00% (6/12). Issue to file: raise src/services/providers/bhs.rs from 50 to 80 (#57 follow-up)."
+      "floor": 80,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 66.67% (8 caught, 4 missed, 0 timeout, 5 unviable). The figure rounded down is 66 (the floor was 50). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 4 step 2 (the header service's `is_valid_root_for_height`, the chain tracker's verdict)). Raised to 80 by the owner's 23.5 (c) word: red by design until its survivors are killed or declared equivalent; its triage issue is filed at landing. Integration targets also enter it (fixtures), so the --lib figure is a lower bound; under the widened oracle (the lib and those targets, features sqlite,remote,bench-support; this lane's re-measure of the 4 --lib survivors, docs/MUTANTS.md) 66.67% (8 caught, 4 missed, 0 timeout)."
     },
     "src/services/providers/bitails.rs": {
-      "floor": 57,
-      "_comment": "Measured 57.45% (27/47). Issue to file: raise src/services/providers/bitails.rs from 57 to 80 (#57 follow-up)."
+      "floor": 74,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 74.47% (35 caught, 12 missed, 0 timeout, 11 unviable). The figure rounded down is 74 (the floor was 57)."
     },
     "src/services/providers/chaintracks_client.rs": {
-      "floor": 80,
-      "_comment": "Measured 80.77% (21/26)."
+      "floor": 93,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 93.48% (43 caught, 3 missed, 0 timeout, 6 unviable). The figure rounded down is 93 (the floor was 80). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 4 step 2 (the header service's `is_valid_root_for_height`, the chain tracker's verdict))."
     },
     "src/services/providers/fallback_chain_tracker.rs": {
-      "floor": 80,
-      "_comment": "Measured 100.00% (26/26)."
+      "floor": 100,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 100.00% (27 caught, 0 missed, 0 timeout, 4 unviable). The figure rounded down is 100 (the floor was 80). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 4 step 2 (the tracker's verdict over its header services))."
+    },
+    "src/services/providers/http_client.rs": {
+      "floor": 88,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 88.89% (8 caught, 1 missed, 0 timeout, 12 unviable). No entry before (#534); the figure rounded down is 88."
     },
     "src/services/providers/mod.rs": {
       "floor": 80,
       "_comment": "No mutants generated today; 80 applies to any that appear."
     },
     "src/services/providers/pace.rs": {
-      "floor": 75,
-      "_comment": "Measured 75.86% (22/29). Issue to file: raise src/services/providers/pace.rs from 75 to 80 (#57 follow-up)."
+      "floor": 81,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 81.25% (26 caught, 1 missed, 5 timeout, 15 unviable). The figure rounded down is 81 (the floor was 75). Its 5 timeouts under the restored environment count as not caught (the record's Timeouts section, each a loop or a wait the mutation made): 103:9: replace TokenBucket::take -> std::result::Result<(), Duration> with Ok(()); 107:25: replace -= with += in TokenBucket::take; 107:25: replace -= with /= in TokenBucket::take; 173:9: replace RateGate::admit -> Result<()> with Ok(()); 177:9: replace RateGate::admit_at -> Result<()> with Ok(())."
     },
     "src/services/providers/whatsonchain.rs": {
-      "floor": 46,
-      "_comment": "Measured 46.25% (37/80). Issue to file: raise src/services/providers/whatsonchain.rs from 46 to 80 (#57 follow-up)."
+      "floor": 57,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 57.50% (46 caught, 34 missed, 0 timeout, 13 unviable). The figure rounded down is 57 (the floor was 46)."
     },
     "src/services/services.rs": {
-      "floor": 54,
-      "_comment": "Measured 54.59% (107/196). Issue to file: raise src/services/services.rs from 54 to 80 (#57 follow-up)."
+      "floor": 59,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 59.90% (118 caught, 79 missed, 0 timeout, 56 unviable). The figure rounded down is 59 (the floor was 54)."
     },
     "src/storage/sqlx/create_action/allocation.rs": {
       "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 52.83% (28 caught, 13 missed, 12 timeout, 16 unviable). The figure fell below the existing floor 64: the floor is kept, a finding. Its 12 timeouts under the restored environment count as not caught (the record's Timeouts section, each a loop or a wait the mutation made): 134:9: replace ChangePick<'a>::must_spend -> &'a[i64] with Vec::leak(vec![1]); 219:9: replace PickReservation::unavailable -> Vec<i64> with vec![]; 219:9: replace PickReservation::unavailable -> Vec<i64> with vec![0]; 219:9: replace PickReservation::unavailable -> Vec<i64> with vec![1]; 219:9: replace PickReservation::unavailable -> Vec<i64> with vec![-1]; 229:9: replace PickReservation::try_take -> bool with true; 229:9: replace PickReservation::try_take -> bool with false; 229:37: replace && with || in PickReservation::try_take; 229:12: delete ! in PickReservation::try_take; 371:20: delete ! in allocate_change_input_by; 483:5: replace placeholders -> String with String::new(); 665:34: replace == with != in Door<'_>::precheck."
     },
     "src/storage/sqlx/create_action/beef.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 84,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 84.44% (38 caught, 7 missed, 0 timeout, 1 unviable). The figure rounded down is 84 (the floor was 64). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 1, the createAction row (the BEEF assembled from stored bytes, every stored proof's root read against the tracker)). Integration targets also enter it (caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, test_vectors; #571's reach probe), so the --lib figure is a lower bound."
     },
     "src/storage/sqlx/create_action/beef_graph.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 92,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 92.59% (25 caught, 2 missed, 0 timeout, 0 unviable). The figure rounded down is 92 (the floor was 64). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 1, the createAction row (the BEEF assembled and pruned to its roots)). Integration targets also enter it (arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests; #571's reach probe), so the --lib figure is a lower bound."
     },
     "src/storage/sqlx/create_action/beef_storage.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 80,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 48.05% (37 caught, 40 missed, 0 timeout, 1 unviable). The figure fell below the existing floor 64: the floor is kept, a finding. On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 1, the createAction row (the BEEF assembled from stored bytes)). Raised to 80 by the owner's 23.5 (c) word: red by design until its survivors are killed or declared equivalent; its triage issue is filed at landing. Integration targets also enter it (arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests), so the --lib figure is a lower bound; its widened re-measure (40 --lib survivors, docs/MUTANTS.md) is not complete at this entry, so its finding waits on that figure."
     },
     "src/storage/sqlx/create_action/beef_walk.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 80,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 72.73% (16 caught, 6 missed, 0 timeout, 1 unviable). The figure rounded down is 72 (the floor was 64). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 4, the row `the BEEF walk skips a refuted stored BUMP and demotes nothing`). Raised to 80 by the owner's 23.5 (c) word: red by design until its survivors are killed or declared equivalent; its triage issue is filed at landing. Integration targets also enter it (arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests), so the --lib figure is a lower bound; under the widened oracle (the lib and those targets, features sqlite,remote,bench-support; this lane's re-measure of the 6 --lib survivors, docs/MUTANTS.md) 72.73% (16 caught, 6 missed, 0 timeout)."
     },
     "src/storage/sqlx/create_action/broadcast.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 78,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 78.57% (11 caught, 3 missed, 0 timeout, 3 unviable). The figure rounded down is 78 (the floor was 64)."
     },
     "src/storage/sqlx/create_action/change.rs": {
       "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 43.24% (48 caught, 56 missed, 7 timeout, 5 unviable). The figure fell below the existing floor 64: the floor is kept, a finding. Its 7 timeouts under the restored environment count as not caught (the record's Timeouts section, each a loop or a wait the mutation made): 341:9: replace && with || in generate_change; 341:23: replace > with < in generate_change; 457:42: replace && with || in generate_change; 511:38: replace && with || in generate_change; 511:52: replace > with >= in generate_change; 516:46: replace < with <= in generate_change; 528:24: replace -= with /= in generate_change."
     },
     "src/storage/sqlx/create_action/fees.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 100,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 100.00% (35 caught, 0 missed, 0 timeout, 0 unviable). The figure rounded down is 100 (the floor was 64)."
     },
     "src/storage/sqlx/create_action/inputs.rs": {
       "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 51.52% (17 caught, 16 missed, 0 timeout, 5 unviable). The figure fell below the existing floor 64: the floor is kept, a finding."
     },
     "src/storage/sqlx/create_action/mod.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 80,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 62.16% (23 caught, 14 missed, 0 timeout, 2 unviable). The figure fell below the existing floor 64: the floor is kept, a finding. On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 1, the createAction row (the door's pre-check: the caller's `inputBEEF` roots read against the tracker, the reviews and the own word called)). Raised to 80 by the owner's 23.5 (c) word: red by design until its survivors are killed or declared equivalent; its triage issue is filed at landing. Integration targets also enter it (caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, test_vectors), so the --lib figure is a lower bound; its widened re-measure (14 --lib survivors, docs/MUTANTS.md) is not complete at this entry, so its finding waits on that figure."
     },
     "src/storage/sqlx/create_action/must_spend.rs": {
       "floor": 80,
       "_comment": "Measured 94.74% (18/19) under the door oracle, 0.00% (0/19) under --lib (docs/census/mutants-oracle-2026-11-01.md); the survivor 131:31 is the triage lane's (#535)."
     },
     "src/storage/sqlx/create_action/outputs.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 75,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 75.00% (12 caught, 4 missed, 0 timeout, 4 unviable). The figure rounded down is 75 (the floor was 64)."
     },
     "src/storage/sqlx/create_action/own_word.rs": {
       "floor": 71,
@@ -166,24 +170,24 @@
       "_comment": "Measured 100.00% (13/13) under the door oracle, the same under --lib (docs/census/mutants-oracle-2026-11-01.md)."
     },
     "src/storage/sqlx/create_action/signing.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 81,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 81.33% (61 caught, 13 missed, 1 timeout, 1 unviable). The figure rounded down is 81 (the floor was 64). Its 1 timeouts under the restored environment count as not caught (the record's Timeouts section, each a loop or a wait the mutation made): 68:11: replace += with *= in script_pushes."
     },
     "src/storage/sqlx/create_action/tracker.rs": {
-      "floor": 64,
-      "_comment": "Provisional: carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); confirm per file from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 85,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 85.71% (24 caught, 4 missed, 0 timeout, 1 unviable). The figure rounded down is 85 (the floor was 64). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 1, the createAction row (the roots read against the tracker, `RecordingTracker`; the BEEF rebuilt from the kept answers, `CachedTracker`)). Integration targets also enter it (caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, test_vectors; #571's reach probe), so the --lib figure is a lower bound."
     },
     "src/storage/sqlx/internalize_action.rs": {
-      "floor": 50,
-      "_comment": "Measured 50.00% (6/12) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/internalize_action.rs from 50 to 80 (#57 follow-up)."
+      "floor": 80,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 73.63% (67 caught, 24 missed, 0 timeout, 7 unviable). The figure rounded down is 73 (the floor was 50). On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 1, the internalizeAction row (the bytes parsed, every input's word `verify_spends`, the subject's BUMP claim and its `proven_txs` link)). Raised to 80 by the owner's 23.5 (c) word: red by design until its survivors are killed or declared equivalent; its triage issue is filed at landing. Integration targets also enter it (fixtures, immediate_broadcast_hint_tests, internalize_custom_instructions_tests), so the --lib figure is a lower bound; its widened re-measure (24 --lib survivors, docs/MUTANTS.md) is not complete at this entry, so its finding waits on that figure."
     },
     "src/storage/sqlx/process_action.rs": {
-      "floor": 61,
-      "_comment": "Measured 61.90% (13/21) on the 1/8 sample; provisional, confirm from the nightly once it has run. Issue to file: raise src/storage/sqlx/process_action.rs from 61 to 80 (#57 follow-up)."
+      "floor": 80,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 61.71% (137 caught, 85 missed, 0 timeout, 12 unviable). The figure rounded down is 61, the floor before. On the paths that judge the node's word and the chain's evidence (docs/ARCHITECTURE.md section 1, the processAction row (the signed BEEF rebuilt and roots checked, `verify_stored_post_beef`)). Raised to 80 by the owner's 23.5 (c) word: red by design until its survivors are killed or declared equivalent; its triage issue is filed at landing. Integration targets also enter it (caller_complete_funding_tests, concurrent_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests, poisoned_chain_tests, retire_rejected_tests), so the --lib figure is a lower bound; its widened re-measure (85 --lib survivors, docs/MUTANTS.md) is not complete at this entry, so its finding waits on that figure."
     },
     "src/wallet/create_args.rs": {
-      "floor": 64,
-      "_comment": "Provisional: moved with validate_create_action_args from src/storage/sqlx/create_action/validation.rs (#416), whose floor was carried from create_action.rs's 64 (measured 64.71% on a 1/8 sample before the #61 split); the body is the old one plus the two #212 input-script checks and the duplicate pass moved after the options. Confirm from the next complete mutants run (#159). Issue to file: raise to 80 (#57 follow-up)."
+      "floor": 95,
+      "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 95.74% (45 caught, 2 missed, 0 timeout, 2 unviable). The figure rounded down is 95 (the floor was 64)."
     }
   }
 }
