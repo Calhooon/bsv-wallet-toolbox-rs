@@ -93,7 +93,7 @@
   record unchanged (#594 (ii), the keeper's reading of 2026-11-02
   19:5xZ). A failed unlock writes nothing. A
   wrong password on a token alone is `Error::AccessDenied` (v1 built
-  another wallet). An interrupted write's sibling is zeroed and removed at
+  another wallet). An interrupted write's sibling is zeroed (on unix) and removed at
   the next open; key material is zeroed on drop. The public shapes that
   move: `UmpToken` (the reference's fields, `to_bytes`/`from_bytes`, no
   `new`), `WalletSnapshot` (the reference's layout, `active_profile_id`
