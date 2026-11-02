@@ -32,13 +32,13 @@ still unmeasured. Pin endpoints describe direct dependents' toolbox requirements
 | Rust files over 800 lines (count) | measured 2026-11-01: 33 | 0; #55, #61, #62 | `files_over_800` |
 | Largest Rust file (lines) | measured 2026-11-01: 7128 | <= 800; #55, #61, #62 | `max_file_lines` |
 | Unwrap/expect outside tests (count) | measured 2026-11-01: 61 | 0; #55, #56 | `unwraps_outside_tests` |
-| Door and ladders mutation score (%) | measured 2026-11-01: 60.24 | >= 80; #57 | `mutation_score_pct` |
+| Door and ladders mutation score (%) | measured 2026-11-01: 50.76 | >= 80; #57 | `mutation_score_pct` |
 | Fuzz hours, twelve targets, last census (h) | measured 2026-11-01: 2.01 | No crash, corpus grows; #58 | `fuzz_hours` |
 | Undocumented public items (count) | measured 2026-11-01: 308 | 0; #55 | `undocumented_public_items` |
 | Direct dependents, oldest toolbox pin | measured 2026-10-23: 0.3.38 | Current minor or dated plan; #59 | `dependent_pin_min` |
 | Direct dependents, newest toolbox pin | measured 2026-10-23: 0.12.1 | Current minor or dated plan; #59 | `dependent_pin_max` |
 
-<!-- scoreboard:sha256 141beaf8c6f0db257f031752ab0fb2eb0084384d826e82bd08e9c261e1481469 -->
+<!-- scoreboard:sha256 a45e7e9ab43736af73e8dffea79a8e3c75929b0c89e539d107af1b7fbed55397 -->
 <!-- scoreboard:end -->
 
 ### Feeding the table
