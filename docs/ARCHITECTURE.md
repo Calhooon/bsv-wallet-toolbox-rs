@@ -315,14 +315,21 @@ in `ump-token-rust.result.json`.
 | invariant | charter | test |
 |-----------|---------|------|
 | a new profile's token carries a 32-byte OS-drawn `passwordSalt` distinct from the profile id, `umpVersion` 3 and `pbkdf2-sha512` at 7777; a wrong password is `AccessDenied` | `ts-stack@edf6e03 CWIStyleWalletManager.ts:1832-1876`; toolbox #560, #191 | `a_new_profile_carries_a_random_32_byte_salt_and_ump_version_3` |
-| a v1 file (salted with the profile id) opens with its key unchanged; its unlock re-writes it as v3 (sibling, then rename) with a fresh salt, and the key still decrypts from the token | toolbox #560 | `a_v1_file_opens_and_its_unlock_rewrites_it_as_v3_with_a_fresh_salt` |
-| a failed unlock (no privileged key manager on v1, a wrong password on v3) leaves the file byte-identical | toolbox #560 | `a_failed_unlock_leaves_the_file_byte_identical` |
-| the token is the reference's binary layout, its v3 form re-serializing byte for byte | `ts-stack@edf6e03 CWIStyleWalletManager.ts:2648-2716`; toolbox #560 | `a_v3_token_round_trips_in_the_reference_layout` |
-| the reader refuses what the reference's refuses: version, zero-length field, non-minimal varint, malformed outpoint, unsafe KDF params | `ts-stack@edf6e03 CWIStyleWalletManager.ts:103-122,2721-2817`; toolbox #560 | `the_reference_bounds_refuse_what_its_reader_refuses` |
+| a v1 file (salted with the profile id) opens with its key unchanged; its unlock writes a token beside the kept v1 record (sibling, then rename); a later unlock the token opens drops v1, the file the token alone at a 32-byte salt | toolbox #560, #594 (a) | `a_v1_file_gains_a_token_and_a_later_unlock_that_opens_it_drops_v1` |
+| a wrong password at the migrating unlock keeps the v1 record; the right one opens through v1 and re-seals the token around the right root; the next right unlock drops v1 | toolbox #594 (a) | `a_wrong_password_at_the_migrating_unlock_keeps_v1_and_the_right_one_still_opens` |
+| a wrong password at the second unlock leaves the file byte-identical and the right one still opens the token | toolbox #594 (a) | `a_wrong_second_unlock_changes_nothing` |
+| a migrated file derives at its new salt alone: PBKDF2 at the profile id opens no blob and the clear pad yields no key; the new salt opens the token to the v1 primary key | toolbox #560 | `a_migrated_file_derives_at_its_new_salt_alone` |
+| a failed unlock (no privileged key manager at either migration step, a wrong password on a token alone) leaves the file byte-identical | toolbox #560 | `a_failed_unlock_leaves_the_file_byte_identical` |
+| a profile deleted or replaced while its unlock ran refuses the commit and writes nothing | toolbox #560 | `a_profile_replaced_or_deleted_during_its_unlock_refuses_the_commit` |
+| an interrupted write's `<name>.tmp-<16 hex>` sibling is zeroed and removed at the next open | toolbox #560 | `opening_a_key_file_removes_a_stale_write_sibling` |
+| one changed byte of a v3 token's salt refuses the right password | toolbox #560 | `one_changed_byte_of_a_v3_salt_refuses_the_password` |
+| the records' key material is zeroed on drop | toolbox #560 | `the_records_key_material_is_zeroed_on_drop` |
+| the token is the reference's binary layout, its v3 form re-serializing byte for byte; a token not on chain carries the null-txid placeholder outpoint, and the pbkdf2 params JSON is the reference's four keys | `ts-stack@edf6e03 CWIStyleWalletManager.ts:2648-2716`; toolbox #560 | `a_v3_token_round_trips_in_the_reference_layout` |
+| the reader refuses what the reference's refuses: version, zero-length field, non-minimal varint, malformed or empty outpoint, unsafe KDF params | `ts-stack@edf6e03 CWIStyleWalletManager.ts:103-122,2721-2817`; toolbox #560 | `the_reference_bounds_refuse_what_its_reader_refuses` |
 | a reference-written v3 token opens to its recorded root primary and privileged keys, recovery key and profile key | `ts-stack@edf6e03 CWIStyleWalletManager.ts:303-358,1805-1830`; toolbox #560 | `the_reference_written_v3_token_opens_to_its_recorded_root_keys` |
 | a reference legacy token (no KDF metadata) opens at 7777 rounds and not at another count | `ts-stack@edf6e03 CWIStyleWalletManager.ts:83,319-328`; toolbox #560 | `the_reference_legacy_token_opens_at_7777_rounds` |
 | a reference-written token opens through `switch_profile`, the pad read from the token | `ts-stack@edf6e03 CWIStyleWalletManager.ts:2267-2316`; toolbox #560 | `a_reference_written_token_opens_through_switch_profile` |
-| the Rust-written vector the reference opened under Node still opens in Rust | toolbox #560; `test_vectors/keys/ump-token-rust.result.json` | `the_rust_written_vector_still_opens_in_rust` |
+| the Rust-written vector the reference opened under Node, with no locator set, still opens in Rust | toolbox #560; `test_vectors/keys/ump-token-rust.result.json` | `the_rust_written_vector_still_opens_in_rust` |
 | an argon2id token parses and is refused at derivation until stage two | `ts-stack@edf6e03 CWIStyleWalletManager.ts:330-350`; toolbox #560 | `argon2id_parses_and_is_refused_at_derivation_until_stage_two` |
 
 ## 2. The writer and the pool
