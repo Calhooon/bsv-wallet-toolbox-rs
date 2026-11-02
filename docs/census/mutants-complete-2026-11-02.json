@@ -3,7 +3,7 @@
   "scoreboard": ["mutation_score_pct"],
   "complete": true,
   "problems": [],
-  "standing": ["The base is 42559923ef206442c9dd0e680fd0d3bcaa15dc35.", "The artifact cannot recur on beta past #563 (merged as 6afdfe47; its d4f86b7c removed the dump from describe_invalid_beef), and the repair's driver gives each worker its own TMPDIR.", "The figure 59.22 is the base's complete figure under the stated method: every catalogued mutant has one verdict, every timeout of the artifact run was run again under the restored environment, and a slow folder can only turn a verdict into a timeout, so the caught and missed verdicts of the rounds the pile reached stand."],
+  "standing": ["The base is 42559923ef206442c9dd0e680fd0d3bcaa15dc35.", "The artifact cannot recur on beta past #563 (merged as 6afdfe47; its d4f86b7c removed the dump from describe_invalid_beef), and the repair's driver gives each worker its own TMPDIR.", "The figure 59.22 is the base's complete figure under the stated method: every catalogued mutant has one verdict, every timeout of the artifact run was run again under the restored environment, and a slow folder can only turn a verdict into a timeout, so the caught and missed verdicts of the rounds the pile reached stand.", "The scoreboard cell `mutation_score_pct` in docs/NORTH-STAR.md reads measured 2026-11-01: tools/scoreboard-write stamps every cell with tools/ratchet.json's one top-level measured_at, not the mutation_score section's 2026-11-02; a limit of scoreboard-write, filed as #587."],
   "run": {
     "base": "42559923ef206442c9dd0e680fd0d3bcaa15dc35",
     "catalog": "cargo mutants --list --json > catalog.json, in a copy of the base (git archive 42559923); the set of .cargo/mutants.toml: 2228 mutants over 46 files",
@@ -91,6 +91,9 @@
     {"cell": "mutants.file.src/storage/sqlx/internalize_action.rs.score", "value": 73.63, "unit": "percent", "file": "src/storage/sqlx/internalize_action.rs", "mutants": 98, "caught": 67, "missed": 24, "timeout": 0, "unviable": 7, "score": 73.63, "floor": 50, "verdict": "at or above floor", "hosts": {"box": 98}, "score_timeouts_left_out": 73.63, "score_timeouts_caught": 73.63, "verdict_rests_on_timeouts": false},
     {"cell": "mutants.file.src/storage/sqlx/process_action.rs.score", "value": 61.71, "unit": "percent", "file": "src/storage/sqlx/process_action.rs", "mutants": 234, "caught": 137, "missed": 85, "timeout": 0, "unviable": 12, "score": 61.71, "floor": 61, "verdict": "at or above floor", "hosts": {"box": 234}, "score_timeouts_left_out": 61.71, "score_timeouts_caught": 61.71, "verdict_rests_on_timeouts": false},
     {"cell": "mutants.file.src/wallet/create_args.rs.score", "value": 95.74, "unit": "percent", "file": "src/wallet/create_args.rs", "mutants": 49, "caught": 45, "missed": 2, "timeout": 0, "unviable": 2, "score": 95.74, "floor": 64, "verdict": "at or above floor", "hosts": {"box": 49}, "score_timeouts_left_out": 95.74, "score_timeouts_caught": 95.74, "verdict_rests_on_timeouts": false}
+  ],
+  "floor_entries_without_mutants": [
+    {"file": "src/services/providers/mod.rs", "floor": 80}
   ],
   "doors": [
     {"file": "src/storage/sqlx/create_action/must_spend.rs", "this_lib": {"caught": 0, "missed": 19, "timeout": 0, "unviable": 3, "score": 0.0}, "artifact_lib": {"caught": 0, "missed": 0, "timeout": 19, "unviable": 3, "score": 0.0}, "oracle_571_lib": {"caught": 0, "missed": 19, "timeout": 0, "unviable": 3, "score": 0.0}, "oracle_571_wide": {"caught": 18, "missed": 1, "timeout": 0, "unviable": 3, "score": 94.74}},

@@ -433,6 +433,7 @@ def build(ledger):
         "timeouts": by_file(art, "Timeout"),
     }
     overall = pct(totals)
+    stamped = json.loads((ROOT / "tools/ratchet.json").read_text())["measured_at"]
     record = {
         "producer": "tools/mutants-complete-record.py over the run's ledger (lanes p5-mutants-complete-box, "
                     "p5-mutants-complete-studio-b, p5-mutants-complete-box-c, p5-mutants-complete-box-d)",
@@ -447,12 +448,17 @@ def build(ledger):
             "mutant has one verdict, every timeout of the artifact run was run again under the restored "
             "environment, and a slow folder can only turn a verdict into a timeout, so the caught and missed "
             "verdicts of the rounds the pile reached stand.",
+            f"The scoreboard cell `mutation_score_pct` in docs/NORTH-STAR.md reads measured {stamped}: "
+            "tools/scoreboard-write stamps every cell with tools/ratchet.json's one top-level measured_at, "
+            f"not the mutation_score section's {DAY}; a limit of scoreboard-write, filed as #587.",
         ],
         "run": run,
         "cells": [dict(cell="mutation_score_pct", value=overall, unit="percent",
                        scope="the Mutants workflow's set, every catalogued mutant", **head)]
                  + [dict(cell=f"mutants.file.{r['file']}.score", value=r["score"], unit="percent", **r)
                     for r in files],
+        "floor_entries_without_mutants": [{"file": f, "floor": floors[f].get("floor")}
+                                          for f in sorted(set(floors) - set(expected.values()))],
         "doors": doors,
         "artifact": artifact,
         "survivors": by_file(mutants, "MissedMutant"),
@@ -572,6 +578,10 @@ def render_md(record):
                         "its verdict rests on those timeouts alone." for r in rests)
                if rests else "No file's verdict rests on its timeouts.")
             + " Every other file's verdict stands with its timeouts counted either way."]
+    unlisted = record["floor_entries_without_mutants"]
+    out += ["", "Floor entries with no catalogued mutant (no row above: the catalog of this base holds none in "
+            "them): " + (", ".join(f"`{e['file']}` (floor {e['floor']})" for e in unlisted) if unlisted
+                         else "none") + "."]
     out += ["", "## The door files beside #571", "",
             "The three door files under this run's `--lib` oracle (base `42559923`), beside "
             f"[{Path(ORACLE).name}]({Path(ORACLE).name}) (#571, base `83a5b049`): its `--lib` run and its widened "
@@ -658,7 +668,9 @@ def render_md(record):
             + ", ".join(f"{s['from']} ({s['RUST_TEST_THREADS']})" for s in run["test_threads"])
             + ". Verdicts at the default: " + counted(tb["default"]) + "; under 2 threads: " + counted(tb["2"])
             + ". Verdicts by the dumps and the threads: "
-            + "; ".join(f"{k}: " + ", ".join(f"{n} {v}" for v, n in c.items())
+            + "; ".join(f"{k}: " + (", ".join(f"{n} {v}" for v, n in c.items()) or
+                                    f"none (the dumps began {iso(DUMPS_FROM)}, before the switch to 2 threads "
+                                    f"at {run['test_threads'][0]['from']})")
                         for k, c in art["by_tmpdir_and_threads"].items()) + ".", "",
             "Files below their floor by the 2-thread timeouts alone (at or above it with them left out): "
             + (", ".join(f"`{r['file']}`" for r in art["files"] if r["below_by_threads_2_timeouts"]) or "none")

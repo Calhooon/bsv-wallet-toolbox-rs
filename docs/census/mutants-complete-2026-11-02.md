@@ -9,6 +9,7 @@ The figure is the repaired one, 59.22%: the run before the repair scored 50.76%,
 - The base is 42559923ef206442c9dd0e680fd0d3bcaa15dc35.
 - The artifact cannot recur on beta past #563 (merged as 6afdfe47; its d4f86b7c removed the dump from describe_invalid_beef), and the repair's driver gives each worker its own TMPDIR.
 - The figure 59.22 is the base's complete figure under the stated method: every catalogued mutant has one verdict, every timeout of the artifact run was run again under the restored environment, and a slow folder can only turn a verdict into a timeout, so the caught and missed verdicts of the rounds the pile reached stand.
+- The scoreboard cell `mutation_score_pct` in docs/NORTH-STAR.md reads measured 2026-11-01: tools/scoreboard-write stamps every cell with tools/ratchet.json's one top-level measured_at, not the mutation_score section's 2026-11-02; a limit of scoreboard-write, filed as #587.
 
 ## Method
 
@@ -92,6 +93,8 @@ Files below their floor: 5. Files with no floor entry: 4.
 | `src/wallet/create_args.rs` | box 49 | 49 | 45 | 2 | 0 | 2 | 95.74% | 64 | at or above floor |
 
 A verdict rests on timeouts when it changes with the file's timeouts counted as caught (the json's `verdict_rests_on_timeouts`, beside `score_timeouts_left_out` and `score_timeouts_caught`). `src/storage/sqlx/create_action/allocation.rs` is below floor at 52.83% with its 12 timeouts (12 of them the repair segment's), 68.29% with them left out and 75.47% with them caught, against a floor of 64: its verdict rests on those timeouts alone. Every other file's verdict stands with its timeouts counted either way.
+
+Floor entries with no catalogued mutant (no row above: the catalog of this base holds none in them): `src/services/providers/mod.rs` (floor 80).
 
 ## The door files beside #571
 
@@ -295,6 +298,6 @@ Files below their floor by the Studio's timeouts alone (at or above it with them
 
 ### The timeouts under RUST_TEST_THREADS=2
 
-The driver's environment set `RUST_TEST_THREADS=2` for the rounds opened from 2026-11-01T22:39:24Z (2), 2026-11-01T23:46:46Z (default), 2026-11-02T00:56:06Z (2), 2026-11-02T07:51:33Z (default). Verdicts at the default: 895 CaughtMutant, 620 MissedMutant, 14 Timeout, 225 Unviable; under 2 threads: 107 CaughtMutant, 64 MissedMutant, 274 Timeout, 29 Unviable. Verdicts by the dumps and the threads: before the dumps, RUST_TEST_THREADS=default: 800 CaughtMutant, 595 MissedMutant, 5 Timeout, 211 Unviable; before the dumps, RUST_TEST_THREADS=2: ; after the dumps, RUST_TEST_THREADS=default: 95 CaughtMutant, 25 MissedMutant, 9 Timeout, 14 Unviable; after the dumps, RUST_TEST_THREADS=2: 107 CaughtMutant, 64 MissedMutant, 274 Timeout, 29 Unviable.
+The driver's environment set `RUST_TEST_THREADS=2` for the rounds opened from 2026-11-01T22:39:24Z (2), 2026-11-01T23:46:46Z (default), 2026-11-02T00:56:06Z (2), 2026-11-02T07:51:33Z (default). Verdicts at the default: 895 CaughtMutant, 620 MissedMutant, 14 Timeout, 225 Unviable; under 2 threads: 107 CaughtMutant, 64 MissedMutant, 274 Timeout, 29 Unviable. Verdicts by the dumps and the threads: before the dumps, RUST_TEST_THREADS=default: 800 CaughtMutant, 595 MissedMutant, 5 Timeout, 211 Unviable; before the dumps, RUST_TEST_THREADS=2: none (the dumps began 2026-11-01T22:18:42Z, before the switch to 2 threads at 2026-11-01T22:39:24Z); after the dumps, RUST_TEST_THREADS=default: 95 CaughtMutant, 25 MissedMutant, 9 Timeout, 14 Unviable; after the dumps, RUST_TEST_THREADS=2: 107 CaughtMutant, 64 MissedMutant, 274 Timeout, 29 Unviable.
 
 Files below their floor by the 2-thread timeouts alone (at or above it with them left out): `src/storage/sqlx/create_action/beef_walk.rs`, `src/storage/sqlx/create_action/fees.rs`, `src/storage/sqlx/create_action/outputs.rs`, `src/storage/sqlx/create_action/signing.rs`, `src/storage/sqlx/create_action/tracker.rs`.
