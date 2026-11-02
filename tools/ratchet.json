@@ -9,7 +9,7 @@
     "max_file_lines": 7128,
     "unwraps_outside_tests": 61,
     "undocumented_public_items": 308,
-    "mutation_score_pct": 50.76,
+    "mutation_score_pct": 59.22,
     "fuzz_hours": 2.01
   },
   "clippy_pedantic": {
@@ -366,17 +366,18 @@
     "names": []
   },
   "mutation_score": {
-    "method": "cargo-mutants 27.1.0 over .cargo/mutants.toml's set (the Mutants workflow's set: 2228 mutants), every catalogued mutant once, --in-place --baseline skip after a green `cargo test --lib` on 42559923, one catalog mutant per run (--shard N/2228 --sharding round-robin), --timeout 270 --build-timeout 400, rule 10's proxy variables; scored by tools/mutants-score (its collect(), --baseline-skipped); score = caught / (caught + missed + timeout), unviable excluded",
-    "caught": 1002,
-    "missed": 684,
-    "timeout": 288,
+    "method": "cargo-mutants 27.1.0 over .cargo/mutants.toml's set (the Mutants workflow's set: 2228 mutants), every catalogued mutant once, --in-place --baseline skip after a green `cargo test --lib` on 42559923, one catalog mutant per run (--shard N/2228 --sharding round-robin), --timeout 270 --build-timeout 400, rule 10's proxy variables; the artifact run's timeouts run again under the restored environment; scored by tools/mutants-score (its collect(), --baseline-skipped); score = caught / (caught + missed + timeout), unviable excluded",
+    "caught": 1169,
+    "missed": 780,
+    "timeout": 25,
     "unviable": 254,
     "hosts": {
-      "p5-mutants-complete-box": "box, 1838 mutants",
-      "p5-mutants-complete-studio-b": "studio, 125 mutants",
-      "p5-mutants-complete-box-c": "box, 265 mutants"
+      "p5-mutants-complete-box": "box, 1794 mutants",
+      "p5-mutants-complete-studio-b": "studio, 89 mutants",
+      "p5-mutants-complete-box-c": "box, 57 mutants",
+      "p5-mutants-complete-box-d": "box, 288 mutants"
     },
-    "source": "docs/census/mutants-complete-2026-11-02.{md,json} (the per-file table, every survivor and every mutant's host)",
+    "source": "docs/census/mutants-complete-2026-11-02.{md,json} (the per-file table, every survivor, every mutant's host and the artifact)",
     "measured_at": "2026-11-02"
   },
   "fuzz_hours": {
