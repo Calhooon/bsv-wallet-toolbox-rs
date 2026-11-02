@@ -375,7 +375,7 @@ async fn call_without_reason(wallet: &TestWallet, name: &str) -> bsv_rs::Result<
     }
 }
 
-fn assert_argument_refusal<T: std::fmt::Debug>(
+pub(super) fn assert_argument_refusal<T: std::fmt::Debug>(
     scene: &str,
     result: bsv_rs::Result<T>,
     expected: &str,
