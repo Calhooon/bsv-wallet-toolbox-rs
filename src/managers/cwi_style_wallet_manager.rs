@@ -8,8 +8,9 @@
 //!
 //! The key file (`save_snapshot`, `save_key_file`) holds one reference UMP
 //! token per profile, salted with its own random 32-byte `passwordSalt`
-//! (#560, `docs/design/ump-token-format.md`); a v1 file, salted with the
-//! profile id, opens and is re-written at its next unlock.
+//! (#560, `docs/design/ump-token-format.md`); a v1 record, salted with the
+//! profile id, gains a token at its next unlock and leaves the file once a
+//! later unlock opens that token.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -91,7 +92,7 @@ pub struct Profile {
     #[serde(with = "base64_bytes")]
     pub primary_pad: Vec<u8>,
     /// Privileged key pad (32 bytes) for two-factor authentication.
-    #[serde(default, with = "base64_bytes_default")]
+    #[serde(default, with = "base64_bytes")]
     pub privileged_pad: Vec<u8>,
     /// When the profile was created.
     pub created_at: DateTime<Utc>,
@@ -114,17 +115,11 @@ impl Profile {
 
     /// Creates a profile from a name and existing primary key.
     pub fn from_primary_key(name: String, primary_key: &[u8], derived_key: &[u8]) -> Self {
-        // primary_pad = primary_key XOR derived_key
-        let primary_pad: Vec<u8> = primary_key
-            .iter()
-            .zip(derived_key.iter())
-            .map(|(a, b)| a ^ b)
-            .collect();
-
         Self {
             name,
             id: generate_random_bytes(PROFILE_ID_LENGTH),
-            primary_pad,
+            // primary_pad = primary_key XOR derived_key
+            primary_pad: ump_token::xor(primary_key, derived_key).to_vec(),
             privileged_pad: generate_random_bytes(PRIVILEGED_PAD_LENGTH),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -134,11 +129,7 @@ impl Profile {
     /// Derives the primary key from the profile pad and derived password key.
     pub fn derive_primary_key(&self, derived_key: &[u8]) -> Vec<u8> {
         // primary_key = primary_pad XOR derived_key
-        self.primary_pad
-            .iter()
-            .zip(derived_key.iter())
-            .map(|(a, b)| a ^ b)
-            .collect()
+        ump_token::xor(&self.primary_pad, derived_key).to_vec()
     }
 }
 
@@ -163,31 +154,6 @@ pub(super) mod base64_bytes {
             .decode(&s)
             .map(B::from)
             .map_err(|e| serde::de::Error::custom(e.to_string()))
-    }
-}
-
-/// Base64 encoding helper for serde with default support (for optional/new fields).
-mod base64_bytes_default {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error> {
-        if bytes.is_empty() {
-            serializer.serialize_str("")
-        } else {
-            serializer.serialize_str(&STANDARD.encode(bytes))
-        }
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        if s.is_empty() {
-            Ok(Vec::new())
-        } else {
-            STANDARD
-                .decode(&s)
-                .map_err(|e| serde::de::Error::custom(e.to_string()))
-        }
     }
 }
 
@@ -220,6 +186,10 @@ async fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(written?)
 }
 
+/// A profile's key and the record that follows its unlock, with whether the
+/// file must take it (`unlock_entry`).
+type Unlocked = (Zeroizing<Vec<u8>>, Option<(Entry, bool)>);
+
 /// Type alias for the wallet builder function.
 pub type CWIWalletBuilder = Arc<
     dyn Fn(
@@ -235,13 +205,10 @@ pub type CWIWalletBuilder = Arc<
 ///
 /// # Features
 ///
-/// - Multiple profiles per wallet
-/// - The reference's UMP token per profile: PBKDF2-SHA512 over a random
-///   32-byte salt, KDF metadata, presentation and recovery factors (#560)
-/// - v1 key files (salted with the profile id) read and re-written at their
-///   next unlock
+/// - Multiple profiles, each with its password and the reference's UMP
+///   token (PBKDF2-SHA512 over a random 32-byte salt, #560)
+/// - v1 records (salted with the profile id) read and migrated (design 4.3)
 /// - Profile import/export with encryption
-/// - Password-protected profile switching
 ///
 /// # Example
 ///
@@ -420,6 +387,7 @@ impl CWIStyleWalletManager {
         let entry = Entry {
             profile: profile.clone(),
             ump: Some(ump),
+            v1_pad: None,
         };
         entries.insert(profile.id.clone(), entry);
 
@@ -443,62 +411,105 @@ impl CWIStyleWalletManager {
             })
     }
 
-    /// The profile's wallet key and, for a v1 record, its migrated entry.
-    fn unlock_entry(
-        &self,
-        entry: &Entry,
-        password: &str,
-    ) -> Result<(Zeroizing<Vec<u8>>, Option<Entry>)> {
+    /// The profile's wallet key, and the record that follows the unlock with
+    /// whether the file must take it (design 4.3):
+    ///
+    /// - a token alone: it opens or the unlock fails; nothing follows;
+    /// - a v1 record alone: v1 opens; a token joins it, written, the v1 record kept;
+    /// - both, the token opens: its GCM tag proves the password the token was
+    ///   sealed with, so the v1 record leaves, written;
+    /// - both, the token refuses: v1 opens and the token is re-sealed around
+    ///   that key in memory, the file untouched (v1 cannot tell this
+    ///   password from the token's; the next unlock that opens the token
+    ///   writes).
+    fn unlock_entry(&self, entry: &Entry, password: &str) -> Result<Unlocked> {
         if let Some(ump) = &entry.ump {
-            let opened = ump_token::open_token(&ump.token, &ump.presentation_key, password)?;
-            let pad = opened
-                .profiles
-                .iter()
-                .find(|p| p.id == entry.profile.id)
-                .map(|p| &p.primary_pad)
-                .ok_or_else(|| {
-                    Error::ValidationError("UMP token: profile not in its token".into())
-                })?;
-            return Ok((ump_token::xor(&opened.root_primary, pad), None));
+            match self.open_ump(entry, ump, password) {
+                Ok(key) if entry.v1_pad.is_some() => {
+                    let mut next = entry.clone();
+                    next.v1_pad = None;
+                    return Ok((key, Some((next, true))));
+                }
+                Ok(key) => return Ok((key, None)),
+                Err(Error::AccessDenied(_)) if entry.v1_pad.is_some() => {}
+                Err(e) => return Err(e),
+            }
         }
+        let v1_pad = entry
+            .v1_pad
+            .as_ref()
+            .ok_or_else(|| Error::ValidationError("Profile has neither record".into()))?;
         let derived = self.derive_key_from_password(password, &entry.profile.id)?;
-        let key = Zeroizing::new(entry.profile.derive_primary_key(&derived));
+        let key = ump_token::xor(v1_pad, &derived);
+        // A fresh root: the token and its blobs depend on the new salt alone,
+        // and the pad moves so that root XOR pad is still the v1 key.
+        let root = Zeroizing::new(generate_random_bytes(32));
         let mut profile = entry.profile.clone();
-        let ump = self.seal(&mut profile, derived, password)?;
-        Ok((
-            key,
-            Some(Entry {
-                profile,
-                ump: Some(ump),
-            }),
-        ))
+        profile.primary_pad = ump_token::xor(&key, &root).to_vec();
+        let ump = self.seal(&mut profile, root, password)?;
+        let next = Entry {
+            profile,
+            ump: Some(ump),
+            v1_pad: entry.v1_pad.clone(),
+        };
+        Ok((key, Some((next, entry.ump.is_none()))))
     }
 
-    /// Installs a migrated entry, writing the open key file before memory moves.
-    async fn commit_entry(&self, entry: Entry) -> Result<()> {
+    /// The profile's key from its token: root primary XOR the token's pad.
+    fn open_ump(
+        &self,
+        entry: &Entry,
+        ump: &UmpEntry,
+        password: &str,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        let opened = ump_token::open_token(&ump.token, &ump.presentation_key, password)?;
+        let pad = opened
+            .profiles
+            .iter()
+            .find(|p| p.id == entry.profile.id)
+            .map(|p| &p.primary_pad)
+            .ok_or_else(|| Error::ValidationError("UMP token: profile not in its token".into()))?;
+        Ok(ump_token::xor(&opened.root_primary, pad))
+    }
+
+    /// Installs `next` in place of `read`, the record the unlock read before
+    /// its KDF ran; when `write` and a key file is open, the file is written
+    /// before memory moves, under the same lock. The profiles are those held now, after the
+    /// KDF; a record replaced or deleted meanwhile refuses the commit.
+    async fn commit_entry(&self, read: &Entry, next: Entry, write: bool) -> Result<()> {
         let mut entries = self.entries.write().await;
-        let mut next = entries.clone();
-        next.insert(entry.profile.id.clone(), entry);
-        if let Some(path) = self.key_file.read().await.clone() {
-            let default_id = self.default_profile_id.read().await.clone();
-            write_key_file(&path, &encode_key_file(&next, default_id.as_deref())?).await?;
+        if !entries
+            .get(&read.profile.id)
+            .is_some_and(|e| e.is_same_record(read))
+        {
+            return Err(Error::InvalidOperation(
+                "The profile changed during its unlock".into(),
+            ));
         }
-        *entries = next;
+        let mut now = entries.clone();
+        now.insert(next.profile.id.clone(), next);
+        let path = self.key_file.read().await.clone();
+        if let Some(path) = path.filter(|_| write) {
+            let default_id = self.default_profile_id.read().await.clone();
+            write_key_file(&path, &encode_key_file(&now, default_id.as_deref())?).await?;
+        }
+        *entries = now;
         Ok(())
     }
 
     /// Switches to a profile by ID.
     ///
-    /// A v3 profile opens its UMP token with the password (a wrong one is
-    /// `Error::AccessDenied`). A v1 record opens as before, salted with the
-    /// profile id; once its wallet is built it is re-sealed as a UMP token with
-    /// a fresh salt and, when a key file is open, the file is re-written
-    /// atomically. A failed unlock writes nothing.
+    /// A profile with a token alone opens it with the password (a wrong one
+    /// is `Error::AccessDenied`). A v1 record opens as before, salted with
+    /// the profile id; at its unlock a token joins it with a fresh salt and
+    /// root, and the v1 record stays until a later unlock opens the token
+    /// (design 4.3). With a key file open, those two steps re-write it
+    /// atomically before the wallet is installed. A failed unlock writes
+    /// nothing.
     pub async fn switch_profile(&self, profile_id: &[u8], password: &str) -> Result<()> {
         let entry = self.entry(profile_id).await?;
-        let (primary_key, migrated) = self.unlock_entry(&entry, password)?;
+        let (primary_key, next) = self.unlock_entry(&entry, password)?;
 
-        // Get PKM
         let pkm = self
             .privileged_key_manager
             .read()
@@ -506,10 +517,10 @@ impl CWIStyleWalletManager {
             .clone()
             .ok_or(Error::AuthenticationRequired)?;
 
-        // Build wallet
+        // Build wallet (the builder takes its own copy of the key)
         let wallet = (self.wallet_builder)(primary_key.to_vec(), pkm).await?;
-        if let Some(entry) = migrated {
-            self.commit_entry(entry).await?;
+        if let Some((next, write)) = next {
+            self.commit_entry(&entry, next, write).await?;
         }
 
         *self.underlying.write().await = Some(wallet);
@@ -519,7 +530,9 @@ impl CWIStyleWalletManager {
     }
 
     /// The profile's recovery key, unwrapped from its token with the root
-    /// privileged key the password opens (the reference's `getRecoveryKey`).
+    /// privileged key the password opens: the reference's manager hands it to
+    /// a host through `getRecoveryKey` (`CWIStyleWalletManager.ts:2356-2361`
+    /// at ts-stack edf6e03) and its `recoveryKeySaver` (:1840).
     ///
     /// # Errors
     ///
@@ -742,13 +755,3 @@ impl CWIStyleWalletManager {
 #[cfg(test)]
 #[path = "cwi_style_wallet_manager_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-pub(crate) fn draw_for_vector(len: usize) -> Vec<u8> {
-    generate_random_bytes(len)
-}
-
-#[cfg(test)]
-pub(crate) fn draw_scalar_for_vector() -> Zeroizing<Vec<u8>> {
-    generate_scalar()
-}
