@@ -5,21 +5,30 @@
 //!
 //! Once a profile is switched to with the correct password, the manager becomes
 //! authenticated and delegates all wallet operations to an underlying wallet instance.
+//!
+//! The key file (`save_snapshot`, `save_key_file`) holds one reference UMP
+//! token per profile, salted with its own random 32-byte `passwordSalt`
+//! (#560, `docs/design/ump-token-format.md`); a v1 file, salted with the
+//! profile id, opens and is re-written at its next unlock.
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
 use bsv_rs::primitives::{PrivateKey, SymmetricKey};
 use bsv_rs::wallet::WalletInterface;
 use chrono::{DateTime, Utc};
-use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use zeroize::Zeroizing;
 
+use super::ump_token::{
+    self, decode_key_file, encode_key_file, Entries, Entry, EntryRecord, Factors, PasswordKdf,
+    RefProfile, UmpEntry,
+};
 use crate::error::{Error, Result};
 
 /// Random bytes from the OS CSPRNG, never seeded (#191).
@@ -27,6 +36,16 @@ fn generate_random_bytes(len: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; len];
     crate::rng::os_fill(&mut bytes);
     bytes
+}
+
+/// A 32-byte OS draw that is a valid secp256k1 scalar (the root privileged key).
+fn generate_scalar() -> Zeroizing<Vec<u8>> {
+    loop {
+        let bytes = Zeroizing::new(generate_random_bytes(32));
+        if PrivateKey::from_bytes(&bytes).is_ok() {
+            return bytes;
+        }
+    }
 }
 
 /// Default number of PBKDF2 rounds (matches TypeScript).
@@ -124,7 +143,7 @@ impl Profile {
 }
 
 /// Base64 encoding helper for serde.
-mod base64_bytes {
+pub(super) mod base64_bytes {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde::{Deserialize, Deserializer, Serializer};
 
@@ -165,58 +184,33 @@ mod base64_bytes_default {
     }
 }
 
-/// Universal Message Protocol token for cross-device wallet transfer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UmpToken {
-    /// Token format version.
-    pub version: u32,
-    /// Encrypted root key material.
-    pub key_encrypted: Vec<u8>,
-    /// Encrypted profiles data.
-    pub profiles_encrypted: Vec<u8>,
-}
-
-impl UmpToken {
-    /// Create a new UMP token (version 1).
-    pub fn new(key_encrypted: Vec<u8>, profiles_encrypted: Vec<u8>) -> Self {
-        Self {
-            version: 1,
-            key_encrypted,
-            profiles_encrypted,
-        }
+/// Writes `bytes` over `path` atomically: a sibling in the same directory,
+/// synced, then renamed over the file (owner-only on unix).
+async fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let name = path
+        .file_name()
+        .ok_or_else(|| Error::InvalidArgument("Key file path has no file name".into()))?;
+    let tmp = path.with_file_name(format!(
+        "{}.tmp-{}",
+        name.to_string_lossy(),
+        hex::encode(generate_random_bytes(8))
+    ));
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let written = async {
+        let mut file = options.open(&tmp).await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        tokio::fs::rename(&tmp, path).await
     }
-}
-
-/// Wallet snapshot for persistence and recovery.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WalletSnapshot {
-    /// Snapshot format version (currently 2).
-    pub version: u8,
-    /// Encrypted snapshot key material.
-    pub snapshot_key: Vec<u8>,
-    /// Active profile identifier.
-    pub active_profile_id: String,
-    /// Encrypted payload containing wallet state.
-    pub encrypted_payload: Vec<u8>,
-}
-
-impl WalletSnapshot {
-    /// Current snapshot version.
-    pub const CURRENT_VERSION: u8 = 2;
-
-    /// Create a new V2 snapshot.
-    pub fn new(
-        snapshot_key: Vec<u8>,
-        active_profile_id: String,
-        encrypted_payload: Vec<u8>,
-    ) -> Self {
-        Self {
-            version: Self::CURRENT_VERSION,
-            snapshot_key,
-            active_profile_id,
-            encrypted_payload,
-        }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
     }
+    Ok(written?)
 }
 
 /// Type alias for the wallet builder function.
@@ -235,7 +229,10 @@ pub type CWIWalletBuilder = Arc<
 /// # Features
 ///
 /// - Multiple profiles per wallet
-/// - PBKDF2 password-based key derivation
+/// - The reference's UMP token per profile: PBKDF2-SHA512 over a random
+///   32-byte salt, KDF metadata, presentation and recovery factors (#560)
+/// - v1 key files (salted with the profile id) read and re-written at their
+///   next unlock
 /// - Profile import/export with encryption
 /// - Password-protected profile switching
 ///
@@ -253,8 +250,10 @@ pub type CWIWalletBuilder = Arc<
 /// // Provide privileged key manager first
 /// manager.provide_privileged_key_manager(pkm_key).await;
 ///
-/// // Create a new profile
+/// // Open (or start) the key file, then create a new profile
+/// manager.open_key_file("wallet.keys").await?;
 /// let profile = manager.create_profile("Work", "password123").await?;
+/// manager.save_key_file().await?;
 ///
 /// // Switch to the profile
 /// manager.switch_profile(&profile.id, "password123").await?;
@@ -266,8 +265,8 @@ pub type CWIWalletBuilder = Arc<
 pub struct CWIStyleWalletManager {
     /// Configuration.
     config: CWIStyleWalletManagerConfig,
-    /// All profiles by ID.
-    profiles: RwLock<HashMap<Vec<u8>, Profile>>,
+    /// All profiles by ID, with their tokens.
+    entries: RwLock<Entries>,
     /// Default profile ID.
     default_profile_id: RwLock<Option<Vec<u8>>>,
     /// Currently active profile ID.
@@ -280,6 +279,8 @@ pub struct CWIStyleWalletManager {
     underlying: RwLock<Option<Arc<dyn WalletInterface + Send + Sync>>>,
     /// Privileged key manager (provided separately).
     privileged_key_manager: RwLock<Option<PrivateKey>>,
+    /// The key file a migrating unlock re-writes (`open_key_file`).
+    key_file: RwLock<Option<PathBuf>>,
 }
 
 impl CWIStyleWalletManager {
@@ -291,13 +292,14 @@ impl CWIStyleWalletManager {
     ) -> Self {
         Self {
             config,
-            profiles: RwLock::new(HashMap::new()),
+            entries: RwLock::new(HashMap::new()),
             default_profile_id: RwLock::new(None),
             active_profile_id: RwLock::new(None),
             admin_originator,
             wallet_builder,
             underlying: RwLock::new(None),
             privileged_key_manager: RwLock::new(None),
+            key_file: RwLock::new(None),
         }
     }
 
@@ -346,81 +348,148 @@ impl CWIStyleWalletManager {
         &self.admin_originator
     }
 
-    /// Derives a key from password using PBKDF2.
+    /// The v1 derivation: PBKDF2 salted with the profile id.
     ///
     /// Returns a `Zeroizing<Vec<u8>>` that is automatically zeroed on drop,
     /// preventing sensitive derived key material from lingering in memory.
-    fn derive_key_from_password(&self, password: &str, salt: &[u8]) -> Zeroizing<Vec<u8>> {
-        let mut derived = Zeroizing::new(vec![0u8; 32]);
-
+    fn derive_key_from_password(&self, password: &str, salt: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         if self.config.use_pbkdf2 {
-            pbkdf2::derive(
-                pbkdf2::PBKDF2_HMAC_SHA512,
-                std::num::NonZeroU32::new(self.config.password_rounds).unwrap(),
-                salt,
-                password.as_bytes(),
-                &mut derived,
-            );
-        } else {
-            // Simple fallback: just hash the password (not secure, for testing only)
-            use ring::digest::{digest, SHA256};
-            let hash = digest(&SHA256, password.as_bytes());
-            derived.copy_from_slice(&hash.as_ref()[..32]);
+            return ump_token::pbkdf2_sha512(password, salt, self.config.password_rounds);
         }
+        // Simple fallback: just hash the password (not secure, for testing only)
+        use ring::digest::{digest, SHA256};
+        Ok(Zeroizing::new(
+            digest(&SHA256, password.as_bytes()).as_ref().to_vec(),
+        ))
+    }
 
-        derived
+    /// Builds a profile's token around `root_primary` with a fresh salt, fresh
+    /// presentation, recovery and root privileged keys, and PBKDF2-SHA512 at
+    /// the configured rounds (`createNewUser`, :1832-1876).
+    fn seal(
+        &self,
+        profile: &mut Profile,
+        root_primary: Zeroizing<Vec<u8>>,
+        password: &str,
+    ) -> Result<UmpEntry> {
+        let salt = generate_random_bytes(32);
+        let kdf = PasswordKdf::pbkdf2(self.config.password_rounds);
+        let factors = Factors {
+            password_key: ump_token::derive_password_key(&salt, Some(&kdf), password)?,
+            presentation_key: Zeroizing::new(generate_random_bytes(32)),
+            recovery_key: Zeroizing::new(generate_random_bytes(32)),
+            root_primary,
+            root_privileged: generate_scalar(),
+        };
+        if profile.privileged_pad.is_empty() {
+            profile.privileged_pad = generate_random_bytes(PRIVILEGED_PAD_LENGTH);
+        }
+        let reference = RefProfile {
+            name: profile.name.clone(),
+            id: profile.id.clone(),
+            primary_pad: profile.primary_pad.clone(),
+            privileged_pad: profile.privileged_pad.clone(),
+            created_at: profile.created_at.timestamp(),
+        };
+        let token = ump_token::build_token(salt, kdf, &factors, &[reference])?;
+        Ok(UmpEntry {
+            presentation_key: factors.presentation_key,
+            token,
+        })
     }
 
     /// Creates a new profile.
     ///
-    /// The profile is created with a random ID and primary pad. The pad is
-    /// designed so that XORing it with the derived password key produces the
-    /// root wallet key.
+    /// The profile gets a random ID and pads and its own UMP token around a
+    /// random root key; its wallet key is `root XOR primary_pad`, the
+    /// reference's derivation for a profile.
     pub async fn create_profile(&self, name: &str, password: &str) -> Result<Profile> {
-        // Generate a random primary key first
-        let primary_key = generate_random_bytes(32);
-
-        // Create salt from profile id (will be generated)
-        let profile_id = generate_random_bytes(PROFILE_ID_LENGTH);
-
-        // Derive key from password
-        let derived_key = self.derive_key_from_password(password, &profile_id);
-
-        // Create profile with computed pad
-        let mut profile = Profile::from_primary_key(name.to_string(), &primary_key, &derived_key);
-        profile.id = profile_id;
+        let mut profile = Profile::new(name.to_string());
+        let root = Zeroizing::new(generate_random_bytes(32));
+        let ump = self.seal(&mut profile, root, password)?;
 
         // Store profile
-        let mut profiles = self.profiles.write().await;
-        profiles.insert(profile.id.clone(), profile.clone());
+        let mut entries = self.entries.write().await;
+        let entry = Entry {
+            profile: profile.clone(),
+            ump: Some(ump),
+        };
+        entries.insert(profile.id.clone(), entry);
 
         // Set as default if first profile
-        if profiles.len() == 1 {
+        if entries.len() == 1 {
             *self.default_profile_id.write().await = Some(profile.id.clone());
         }
 
         Ok(profile)
     }
 
-    /// Switches to a profile by ID.
-    ///
-    /// Requires the correct password to derive the primary key.
-    pub async fn switch_profile(&self, profile_id: &[u8], password: &str) -> Result<()> {
-        let profiles = self.profiles.read().await;
-        let profile = profiles
+    async fn entry(&self, profile_id: &[u8]) -> Result<Entry> {
+        self.entries
+            .read()
+            .await
             .get(profile_id)
+            .cloned()
             .ok_or_else(|| Error::NotFound {
                 entity: "Profile".to_string(),
                 id: hex::encode(profile_id),
-            })?
-            .clone();
-        drop(profiles);
+            })
+    }
 
-        // Derive key from password using profile ID as salt
-        let derived_key = self.derive_key_from_password(password, &profile.id);
+    /// The profile's wallet key and, for a v1 record, its migrated entry.
+    fn unlock_entry(
+        &self,
+        entry: &Entry,
+        password: &str,
+    ) -> Result<(Zeroizing<Vec<u8>>, Option<Entry>)> {
+        if let Some(ump) = &entry.ump {
+            let opened = ump_token::open_token(&ump.token, &ump.presentation_key, password)?;
+            let pad = opened
+                .profiles
+                .iter()
+                .find(|p| p.id == entry.profile.id)
+                .map(|p| &p.primary_pad)
+                .ok_or_else(|| {
+                    Error::ValidationError("UMP token: profile not in its token".into())
+                })?;
+            return Ok((ump_token::xor(&opened.root_primary, pad), None));
+        }
+        let derived = self.derive_key_from_password(password, &entry.profile.id)?;
+        let key = Zeroizing::new(entry.profile.derive_primary_key(&derived));
+        let mut profile = entry.profile.clone();
+        let ump = self.seal(&mut profile, derived, password)?;
+        Ok((
+            key,
+            Some(Entry {
+                profile,
+                ump: Some(ump),
+            }),
+        ))
+    }
 
-        // Get primary key
-        let primary_key = profile.derive_primary_key(&derived_key);
+    /// Installs a migrated entry, writing the open key file before memory moves.
+    async fn commit_entry(&self, entry: Entry) -> Result<()> {
+        let mut entries = self.entries.write().await;
+        let mut next = entries.clone();
+        next.insert(entry.profile.id.clone(), entry);
+        if let Some(path) = self.key_file.read().await.clone() {
+            let default_id = self.default_profile_id.read().await.clone();
+            write_key_file(&path, &encode_key_file(&next, default_id.as_deref())?).await?;
+        }
+        *entries = next;
+        Ok(())
+    }
+
+    /// Switches to a profile by ID.
+    ///
+    /// A v3 profile opens its UMP token with the password (a wrong one is
+    /// `Error::AccessDenied`). A v1 record opens as before, salted with the
+    /// profile id; once its wallet is built it is re-sealed as a UMP token with
+    /// a fresh salt and, when a key file is open, the file is re-written
+    /// atomically. A failed unlock writes nothing.
+    pub async fn switch_profile(&self, profile_id: &[u8], password: &str) -> Result<()> {
+        let entry = self.entry(profile_id).await?;
+        let (primary_key, migrated) = self.unlock_entry(&entry, password)?;
 
         // Get PKM
         let pkm = self
@@ -431,7 +500,10 @@ impl CWIStyleWalletManager {
             .ok_or(Error::AuthenticationRequired)?;
 
         // Build wallet
-        let wallet = (self.wallet_builder)(primary_key, pkm).await?;
+        let wallet = (self.wallet_builder)(primary_key.to_vec(), pkm).await?;
+        if let Some(entry) = migrated {
+            self.commit_entry(entry).await?;
+        }
 
         *self.underlying.write().await = Some(wallet);
         *self.active_profile_id.write().await = Some(profile_id.to_vec());
@@ -439,11 +511,32 @@ impl CWIStyleWalletManager {
         Ok(())
     }
 
+    /// The profile's recovery key, unwrapped from its token with the root
+    /// privileged key the password opens (the reference's `getRecoveryKey`).
+    ///
+    /// # Errors
+    ///
+    /// `Error::AccessDenied` for a wrong password; `Error::InvalidOperation`
+    /// for a v1 record not yet unlocked (it has no recovery key).
+    pub async fn recovery_key(
+        &self,
+        profile_id: &[u8],
+        password: &str,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        let entry = self.entry(profile_id).await?;
+        let ump = entry
+            .ump
+            .ok_or_else(|| Error::InvalidOperation("v1 profile: unlock it to migrate".into()))?;
+        let opened = ump_token::open_token(&ump.token, &ump.presentation_key, password)?;
+        let root_privileged = ump_token::open_root_privileged(&ump.token, &opened)?;
+        ump_token::unwrap_factor(&root_privileged, &ump.token.recovery_key_encrypted)
+    }
+
     /// Deletes a profile by ID.
     pub async fn delete_profile(&self, profile_id: &[u8]) -> Result<()> {
-        let mut profiles = self.profiles.write().await;
+        let mut entries = self.entries.write().await;
 
-        if !profiles.contains_key(profile_id) {
+        if !entries.contains_key(profile_id) {
             return Err(Error::NotFound {
                 entity: "Profile".to_string(),
                 id: hex::encode(profile_id),
@@ -457,11 +550,11 @@ impl CWIStyleWalletManager {
             ));
         }
 
-        profiles.remove(profile_id);
+        entries.remove(profile_id);
 
         // Update default if needed
         if self.default_profile_id.read().await.as_deref() == Some(profile_id) {
-            let new_default = profiles.keys().next().cloned();
+            let new_default = entries.keys().next().cloned();
             *self.default_profile_id.write().await = new_default;
         }
 
@@ -470,7 +563,8 @@ impl CWIStyleWalletManager {
 
     /// Gets all profiles.
     pub async fn get_profiles(&self) -> Vec<Profile> {
-        self.profiles.read().await.values().cloned().collect()
+        let entries = self.entries.read().await;
+        entries.values().map(|e| e.profile.clone()).collect()
     }
 
     /// Gets the active profile ID.
@@ -485,28 +579,20 @@ impl CWIStyleWalletManager {
 
     /// Sets the default profile ID.
     pub async fn set_default_profile_id(&self, profile_id: Vec<u8>) -> Result<()> {
-        let profiles = self.profiles.read().await;
-        if !profiles.contains_key(&profile_id) {
+        if !self.entries.read().await.contains_key(&profile_id) {
             return Err(Error::NotFound {
                 entity: "Profile".to_string(),
                 id: hex::encode(profile_id),
             });
         }
-        drop(profiles);
 
         *self.default_profile_id.write().await = Some(profile_id);
         Ok(())
     }
 
-    /// Exports a profile as encrypted bytes.
+    /// Exports a profile as encrypted bytes (its fields and its UMP token).
     pub async fn export_profile(&self, profile_id: &[u8]) -> Result<Vec<u8>> {
-        let profiles = self.profiles.read().await;
-        let profile = profiles.get(profile_id).ok_or_else(|| Error::NotFound {
-            entity: "Profile".to_string(),
-            id: hex::encode(profile_id),
-        })?;
-
-        let json = serde_json::to_vec(profile).map_err(Error::JsonError)?;
+        let json = self.export_profile_json(profile_id).await?;
 
         // Encrypt with random key (key is prepended to output)
         let key = generate_random_bytes(32);
@@ -536,67 +622,56 @@ impl CWIStyleWalletManager {
             .decrypt(encrypted)
             .map_err(|e| Error::InvalidOperation(format!("Decryption failed: {:?}", e)))?;
 
-        let profile: Profile = serde_json::from_slice(&decrypted).map_err(Error::JsonError)?;
-
-        // Store the imported profile
-        let mut profiles = self.profiles.write().await;
-        profiles.insert(profile.id.clone(), profile.clone());
-
-        Ok(profile)
+        self.import_profile_json(&decrypted).await
     }
 
     /// Exports a single profile to JSON bytes (unencrypted).
     ///
-    /// This serializes the profile data to a JSON byte array that can be
-    /// stored or transmitted. Unlike `export_profile()`, this does not encrypt
-    /// the data, making it suitable for internal backup operations.
+    /// The profile's fields with its UMP token beside them (`ump`), the
+    /// key file's record; a v1 record has no `ump`. Unlike `export_profile()`,
+    /// this does not encrypt the data.
     pub async fn export_profile_json(&self, profile_id: &[u8]) -> Result<Vec<u8>> {
-        let profiles = self.profiles.read().await;
-        let profile = profiles.get(profile_id).ok_or_else(|| Error::NotFound {
-            entity: "Profile".to_string(),
-            id: hex::encode(profile_id),
-        })?;
-
-        serde_json::to_vec(profile).map_err(Error::JsonError)
+        let entry = self.entry(profile_id).await?;
+        serde_json::to_vec(&entry.to_record()).map_err(Error::JsonError)
     }
 
     /// Imports a profile from JSON bytes (unencrypted).
     ///
-    /// Deserializes a profile from a JSON byte array and stores it in the
-    /// manager. If a profile with the same ID already exists, it will be
-    /// overwritten.
+    /// Reads a key-file record (a v1 export, with no `ump`, reads as a v1
+    /// record) and stores it, overwriting a profile with the same ID.
     pub async fn import_profile_json(&self, data: &[u8]) -> Result<Profile> {
-        let profile: Profile = serde_json::from_slice(data).map_err(Error::JsonError)?;
-
-        let mut profiles = self.profiles.write().await;
-        profiles.insert(profile.id.clone(), profile.clone());
-
+        let record: EntryRecord = serde_json::from_slice(data).map_err(Error::JsonError)?;
+        let entry = Entry::from_record(record)?;
+        let profile = entry.profile.clone();
+        self.entries.write().await.insert(profile.id.clone(), entry);
         Ok(profile)
     }
 
-    /// Backs up all profiles to a JSON byte array.
+    /// Backs up all profiles, with their tokens, to a JSON array.
     ///
-    /// Serializes all profiles to a JSON array. This is an unencrypted backup
-    /// suitable for internal storage. For encrypted backups, use `save_snapshot()`.
+    /// For the whole key file, use `save_snapshot()`.
     pub async fn backup_all_profiles(&self) -> Result<Vec<u8>> {
-        let profiles = self.profiles.read().await;
-        let all_profiles: Vec<&Profile> = profiles.values().collect();
-        serde_json::to_vec(&all_profiles).map_err(Error::JsonError)
+        let entries = self.entries.read().await;
+        let records: Vec<EntryRecord> = entries.values().map(Entry::to_record).collect();
+        serde_json::to_vec(&records).map_err(Error::JsonError)
     }
 
-    /// Restores profiles from a JSON byte array backup.
+    /// Restores profiles from a JSON array backup.
     ///
-    /// Deserializes profiles from a JSON array and adds them to the manager.
     /// Existing profiles with the same IDs will be overwritten.
     pub async fn restore_all_profiles(&self, data: &[u8]) -> Result<Vec<Profile>> {
-        let restored: Vec<Profile> = serde_json::from_slice(data).map_err(Error::JsonError)?;
+        let records: Vec<EntryRecord> = serde_json::from_slice(data).map_err(Error::JsonError)?;
+        let restored = records
+            .into_iter()
+            .map(Entry::from_record)
+            .collect::<Result<Vec<_>>>()?;
 
-        let mut profiles = self.profiles.write().await;
-        for profile in &restored {
-            profiles.insert(profile.id.clone(), profile.clone());
+        let mut entries = self.entries.write().await;
+        for entry in &restored {
+            entries.insert(entry.profile.id.clone(), entry.clone());
         }
 
-        Ok(restored)
+        Ok(restored.into_iter().map(|e| e.profile).collect())
     }
 
     /// Destroys the manager state, returning to unauthenticated.
@@ -606,171 +681,56 @@ impl CWIStyleWalletManager {
         *self.privileged_key_manager.write().await = None;
     }
 
-    /// Saves profiles state to an encrypted snapshot.
+    /// The key file's bytes: version 3, one UMP token per profile (v1 records
+    /// not yet unlocked carried as they are).
     pub async fn save_snapshot(&self) -> Result<Vec<u8>> {
-        let profiles = self.profiles.read().await;
+        let entries = self.entries.read().await;
         let default_id = self.default_profile_id.read().await;
-
-        #[derive(Serialize)]
-        struct Snapshot {
-            profiles: Vec<Profile>,
-            default_profile_id: Option<Vec<u8>>,
-        }
-
-        let snapshot = Snapshot {
-            profiles: profiles.values().cloned().collect(),
-            default_profile_id: default_id.clone(),
-        };
-
-        let json = serde_json::to_vec(&snapshot).map_err(Error::JsonError)?;
-
-        // Encrypt with random key
-        let key = generate_random_bytes(32);
-        let sym_key = SymmetricKey::from_bytes(&key)
-            .map_err(|e| Error::InvalidOperation(format!("Failed to create key: {:?}", e)))?;
-        let encrypted = sym_key
-            .encrypt(&json)
-            .map_err(|e| Error::InvalidOperation(format!("Encryption failed: {:?}", e)))?;
-
-        let mut result = key;
-        result.extend_from_slice(&encrypted);
-        Ok(result)
+        encode_key_file(&entries, default_id.as_deref())
     }
 
-    /// Loads profiles state from an encrypted snapshot.
+    /// Loads a key file's bytes, v3 or v1, replacing the profiles.
     pub async fn load_snapshot(&self, data: &[u8]) -> Result<()> {
-        if data.len() < 33 {
-            return Err(Error::InvalidArgument("Snapshot too short".to_string()));
-        }
-
-        let key = &data[0..32];
-        let encrypted = &data[32..];
-
-        let sym_key = SymmetricKey::from_bytes(key)
-            .map_err(|e| Error::InvalidOperation(format!("Failed to create key: {:?}", e)))?;
-        let decrypted = sym_key
-            .decrypt(encrypted)
-            .map_err(|e| Error::InvalidOperation(format!("Decryption failed: {:?}", e)))?;
-
-        #[derive(Deserialize)]
-        struct Snapshot {
-            profiles: Vec<Profile>,
-            default_profile_id: Option<Vec<u8>>,
-        }
-
-        let snapshot: Snapshot = serde_json::from_slice(&decrypted).map_err(Error::JsonError)?;
-
-        let mut profiles = self.profiles.write().await;
-        profiles.clear();
-        for profile in snapshot.profiles {
-            profiles.insert(profile.id.clone(), profile);
-        }
-
-        *self.default_profile_id.write().await = snapshot.default_profile_id;
-
+        let (entries, default_id) = decode_key_file(data)?;
+        *self.entries.write().await = entries;
+        *self.default_profile_id.write().await = default_id;
         Ok(())
+    }
+
+    /// Opens the key file at `path` (v3 or v1; an absent file is no profiles)
+    /// and remembers it: `save_key_file` and a migrating unlock write it.
+    ///
+    /// # Errors
+    ///
+    /// An I/O error other than not-found, or a file neither version reads.
+    pub async fn open_key_file(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref().to_path_buf();
+        match tokio::fs::read(&path).await {
+            Ok(data) => self.load_snapshot(&data).await?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        *self.key_file.write().await = Some(path);
+        Ok(())
+    }
+
+    /// Writes the key file `open_key_file` named, atomically (a sibling,
+    /// synced, renamed over it).
+    ///
+    /// # Errors
+    ///
+    /// `Error::InvalidOperation` when no key file is open; an I/O error.
+    pub async fn save_key_file(&self) -> Result<()> {
+        let path = self
+            .key_file
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| Error::InvalidOperation("No key file is open".into()))?;
+        write_key_file(&path, &self.save_snapshot().await?).await
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_profile_new() {
-        let profile = Profile::new("Test".to_string());
-        assert_eq!(profile.name, "Test");
-        assert_eq!(profile.id.len(), PROFILE_ID_LENGTH);
-        assert_eq!(profile.primary_pad.len(), PRIMARY_PAD_LENGTH);
-        assert_eq!(profile.privileged_pad.len(), PRIVILEGED_PAD_LENGTH);
-    }
-
-    #[test]
-    fn test_profile_salts_differ() {
-        // The profile id is the password salt; each is an OS draw (#191), one
-        // for the id and one for each pad.
-        let before = crate::rng::os_draws();
-        let (a, b) = (Profile::new("A".into()), Profile::new("A".into()));
-        assert_eq!(crate::rng::os_draws() - before, 6);
-        assert_eq!(a.id.len(), PROFILE_ID_LENGTH);
-        assert_ne!(a.id, b.id);
-        assert_ne!(a.primary_pad, b.primary_pad);
-    }
-
-    #[test]
-    fn test_profile_derive_primary_key() {
-        let profile = Profile::new("Test".to_string());
-        let derived_key = vec![0x55u8; 32];
-        let primary_key = profile.derive_primary_key(&derived_key);
-
-        // primary_key = primary_pad XOR derived_key
-        for i in 0..32 {
-            assert_eq!(primary_key[i], profile.primary_pad[i] ^ derived_key[i]);
-        }
-    }
-
-    #[test]
-    fn test_profile_roundtrip() {
-        let primary_key = vec![0x42u8; 32];
-        let derived_key = vec![0x55u8; 32];
-
-        let profile = Profile::from_primary_key("Test".to_string(), &primary_key, &derived_key);
-        let recovered = profile.derive_primary_key(&derived_key);
-
-        assert_eq!(primary_key, recovered);
-    }
-
-    #[test]
-    fn test_profile_serialization() {
-        let profile = Profile::new("Test".to_string());
-        let json = serde_json::to_string(&profile).unwrap();
-        let parsed: Profile = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(profile.name, parsed.name);
-        assert_eq!(profile.id, parsed.id);
-        assert_eq!(profile.primary_pad, parsed.primary_pad);
-        assert_eq!(profile.privileged_pad, parsed.privileged_pad);
-    }
-
-    #[test]
-    fn test_profile_backward_compat_deserialization() {
-        // Simulate old format without privileged_pad
-        let json = r#"{"name":"Test","id":"AAAAAAAAAAAAAAAAAAAAAA==","primaryPad":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","createdAt":"2024-01-01T00:00:00Z","updatedAt":"2024-01-01T00:00:00Z"}"#;
-        let parsed: Profile = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.name, "Test");
-        // privileged_pad should default to empty vec
-        assert!(parsed.privileged_pad.is_empty());
-    }
-
-    #[test]
-    fn test_ump_token() {
-        let token = UmpToken::new(vec![1, 2, 3], vec![4, 5, 6]);
-        assert_eq!(token.version, 1);
-        assert_eq!(token.key_encrypted, vec![1, 2, 3]);
-        assert_eq!(token.profiles_encrypted, vec![4, 5, 6]);
-
-        let json = serde_json::to_string(&token).unwrap();
-        let parsed: UmpToken = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.version, token.version);
-    }
-
-    #[test]
-    fn test_wallet_snapshot() {
-        let snapshot = WalletSnapshot::new(vec![0xAA; 32], "profile-1".to_string(), vec![0xBB; 64]);
-        assert_eq!(snapshot.version, WalletSnapshot::CURRENT_VERSION);
-        assert_eq!(snapshot.version, 2);
-        assert_eq!(snapshot.active_profile_id, "profile-1");
-
-        let json = serde_json::to_string(&snapshot).unwrap();
-        let parsed: WalletSnapshot = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.version, 2);
-        assert_eq!(parsed.active_profile_id, "profile-1");
-    }
-
-    #[test]
-    fn test_config_default() {
-        let config = CWIStyleWalletManagerConfig::default();
-        assert_eq!(config.password_rounds, DEFAULT_PASSWORD_ROUNDS);
-        assert!(config.use_pbkdf2);
-    }
-}
+#[path = "cwi_style_wallet_manager_tests.rs"]
+mod tests;

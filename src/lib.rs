@@ -167,8 +167,10 @@ pub use managers::{
     // Settings manager
     Certifier,
     GroupedPermissions,
+    KdfAlgorithm,
     // Storage manager
     ManagedStorage,
+    PasswordKdf,
     PermissionRequest,
     PermissionRequestHandler,
     PermissionToken,
