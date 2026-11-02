@@ -103,13 +103,24 @@ fn hex_field(v: &serde_json::Value, key: &str) -> Vec<u8> {
     hex::decode(v[key].as_str().unwrap()).unwrap()
 }
 
-fn scratch_file(name: &str, bytes: &[u8]) -> PathBuf {
+/// A key file in its own scratch directory, removed with it on drop.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+fn scratch_file(name: &str, bytes: &[u8]) -> Scratch {
     let dir =
         std::env::temp_dir().join(format!("cwi-560-{}", hex::encode(generate_random_bytes(6))));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
-    path
+    Scratch(path)
 }
 
 fn only_token(file: &[u8]) -> (KeyFile, UmpToken) {
@@ -164,9 +175,10 @@ async fn a_v1_file_opens_and_its_unlock_rewrites_it_as_v3_with_a_fresh_salt() {
         hex_field(&v, "fileHex"),
     );
     let password = v["password"].as_str().unwrap();
-    let path = scratch_file("wallet.keys", &v1);
+    let scratch = scratch_file("wallet.keys", &v1);
+    let path = scratch.0.as_path();
     let (m, seen) = manager();
-    m.open_key_file(&path).await.unwrap();
+    m.open_key_file(path).await.unwrap();
     assert_eq!(m.get_profiles().await[0].name, "Legacy");
     m.provide_privileged_key_manager(PrivateKey::random()).await;
     m.switch_profile(&id, password).await.unwrap();
@@ -176,7 +188,7 @@ async fn a_v1_file_opens_and_its_unlock_rewrites_it_as_v3_with_a_fresh_salt() {
         "v1 opens with the profile-id salt"
     );
 
-    let after = std::fs::read(&path).unwrap();
+    let after = std::fs::read(path).unwrap();
     assert_ne!(after, v1);
     let (_, token) = only_token(&after);
     assert_eq!(token.password_salt.len(), 32);
@@ -186,7 +198,7 @@ async fn a_v1_file_opens_and_its_unlock_rewrites_it_as_v3_with_a_fresh_salt() {
     assert_eq!(siblings, 1, "the sibling was renamed over the file");
 
     let (again, seen_again) = manager();
-    again.open_key_file(&path).await.unwrap();
+    again.open_key_file(path).await.unwrap();
     again
         .provide_privileged_key_manager(PrivateKey::random())
         .await;
@@ -198,7 +210,7 @@ async fn a_v1_file_opens_and_its_unlock_rewrites_it_as_v3_with_a_fresh_salt() {
     );
     assert_eq!(again.recovery_key(&id, password).await.unwrap().len(), 32);
     assert_eq!(
-        std::fs::read(&path).unwrap(),
+        std::fs::read(path).unwrap(),
         after,
         "a v3 unlock writes nothing"
     );
@@ -209,19 +221,20 @@ async fn a_failed_unlock_leaves_the_file_byte_identical() {
     let v = v1_fixture();
     let (id, v1) = (hex_field(&v, "profileIdHex"), hex_field(&v, "fileHex"));
     let password = v["password"].as_str().unwrap();
-    let path = scratch_file("v1.keys", &v1);
+    let scratch = scratch_file("v1.keys", &v1);
+    let path = scratch.0.as_path();
     let (m, _) = manager();
-    m.open_key_file(&path).await.unwrap();
+    m.open_key_file(path).await.unwrap();
     let no_pkm = m.switch_profile(&id, password).await;
     assert!(matches!(no_pkm, Err(Error::AuthenticationRequired)));
-    assert_eq!(std::fs::read(&path).unwrap(), v1);
+    assert_eq!(std::fs::read(path).unwrap(), v1);
 
     m.provide_privileged_key_manager(PrivateKey::random()).await;
     m.switch_profile(&id, password).await.unwrap();
-    let v3 = std::fs::read(&path).unwrap();
+    let v3 = std::fs::read(path).unwrap();
     let wrong = m.switch_profile(&id, "not the password").await;
     assert!(matches!(wrong, Err(Error::AccessDenied(_))));
-    assert_eq!(std::fs::read(&path).unwrap(), v3);
+    assert_eq!(std::fs::read(path).unwrap(), v3);
 }
 
 #[tokio::test]
