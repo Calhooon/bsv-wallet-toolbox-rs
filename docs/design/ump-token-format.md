@@ -293,10 +293,18 @@ The factor wrapping derives the BRC-42 key itself and encrypts the
 borrowed plaintext, where `ProtoWallet::encrypt` would have taken an owned
 copy into `EncryptArgs` and dropped it unzeroed. The encoder writes into a
 buffer sized ahead (8 KiB a profile) so serde does not grow it and free a
-copy. Not covered: the key handed to the host's wallet builder (its
-signature takes a `Vec<u8>`; that copy is the host's), the base64 text
-serde decodes from, `save_snapshot`'s return (the caller's), and what
-bsv-rs and `ring` hold inside their own types.
+copy. Each copy's end on the write path: the base64 text of a pad or key,
+encoded (`base64_bytes::serialize`) or decoded from
+(`base64_bytes::deserialize`), is a `Zeroizing<String>` dropped once
+serde has copied it into the buffer or the bytes out of it; the encoded
+file is a `Zeroizing<Vec<u8>>` from the encoder to the write, the unlock's
+commit and `save_key_file` alike, moved into std's blocking write, which
+writes from it (tokio's file would copy it into a buffer of its own, freed
+unzeroed), and zeroed when that write ends. Not covered: the key handed
+to the host's wallet builder (its signature takes a `Vec<u8>`; that copy
+is the host's), serde_json's scratch buffer for a string with escapes
+(base64 has none), `save_snapshot`'s return (the caller's), the kernel's
+page cache, and what bsv-rs and `ring` hold inside their own types.
 
 ### 4.3 The read path and the migration
 

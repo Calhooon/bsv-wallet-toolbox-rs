@@ -129,25 +129,27 @@ impl Profile {
     }
 }
 
-/// Base64 encoding helper for serde.
+/// Base64 encoding helper for serde; the base64 text, key material for the
+/// pads and the presentation key, is zeroed on drop both ways.
 pub(super) mod base64_bytes {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde::{Deserialize, Deserializer, Serializer};
+    use zeroize::Zeroizing;
 
     pub fn serialize<S: Serializer, B: AsRef<[u8]>>(
         bytes: &B,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&STANDARD.encode(bytes))
+        serializer.serialize_str(&Zeroizing::new(STANDARD.encode(bytes)))
     }
 
     /// Into a `Vec<u8>`, or straight into a `Zeroizing<Vec<u8>>` for key material.
     pub fn deserialize<'de, D: Deserializer<'de>, B: From<Vec<u8>>>(
         deserializer: D,
     ) -> Result<B, D::Error> {
-        let s = String::deserialize(deserializer)?;
+        let s = Zeroizing::new(String::deserialize(deserializer)?);
         STANDARD
-            .decode(&s)
+            .decode(s.as_bytes())
             .map(B::from)
             .map_err(|e| serde::de::Error::custom(e.to_string()))
     }
@@ -217,35 +219,39 @@ fn same_file(_: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
 
 /// Writes `bytes` over `path` atomically: a sibling in the same directory,
 /// synced, renamed over the file (owner-only on unix), and the directory
-/// synced so the rename survives a crash.
-async fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
+/// synced so the rename survives a crash. std's blocking write, on the
+/// blocking pool, writes from `bytes` itself, zeroed when the write ends;
+/// tokio's file would copy them into a buffer of its own, freed unzeroed.
+async fn write_key_file(path: &Path, bytes: Zeroizing<Vec<u8>>) -> Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = path.to_path_buf();
     let tmp = path.with_file_name(format!(
         "{}{}",
-        tmp_prefix(path)?,
+        tmp_prefix(&path)?,
         hex::encode(generate_random_bytes(8))
     ));
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let written = async {
-        let mut file = options.open(&tmp).await?;
-        file.write_all(bytes).await?;
-        file.sync_all().await?;
-        tokio::fs::rename(&tmp, path).await
-    }
-    .await;
-    if written.is_err() {
-        let _ = tokio::fs::remove_file(&tmp).await;
-    }
-    written?;
-    #[cfg(unix)]
-    tokio::fs::File::open(parent_dir(path))
-        .await?
-        .sync_all()
-        .await?;
-    Ok(())
+    let write = move || -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let written = options.open(&tmp).and_then(|mut file| {
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            std::fs::rename(&tmp, &path)
+        });
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written?;
+        #[cfg(unix)]
+        std::fs::File::open(parent_dir(&path))?.sync_all()?;
+        Ok(())
+    };
+    let joined = tokio::task::spawn_blocking(write).await;
+    Ok(joined.map_err(std::io::Error::other)??)
 }
 
 /// A profile's key and the record that follows its unlock, which the file
@@ -532,7 +538,7 @@ impl CWIStyleWalletManager {
         let path = self.key_file.read().await.clone();
         if let Some(path) = path {
             let default_id = self.default_profile_id.read().await.clone();
-            write_key_file(&path, &encode_key_file(&now, default_id.as_deref())?).await?;
+            write_key_file(&path, encode_key_file(&now, default_id.as_deref())?).await?;
         }
         *entries = now;
         Ok(())
@@ -764,7 +770,7 @@ impl CWIStyleWalletManager {
     }
 
     /// Writes the key file `open_key_file` named, atomically (a sibling,
-    /// synced, renamed over it).
+    /// synced, renamed over it); the bytes stay zeroed on drop to the write.
     ///
     /// # Errors
     ///
@@ -776,7 +782,11 @@ impl CWIStyleWalletManager {
             .await
             .clone()
             .ok_or_else(|| Error::InvalidOperation("No key file is open".into()))?;
-        write_key_file(&path, &self.save_snapshot().await?).await
+        let entries = self.entries.read().await;
+        let default_id = self.default_profile_id.read().await.clone();
+        let bytes = encode_key_file(&entries, default_id.as_deref())?;
+        drop(entries);
+        write_key_file(&path, bytes).await
     }
 }
 
