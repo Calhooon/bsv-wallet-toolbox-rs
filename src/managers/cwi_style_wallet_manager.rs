@@ -170,15 +170,18 @@ fn parent_dir(path: &Path) -> &Path {
 
 /// Removes the write siblings an interrupted write left beside `path`,
 /// each overwritten with zeros in place and synced before removal: their bytes are
-/// key material (on a copy-on-write file system the overwrite is best effort).
-/// Only a regular file is opened, and written only when the open reached that
+/// key material (on a copy-on-write file system the overwrite is best effort);
+/// an absent directory has none. Only a regular file is opened, and written only when the open reached that
 /// file (a link swapped in meanwhile is left); a symlink is removed as a link,
 /// its target untouched (the manager writes no link, so one there was planted).
 async fn remove_stale_siblings(path: &Path) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let prefix = tmp_prefix(path)?;
     let stale = |tag: &str| tag.len() == 16 && tag.bytes().all(|b| b.is_ascii_hexdigit());
-    let mut dir = tokio::fs::read_dir(parent_dir(path)).await?;
+    let mut dir = match tokio::fs::read_dir(parent_dir(path)).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        dir => dir?,
+    };
     while let Some(item) = dir.next_entry().await? {
         let name = item.file_name().to_string_lossy().into_owned();
         if !name.strip_prefix(&prefix).is_some_and(stale) {
