@@ -48,9 +48,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
+# The CI build carries no debuginfo and no incremental state (#612): a test
+# binary without DWARF compiles and links faster, and incremental artifacts are
+# never reused across runs. Environment rather than a `[profile.ci]`, so every
+# cargo call takes it, tools/arch-doc-tests.sh's own `cargo test --list` calls
+# among them, and lists from the build beside it instead of building the dev
+# profile again. On x86_64 Linux the toolchain links with its bundled rust-lld
+# by default (Rust 1.90 and later), so RUSTFLAGS names no linker.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   test:
@@ -71,17 +80,22 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
-      # Cargo.lock is not tracked (a library), so the key follows the manifest.
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      # Cargo.lock is not tracked (a library): resolve it before the cache, so
+      # the cache key hashes the lock this build uses, not the manifest alone.
+      - name: Resolve the dependency lock
+        run: test -f Cargo.lock || cargo generate-lockfile
+
+      # The dependencies' build, keyed by the action on the lock, the rustc
+      # release and host, and the CARGO* and RUST* environment (RUSTFLAGS and
+      # the profile above among them), plus the feature set's shared key; the
+      # workspace crate is pruned before the save. Saved by a push to a line
+      # alone (a PR's cache is its own ref's, seen by no other PR; a line's is
+      # seen by every PR into it), restored everywhere.
+      - name: Cache the dependency build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.rust }}-
+          shared-key: test-sqlite-remote
+          save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Run unit tests (sqlite)
         run: cargo test --lib --features sqlite,remote --verbose
@@ -130,16 +144,17 @@ jobs:
           toolchain: stable
           components: clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      # Cargo.lock is not tracked (a library): resolve it before the cache, so
+      # the cache key hashes the lock this build uses, not the manifest alone.
+      - name: Resolve the dependency lock
+        run: test -f Cargo.lock || cargo generate-lockfile
+
+      # As the Test Suite's cache, keyed for this job's own build.
+      - name: Cache the dependency build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ubuntu-clippy-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            ubuntu-clippy-
+          shared-key: clippy
+          save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Run Clippy
         run: cargo clippy --all-targets --features sqlite,remote -- -D warnings
@@ -178,16 +193,18 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      # Cargo.lock is not tracked (a library): resolve it before the cache, so
+      # the cache key hashes the lock this build uses, not the manifest alone.
+      - name: Resolve the dependency lock
+        run: test -f Cargo.lock || cargo generate-lockfile
+
+      # As the Test Suite's cache; vectors and fixtures build the same `sqlite`
+      # test set and share one.
+      - name: Cache the dependency build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ubuntu-vectors-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            ubuntu-vectors-
+          shared-key: test-sqlite
+          save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
       - name: The vector files are present
         run: |
@@ -226,6 +243,13 @@ jobs:
             cargo generate-lockfile
           fi
 
+      # The vectors job's cache: the same `sqlite` test set.
+      - name: Cache the dependency build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test-sqlite
+          save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
+
       - name: Replay golden fixtures
         run: cargo test --test fixtures --locked
 
@@ -240,16 +264,17 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      # Cargo.lock is not tracked (a library): resolve it before the cache, so
+      # the cache key hashes the lock this build uses, not the manifest alone.
+      - name: Resolve the dependency lock
+        run: test -f Cargo.lock || cargo generate-lockfile
+
+      # As the Test Suite's cache, keyed for this job's own build.
+      - name: Cache the dependency build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ubuntu-docs-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            ubuntu-docs-
+          shared-key: docs
+          save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build docs
         run: cargo doc --no-deps --features sqlite
