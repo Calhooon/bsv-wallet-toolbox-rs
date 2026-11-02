@@ -38,7 +38,7 @@
   everyday key. Old: both answered from the wallet's own `ProtoWallet`
   whatever the flag, after the seven key calls had moved to the privileged
   key manager (#186). New: both take the key route the seven take, as the
-  reference's `Wallet.ts:467-490` does: the argument validators first,
+  reference's `Wallet.ts:467-490` does: the argument validators ahead of the route,
   then the manager with the caller's `privileged`, `privilegedReason` and
   originator; with no manager the reference's refusal,
   `WalletRefusal { class: NotImplemented }` with the text `Privileged
