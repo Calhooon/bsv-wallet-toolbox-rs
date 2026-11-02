@@ -560,6 +560,27 @@ async fn a_symlink_sibling_is_removed_as_a_link_and_its_target_untouched() {
     );
 }
 
+/// A planted sibling of the write's shape that is a hard link to a file outside
+/// the directory (a regular file sharing the target's inode) is unlinked by
+/// name and never written: the target is byte-identical.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_hard_link_sibling_is_unlinked_and_its_target_untouched() {
+    let (_, _, v1, _) = v1_parts();
+    let scratch = scratch_file("h.keys", &v1);
+    let outside = scratch_file("outside", b"not the manager's to zero");
+    let link = scratch.0.with_file_name("h.keys.tmp-fedcba9876543210");
+    std::fs::hard_link(&outside.0, &link).unwrap();
+    let (m, _) = manager();
+    m.open_key_file(&scratch.0).await.unwrap();
+    assert_eq!(m.get_profiles().await.len(), 1, "the open proceeds");
+    assert_eq!(
+        std::fs::read(&outside.0).unwrap(),
+        b"not the manager's to zero"
+    );
+    assert!(!link.exists(), "the sibling's name is gone");
+}
+
 /// A key file whose directory is absent is no profiles, as an absent file is;
 /// the stale-sibling scan is skipped, and a save then fails at the write.
 #[tokio::test]
