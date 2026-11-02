@@ -97,17 +97,41 @@ jobs:
           shared-key: test-sqlite-remote
           save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
-      - name: Run unit tests (sqlite)
-        run: cargo test --lib --features sqlite,remote --verbose
-        env:
-          # Two replays for a ladder scene a runner stall failed (#513); one locally.
-          LADDER_FIXTURES_STALL_REPLAYS: "2"
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-nextest@0.9.146
+
+      # The builds and the runs are separate steps, so the log shows the job's
+      # compile time apart from its test time; nextest's run lists from these
+      # builds and compiles nothing.
+      - name: Build unit tests (sqlite)
+        run: cargo test --no-run --lib --features sqlite,remote
 
       # Every target under tests/, not services_tests alone: the witnesses of
       # the 0.4.x fixes live in the other files.
       # `bench-support` also runs the four network-isolation witnesses of #182.
+      - name: Build integration tests
+        run: cargo test --no-run --test '*' --features sqlite,remote,bench-support
+
+      # A mark lld or mold leaves in the binary's .comment section.
+      - name: The linker the build used
+        run: |
+          for f in target/debug/deps/bsv_wallet_toolbox_rs-*; do
+            if [ -f "$f" ] && [ -x "$f" ]; then
+              readelf -p .comment "$f" | grep -i -E 'lld|mold' || echo "$f: no lld or mold mark"
+              break
+            fi
+          done
+
+      - name: Run unit tests (sqlite)
+        run: cargo nextest run --lib --features sqlite,remote --no-fail-fast
+        env:
+          # Two replays for a ladder scene a runner stall failed (#513); one locally.
+          LADDER_FIXTURES_STALL_REPLAYS: "2"
+
       - name: Run integration tests
-        run: cargo test --test '*' --features sqlite,remote,bench-support --verbose
+        run: cargo nextest run --test '*' --features sqlite,remote,bench-support --no-fail-fast
 
       # Every test the invariants tables of docs/ARCHITECTURE.md name exists
       # (and section 7's D7 row keeps its citations). The `--lib` rows list
@@ -118,15 +142,19 @@ jobs:
         run: ARCH_DOC_LIB_FEATURES=sqlite,remote ARCH_DOC_TEST_FEATURES=sqlite,remote,bench-support bash tools/arch-doc-tests.sh
 
       # The integration step's feature set, so the library it built is reused
-      # here and the job compiles it once less (#253).
+      # here and the job compiles it once less (#253). Doc tests stay on cargo
+      # test: nextest does not run them.
       - name: Run doc tests
         run: cargo test --doc --features sqlite,remote,bench-support
 
       # The unit tests and every suite under tests/ with `remote` alone: a test
       # needing a SQL store carries its feature gate (#429). The run takes
       # well under a minute past its build, so it runs rather than only builds.
+      - name: Build unit and integration tests (remote only)
+        run: cargo test --no-run --lib --tests --no-default-features --features remote
+
       - name: Run unit and integration tests (remote only)
-        run: cargo test --lib --tests --no-default-features --features remote
+        run: cargo nextest run --lib --tests --no-default-features --features remote --no-fail-fast
         env:
           # Two replays for a ladder scene a runner stall failed (#513); one locally.
           LADDER_FIXTURES_STALL_REPLAYS: "2"
