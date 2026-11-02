@@ -1,8 +1,10 @@
 # The CWI manager's key file as the reference's UMP token (#560)
 
 Status: stage one, the owner's word of 2026-11-02 13:2xZ ("the
-recommendation as given, no shortcuts; a key-file format, a public shape").
-Stage two (argon2id) waits for the owner's word on a dependency.
+recommendation as given, no shortcuts; a key-file format, a public shape"),
+with the migration's shape on the owner's word of 2026-11-02 14:4xZ
+(#594, option (a): the v1 record stays beside the token until a later
+unlock opens it). Stage two (argon2id) waits for the owner's word on a dependency.
 
 The reference is ts-stack at edf6e03,
 `packages/wallet/wallet-toolbox/src/CWIStyleWalletManager.ts`, read with
@@ -148,8 +150,8 @@ effect: it is a session cache, not a password-protected file.
 
 | v1 | the reference | the new key file |
 |----|---------------|------------------|
-| `PBKDF2(password, id)` | `passwordKey`, salt `passwordSalt` | the v1 derived key becomes the token's root primary key; a fresh `passwordSalt` salts the new `passwordKey` |
-| `primary_pad` | `Profile.primaryPad` | kept: the profile's key is unchanged |
+| `PBKDF2(password, id)` | `passwordKey`, salt `passwordSalt` | opens the v1 record only; a fresh `passwordSalt` salts the new `passwordKey` |
+| `primary_pad` | `Profile.primaryPad` | the token's pad is `primary XOR root` around a fresh random root, so the profile's key is unchanged; the v1 pad stays under `"v1"` until it is dropped (4.3) |
 | `privileged_pad` | `Profile.privilegedPad` | kept, drawn when empty |
 | id | `Profile.id` | kept; no longer a salt |
 | (none) | presentation key, recovery key, root privileged key | drawn at the token's creation |
@@ -183,12 +185,30 @@ effect: it is a session cache, not a password-protected file.
   (stage two).
 
 The current outpoint: the toolbox publishes nothing (no interactor; rule
-3), so its tokens carry `current_outpoint: None`, written as a zero-length
-outpoint. The reference's reader requires one, so a token the toolbox
-writes is readable by the reference once a host has published it and set
-the outpoint (the Rust-to-reference witness sets one, section 7). The
-toolbox's reader accepts a zero-length outpoint as `None` and checks the
-reference's pattern otherwise.
+3), so its tokens carry `current_outpoint: None`. The reference has no
+convention for a token not on chain: `createNewUser` publishes before
+anything serializes (:1900), `serializeUMPToken` throws without an
+outpoint (:2649-2651), `saveSnapshot` likewise (:1972), and
+`deserializeUMPToken` refuses any outpoint not matching
+`^[^\s.:]+[.:]\d+$` (:2786-2789), the empty one included. So the toolbox
+writes `UNPUBLISHED_OUTPOINT`, `<64 zeros>.0`: the null txid at index 0,
+which the reference's pattern takes and no transaction has (the null
+txid marks a coinbase input; it is never a transaction's id). The toolbox
+reads it back as `None` and, as the reference, refuses an empty or
+malformed outpoint. The Rust-to-reference vector opens on the reference's
+code with no locator set (section 7).
+
+The params JSON: the reference's constructor fills every field of its
+`Required<KdfConfig>` (:1679-1686), so a reference PBKDF2 token's params
+read `{"iterations":7777,"memoryKiB":131072,"parallelism":1,"hashLength":32}`
+whatever the algorithm; `PasswordKdf::pbkdf2` fills the same three, so
+the toolbox writes those bytes too. The reference's writer is
+deterministic there (a fixed key order, `JSON.stringify` of integers), so
+a Rust token and a reference token at the same KDF differ in the salt,
+the ciphertexts (fresh IVs and keys) and the outpoint, and nowhere else:
+the version byte, the flags, `umpVersion`, the algorithm and the params
+are byte-identical (`the_reference_written_v3_token_opens_to_its_recorded_root_keys`
+compares the reference's params with `PasswordKdf::pbkdf2(7777)`'s).
 
 ### 4.2 The key file (v3)
 
@@ -205,7 +225,8 @@ token:
     {
       "name": "...", "id": "<base64 16>", "primaryPad": "<base64 32>",
       "privilegedPad": "<base64 32>", "createdAt": "<RFC 3339>", "updatedAt": "<RFC 3339>",
-      "ump": { "presentationKey": "<base64 32>", "token": "<base64 serializeUMPToken>" }
+      "ump": { "presentationKey": "<base64 32>", "token": "<base64 serializeUMPToken>" },
+      "v1": { "primaryPad": "<base64 32>" }
     }
   ]
 }
@@ -225,8 +246,11 @@ token:
   presentation-and-recovery flows; a host that wants the presentation key
   off the disk is stage two's question, not this format's.
 - The recovery key is drawn with the token and recoverable after an
-  unlock (`recovery_key(id, password)`, the reference's `getRecoveryKey`,
-  :2356-2361), unwrapped from field 10 with the root privileged key.
+  unlock (`recovery_key(id, password)`), unwrapped from field 10 with the
+  root privileged key. The reference's manager hands the recovery key to
+  its host twice: `recoveryKeySaver(recoveryKey)` at creation (:1840) and
+  the public `getRecoveryKey()` (:2356-2361); `recovery_key` is the
+  second, kept for that reason.
 - The root privileged key is drawn with the token. The wallet the toolbox
   builds still takes the host's privileged key manager
   (`provide_privileged_key_manager`), unchanged; the token's privileged
@@ -234,10 +258,14 @@ token:
 - The profile's fields are the clear index v1 already had (name, id, pads, times):
   `get_profiles` lists before an unlock. At an unlock the pads are read
   from the decrypted `profilesEncrypted`, never the clear copy.
-- `"ump"` absent marks a v1 record carried until its own unlock (4.3). The
-  exports (`export_profile`, `export_profile_json`, `backup_all_profiles`)
-  write the same record, so an exported v3 profile keeps its token; a v1
-  export (no `"ump"`) imports as a v1 record.
+- `"ump"` absent marks a v1 record carried until its own unlock (4.3);
+  `"v1"` beside `"ump"` is the v1 record kept after its migrating unlock
+  until a later unlock opens the token. The clear `primaryPad` of a record
+  with a token is the token's pad, which yields no key without the
+  token's root. The exports (`export_profile`, `export_profile_json`,
+  `backup_all_profiles`) write the same record, so an exported v3 profile
+  keeps its token (and its `"v1"` while kept); a v1 export (no `"ump"`)
+  imports as a v1 record.
 - New tokens: `pbkdf2-sha512` at `config.password_rounds` (default 7777,
   the reference's `PBKDF2_NUM_ROUNDS`), `umpVersion` 3, a 32-byte salt
   from `crate::rng::os_fill` (#191), and every key above drawn the same
@@ -248,8 +276,27 @@ token:
 `save_snapshot` writes this container; `load_snapshot` reads it and v1.
 `open_key_file(path)` reads a file (v1 or v3; an absent file is an empty
 manager) and remembers the path; `save_key_file()` writes the container
-to a sibling `<name>.tmp-<hex>` in the same directory, syncs it and
-renames it over the file, so a reader sees the old file or the new one.
+to a sibling `<name>.tmp-<16 hex>` in the same directory, syncs it,
+renames it over the file and syncs the directory, so a reader sees the
+old file or the new one and the rename survives a crash. A sibling of
+that shape left by an interrupted write holds key material, so
+`open_key_file` overwrites it with zeros in place, syncs it and removes it
+(best effort on a copy-on-write file system, where the overwrite may land
+on new blocks).
+
+Key material in memory: the derived keys, the five factors, the opened
+root, the presentation key (`UmpEntry` and the on-disk `UmpRecord`), the
+kept v1 pad (`V1Record`), the decrypted profiles (`RefProfile`'s pads,
+zeroed by its `Drop`), the decrypted v1 payload, the file's bytes read
+and the encoded bytes written are each `Zeroizing` or zeroed on drop.
+The factor wrapping derives the BRC-42 key itself and encrypts the
+borrowed plaintext, where `ProtoWallet::encrypt` would have taken an owned
+copy into `EncryptArgs` and dropped it unzeroed. The encoder writes into a
+buffer sized ahead (8 KiB a profile) so serde does not grow it and free a
+copy. Not covered: the key handed to the host's wallet builder (its
+signature takes a `Vec<u8>`; that copy is the host's), the base64 text
+serde decodes from, `save_snapshot`'s return (the caller's), and what
+bsv-rs and `ring` hold inside their own types.
 
 ### 4.3 The read path and the migration
 
@@ -260,33 +307,81 @@ renames it over the file, so a reader sees the old file or the new one.
 - v1 (a `load_snapshot` of v1 bytes, or an `"ump"`-less record): opens
   as today, `pad XOR PBKDF2(password, id, config.password_rounds)` (the
   `use_pbkdf2: false` fallback kept for files written with it).
-- The migration: after a v1 profile's unlock builds its wallet, the
-  record becomes a token: root primary key = the v1 derived key, the pad
-  unchanged (the profile's key does not move), a fresh salt, a fresh
-  password key at the configured KDF, fresh presentation, recovery and
-  root privileged keys. When a key file is open the container is written
-  (sibling, sync, rename) before the wallet is installed; a failed write
-  fails the unlock and leaves memory and file as they were. A failed
-  unlock (unknown profile, no privileged key manager, a builder error)
-  writes nothing.
+- The migration (#594, the owner's word of 2026-11-02 14:4xZ, option (a)).
+  A v1 record has no password check, so the migrating unlock cannot tell
+  a mistyped password from the right one. The token therefore joins the
+  v1 record and does not replace it:
+  1. The migrating unlock (a v1 record alone): v1 opens, `key = v1_pad XOR
+     PBKDF2(password, id)`, and once the wallet is built a token is sealed
+     around it: a fresh random root primary key, the token's pad `key XOR
+     root` (so `root XOR pad`, the reference's derivation, is still the
+     v1 key and the funds do not move), a fresh salt, a fresh password key
+     at the configured KDF, fresh presentation, recovery and root
+     privileged keys. The file is written with the token and the v1
+     record (`"v1"`) both.
+  2. A later unlock (both records): the token is tried before v1. If
+     it opens, its GCM tag is the proof that this password is the one the
+     token was sealed with, so two unlocks agreed; the v1 record leaves
+     and the file is written with the token alone.
+  3. If the token refuses at that later unlock, v1 opens (as it always
+     did) and the token is re-sealed around that key in memory; the file
+     is not written. The state "a token sealed with password X, the v1
+     record, password Y arrives" is the same whether X was a typo and Y
+     the right password or X the right one and Y a typo: nothing in the
+     file tells them apart. Writing the re-sealed token would change the
+     file on a wrong second unlock; not writing it keeps the file
+     byte-identical then, at a cost: a typo at the migrating unlock is
+     repaired on disk only when two right unlocks happen in one process
+     (the earlier re-seals in memory, the later opens that token and
+     writes), and until then the file's token is sealed with the typo. A
+     host that saves (`save_key_file`) after the earlier writes the
+     re-sealed token beside v1, which is also safe.
+  With a key file open each write is a sibling, sync, rename and
+  directory sync, before the wallet is installed; a failed write fails
+  the unlock and leaves memory and file as they were. A failed unlock
+  (unknown profile, no privileged key manager, a builder error) writes
+  nothing at either step. The unlock reads its record before the KDF; the
+  commit, under the profiles' write lock, installs the next record only
+  while the profile still holds the record the unlock read, and refuses
+  with `Error::InvalidOperation` otherwise (a delete or an import during
+  the KDF); the file then written is the manager's profiles as they are
+  at the commit, the bytes `save_key_file` would write.
 - A v1 file of several profiles migrates one profile per unlock: each
-  profile has its own password. The file is v3 from the migrating unlock
-  on, with the not-yet-unlocked v1 records inside it.
+  profile has its own password. The file is v3 from the earliest migrating
+  unlock on, with the not-yet-unlocked v1 records inside it.
 - A reference-written token opens: v3 at its `iterations`, legacy (no
-  metadata, the reference's version 2 serialization) at 7777.
+  metadata, the reference's version 2 serialization) at 7777. A record
+  with a token alone is never re-written by an unlock.
+- The salt: after step 2 the file holds nothing derived at the profile
+  id. The token's root is a fresh draw, so no blob opens under
+  `PBKDF2(password, id)` (the round before this fix sealed the token
+  around the v1 derived key itself, so a guess at the profile-id salt
+  could be tested against the token's GCM tags, which v1 never offered),
+  and the clear pad is the token's, which yields no key without the
+  root. Until step 2 the v1 record stays, and with it v1's exposure (the
+  profile-id salt, a guess testable against any public key the wallet
+  has shown); a host that never unlocks twice keeps it.
 
-#### The hazard v1 carries into the migration
+#### The factor model, and what an offline guess can test
 
-v1 has no password check: a mistyped password builds another wallet. The
-migrating unlock cannot tell a mistyped password from the right one, so a
-mistyped migrating unlock re-keys the record to the wrong root, and the
-v1 record that the right password would have opened is gone from the
-file. Before this change the right password still worked the next time.
-The witnesses pin the brief's rule (migrate at the successful unlock).
-The narrowing this design proposes for the owner's word, not built here:
-keep the v1 record beside the token until a later unlock opens the token
-(the GCM tag is then the check), at the cost of the profile-id salt
-staying in the file until then. The report files it.
+The reference's token has three factors, any two of which open the root:
+the password, the presentation key and the recovery key (fields 1 to 3).
+The token itself is public (it sits on chain, found by
+`presentationHash`); the presentation key is held off chain by the user
+(a device, a WAB). A holder of the token alone cannot test a password
+guess: field 1 needs `presentationKey XOR passwordKey`.
+
+The toolbox's key file holds the presentation key beside the token, as
+v1 held its pad: the unlock is the password alone. So the toolbox's file
+has one factor. A holder of the file can test a password guess offline
+against field 1's GCM tag, at one PBKDF2-SHA512 of 7777 rounds a guess,
+with a per-token random salt (no precomputation across files or
+profiles). v1 offered no tag, but a guess yields a candidate key whose
+public key can be compared with any key the wallet has shown (its
+identity key), so v1 was one factor too, at the profile-id salt. That
+the toolbox file is one factor at 7777 rounds is a finding for the
+owner's items (argon2id is #593; a presentation key off the file is a
+host's design), not this change's to alter.
 
 ## 5. Argon2id (stage two, out of this lane)
 
@@ -312,31 +407,51 @@ issue names the dependency.
   `new(key_encrypted, profiles_encrypted)`), `WalletSnapshot`
   (`active_profile_id: Vec<u8>` of 16 bytes, binary layout), both without
   their serde derives (the reference's bytes are their form), and the new
-  `PasswordKdf`, `KdfAlgorithm`, `open_key_file`, `save_key_file`,
-  `recovery_key`. Nothing else public moves.
+  `PasswordKdf`, `KdfAlgorithm` (`UNPUBLISHED_OUTPOINT` is crate-private:
+  `to_bytes` writes it, `from_bytes` reads it as `None`). Three new
+  manager methods: `open_key_file` and `save_key_file` (the migration
+  re-writes the file it was opened from, so the manager must know the
+  path) and `recovery_key` (the reference's `getRecoveryKey`, 4.2).
+  Nothing else public moves.
+- A host that never unlocks a migrated profile twice keeps the v1 record
+  (and the profile-id salt) in its file beside the token.
 - No host of this repository's line reads the key file today
   (bsv-wallet-cli at origin/beta has no `CWIStyleWalletManager` call);
   the CHANGELOG's host note is for bsv-wallet-cli#386.
 
 ## 7. The witnesses
 
-In `src/managers/ump_token.rs` and `cwi_style_wallet_manager.rs`'s tests,
-and `tests/test_vectors.rs`:
+In `src/managers/ump_token_tests.rs` (the token, the KDF and the
+vectors both ways) and `src/managers/cwi_style_wallet_manager_tests.rs`
+(the key file and the migration):
 
 1. A new profile's token carries a 32-byte salt distinct from the
    profile id, `umpVersion` 3 and `pbkdf2-sha512` at the configured
    iterations; the salt is an OS draw.
 2. A v1 file opens with its password; after the unlock the file holds
-   `keyFileVersion` 3, a token with a fresh 32-byte salt, and the same
-   profile key decrypts from the token with the same password (the
-   wallet builder sees the same key before and after).
-3. A failed unlock (wrong password on v3; no privileged key manager on
-   v1) leaves the file byte-identical.
-4. A reference legacy token (no KDF metadata) opens at 7777 rounds, and
+   `keyFileVersion` 3, a token with a fresh 32-byte salt and the v1
+   record beside it, and the same profile key decrypts from the token; a
+   second unlock opens the token and the file holds the token alone.
+3. The #594 exit: a wrong password at the migrating unlock leaves the v1
+   record intact, the right password opens afterwards and the token then
+   carries the right root, and the next right unlock drops v1; a wrong
+   password at the second unlock leaves the file byte-identical and the
+   right one still opens. A failed unlock at either step (no privileged
+   key manager) and a wrong password on a token alone leave the file
+   byte-identical; a reference-written token is never re-written.
+4. After the drop, `PBKDF2(password, profile id)` opens no blob of the
+   token and the clear pad yields no key with it; `PBKDF2(password,
+   new salt)` opens the token to the v1 primary key. One changed byte of
+   a v3 salt refuses the right password.
+5. A profile deleted during its unlock refuses the commit and nothing is
+   written; a stale write sibling is removed at the next open; the
+   records' key material is zeroed on drop.
+6. A reference legacy token (no KDF metadata) opens at 7777 rounds, and
    does not at another count.
-5. The token's binary layout round-trips; the reference's bounds refuse
-   a zero-length field, unsafe KDF params and a malformed outpoint.
-6. The reference's vectors (`test_vectors/keys/ump-token-reference.json`):
+7. The token's binary layout round-trips; the reference's bounds refuse
+   a zero-length field, unsafe KDF params and an empty or malformed
+   outpoint.
+8. The reference's vectors (`test_vectors/keys/ump-token-reference.json`):
    a token written by the reference's own code under Node with recorded
    factors; the Rust reader recovers the recorded root primary and
    privileged keys, the profile's key and the recovery key, from both the
@@ -344,7 +459,9 @@ and `tests/test_vectors.rs`:
    code writes is opened by the reference's `deserializeUMPToken`,
    `providePresentationKey` + `providePassword` and `switchProfile` under
    Node (`test_vectors/keys/ump-token-reference.mjs`), the recorded
-   result beside it. The reference's read needs a `UMPTokenInteractor`;
-   the script stands one up locally (it answers the lookup with the token
+   result beside it. The Rust token carries no outpoint (written as
+   `UNPUBLISHED_OUTPOINT`) and the reference's reader takes it with no
+   locator set. The reference's unlock needs a `UMPTokenInteractor`; the
+   script stands one up locally (it answers the lookup with the token
    under test and records `buildAndSend` with a fixed outpoint), so no
    network is reached.
