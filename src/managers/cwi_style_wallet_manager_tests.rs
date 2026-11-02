@@ -252,8 +252,18 @@ async fn a_v1_file_gains_a_token_and_a_later_unlock_that_opens_it_drops_v1() {
     );
 }
 
+/// The v1 record's pad as the key file holds it.
+fn v1_pad(file: &[u8]) -> Option<Vec<u8>> {
+    let (file, _) = only_token(file);
+    let v1 = file.profiles[0].v1.as_ref();
+    v1.map(|v| v.primary_pad.to_vec())
+}
+
+/// (w1) A typo at the migrating unlock, then the right password: the token on
+/// disk is re-sealed under the right one beside the intact v1 record; the
+/// right password again opens the token and the file holds it alone.
 #[tokio::test]
-async fn a_wrong_password_at_the_migrating_unlock_keeps_v1_and_the_right_one_still_opens() {
+async fn a_typo_at_the_migrating_unlock_is_resealed_on_disk_by_the_right_password() {
     let (id, key, v1, password) = v1_parts();
     let scratch = scratch_file("typo.keys", &v1);
     let path = scratch.0.as_path();
@@ -261,8 +271,7 @@ async fn a_wrong_password_at_the_migrating_unlock_keeps_v1_and_the_right_one_sti
     m.switch_profile(&id, "a typo").await.unwrap();
     assert_ne!(seen.lock().unwrap()[0], key, "v1 has no password check");
     let typo = std::fs::read(path).unwrap();
-    let (file, _) = only_token(&typo);
-    assert!(file.profiles[0].v1.is_some(), "the v1 record is intact");
+    let pad = v1_pad(&typo).expect("the v1 record is intact");
     assert!(
         token_key(&typo, &password).is_err(),
         "the token holds the typo's root"
@@ -274,26 +283,21 @@ async fn a_wrong_password_at_the_migrating_unlock_keeps_v1_and_the_right_one_sti
         key,
         "the right password opens through v1"
     );
-    let resealed = m.save_snapshot().await.unwrap();
+    let resealed = std::fs::read(path).unwrap();
     assert_eq!(
         *token_key(&resealed, &password).unwrap(),
         key,
-        "the token now carries the right root"
+        "the token on disk carries the right root"
     );
-    assert_eq!(
-        std::fs::read(path).unwrap(),
-        typo,
-        "a token that refused writes nothing"
-    );
+    assert!(token_key(&resealed, "a typo").is_err());
+    assert_eq!(v1_pad(&resealed), Some(pad), "the v1 record is intact");
 
     m.switch_profile(&id, &password).await.unwrap();
     assert_eq!(seen.lock().unwrap()[2], key);
     let alone = std::fs::read(path).unwrap();
-    let (file, token) = only_token(&alone);
-    assert!(
-        file.profiles[0].v1.is_none(),
-        "the second right unlock drops v1"
-    );
+    assert_eq!(v1_pad(&alone), None, "the token opened, so v1 left");
+    assert!(!String::from_utf8_lossy(&alone).contains("\"v1\""));
+    let (_, token) = only_token(&alone);
     assert_eq!(token.password_salt.len(), 32);
     assert_ne!(token.password_salt[..16], id[..]);
     let (fresh, seen_fresh) = opened(path).await;
@@ -301,35 +305,53 @@ async fn a_wrong_password_at_the_migrating_unlock_keeps_v1_and_the_right_one_sti
     assert_eq!(seen_fresh.lock().unwrap()[0], key);
 }
 
+/// (w2) A wrong password while the v1 record is present re-seals the token on
+/// disk under it, the v1 record's bytes and the rest of the file unchanged;
+/// the right password then opens through v1 and re-seals.
 #[tokio::test]
-async fn a_wrong_second_unlock_changes_nothing() {
+async fn a_wrong_password_beside_v1_reseals_the_token_and_changes_nothing_else() {
     let (id, key, v1, password) = v1_parts();
     let scratch = scratch_file("second.keys", &v1);
     let path = scratch.0.as_path();
-    opened(path)
-        .await
-        .0
-        .switch_profile(&id, &password)
-        .await
-        .unwrap();
-    let both = std::fs::read(path).unwrap();
     let (m, _) = opened(path).await;
+    m.switch_profile(&id, &password).await.unwrap();
+    let both = std::fs::read(path).unwrap();
+    let (m, seen) = opened(path).await;
     m.switch_profile(&id, "not the password").await.unwrap();
-    assert_eq!(
-        std::fs::read(path).unwrap(),
-        both,
-        "the file is byte-identical"
+    let wrong = std::fs::read(path).unwrap();
+    assert!(
+        token_key(&wrong, "not the password").is_ok(),
+        "the token on disk is sealed under the wrong password"
     );
-    let (n, seen) = opened(path).await;
-    n.switch_profile(&id, &password).await.unwrap();
+    assert!(token_key(&wrong, &password).is_err());
+    let (before, _) = only_token(&both);
+    let (after, _) = only_token(&wrong);
+    let (b, a) = (&before.profiles[0], &after.profiles[0]);
     assert_eq!(
-        seen.lock().unwrap()[0],
+        a.v1.as_ref().unwrap().primary_pad,
+        b.v1.as_ref().unwrap().primary_pad,
+        "the v1 record's bytes"
+    );
+    assert_eq!(
+        (&a.profile.name, &a.profile.id, &a.profile.privileged_pad),
+        (&b.profile.name, &b.profile.id, &b.profile.privileged_pad)
+    );
+    assert_eq!(
+        (a.profile.created_at, a.profile.updated_at),
+        (b.profile.created_at, b.profile.updated_at)
+    );
+    assert_eq!(after.default_profile_id, before.default_profile_id);
+    assert_eq!(after.profiles.len(), 1);
+
+    m.switch_profile(&id, &password).await.unwrap();
+    assert_eq!(
+        seen.lock().unwrap()[1],
         key,
-        "the right password still opens the token"
+        "the right one opens through v1"
     );
-    assert!(only_token(&std::fs::read(path).unwrap()).0.profiles[0]
-        .v1
-        .is_none());
+    let right = std::fs::read(path).unwrap();
+    assert_eq!(*token_key(&right, &password).unwrap(), key, "and re-seals");
+    assert_eq!(v1_pad(&right), v1_pad(&both));
 }
 
 #[tokio::test]
@@ -419,10 +441,9 @@ async fn a_profile_replaced_or_deleted_during_its_unlock_refuses_the_commit() {
     let (m, _) = opened(path).await;
     let read = m.entry(&id).await.unwrap();
     let (_, next) = m.unlock_entry(&read, &password).unwrap();
-    let (next, write) = next.unwrap();
-    assert!(write);
+    let next = next.unwrap();
     m.delete_profile(&id).await.unwrap();
-    let refused = m.commit_entry(&read, next.clone(), write).await;
+    let refused = m.commit_entry(&read, next.clone()).await;
     assert!(matches!(refused, Err(Error::InvalidOperation(_))));
     assert!(
         m.get_profiles().await.is_empty(),
@@ -431,7 +452,7 @@ async fn a_profile_replaced_or_deleted_during_its_unlock_refuses_the_commit() {
     assert_eq!(std::fs::read(path).unwrap(), v1, "nothing written");
 
     m.load_snapshot(&v1).await.unwrap();
-    m.commit_entry(&read, next, write).await.unwrap();
+    m.commit_entry(&read, next).await.unwrap();
     assert!(only_token(&std::fs::read(path).unwrap()).0.profiles[0]
         .v1
         .is_some());

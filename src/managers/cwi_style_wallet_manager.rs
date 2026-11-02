@@ -227,9 +227,9 @@ async fn write_key_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// A profile's key and the record that follows its unlock, with whether the
-/// file must take it (`unlock_entry`).
-type Unlocked = (Zeroizing<Vec<u8>>, Option<(Entry, bool)>);
+/// A profile's key and the record that follows its unlock, which the file
+/// takes (`unlock_entry`).
+type Unlocked = (Zeroizing<Vec<u8>>, Option<Entry>);
 
 /// Type alias for the wallet builder function.
 pub type CWIWalletBuilder = Arc<
@@ -441,24 +441,24 @@ impl CWIStyleWalletManager {
             })
     }
 
-    /// The profile's wallet key, and the record that follows the unlock with
-    /// whether the file must take it (design 4.3):
+    /// The profile's wallet key, and the record that follows the unlock,
+    /// which the file takes (design 4.3):
     ///
     /// - a token alone: it opens or the unlock fails; nothing follows;
     /// - a v1 record alone: v1 opens; a token joins it, written, the v1 record kept;
     /// - both, the token opens: its GCM tag proves the password the token was
     ///   sealed with, so the v1 record leaves, written;
     /// - both, the token refuses: v1 opens and the token is re-sealed around
-    ///   that key in memory, the file untouched (v1 cannot tell this
-    ///   password from the token's; the next unlock that opens the token
-    ///   writes).
+    ///   that key under this password, written beside the unchanged v1
+    ///   record (v1 cannot tell this password from the token's; only a
+    ///   token that opens drops v1).
     fn unlock_entry(&self, entry: &Entry, password: &str) -> Result<Unlocked> {
         if let Some(ump) = &entry.ump {
             match self.open_ump(entry, ump, password) {
                 Ok(key) if entry.v1_pad.is_some() => {
                     let mut next = entry.clone();
                     next.v1_pad = None;
-                    return Ok((key, Some((next, true))));
+                    return Ok((key, Some(next)));
                 }
                 Ok(key) => return Ok((key, None)),
                 Err(Error::AccessDenied(_)) if entry.v1_pad.is_some() => {}
@@ -482,7 +482,7 @@ impl CWIStyleWalletManager {
             ump: Some(ump),
             v1_pad: entry.v1_pad.clone(),
         };
-        Ok((key, Some((next, entry.ump.is_none()))))
+        Ok((key, Some(next)))
     }
 
     /// The profile's key from its token: root primary XOR the token's pad.
@@ -503,10 +503,10 @@ impl CWIStyleWalletManager {
     }
 
     /// Installs `next` in place of `read`, the record the unlock read before
-    /// its KDF ran; when `write` and a key file is open, the file is written
-    /// before memory moves, under the same lock. The profiles are those held now, after the
+    /// its KDF ran; with a key file open, the file is written before memory
+    /// moves, under the same lock. The profiles are those held now, after the
     /// KDF; a record replaced or deleted meanwhile refuses the commit.
-    async fn commit_entry(&self, read: &Entry, next: Entry, write: bool) -> Result<()> {
+    async fn commit_entry(&self, read: &Entry, next: Entry) -> Result<()> {
         let mut entries = self.entries.write().await;
         if !entries
             .get(&read.profile.id)
@@ -519,7 +519,7 @@ impl CWIStyleWalletManager {
         let mut now = entries.clone();
         now.insert(next.profile.id.clone(), next);
         let path = self.key_file.read().await.clone();
-        if let Some(path) = path.filter(|_| write) {
+        if let Some(path) = path {
             let default_id = self.default_profile_id.read().await.clone();
             write_key_file(&path, &encode_key_file(&now, default_id.as_deref())?).await?;
         }
@@ -529,13 +529,17 @@ impl CWIStyleWalletManager {
 
     /// Switches to a profile by ID.
     ///
-    /// A profile with a token alone opens it with the password (a wrong one
-    /// is `Error::AccessDenied`). A v1 record opens as before, salted with
-    /// the profile id; at its unlock a token joins it with a fresh salt and
-    /// root, and the v1 record stays until a later unlock opens the token
-    /// (design 4.3). With a key file open, those two steps re-write it
-    /// atomically before the wallet is installed. A failed unlock writes
-    /// nothing.
+    /// The four cases (design 4.3): a token alone opens with the password
+    /// (a wrong one is `Error::AccessDenied`) and nothing is written. A v1
+    /// record alone opens as before, salted with the profile id, and a token
+    /// joins it with a fresh salt and root. With both, a token that opens
+    /// drops the v1 record; a token that refuses is re-sealed under this
+    /// password around the key v1 opens to, the v1 record unchanged. Only a
+    /// token that opens drops v1, so the same wrong password at two
+    /// consecutive unlocks seals the token under it and drops v1: a host
+    /// whose builder checks the key and errs refuses the unlock with nothing
+    /// written. With a key file open, the last three re-write it atomically
+    /// before the wallet is installed. A failed unlock writes nothing.
     pub async fn switch_profile(&self, profile_id: &[u8], password: &str) -> Result<()> {
         let entry = self.entry(profile_id).await?;
         let (primary_key, next) = self.unlock_entry(&entry, password)?;
@@ -549,8 +553,8 @@ impl CWIStyleWalletManager {
 
         // Build wallet (the builder takes its own copy of the key)
         let wallet = (self.wallet_builder)(primary_key.to_vec(), pkm).await?;
-        if let Some((next, write)) = next {
-            self.commit_entry(&entry, next, write).await?;
+        if let Some(next) = next {
+            self.commit_entry(&entry, next).await?;
         }
 
         *self.underlying.write().await = Some(wallet);
