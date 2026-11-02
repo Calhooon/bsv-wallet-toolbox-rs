@@ -2,7 +2,8 @@
 """Write the complete Mutants run's record from its ledger; see docs/census/.
 
 Reads the run's ledger (catalog.json, base.txt, runs/iN/mutants.out/outcomes.json,
-state/done/N, logs/rounds.log, logs/load.log, logs/baseline.log) and writes
+state/done/N, logs/rounds.log, logs/load.log, logs/baseline.log, and the artifact
+run's state/artifact-timeout/N and artifact/runs/iN) and writes
 docs/census/mutants-complete-2026-11-02.{md,json} and the mutation cell's source
 in tools/ratchet.json (metrics.mutation_score_pct and its mutation_score
 section), which tools/scoreboard-write reads. Counting is tools/mutants-score's
@@ -14,7 +15,14 @@ The run moved between two hosts; a mutant's host is the segment holding its
 state/done/N file's mtime (its completion time), the segments bounded by the
 captain's and the lanes' host lines in logs/rounds.log.
 
+The artifact: the run's 288 timeouts, most of them a test reading a temp folder
+of 1.4 million dumps, were moved to state/artifact-timeout/N (their runs to
+artifact/runs/iN) and run again under the restored environment (lane
+p5-mutants-complete-box-d); the record's figure is the repaired one, and its
+section "The artifact" carries the run as it stood.
+
     python3 tools/mutants-complete-record.py [--ledger DIR]
+    python3 tools/mutants-complete-record.py --check   # the md against the json; exit 1 on a difference
 """
 
 import argparse
@@ -22,6 +30,7 @@ import datetime
 import importlib.machinery
 import importlib.util
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 import subprocess
@@ -30,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LEDGER = Path("/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-mutants-complete-box")
 DAY = "2026-11-02"
 STEM = f"docs/census/mutants-complete-{DAY}"
+ORACLE = "docs/census/mutants-oracle-2026-11-01.json"
 DOORS = ("src/storage/sqlx/create_action/must_spend.rs",
          "src/storage/sqlx/create_action/own_word.rs",
          "src/storage/sqlx/create_action/review_beef.rs")
@@ -39,12 +49,13 @@ SEGMENTS = (
     ("box", 18, "p5-mutants-complete-box", None, "captain: the box lane stopped"),
     ("studio", 10, "p5-mutants-complete-studio-b", "studio lane (p5-mutants-complete-studio-b)",
      "captain: the Studio lane stopped"),
-    ("box", 18, "p5-mutants-complete-box-c", "lane p5-mutants-complete-box-c:", None),
+    ("box", 18, "p5-mutants-complete-box-c", "lane p5-mutants-complete-box-c:", "lane p5-mutants-complete-box-d:"),
+    ("box", 18, "p5-mutants-complete-box-d", "lane p5-mutants-complete-box-d:", None),
 )
 # The rounds-log lines that switched RUST_TEST_THREADS=2 on and off; a round takes the
 # driver as it stands at its opening.
 THREADS = (("RUST_TEST_THREADS=2 (the box load rule)", 2), ("RUST_TEST_THREADS=2 removed", None),
-           ("RUST_TEST_THREADS=2 put back", 2))
+           ("RUST_TEST_THREADS=2 put back", 2), ("RUST_TEST_THREADS removed for the repair", None))
 # The opening burst of beef-rejected-*.hex dumps into $TMPDIR (pid 93567, 22:18:42Z to 22:23:05Z;
 # pid 41370 wrote the second, 23:21:07Z to 23:24:40Z, by the dumps' own millisecond stamps):
 # about 1.3 million files, so a test that reads the folder whole runs minutes from then on.
@@ -53,8 +64,31 @@ MEASURED = ("measured on the box on the unmutated base after the run, 2026-11-02
             "$TMPDIR at 1,411,380 entries: the lib pass 253.06 s under RUST_TEST_THREADS=2 and 195.16 s at the "
             "default, the one test alone 171.55 s; logs baseline-threads-{2,default}.log and one-test.log under "
             "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-mutants-complete-box-c/")
+WITNESS = "wallet::txid_only_tests::immediate_broadcast_writes_no_beef_dump"
+# The repair's own figures (logs/environment-restored.log in the ledger).
+PILE = {
+    "cause": "a mutant turned describe_invalid_beef's dump (create_action/beef_graph.rs at the base) into an "
+             "unbounded loop; two mutated test processes (pid 93567, 2026-11-01T22:18:42Z to 22:23:05Z; pid "
+             "41370, 23:21:07Z to 23:24:40Z) wrote beef-rejected-*.hex into the shared $TMPDIR, and "
+             f"{WITNESS} reads that folder whole twice (beef_dumps())",
+    "folder": "/Volumes/Lanes/tmp",
+    "files": 1398520, "entries": 1411380, "counted": "2026-11-02T07:43:48Z",
+}
+CLEARING = {
+    "command": "find /Volumes/Lanes/tmp -maxdepth 1 -name 'beef-rejected-*.hex' -type f -delete",
+    "at": "2026-11-02T07:49:00Z", "removed": 1398520, "entries_left": 12861,
+    "free_before": "246Gi", "free_after": "250Gi",
+}
+ENVIRONMENT = {
+    "at": "2026-11-02T07:50:29Z",
+    "tree": "the pristine scratch copy of the base (no difference from git archive 42559923 save Cargo.lock), "
+            "the default test threads, rule 10's proxy assignments inline, one-minute load 10.42",
+    "witness_s": 0.08, "lib_s": 25.64, "witness_s_pile": 171.55, "lib_s_pile": 253.06,
+    "lib_result": "test result: ok. 1730 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 25.64s",
+}
 HOSTS = {"box": "the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK)",
          "studio": "the Studio (10 cores, its default toolchain and SDK)"}
+KEYS = ("caught", "missed", "timeout", "unviable")
 
 
 def tool(name):
@@ -115,101 +149,131 @@ def openings(ledger):
     return out
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ledger", type=Path, default=LEDGER)
-    ledger = parser.parse_args().ledger
+def verdicts_of(documents):
+    out = {}
+    for _, doc in documents:
+        for row in doc["outcomes"]:
+            if row["scenario"] != "Baseline":
+                out[row["scenario"]["Mutant"]["name"]] = row["summary"]
+    return out
+
+
+def tally(c):
+    return {k: c[k] for k in KEYS} | {"score": pct(c)}
+
+
+def floor_verdict(c, wanted, floor, listed):
+    s = pct(c)
+    if sum(c.values()) != wanted:
+        return "incomplete"
+    if not listed:
+        return "no floor entry"
+    if floor is None:
+        return "floor pending"
+    if s is None:
+        return "no viable mutants"
+    if c["caught"] * 100 < floor * (c["caught"] + c["missed"] + c["timeout"]):
+        return "below floor"
+    return "at or above floor"
+
+
+def build(ledger):
     score = tool("mutants-score")
     catalog = json.loads((ledger / "catalog.json").read_text())
     base = (ledger / "base.txt").read_text().strip()
     floors = json.loads(subprocess.run(["git", "-C", str(ROOT), "show", f"{base}:tools/mutants-floor.json"],
                                        capture_output=True, text=True, check=True).stdout)["files"]
-    paths = [ledger / "runs" / f"i{n}" / "mutants.out" / "outcomes.json" for n in range(len(catalog))]
+    moved = {int(p.name) for p in (ledger / "state/artifact-timeout").iterdir()}
+    outcome = "mutants.out/outcomes.json"
+    paths = [ledger / "runs" / f"i{n}" / outcome for n in range(len(catalog))]
+    art_paths = [ledger / "artifact/runs" / f"i{n}" / outcome if n in moved else p for n, p in enumerate(paths)]
     missing = [n for n, p in enumerate(paths) if not p.exists()]
     documents = [(str(p), json.loads(p.read_text())) for p in paths if p.exists()]
+    art_documents = [(str(p), json.loads(p.read_text())) for p in art_paths if p.exists()]
     counts, seen, problems = score.collect(documents, skipped_baseline=True)
+    art_counts, art_seen, art_problems = score.collect(art_documents, skipped_baseline=True)
+    problems += [f"artifact: {p}" for p in art_problems]
     expected = {m["name"]: m["file"] for m in catalog}
-    absent = sorted(set(expected) - seen)
+    absent = sorted(set(expected) - seen) + sorted(set(expected) - art_seen)
 
     rounds = (ledger / "logs/rounds.log").read_text().splitlines()
     segs = segments(rounds)
     opens = openings(ledger)
     switches = threads(rounds)
-    verdicts = {}
-    for _, doc in documents:
-        for row in doc["outcomes"]:
-            if row["scenario"] != "Baseline":
-                verdicts[row["scenario"]["Mutant"]["name"]] = row["summary"]
-    mutants = []
-    for n, m in enumerate(catalog):
-        done = ledger / "state/done" / str(n)
-        if not done.exists():
-            problems.append(f"catalog index {n} has no state/done entry")
-            continue
-        t = datetime.datetime.fromtimestamp(done.stat().st_mtime, datetime.timezone.utc)
+    verdicts, art_verdicts = verdicts_of(documents), verdicts_of(art_documents)
+
+    def place(n, m, path, verdict):
+        if not path.exists():
+            problems.append(f"catalog index {n} has no {path.parent.name} entry")
+            return None
+        t = datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc)
         seg = next((i for i, s in enumerate(segs) if s["start"] <= t <= s["end"]), None)
         if seg is None:
             problems.append(f"catalog index {n} finished at {iso(t)}, outside every host segment")
         o = max((o for o in opens if o["stamp"] <= t), key=lambda o: o["stamp"])
-        mutants.append({"n": n, "file": m["file"], "name": m["name"], "verdict": verdicts.get(m["name"]),
-                        "seconds": float(done.read_text().split()[1]), "finished": t, "segment": seg,
-                        "host": segs[seg]["host"] if seg is not None else None,
-                        "round_opened": o["stamp"], "load_1m": o["load_1m"],
-                        "threads": next((v for s, v in reversed(switches) if s <= o["stamp"]), None)})
-    for i, s in enumerate(segs):
-        s["mutants"] = sum(1 for m in mutants if m["segment"] == i)
-        s["verdicts"] = Counter(m["verdict"] for m in mutants if m["segment"] == i)
+        return {"n": n, "file": m["file"], "name": m["name"], "verdict": verdict,
+                "seconds": float(path.read_text().split()[1]), "finished": t, "segment": seg,
+                "host": segs[seg]["host"] if seg is not None else None,
+                "round_opened": o["stamp"], "load_1m": o["load_1m"],
+                "threads": next((v for s, v in reversed(switches) if s <= o["stamp"]), None)}
 
-    survivors, timeouts = {}, {}
-    for m in mutants:
-        if m["verdict"] == "MissedMutant":
-            survivors.setdefault(m["file"], []).append(m["name"])
-        elif m["verdict"] == "Timeout":
-            timeouts.setdefault(m["file"], []).append(m["name"])
-    studio = [m for m in mutants if m["host"] == "studio" and m["verdict"] == "Timeout"]
-    two = [m for m in mutants if m["threads"] == 2 and m["verdict"] == "Timeout"]
+    mutants = [place(n, m, ledger / "state/done" / str(n), verdicts.get(m["name"])) for n, m in enumerate(catalog)]
+    art = [place(n, m, ledger / "state/artifact-timeout" / str(n), art_verdicts.get(m["name"]))
+           if n in moved else mutants[n] for n, m in enumerate(catalog)]
+    if None in mutants or None in art:
+        raise SystemExit("\n".join(problems))
+    problems += [f"artifact index {m['n']} is {m['verdict']}, not Timeout" for m in art
+                 if m["n"] in moved and m["verdict"] != "Timeout"]
+    problems += [f"Timeout at index {m['n']} not run again" for m in art
+                 if m["verdict"] == "Timeout" and m["n"] not in moved]
 
-    totals = Counter()
-    files = []
+    def seg_rows(view):
+        return [{"host": s["host"], "cores": s["cores"], "lane": s["lane"], "start": iso(s["start"]),
+                 "end": iso(s["end"]), "mutants": sum(1 for m in view if m["segment"] == i),
+                 "verdicts": dict(sorted(Counter(m["verdict"] for m in view if m["segment"] == i).items()))}
+                for i, s in enumerate(segs)]
+
+    def by_file(view, verdict):
+        out = {}
+        for m in view:
+            if m["verdict"] == verdict:
+                out.setdefault(m["file"], []).append(m["name"])
+        return dict(sorted(out.items()))
+
+    studio = [m for m in art if m["host"] == "studio" and m["verdict"] == "Timeout"]
+    two = [m for m in art if m["threads"] == 2 and m["verdict"] == "Timeout"]
+    totals, art_totals = Counter(), Counter()
+    files, art_files = [], []
     for f in sorted(set(expected.values())):
-        c = counts.get(f, Counter())
+        c, a = counts.get(f, Counter()), art_counts.get(f, Counter())
         totals.update(c)
+        art_totals.update(a)
         wanted = sum(1 for v in expected.values() if v == f)
         floor = floors.get(f, {}).get("floor")
-        s = pct(c)
-        if sum(c.values()) != wanted:
-            verdict = "incomplete"
-        elif f not in floors:
-            verdict = "no floor entry"
-        elif floor is None:
-            verdict = "floor pending"
-        elif s is None:
-            verdict = "no viable mutants"
-        elif c["caught"] * 100 < floor * (c["caught"] + c["missed"] + c["timeout"]):
-            verdict = "below floor"
-        else:
-            verdict = "at or above floor"
+        hosts = Counter(m["host"] for m in mutants if m["file"] == f)
+        files.append({"file": f, "mutants": wanted, **{k: c[k] for k in KEYS}, "score": pct(c), "floor": floor,
+                      "verdict": floor_verdict(c, wanted, floor, f in floors),
+                      "hosts": dict(sorted(hosts.items(), key=lambda kv: str(kv[0])))})
+        verdict = floor_verdict(a, wanted, floor, f in floors)
+
         # Below the floor by the Studio's timeouts alone: at or above it with them left out.
         def below_by(timed):
             k = sum(1 for m in timed if m["file"] == f)
             return k, (verdict == "below floor" and k > 0
-                       and c["caught"] * 100 >= floor * (c["caught"] + c["missed"] + c["timeout"] - k))
+                       and a["caught"] * 100 >= floor * (a["caught"] + a["missed"] + a["timeout"] - k))
         st, by_studio = below_by(studio)
         tt, by_two = below_by(two)
-        hosts = Counter(m["host"] for m in mutants if m["file"] == f)
-        files.append({"file": f, "mutants": wanted, "caught": c["caught"], "missed": c["missed"],
-                      "timeout": c["timeout"], "unviable": c["unviable"], "score": s,
-                      "floor": floor, "verdict": verdict, "hosts": dict(sorted(hosts.items(), key=lambda kv: str(kv[0]))),
-                      "studio_timeouts": st, "below_by_studio_timeouts": by_studio,
-                      "threads_2_timeouts": tt, "below_by_threads_2_timeouts": by_two})
+        art_files.append({"file": f, **{k: a[k] for k in KEYS}, "score": pct(a), "verdict": verdict,
+                          "studio_timeouts": st, "below_by_studio_timeouts": by_studio,
+                          "threads_2_timeouts": tt, "below_by_threads_2_timeouts": by_two})
 
     complete = not missing and not absent and not problems
-    overall = pct(totals)
     seconds = [m["seconds"] for m in mutants]
     baseline = next(l for l in (ledger / "logs/baseline.log").read_text().splitlines()
                     if l.startswith("test result"))
     hours = {h: round(sum((s["end"] - s["start"]).total_seconds() for s in segs if s["host"] == h) / 3600, 2)
              for h in HOSTS}
+    repair = segs[-1]
     run = {
         "base": base,
         "catalog": f"cargo mutants --list --json > catalog.json, in a copy of the base (git archive {base[:8]}); "
@@ -220,13 +284,19 @@ def main():
                    "each run): HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 "
                    "ALL_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 "
                    "CARGO_TARGET_DIR=$HOME/bsv/targets/p5-mutants-complete-box/wK CARGO_BUILD_JOBS=2 "
-                   "RUST_TEST_THREADS=2 [SDKROOT=<Xcode 26.3's MacOSX.sdk> on the box] cargo mutants --in-place "
-                   "--baseline skip --timeout 270 --build-timeout 400 "
+                   "[RUST_TEST_THREADS=2 in the rounds test_threads names] [TMPDIR=<scratch>/tmp-wK, emptied at "
+                   "each reset, in the repair's rounds] [SDKROOT=<Xcode 26.3's MacOSX.sdk> on the box] "
+                   "cargo mutants --in-place --baseline skip --timeout 270 --build-timeout 400 "
                    f"--shard N/{len(catalog)} --sharding round-robin --output runs/iN",
         "driver": "round.py in the ledger (one foreground round per shell call, every round's date -u in "
                   "logs/rounds.log and its opening uptime in logs/load.log; eight workers when the one-minute "
-                  "load at a round's opening is 50 or under, four above; a run still going at a round's deadline "
-                  "is killed, its output removed and the index run again whole in a later round: it had no outcome)",
+                  "load at a round's opening is 50 or under, four above; in the repair four, two above 55; a run "
+                  "still going at a round's deadline is killed, its output removed and the index run again whole "
+                  "in a later round: it had no outcome)",
+        "repair": f"the artifact run's {len(moved)} Timeout entries moved from state/done to "
+                  "state/artifact-timeout (their runs to artifact/runs) and run again by the same driver and "
+                  f"command, {iso(repair['start'])} to {iso(repair['end'])} (lane {repair['lane']}), the default "
+                  "test threads and each worker its own TMPDIR; a re-run's verdict replaces its timeout",
         "scoring": "tools/mutants-score collect(), skipped baseline; score = caught / (caught + missed + timeout), "
                    "unviable excluded; the per-file table also as tools/mutants-score --catalog catalog.json "
                    "--baseline-skipped --report-only over every outcomes file",
@@ -238,78 +308,86 @@ def main():
         "rounds": len(opens),
         "hosts": HOSTS,
         "test_threads": [{"from": iso(s), "RUST_TEST_THREADS": v or "default"} for s, v in switches],
-        "timeouts_by_threads": {str(v or "default"): dict(sorted(Counter(m["verdict"] for m in mutants
-                                                                      if m["threads"] == v).items()))
-                                for v in (None, 2)},
-        "by_tmpdir_and_threads": {f"{when}, RUST_TEST_THREADS={v or 'default'}": dict(sorted(Counter(
-            m["verdict"] for m in mutants if m["threads"] == v
-            and (m["finished"] >= DUMPS_FROM) == (when == "after the dumps")).items()))
-            for when in ("before the dumps", "after the dumps") for v in (None, 2)},
-        "segments": [{"host": s["host"], "cores": s["cores"], "lane": s["lane"], "start": iso(s["start"]),
-                      "end": iso(s["end"]), "mutants": s["mutants"],
-                      "verdicts": dict(sorted(s["verdicts"].items()))} for s in segs],
+        "segments": seg_rows(mutants),
         "toolchain": "box: " + head_line(subprocess.run(["rustc", "-V"], capture_output=True, text=True).stdout)
                      + "; the Studio's toolchain is not in the ledger",
         "tool_version": head_line(subprocess.run(["cargo", "mutants", "--version"], capture_output=True,
-                                             text=True).stdout),
+                                                 text=True).stdout),
         "lockfile": "Cargo.lock (no lock is committed; resolved once by cargo fetch, copied to every worker)",
-        "logs": str(ledger) + ": logs/rounds.log, logs/load.log, logs/baseline.log, runs/i<N>.log, "
-                "runs/i<N>/mutants.out, state/done/<N>",
+        "logs": str(ledger) + ": logs/rounds.log, logs/load.log, logs/baseline.log, logs/environment-restored.log, "
+                "runs/i<N>.log, runs/i<N>/mutants.out, state/done/<N>, state/artifact-timeout/<N>, artifact/runs/",
     }
-    head = {"caught": totals["caught"], "missed": totals["missed"], "timeout": totals["timeout"],
-            "unviable": totals["unviable"], "mutants": len(catalog), "tested": len(seen)}
+    head = {k: totals[k] for k in KEYS} | {"mutants": len(catalog), "tested": len(seen)}
+    witness = sum(1 for n in moved for log in (ledger / "artifact/runs" / f"i{n}" / "mutants.out/log").glob("*.log")
+                  if f"{WITNESS.split('::')[-1]} has been running" in log.read_text(errors="replace"))
+    oracle = json.loads((ROOT / ORACLE).read_text())
+    doors = [{"file": f, "this_lib": tally(counts.get(f, Counter())), "artifact_lib": tally(art_counts.get(f, Counter())),
+              "oracle_571_lib": {k: oracle["oracles"]["narrow"]["files"][f][k] for k in KEYS + ("score",)},
+              "oracle_571_wide": {k: oracle["oracles"]["wide"]["files"][f][k] for k in KEYS + ("score",)}}
+             for f in DOORS]
+    artifact = {
+        "figure": pct(art_totals), **{k: art_totals[k] for k in KEYS},
+        "rerun": dict(sorted(Counter(mutants[n]["verdict"] for n in moved).items())),
+        "witness_over_60s": witness,
+        "pile": PILE, "clearing": CLEARING, "environment": ENVIRONMENT,
+        "timeouts_by_threads": {str(v or "default"): dict(sorted(Counter(m["verdict"] for m in art
+                                                                      if m["threads"] == v).items()))
+                                for v in (None, 2)},
+        "by_tmpdir_and_threads": {f"{when}, RUST_TEST_THREADS={v or 'default'}": dict(sorted(Counter(
+            m["verdict"] for m in art if m["threads"] == v
+            and (m["finished"] >= DUMPS_FROM) == (when == "after the dumps")).items()))
+            for when in ("before the dumps", "after the dumps") for v in (None, 2)},
+        "segments": seg_rows(art),
+        "files": art_files,
+        "studio_timeouts": [{"n": m["n"], "name": m["name"], "round_opened": iso(m["round_opened"]),
+                             "load_1m": m["load_1m"]} for m in studio],
+        "timeouts": by_file(art, "Timeout"),
+    }
+    overall = pct(totals)
     record = {
         "producer": "tools/mutants-complete-record.py over the run's ledger (lanes p5-mutants-complete-box, "
-                    "p5-mutants-complete-studio-b, p5-mutants-complete-box-c)",
+                    "p5-mutants-complete-studio-b, p5-mutants-complete-box-c, p5-mutants-complete-box-d)",
         "scoreboard": ["mutation_score_pct"],
         "complete": complete,
         "problems": problems + ([f"catalog indices with no outcome: {len(missing)}"] if missing else []),
+        "standing": [
+            f"The base is {base}.",
+            "The artifact cannot recur on beta past #563 (merged as 6afdfe47; its d4f86b7c removed the dump "
+            "from describe_invalid_beef), and the repair's driver gives each worker its own TMPDIR.",
+            f"The figure {overall} is the base's complete figure under the stated method: every catalogued "
+            "mutant has one verdict, every timeout of the artifact run was run again under the restored "
+            "environment, and a slow folder can only turn a verdict into a timeout, so the caught and missed "
+            "verdicts of the rounds the pile reached stand.",
+        ],
         "run": run,
         "cells": [dict(cell="mutation_score_pct", value=overall, unit="percent",
                        scope="the Mutants workflow's set, every catalogued mutant", **head)]
-                 + [dict(cell=f"mutants.file.{r['file']}.score", value=r["score"], unit="percent", **{
-                     k: v for k, v in r.items() if k not in ("file", "score")}) for r in files],
-        "studio_timeouts": [{"n": m["n"], "name": m["name"], "round_opened": iso(m["round_opened"]),
-                             "load_1m": m["load_1m"]} for m in studio],
-        "survivors": survivors,
-        "timeouts": timeouts,
-        "mutants": [[m["n"], m["verdict"], m["host"], m["threads"] or 0, m["seconds"]] for m in mutants],
+                 + [dict(cell=f"mutants.file.{r['file']}.score", value=r["score"], unit="percent", **r)
+                    for r in files],
+        "doors": doors,
+        "artifact": artifact,
+        "survivors": by_file(mutants, "MissedMutant"),
+        "timeouts": by_file(mutants, "Timeout"),
+        "mutants": [{"n": m["n"], "verdict": m["verdict"], "host": m["host"], "threads": m["threads"] or 0,
+                     "seconds": m["seconds"]} | ({"artifact_timeout": True} if m["n"] in moved else {})
+                    for m in mutants],
     }
-    write_json(ROOT / f"{STEM}.json", record)
-    write_md(ROOT / f"{STEM}.md", record, files, head, overall, run)
-    if complete:
-        ratchet(overall, head, run)
-    print(f"tested {len(seen)}/{len(catalog)}; score {overall}; complete {complete}; "
-          f"problems {len(record['problems'])}")
+    return record
 
 
-def write_json(path, record):
-    """Two-space JSON, each cell, list and survivor file on one line and eight mutants a line
-    (the 800-line rule); `mutants` rows are [catalog index, verdict, host, RUST_TEST_THREADS (0 the default),
-    seconds]."""
-    lines = ["{"]
-    keys = list(record)
-    for i, key in enumerate(keys):
-        value, comma = record[key], "," if i < len(keys) - 1 else ""
-        if key in ("cells", "studio_timeouts"):
-            lines.append(f'  "{key}": [')
-            lines += ["    " + json.dumps(c) + ("," if j < len(value) - 1 else "") for j, c in enumerate(value)]
-            lines.append("  ]" + comma)
-        elif key == "mutants":
-            rows = [", ".join(json.dumps(m) for m in value[j:j + 8]) for j in range(0, len(value), 8)]
-            lines.append('  "mutants": [')
-            lines += ["    " + r + ("," if j < len(rows) - 1 else "") for j, r in enumerate(rows)]
-            lines.append("  ]" + comma)
-        elif key in ("survivors", "timeouts"):
-            lines.append(f'  "{key}": {{')
-            lines += [f"    {json.dumps(f)}: {json.dumps(v)}" + ("," if j < len(value) - 1 else "")
-                      for j, (f, v) in enumerate(value.items())]
-            lines.append("  }" + comma)
-        else:
-            body = json.dumps(value, indent=2).replace("\n", "\n  ")
-            lines.append(f"  {json.dumps(key)}: {body}{comma}")
-    lines.append("}")
-    path.write_text("\n".join(lines) + "\n")
+def dump(value, depth=0, key=None):
+    """Two-space JSON: the top two levels of objects expanded, a list of objects one object a line,
+    `mutants` eight rows a line (the 800-line rule), everything deeper on one line."""
+    pad, inner = "  " * depth, "  " * (depth + 1)
+    if key == "mutants" and isinstance(value, list):
+        rows = [", ".join(json.dumps(m) for m in value[j:j + 8]) for j in range(0, len(value), 8)]
+        return "[\n" + ",\n".join(inner + r for r in rows) + "\n" + pad + "]"
+    if isinstance(value, dict) and value and depth < 2:
+        items = [f"{inner}{json.dumps(k)}: {dump(v, depth + 1, k)}" for k, v in value.items()]
+        return "{\n" + ",\n".join(items) + "\n" + pad + "}"
+    if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+        return "[\n" + ",\n".join(inner + json.dumps(v) for v in value) + "\n" + pad + "]"
+    return json.dumps(value)
 
 
 def cell(v):
@@ -321,36 +399,58 @@ def short(name):
     return f"{':'.join(loc.split(':')[1:])} {change}"
 
 
-def write_md(path, record, files, head, overall, run):
+def counted(c):
+    return ", ".join(f"{v} {k}" for k, v in c.items())
+
+
+def named(record_timeouts):
+    out = [f"- `{f}`: " + "; ".join(f"`{short(n)}`" for n in names) for f, names in record_timeouts.items()]
+    return out or ["None."]
+
+
+def render_md(record):
+    """The md, from the json record alone (so --check can compare them)."""
+    run, art = record["run"], record["artifact"]
+    head = record["cells"][0]
+    overall = head["value"]
+    files = record["cells"][1:]
     viable = head["caught"] + head["missed"] + head["timeout"]
+    art_viable = art["caught"] + art["missed"] + art["timeout"]
     below = [r for r in files if r["verdict"] == "below floor"]
     nofloor = [r for r in files if r["verdict"] == "no floor entry"]
-    segs = run["segments"]
-    seg_lines = [f"- {HOSTS[s['host']]}, lane `{s['lane']}`, {s['start']} to {s['end']}: {s['mutants']} mutants "
-                 f"({', '.join(f'{v} {k}' for k, v in s['verdicts'].items())})" for s in segs]
+
+    def seg_lines(segs):
+        return [f"- {HOSTS[s['host']]}, lane `{s['lane']}`, {s['start']} to {s['end']}: {s['mutants']} mutants "
+                f"({counted(s['verdicts'])})" for s in segs]
     out = [f"# The complete Mutants run of {DAY}", "",
            f"Base `{run['base'][:8]}` (the run spans {run['started']} to {run['finished']} on two hosts: "
            f"{run['host_hours']['box']} hours on the box and {run['host_hours']['studio']} on the Studio by the "
            f"rounds' `date -u`). Every value below is written by `tools/mutants-complete-record.py` from the run's "
            f"ledger; the machine-readable cells, the run's commands, times, hosts, toolchain, tool version, "
            f"logs and every mutant's verdict and host are [mutants-complete-{DAY}.json](mutants-complete-{DAY}.json). "
-           f"The ledger is on the lane volume under `{LEDGER}/` (`catalog.json`, `runs/`, `state/`, `logs/`). "
-           f"The scoreboard cell `mutation_score_pct` in `docs/NORTH-STAR.md` is written from this run by "
-           f"`tools/scoreboard-write`.", "",
+           f"The ledger is on the lane volume under `{LEDGER}/` (`catalog.json`, `runs/`, `state/`, `logs/`, "
+           f"`artifact/`). The scoreboard cell `mutation_score_pct` in `docs/NORTH-STAR.md` is written from this "
+           f"run by `tools/scoreboard-write`.", "",
+           f"The figure is the repaired one, {cell(overall)}: the run before the repair scored "
+           f"{cell(art['figure'])}, its {art['timeout']} timeouts an artifact of a temp folder of "
+           f"{art['pile']['files']:,} dumps; each was run again under the restored environment "
+           "(the section The artifact).", "",
+           "## Standing", ""] + [f"- {s}" for s in record["standing"]] + ["",
            "## Method", "",
            f"`{run['tool_version']}` over the Mutants workflow's set (`.cargo/mutants.toml`: "
            f"{head['mutants']} mutants over {len(files)} files), every catalogued mutant once, one mutant per "
            f"`--in-place --baseline skip` invocation after one green `cargo test --lib` on the base "
            f"({run['baseline'].split(': ', 1)[1]}); test timeout 270 s, build timeout 400 s; eight workers "
            f"(four when a round opened above a one-minute load of 50), each in its own scratch copy and target "
-           f"directory, `CARGO_BUILD_JOBS=2`, `RUST_TEST_THREADS=2` in the rounds the Timeouts section names "
+           f"directory, `CARGO_BUILD_JOBS=2`, `RUST_TEST_THREADS=2` in the rounds the artifact section names "
            f"(the default in the rest); the oracle is the workflow's (`--lib`). "
            f"A timeout is a timeout, never retried into a kill; a run killed at a round's deadline had no "
            f"outcome and ran again whole. Scored by `tools/mutants-score` (`collect()`, skipped baseline): "
            f"score = caught / (caught + missed + timeout), unviable excluded. Floors are the base's "
            f"`tools/mutants-floor.json`, reported only; no floor is written by this run.", "",
+           f"The repair: {run['repair']}.", "",
            "The hosts, by segment (a mutant's host is the segment holding its completion time, the mtime of "
-           "its `state/done/N`):", ""] + seg_lines + ["",
+           "its `state/done/N`):", ""] + seg_lines(run["segments"]) + ["",
            f"Toolchain: {run['toolchain']}.", "",
            "## Totals", "",
            "| Mutants | Tested | Viable | Caught | Missed | Timeout | Unviable | Score |",
@@ -367,38 +467,22 @@ def write_md(path, record, files, head, overall, run):
         out.append(f"| `{r['file']}`{door} | {host} | {r['mutants']} | {r['caught']} | {r['missed']} | "
                    f"{r['timeout']} | {r['unviable']} | {cell(r['score'])} | "
                    f"{'none' if r['floor'] is None else r['floor']} | {r['verdict']} |")
+    out += ["", "## The door files beside #571", "",
+            "The three door files under this run's `--lib` oracle (base `42559923`), beside "
+            f"[{Path(ORACLE).name}]({Path(ORACLE).name}) (#571, base `83a5b049`): its `--lib` run and its widened "
+            "oracle (`.cargo/mutants-doors.toml`).", "",
+            "| File | Run | Caught | Missed | Timeout | Unviable | Score |",
+            "|---|---|---:|---:|---:|---:|---:|"]
+    for d in record["doors"]:
+        for label, key in (("#571, widened", "oracle_571_wide"), ("#571, `--lib`", "oracle_571_lib"),
+                           ("this run, `--lib`", "this_lib"), ("the artifact, `--lib`", "artifact_lib")):
+            c = d[key]
+            out.append(f"| `{d['file']}` | {label} | {c['caught']} | {c['missed']} | {c['timeout']} | "
+                       f"{c['unviable']} | {cell(c['score'])} |")
     out += ["", "## Timeouts", "",
-            "Each named here took longer than the 270 s test timeout under its mutation (a slow test or a "
-            "loop the mutation made); counted as not caught.", ""]
-    for f, names in record["timeouts"].items():
-        out.append(f"- `{f}`: " + "; ".join(f"`{short(n)}`" for n in names))
-    if not record["timeouts"]:
-        out.append("None.")
-    out += ["", "### The Studio's timeouts", "",
-            "Each timeout the Studio segment ran, with the one-minute load at its round's opening "
-            "(`logs/load.log`):", ""]
-    out += [f"- `{short(t['name'])}` (`{t['name'].split(':')[0]}`), catalog {t['n']}, round opened "
-            f"{t['round_opened']} at load {t['load_1m']}" for t in record["studio_timeouts"]] or ["None."]
-    by = [r["file"] for r in files if r["below_by_studio_timeouts"]]
-    out += ["", "Files below their floor by the Studio's timeouts alone (at or above it with them left out): "
-            + (", ".join(f"`{f}`" for f in by) if by else "none") + "."]
-    tb = run["timeouts_by_threads"]
-    out += ["", "### The timeouts under RUST_TEST_THREADS=2", "",
-            "The driver's environment set `RUST_TEST_THREADS=2` for the rounds opened from "
-            + ", ".join(f"{s['from']} ({s['RUST_TEST_THREADS']})" for s in run["test_threads"])
-            + ". Verdicts at the default: " + ", ".join(f"{v} {k}" for k, v in tb["default"].items())
-            + "; under 2 threads: " + ", ".join(f"{v} {k}" for k, v in tb["2"].items()) + ". The caught "
-            "mutants' test phases under 2 threads run to within seconds of the 270 s test timeout (the "
-            "`phase_results` in each `outcomes.json`), so a timeout there need not be a hang.", "",
-            f"The second cause: from {iso(DUMPS_FROM)} two test processes wrote about 1.3 million "
-            "`beef-rejected-*.hex` dumps (`describe_invalid_beef` in `create_action/beef_graph.rs`) into "
-            "`$TMPDIR`, which every worker shares; `wallet::txid_only_tests::immediate_broadcast_writes_no_beef_dump` "
-            "reads that folder whole twice (`beef_dumps()`), so on the unmutated base it alone took minutes "
-            f"after ({MEASURED}). Verdicts by the dumps and the threads: "
-            + "; ".join(f"{k}: " + ", ".join(f"{n} {v}" for v, n in c.items())
-                        for k, c in run["by_tmpdir_and_threads"].items()) + ".", "",
-            "Files below their floor by the 2-thread timeouts alone (at or above it with them left out): "
-            + (", ".join(f"`{r['file']}`" for r in files if r["below_by_threads_2_timeouts"]) or "none") + "."]
+            "Each named here took longer than the 270 s test timeout under its mutation in the restored "
+            "environment (a slow test or a loop the mutation made); counted as not caught.", ""]
+    out += named(record["timeouts"])
     out += ["", "## Survivors", "",
             "Every missed mutant, by file, as `line:column` and the mutation (the full names are in the "
             "JSON's `survivors`). A survivor is a figure here; the triage is the hardening lanes' (#534, #535, "
@@ -406,30 +490,102 @@ def write_md(path, record, files, head, overall, run):
     for f, names in record["survivors"].items():
         door = " (door)" if f in DOORS else ""
         out.append(f"- `{f}`{door} ({len(names)}): " + "; ".join(f"`{short(n)}`" for n in names))
+    pile, clear, env = art["pile"], art["clearing"], art["environment"]
+    out += ["", "## The artifact", "",
+            f"The run before the repair (lanes `p5-mutants-complete-box`, `p5-mutants-complete-studio-b`, "
+            f"`p5-mutants-complete-box-c`) scored {cell(art['figure'])}: {art['caught']} caught, {art['missed']} "
+            f"missed, {art['timeout']} timeout, {art['unviable']} unviable ({art_viable} viable). The record "
+            "of that run said its figure could not be trusted; the cause and the repair follow.", "",
+            f"The pile: {pile['cause']}. In `{pile['folder']}` at {pile['counted']}: {pile['files']:,} "
+            f"`beef-rejected-*.hex` files of {pile['entries']:,} entries. On the unmutated base the folder made "
+            f"the one test take minutes ({MEASURED}). In {art['witness_over_60s']} of the artifact's "
+            f"{art['timeout']} timeout logs the witness `{WITNESS}` is named as running over 60 seconds.", "",
+            f"The clearing: `{clear['command']}` at {clear['at']}, after counting: {clear['removed']:,} removed, "
+            f"{clear['entries_left']:,} entries left, free space {clear['free_before']} before and "
+            f"{clear['free_after']} after (`df -h`).", "",
+            f"The environment restored, at {env['at']} on {env['tree']}: the witness alone {env['witness_s']} s "
+            f"(beside {env['witness_s_pile']} s under the pile) and the full `cargo test --lib` {env['lib_s']} s "
+            f"(beside {env['lib_s_pile']} s under the pile at RUST_TEST_THREADS=2): {env['lib_result']}.", "",
+            f"The re-run of the {art['timeout']}: {counted(art['rerun'])}. A mutant that timed out again "
+            "keeps its timeout (the method's verdict).", "",
+            "The artifact run's hosts, by segment:", ""] + seg_lines(art["segments"][:-1]) + ["",
+            "The three door files in the artifact run: "
+            + "; ".join(f"`{d['file']}` {d['artifact_lib']['caught']} caught, {d['artifact_lib']['missed']} "
+                        f"survivors, {d['artifact_lib']['timeout']} timeout" for d in record["doors"]) + ".", "",
+            "### The artifact's timeouts by file", "",
+            "| File | Caught | Missed | Timeout | Unviable | Score |",
+            "|---|---:|---:|---:|---:|---:|"]
+    out += [f"| `{r['file']}`{' (door)' if r['file'] in DOORS else ''} | {r['caught']} | {r['missed']} | "
+            f"{r['timeout']} | {r['unviable']} | {cell(r['score'])} |" for r in art["files"] if r["timeout"]]
+    out += ["", "Each by name:", ""] + named(art["timeouts"])
+    out += ["", "### The Studio's timeouts", "",
+            "Each timeout the Studio segment ran, with the one-minute load at its round's opening "
+            "(`logs/load.log`):", ""]
+    out += [f"- `{short(t['name'])}` (`{t['name'].split(':')[0]}`), catalog {t['n']}, round opened "
+            f"{t['round_opened']} at load {t['load_1m']}" for t in art["studio_timeouts"]] or ["None."]
+    by = [r["file"] for r in art["files"] if r["below_by_studio_timeouts"]]
+    out += ["", "Files below their floor by the Studio's timeouts alone (at or above it with them left out): "
+            + (", ".join(f"`{f}`" for f in by) if by else "none") + "."]
+    tb = art["timeouts_by_threads"]
+    out += ["", "### The timeouts under RUST_TEST_THREADS=2", "",
+            "The driver's environment set `RUST_TEST_THREADS=2` for the rounds opened from "
+            + ", ".join(f"{s['from']} ({s['RUST_TEST_THREADS']})" for s in run["test_threads"])
+            + ". Verdicts at the default: " + counted(tb["default"]) + "; under 2 threads: " + counted(tb["2"])
+            + ". Verdicts by the dumps and the threads: "
+            + "; ".join(f"{k}: " + ", ".join(f"{n} {v}" for v, n in c.items())
+                        for k, c in art["by_tmpdir_and_threads"].items()) + ".", "",
+            "Files below their floor by the 2-thread timeouts alone (at or above it with them left out): "
+            + (", ".join(f"`{r['file']}`" for r in art["files"] if r["below_by_threads_2_timeouts"]) or "none")
+            + "."]
     if record["problems"]:
         out += ["", "## Problems", ""] + [f"- {p}" for p in record["problems"]]
-    path.write_text("\n".join(out) + "\n")
+    return "\n".join(out) + "\n"
 
 
-def ratchet(overall, head, run):
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ledger", type=Path, default=LEDGER)
+    parser.add_argument("--check", action="store_true", help="render the md from the json; exit 1 on a difference")
+    args = parser.parse_args()
+    md, js = ROOT / f"{STEM}.md", ROOT / f"{STEM}.json"
+    if args.check:
+        record = json.loads(js.read_text())
+        if md.read_text() != render_md(record) or js.read_text() != dump(record) + "\n":
+            print(f"{STEM}.md or .json differs from the json's own rendering; run the script over the ledger")
+            return 1
+        print(f"{STEM}.md matches its json")
+        return 0
+    record = build(args.ledger)
+    js.write_text(dump(record) + "\n")
+    md.write_text(render_md(record))
+    head = record["cells"][0]
+    if record["complete"]:
+        ratchet(head, record["run"])
+    print(f"tested {head['tested']}/{head['mutants']}; score {head['value']}; artifact "
+          f"{record['artifact']['figure']}; complete {record['complete']}; problems {len(record['problems'])}")
+    return 0
+
+
+def ratchet(head, run):
     path = ROOT / "tools/ratchet.json"
     data = json.loads(path.read_text())
-    data["metrics"]["mutation_score_pct"] = overall
+    data["metrics"]["mutation_score_pct"] = head["value"]
     data["mutation_score"] = {
         "method": f"{run['tool_version']} over .cargo/mutants.toml's set (the Mutants workflow's set: "
                   f"{head['mutants']} mutants), every catalogued mutant once, --in-place --baseline skip after a "
                   f"green `cargo test --lib` on {run['base'][:8]}, one catalog mutant per run (--shard N/"
                   f"{head['mutants']} --sharding round-robin), --timeout 270 --build-timeout 400, rule 10's proxy "
-                  "variables; scored by tools/mutants-score (its collect(), --baseline-skipped); score = caught / "
+                  "variables; the artifact run's timeouts run again under the restored environment; scored by "
+                  "tools/mutants-score (its collect(), --baseline-skipped); score = caught / "
                   "(caught + missed + timeout), unviable excluded",
         "caught": head["caught"], "missed": head["missed"], "timeout": head["timeout"],
         "unviable": head["unviable"],
         "hosts": {s["lane"]: f"{s['host']}, {s['mutants']} mutants" for s in run["segments"]},
-        "source": f"{STEM}.{{md,json}} (the per-file table, every survivor and every mutant's host)",
+        "source": f"{STEM}.{{md,json}} (the per-file table, every survivor, every mutant's host and the artifact)",
         "measured_at": DAY,
     }
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
