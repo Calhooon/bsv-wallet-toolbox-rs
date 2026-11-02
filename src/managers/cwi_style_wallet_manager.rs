@@ -559,7 +559,9 @@ impl CWIStyleWalletManager {
     /// consecutive unlocks seals the token under it and drops v1: a host
     /// whose builder checks the key and errs refuses the unlock with nothing
     /// written. With a key file open, the last three re-write it atomically
-    /// before the wallet is installed. A failed unlock writes nothing.
+    /// before the wallet is installed. A failed unlock writes nothing. Of two
+    /// that write one profile at once, the later is refused
+    /// (`Error::InvalidOperation`) and the caller retries.
     pub async fn switch_profile(&self, profile_id: &[u8], password: &str) -> Result<()> {
         let entry = self.entry(profile_id).await?;
         let (primary_key, next) = self.unlock_entry(&entry, password)?;
