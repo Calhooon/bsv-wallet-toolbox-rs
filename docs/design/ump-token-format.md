@@ -310,7 +310,8 @@ issue names the dependency.
   (`Error::AccessDenied`) where v1 built another wallet.
 - The public types that move: `UmpToken` (the reference's fields, no
   `new(key_encrypted, profiles_encrypted)`), `WalletSnapshot`
-  (`active_profile_id: Vec<u8>` of 16 bytes, binary layout), and the new
+  (`active_profile_id: Vec<u8>` of 16 bytes, binary layout), both without
+  their serde derives (the reference's bytes are their form), and the new
   `PasswordKdf`, `KdfAlgorithm`, `open_key_file`, `save_key_file`,
   `recovery_key`. Nothing else public moves.
 - No host of this repository's line reads the key file today
