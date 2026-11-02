@@ -570,7 +570,7 @@ ProtoWallet's `WalletInterface` adapter, which checks the `privileged` and
 `privilegedReason` its inherent types omit. `key_route.rs` holds the route;
 the wallet's nine calls and the certificate paths share it. The reveals ask
 no BRC-98/99 check of the wallet's own; the reference's permissions manager
-asks one (`linkageRevelation`, `WalletPermissionsManager.ts:5190-5221`).
+asks one (`linkageRevelation`, `WalletPermissionsManager.ts:5190-5221`). The follow-on row is #589.
 
 `prove_certificate` with `privileged: true` derives the verifier's keyring
 through the manager (`create_keyring_for_verifier` decrypts and encrypts
