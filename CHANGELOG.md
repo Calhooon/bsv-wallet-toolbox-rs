@@ -4,6 +4,13 @@
 
 ### Changed
 
+- #612 (CI; no code): the Test Suite's dependency build is cached by
+  rust-cache on the resolved lock, the toolchain and the feature set,
+  built without debuginfo or incremental state and run through
+  cargo-nextest; the remote-only build is its own job, `Test Suite
+  (remote only)`, beside it; and a PR opened with a label runs CI once,
+  the semver job reading `api-break` live
+  (`docs/census/ci-speed-2026-11-02.md`).
 - #534 (the owner's 23.5 (c) word; the keeper's reading of 2026-11-02
   10:4xZ): `tools/mutants-floor.json` takes its floors from the complete
   Mutants record (`docs/census/mutants-complete-2026-11-02`, 59.22
