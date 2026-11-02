@@ -92,6 +92,10 @@ mod privileged_keys_tests;
 #[path = "privileged_certificate_tests.rs"]
 mod privileged_certificate_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "privileged_linkage_tests.rs"]
+mod privileged_linkage_tests;
+
 // =============================================================================
 // Constants
 // =============================================================================
