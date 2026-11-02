@@ -170,12 +170,18 @@ fn parent_dir(path: &Path) -> &Path {
 /// directory has none). A writer in the key directory can already replace the key
 /// file, so this never follows a link nor writes through a shared inode: zeroing
 /// (synced; best effort on copy-on-write) is a courtesy for the manager's own
-/// sibling of one link, done only when the open reached it; a link is unlinked,
-/// as is a sibling the process cannot open (another uid's leftover), unzeroed.
+/// sibling of one link, before and after the open (a link made between the two
+/// would share the inode with the write), done only when the open reached it; a
+/// link is unlinked, as is a sibling the process cannot open (another uid's
+/// leftover), unzeroed.
 async fn remove_stale_siblings(path: &Path) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let prefix = tmp_prefix(path)?;
     let stale = |tag: &str| tag.len() == 16 && tag.bytes().all(|b| b.is_ascii_hexdigit());
+    #[cfg(unix)] // the manager's sibling is created fresh: one link
+    let sole = |m: &std::fs::Metadata| std::os::unix::fs::MetadataExt::nlink(m) == 1;
+    #[cfg(not(unix))] // std gives no link count: removed, never zeroed
+    let sole = |_: &std::fs::Metadata| false;
     let mut dir = match tokio::fs::read_dir(parent_dir(path)).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         dir => dir?,
@@ -186,19 +192,18 @@ async fn remove_stale_siblings(path: &Path) -> Result<()> {
             continue;
         }
         let meta = tokio::fs::symlink_metadata(item.path()).await?;
-        #[cfg(unix)] // the manager's sibling is created fresh: one link
-        let sole = std::os::unix::fs::MetadataExt::nlink(&meta) == 1;
-        #[cfg(not(unix))] // std gives no link count: removed, never zeroed
-        let sole = false;
         let mut open = tokio::fs::OpenOptions::new();
-        if meta.is_file() && sole {
+        if meta.is_file() && sole(&meta) {
             if let Ok(mut file) = open.write(true).open(item.path()).await {
-                if !same_file(&meta, &file.metadata().await?) {
+                let opened = file.metadata().await?;
+                if !same_file(&meta, &opened) {
                     continue;
                 }
-                let len = usize::try_from(meta.len()).unwrap_or(0);
-                file.write_all(&vec![0u8; len]).await?;
-                file.sync_all().await?;
+                if sole(&opened) {
+                    let len = usize::try_from(meta.len()).unwrap_or(0);
+                    file.write_all(&vec![0u8; len]).await?;
+                    file.sync_all().await?;
+                }
             }
         } else if !meta.is_file() && !meta.file_type().is_symlink() {
             continue;
