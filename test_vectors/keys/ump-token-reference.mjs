@@ -136,7 +136,11 @@ async function verify() {
   check('profilePrimaryKey', hex(seen.keys.at(-1).primaryKey), v.expected.profilePrimaryKeyHex)
   check('recoveryKey (getRecoveryKey)', hex(await m.getRecoveryKey()), v.expected.recoveryKeyHex)
   check('rootPrivilegedKey (password)', hex(await m.getFactor('privilegedKey')), v.expected.rootPrivilegedKeyHex)
-  check('passwordKdf', JSON.stringify(token.passwordKdf), JSON.stringify(v.expected.passwordKdf))
+  // Field by field: the vector's JSON keys are sorted, the reader's are in its order.
+  const kdfKeys = ['algorithm', 'iterations', 'memoryKiB', 'parallelism', 'hashLength']
+  const kdf = o => JSON.stringify(kdfKeys.map(k => o?.[k]))
+  check('passwordKdf', kdf(token.passwordKdf), kdf(v.expected.passwordKdf))
+  check('currentOutpoint (no locator set)', token.currentOutpoint, `${'0'.repeat(64)}.0`)
   check('umpVersion', token.umpVersion, 3)
 
   // presentation key + recovery key (fields 3 and 5).

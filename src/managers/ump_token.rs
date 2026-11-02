@@ -6,7 +6,7 @@
 //! `saveSnapshot` layout (:1960-2004). The design is
 //! `docs/design/ump-token-format.md`.
 
-use bsv_rs::primitives::{sha256, PrivateKey, SymmetricKey};
+use bsv_rs::primitives::{sha256, PrivateKey, SymmetricKey, Writer};
 use bsv_rs::wallet::{DecryptArgs, EncryptArgs, ProtoWallet, Protocol, SecurityLevel};
 use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,12 @@ const MAX_FIELD_BYTES: usize = 16 * 1024 * 1024;
 /// The reference's key-wrapping protocol and key id (:1856-1858).
 const WRAP_PROTOCOL: &str = "admin key wrapping";
 const WRAP_KEY_ID: &str = "1";
+
+/// A token not on chain is written with the null txid at index 0: the
+/// reference's pattern takes it (:2786-2789) and no transaction has it; the
+/// reference publishes before it serializes (:1900, :1972) (design 4.1).
+pub(crate) const UNPUBLISHED_OUTPOINT: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000.0";
 
 /// A password KDF the reference names (`passwordKdf.algorithm`, :487).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,15 +88,17 @@ fn in_range(value: Option<u32>, max: u32) -> bool {
 }
 
 impl PasswordKdf {
-    /// `pbkdf2-sha512` at `iterations`, no other parameter.
+    /// `pbkdf2-sha512` at `iterations`, the other three at the argon2id
+    /// defaults the reference's constructor fills into its `Required<KdfConfig>`
+    /// (:1679-1686, :88-91), so the params JSON is the reference's byte for byte.
     #[must_use]
     pub fn pbkdf2(iterations: u32) -> Self {
         Self {
             algorithm: KdfAlgorithm::Pbkdf2Sha512,
             iterations,
-            memory_kib: None,
-            parallelism: None,
-            hash_length: None,
+            memory_kib: Some(131_072),
+            parallelism: Some(1),
+            hash_length: Some(32),
         }
     }
 
@@ -183,27 +191,6 @@ fn token_error(what: &str) -> Error {
     Error::ValidationError(format!("UMP token: {what}"))
 }
 
-fn write_varint(out: &mut Vec<u8>, n: usize) {
-    let n = n as u64;
-    if n < 0xfd {
-        out.push(n.to_le_bytes()[0]);
-    } else if n <= 0xffff {
-        out.push(0xfd);
-        out.extend_from_slice(&n.to_le_bytes()[..2]);
-    } else if n <= 0xffff_ffff {
-        out.push(0xfe);
-        out.extend_from_slice(&n.to_le_bytes()[..4]);
-    } else {
-        out.push(0xff);
-        out.extend_from_slice(&n.to_le_bytes());
-    }
-}
-
-fn write_field(out: &mut Vec<u8>, field: &[u8]) {
-    write_varint(out, field.len());
-    out.extend_from_slice(field);
-}
-
 /// A cursor over the reference's binary layouts.
 struct Cursor<'a> {
     bytes: &'a [u8],
@@ -282,39 +269,36 @@ impl UmpToken {
     }
 
     /// The reference's `serializeUMPToken` (:2648-2716): version 3 with KDF
-    /// metadata, else 2. An unpublished token's outpoint is written empty.
+    /// metadata, else 2. A token with no outpoint is written with
+    /// `UNPUBLISHED_OUTPOINT`, which the reference's reader takes.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let kdf = match (self.ump_version, &self.password_kdf) {
             (Some(UMP_VERSION), Some(kdf)) => Some(kdf),
             _ => None,
         };
-        let mut out = vec![if kdf.is_some() { 3 } else { 2 }];
+        let mut out = Writer::new();
+        out.write_u8(if kdf.is_some() { 3 } else { 2 });
         for field in self.fixed_fields() {
-            write_field(&mut out, field);
+            out.write_var_bytes(field);
         }
         match &self.profiles_encrypted {
-            Some(p) if !p.is_empty() => {
-                out.push(1);
-                write_field(&mut out, p);
-            }
-            _ => out.push(0),
-        }
+            Some(p) if !p.is_empty() => out.write_u8(1).write_var_bytes(p),
+            _ => out.write_u8(0),
+        };
         if let Some(kdf) = kdf {
-            out.extend_from_slice(&[1, UMP_VERSION]);
-            write_field(&mut out, kdf.algorithm.as_str().as_bytes());
-            write_field(&mut out, &kdf.params_json());
+            out.write_u8(1).write_u8(UMP_VERSION);
+            out.write_var_bytes(kdf.algorithm.as_str().as_bytes());
+            out.write_var_bytes(&kdf.params_json());
         }
-        write_field(
-            &mut out,
-            self.current_outpoint.as_deref().unwrap_or("").as_bytes(),
-        );
-        out
+        let outpoint = self.current_outpoint.as_deref();
+        out.write_var_bytes(outpoint.unwrap_or(UNPUBLISHED_OUTPOINT).as_bytes());
+        out.into_bytes()
     }
 
     /// The reference's `deserializeUMPToken` (:2721-2817): versions 1 to 3,
-    /// its field bounds, its KDF bounds and its outpoint pattern. A
-    /// zero-length outpoint reads as an unpublished token.
+    /// its field bounds, its KDF bounds and its outpoint pattern.
+    /// `UNPUBLISHED_OUTPOINT` reads as `current_outpoint: None`.
     ///
     /// # Errors
     ///
@@ -344,7 +328,7 @@ impl UmpToken {
         let n = r.varint()?;
         let outpoint = String::from_utf8(r.take(n)?.to_vec())
             .map_err(|_| token_error("outpoint is not UTF-8"))?;
-        if !outpoint.is_empty() && !is_outpoint(&outpoint) {
+        if !is_outpoint(&outpoint) {
             return Err(token_error("invalid outpoint"));
         }
         let mut f = f.into_iter();
@@ -364,7 +348,7 @@ impl UmpToken {
             profiles_encrypted,
             ump_version,
             password_kdf,
-            current_outpoint: (!outpoint.is_empty()).then_some(outpoint),
+            current_outpoint: (outpoint != UNPUBLISHED_OUTPOINT).then_some(outpoint),
         })
     }
 }

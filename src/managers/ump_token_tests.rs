@@ -40,14 +40,26 @@ fn a_v3_token_round_trips_in_the_reference_layout() {
     assert_eq!(bytes[0], 3);
     assert_eq!(&bytes[1..34], &[&[32u8][..], &[0x55; 32][..]].concat()[..]);
     assert_eq!(UmpToken::from_bytes(&bytes).unwrap(), t);
+    let unpublished = [&[66u8][..], UNPUBLISHED_OUTPOINT.as_bytes()].concat();
     assert!(
-        bytes.ends_with(&[0]),
-        "an unpublished token writes an empty outpoint"
+        bytes.ends_with(&unpublished),
+        "a token not on chain writes the placeholder the reference reads"
     );
     t.current_outpoint = Some(format!("{}.0", "ab".repeat(32)));
     assert_eq!(UmpToken::from_bytes(&t.to_bytes()).unwrap(), t);
-    let params = br#"{"iterations":7777}"#;
+    let params = br#"{"iterations":7777,"memoryKiB":131072,"parallelism":1,"hashLength":32}"#;
     assert!(bytes.windows(params.len()).any(|w| w == params));
+}
+
+#[test]
+fn one_changed_byte_of_a_v3_salt_refuses_the_password() {
+    let mut t = token(PasswordKdf::pbkdf2(7777));
+    assert!(open_token(&t, &[0x11; 32], "pw").is_ok());
+    t.password_salt[0] ^= 1;
+    assert!(matches!(
+        open_token(&t, &[0x11; 32], "pw"),
+        Err(Error::AccessDenied(_))
+    ));
 }
 
 #[test]
@@ -102,7 +114,7 @@ fn the_reference_bounds_refuse_what_its_reader_refuses() {
     empty_field[1] = 0;
     assert!(refuse(&empty_field), "a zero-length field");
     assert!(refuse(&[3, 0xfd, 0x20, 0x00]), "a non-minimal varint");
-    for bad in ["abc", "a b.0", ".0", "ab.", "ab.x"] {
+    for bad in ["", "abc", "a b.0", ".0", "ab.", "ab.x"] {
         let mut t = token(PasswordKdf::pbkdf2(7777));
         t.current_outpoint = Some(bad.into());
         assert!(refuse(&t.to_bytes()), "outpoint {bad:?}");
@@ -203,9 +215,11 @@ fn the_reference_written_v3_token_opens_to_its_recorded_root_keys() {
     );
     let kdf = token.password_kdf.clone().unwrap();
     assert_eq!(
-        (kdf.algorithm, kdf.iterations, kdf.memory_kib),
-        (KdfAlgorithm::Pbkdf2Sha512, 7777, Some(131_072))
+        kdf,
+        PasswordKdf::pbkdf2(7777),
+        "the reference's full params"
     );
+    assert_eq!(kdf.params_json(), PasswordKdf::pbkdf2(7777).params_json());
     assert_eq!(
         token.current_outpoint.as_deref(),
         v["expected"]["currentOutpoint"].as_str()
@@ -251,8 +265,8 @@ fn the_rust_written_vector_still_opens_in_rust() {
 }
 
 /// Writes `test_vectors/keys/ump-token-rust.json`'s body to stdout: a token
-/// the Rust code builds from drawn factors, with the interactor's locator
-/// set so the reference's reader takes it. Run with `--ignored --nocapture`.
+/// the Rust code builds from drawn factors, with no outpoint (written as
+/// `UNPUBLISHED_OUTPOINT`). Run with `--ignored --nocapture`.
 #[test]
 #[ignore = "records the Rust-written vector"]
 fn record_a_rust_written_token_for_the_reference() {
@@ -274,10 +288,10 @@ fn record_a_rust_written_token_for_the_reference() {
         privileged_pad: draw().to_vec(),
         created_at: 1_762_000_000,
     };
-    let mut token = build_token(salt, kdf, &k, std::slice::from_ref(&p)).unwrap();
-    token.current_outpoint = Some(format!("{}.0", "ab".repeat(32)));
+    let token = build_token(salt, kdf, &k, std::slice::from_ref(&p)).unwrap();
+    assert_eq!(token.current_outpoint, None);
     let out = serde_json::json!({
-        "description": "A UMP token written by bsv-wallet-toolbox-rs (#560, src/managers/ump_token.rs build_token and to_bytes) from OS-drawn factors, one profile; the outpoint is the reference interactor stand-in's locator. ump-token-reference.mjs verify opens it on the reference's code and writes ump-token-rust.result.json.",
+        "description": "A UMP token written by bsv-wallet-toolbox-rs (#560, src/managers/ump_token.rs build_token and to_bytes) from OS-drawn factors, one profile, with no outpoint: to_bytes writes UNPUBLISHED_OUTPOINT, the null txid at index 0. ump-token-reference.mjs verify opens it on the reference's code (its deserializeUMPToken, no locator set) and writes ump-token-rust.result.json.",
         "inputs": { "password": password, "presentationKeyHex": hex::encode(&*k.presentation_key) },
         "expected": {
             "rootPrimaryKeyHex": hex::encode(&*k.root_primary),
@@ -286,7 +300,7 @@ fn record_a_rust_written_token_for_the_reference() {
             "profileIdHex": hex::encode(&p.id),
             "profileName": p.name,
             "profilePrimaryKeyHex": hex::encode(&*xor(&k.root_primary, &p.primary_pad)),
-            "passwordKdf": { "algorithm": "pbkdf2-sha512", "iterations": PBKDF2_NUM_ROUNDS },
+            "passwordKdf": { "algorithm": "pbkdf2-sha512", "iterations": PBKDF2_NUM_ROUNDS, "memoryKiB": 131_072, "parallelism": 1, "hashLength": 32 },
         },
         "tokenHex": hex::encode(token.to_bytes()),
     });

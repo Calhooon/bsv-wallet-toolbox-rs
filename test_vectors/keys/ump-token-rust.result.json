@@ -8,8 +8,8 @@
       "ok": true
     },
     "rootPrimaryKey": {
-      "got": "d6cdb986d7b6e57445d13cd8ba20e098fbcf4d1dd6fee3d8f9dea6e1934c72f1",
-      "want": "d6cdb986d7b6e57445d13cd8ba20e098fbcf4d1dd6fee3d8f9dea6e1934c72f1",
+      "got": "9e74d8881483797d725e285de13caa373f3dc37459ca21cb2aafd3c84ff0fdd5",
+      "want": "9e74d8881483797d725e285de13caa373f3dc37459ca21cb2aafd3c84ff0fdd5",
       "ok": true
     },
     "profileName": {
@@ -18,23 +18,28 @@
       "ok": true
     },
     "profilePrimaryKey": {
-      "got": "e2c6bb58c1f72d84497644f2c1ae12d7fa87d5cc03656955b9cfee5204375acf",
-      "want": "e2c6bb58c1f72d84497644f2c1ae12d7fa87d5cc03656955b9cfee5204375acf",
+      "got": "701f192ef11f62ce1a0458d987569663fdd128b2d95f426a0791ebe2a1a7fbac",
+      "want": "701f192ef11f62ce1a0458d987569663fdd128b2d95f426a0791ebe2a1a7fbac",
       "ok": true
     },
     "recoveryKey (getRecoveryKey)": {
-      "got": "75f3655f02b1a5135e4653f28def6925429667c32bf1783c50407765ebf9cae9",
-      "want": "75f3655f02b1a5135e4653f28def6925429667c32bf1783c50407765ebf9cae9",
+      "got": "af169466d3dd4ccffaeef2afdde5a0d906771255f022d9f2901ea34dc9efd76a",
+      "want": "af169466d3dd4ccffaeef2afdde5a0d906771255f022d9f2901ea34dc9efd76a",
       "ok": true
     },
     "rootPrivilegedKey (password)": {
-      "got": "9b3e2fe1b5a7f5910ed64372cdb65a230aab3d193dddbad33e25b615481d2c94",
-      "want": "9b3e2fe1b5a7f5910ed64372cdb65a230aab3d193dddbad33e25b615481d2c94",
+      "got": "58f3c4643c4f4f325dbdeb65c8a669e441fef7f5a9b7d565876638a6b2f3d36d",
+      "want": "58f3c4643c4f4f325dbdeb65c8a669e441fef7f5a9b7d565876638a6b2f3d36d",
       "ok": true
     },
     "passwordKdf": {
-      "got": "{\"algorithm\":\"pbkdf2-sha512\",\"iterations\":7777}",
-      "want": "{\"algorithm\":\"pbkdf2-sha512\",\"iterations\":7777}",
+      "got": "[\"pbkdf2-sha512\",7777,131072,1,32]",
+      "want": "[\"pbkdf2-sha512\",7777,131072,1,32]",
+      "ok": true
+    },
+    "currentOutpoint (no locator set)": {
+      "got": "0000000000000000000000000000000000000000000000000000000000000000.0",
+      "want": "0000000000000000000000000000000000000000000000000000000000000000.0",
       "ok": true
     },
     "umpVersion": {
@@ -43,8 +48,8 @@
       "ok": true
     },
     "rootPrimaryKey (recovery)": {
-      "got": "d6cdb986d7b6e57445d13cd8ba20e098fbcf4d1dd6fee3d8f9dea6e1934c72f1",
-      "want": "d6cdb986d7b6e57445d13cd8ba20e098fbcf4d1dd6fee3d8f9dea6e1934c72f1",
+      "got": "9e74d8881483797d725e285de13caa373f3dc37459ca21cb2aafd3c84ff0fdd5",
+      "want": "9e74d8881483797d725e285de13caa373f3dc37459ca21cb2aafd3c84ff0fdd5",
       "ok": true
     },
     "wrong password refused": {
