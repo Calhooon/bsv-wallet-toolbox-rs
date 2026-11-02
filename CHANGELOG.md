@@ -28,40 +28,6 @@
   permissions manager is unchanged; no public type moves. Host note: a
   host whose verify ran under no grant now sees the prompt, or the
   manager's `Unauthorized` refusal when the prompt is refused.
-### Changed
-
-- #560, bsv-wallet-cli#386 (the owner's word of 2026-11-02 13:2xZ): the
-  `CWIStyleWalletManager` key file is the reference's UMP token format.
-  Old: the toolbox's own layout (`save_snapshot`: a 32-byte key and the
-  profiles' JSON under it), each profile's key `primary_pad XOR
-  PBKDF2-SHA512(password, salt = the 16-byte profile id)`; `UmpToken {
-  version: 1, key_encrypted, profiles_encrypted }` and `WalletSnapshot`
-  were unused shapes. New: version 3, one reference UMP token per profile
-  (`CWIStyleWalletManager.ts:415-498` at ts-stack edf6e03, its binary
-  `serializeUMPToken` layout) with a random 32-byte `passwordSalt` from
-  the OS, `passwordKdf` metadata (`pbkdf2-sha512` at the configured
-  rounds, 7777 by default; a reference token with no metadata opens at
-  7777), `umpVersion` 3, and the reference's password, presentation and
-  recovery blobs and encrypted profiles; the profile's wallet key is
-  unchanged. A v1 file still opens; at its next successful unlock the
-  profile is re-sealed with a fresh salt and, with a key file open
-  (`open_key_file`), the file is re-written (a sibling, then a rename);
-  a failed unlock writes nothing. A wrong password on a v3 profile is now
-  `Error::AccessDenied` (v1 built another wallet). The public shapes that
-  move: `UmpToken` (the reference's fields, `to_bytes`/`from_bytes`, no
-  `new`), `WalletSnapshot` (the reference's layout, `active_profile_id`
-  and `new`'s second argument 16 bytes where they were a `String`; both
-  types drop `Serialize`/`Deserialize`, their form being the reference's
-  bytes), the new `PasswordKdf` and `KdfAlgorithm`, and
-  `open_key_file`, `save_key_file`, `recovery_key`; exports carry the
-  token. argon2id parses and is refused at derivation until it has a
-  dependency (stage two). Design: `docs/design/ump-token-format.md`.
-  Host note: the file's version moves at that unlock (or the next save),
-  and an older toolbox cannot read it after; a host that may roll back
-  keeps a copy of its v1 file. v1 has no password check, so a mistyped
-  password at the migrating unlock re-keys that profile to another root
-  (design 4.3).
-
 ### Added
 
 - #556 (the owner's word of 2026-11-01 14:1xZ, the keeper's reading 22.9
@@ -100,6 +66,52 @@
   privileged reveal asks no permission of a `WalletPermissionsManager` (the
   reference asks a `linkageRevelation` permission in its wrapper,
   `WalletPermissionsManager.ts:5190-5221`), #589.
+- #560, #594, bsv-wallet-cli#386 (the owner's word of 2026-11-02 13:2xZ,
+  and of 14:4xZ for the migration's shape, #594 (a)), api-break: the
+  `CWIStyleWalletManager` key file is the reference's UMP token format.
+  Old: the toolbox's own layout (`save_snapshot`: a 32-byte key and the
+  profiles' JSON under it), each profile's key `primary_pad XOR
+  PBKDF2-SHA512(password, salt = the 16-byte profile id)`; `UmpToken {
+  version: 1, key_encrypted, profiles_encrypted }` and `WalletSnapshot`
+  were unused shapes. New: version 3, one reference UMP token per profile
+  (`CWIStyleWalletManager.ts:415-498` at ts-stack edf6e03, its binary
+  `serializeUMPToken` layout) with a random 32-byte `passwordSalt` from
+  the OS, `passwordKdf` metadata (`pbkdf2-sha512` at the configured
+  rounds, 7777 by default, with the reference's full params JSON; a
+  reference token with no metadata opens at 7777), `umpVersion` 3, and
+  the reference's password, presentation and recovery blobs and encrypted
+  profiles around a random root; the profile's wallet key is unchanged. A
+  token not on chain is written with the null txid at index 0 as its
+  outpoint, which the reference's reader takes (it refuses an empty one).
+  A v1 file still opens. At a v1 profile's next unlock a token joins its
+  v1 record (a fresh salt and root, the pad moved so the key does not)
+  and, with a key file open (`open_key_file`), the file is re-written (a
+  sibling, a sync, a rename, the directory synced); the v1 record stays
+  until a later unlock opens the token, whose GCM tag proves the same
+  password both times, and then leaves. A wrong password at the migrating
+  unlock (v1 has no password check) therefore loses nothing: the right
+  password still opens through v1, and a wrong password at the second
+  unlock leaves the file byte-identical. A failed unlock writes nothing. A
+  wrong password on a token alone is `Error::AccessDenied` (v1 built
+  another wallet). An interrupted write's sibling is zeroed and removed at
+  the next open; key material is zeroed on drop. The public shapes that
+  move: `UmpToken` (the reference's fields, `to_bytes`/`from_bytes`, no
+  `new`), `WalletSnapshot` (the reference's layout, `active_profile_id`
+  and `new`'s second argument 16 bytes where they were a `String`; both
+  types drop `Serialize`/`Deserialize`, their form being the reference's
+  bytes), the new `PasswordKdf` and `KdfAlgorithm`, and three new
+  manager methods: `open_key_file` and `save_key_file` (the migration
+  re-writes the file the manager opened) and `recovery_key` (the
+  reference's `getRecoveryKey`, :2356); exports carry the token.
+  argon2id parses and is refused at derivation until it has a dependency
+  (#593). Design: `docs/design/ump-token-format.md`. Host note: the
+  file's version moves at that unlock (or the next save), and an older
+  toolbox cannot read it after; a host that may roll back keeps a copy of
+  its v1 file. A host that never unlocks a migrated profile twice keeps
+  the profile-id salt in its file, and the v1 record beside the token.
+  The file is one factor (the presentation key sits beside the token), so
+  a holder of the file can test a password guess offline at one PBKDF2 of
+  7777 rounds (design 4.3).
 
 ## [0.14.0-beta.6] - 2026-11-01
 ### Added
