@@ -324,18 +324,26 @@ bsv-rs and `ring` hold inside their own types.
      token was sealed with, so two unlocks agreed; the v1 record leaves
      and the file is written with the token alone.
   3. If the token refuses at that later unlock, v1 opens (as it always
-     did) and the token is re-sealed around that key in memory; the file
-     is not written. The state "a token sealed with password X, the v1
-     record, password Y arrives" is the same whether X was a typo and Y
-     the right password or X the right one and Y a typo: nothing in the
-     file tells them apart. Writing the re-sealed token would change the
-     file on a wrong second unlock; not writing it keeps the file
-     byte-identical then, at a cost: a typo at the migrating unlock is
-     repaired on disk only when two right unlocks happen in one process
-     (the earlier re-seals in memory, the later opens that token and
-     writes), and until then the file's token is sealed with the typo. A
-     host that saves (`save_key_file`) after the earlier writes the
-     re-sealed token beside v1, which is also safe.
+     did) and the token is re-sealed around that key under the arriving
+     password, and the file is written with the re-sealed token beside
+     the unchanged v1 record (the keeper's reading of 2026-11-02 19:5xZ,
+     (ii)). The state "a token sealed with password X, the v1 record,
+     password Y arrives" is the same whether X was a typo and Y the right
+     password or X the right one and Y a typo: nothing in the file tells
+     them apart, so the v1 record never leaves on a token that refused.
+     Writing the re-seal makes the file follow the latest unlock: a typo
+     at the migrating unlock is repaired on disk by the next right
+     unlock, in this process or another (the round before held the
+     re-seal in memory, so a typo stayed on disk until two right unlocks
+     met in one process).
+  The loss condition, the one case the v1 record is lost: the same wrong
+  password at two consecutive unlocks seals the token under it at the
+  earlier and opens it at the later, which drops the v1 record, and the
+  right password is refused afterwards. A host closes it in its wallet
+  builder: the builder (`switch_profile`, `cwi_style_wallet_manager.rs`)
+  runs after the derivation and before the write, so a builder that
+  checks the derived identity key against the storage's users and
+  returns an error refuses the unlock with nothing written.
   With a key file open each write is a sibling, sync, rename and
   directory sync, before the wallet is installed; a failed write fails
   the unlock and leaves memory and file as they were. A failed unlock
@@ -432,13 +440,17 @@ vectors both ways) and `src/managers/cwi_style_wallet_manager_tests.rs`
    `keyFileVersion` 3, a token with a fresh 32-byte salt and the v1
    record beside it, and the same profile key decrypts from the token; a
    second unlock opens the token and the file holds the token alone.
-3. The #594 exit: a wrong password at the migrating unlock leaves the v1
-   record intact, the right password opens afterwards and the token then
-   carries the right root, and the next right unlock drops v1; a wrong
-   password at the second unlock leaves the file byte-identical and the
-   right one still opens. A failed unlock at either step (no privileged
-   key manager) and a wrong password on a token alone leave the file
-   byte-identical; a reference-written token is never re-written.
+3. The #594 exit under (ii): a typo at the migrating unlock, then the
+   right password re-seals the token on disk under it beside the intact
+   v1 record, and the next right unlock drops v1 (w1); a wrong password
+   beside v1 re-seals the token under it, the v1 record's bytes and the
+   rest of the file unchanged, and the right one then opens through v1
+   (w2); the loss condition, the same wrong password twice, drops v1 and
+   the right one is refused (w3); typo, right, right across two
+   instances completes the migration to the v1 primary key (w4). A
+   failed unlock at either step (no privileged key manager) and a wrong
+   password on a token alone leave the file byte-identical; a
+   reference-written token is never re-written (w5).
 4. After the drop, `PBKDF2(password, profile id)` opens no blob of the
    token and the clear pad yields no key with it; `PBKDF2(password,
    new salt)` opens the token to the v1 primary key. One changed byte of
