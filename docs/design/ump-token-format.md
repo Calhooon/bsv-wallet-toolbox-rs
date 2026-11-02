@@ -360,7 +360,7 @@ page cache, and what bsv-rs and `ring` hold inside their own types.
   commit, under the profiles' write lock, installs the next record only
   while the profile still holds the record the unlock read, and refuses
   with `Error::InvalidOperation` otherwise (a delete or an import during
-  the KDF, or another unlock of the profile that wrote first: the caller
+  the KDF, or another unlock of the profile that wrote before it: the caller
   retries, and the retry derives against the record now held; installing
   the later unlock's successor would overwrite the earlier's write, a
   dropped v1 record put back, and re-deriving under the write lock would
