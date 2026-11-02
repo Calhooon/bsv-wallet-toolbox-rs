@@ -286,7 +286,11 @@ on new blocks). A writer in the key directory can already replace the key
 file, so the cleanup never follows a link and never writes through a
 shared inode: a symlink, or on unix a regular file with more than one
 link, is removed by name alone, and off unix, where std gives no link
-count, every sibling is removed unzeroed.
+count, every sibling is removed unzeroed. The link count is read again on
+the opened file, so a link made between the entry's read and the open is
+removed by name, never written. A sibling the process cannot open (another
+uid's leftover) is removed unzeroed and the open proceeds; an error from
+the removal itself fails the open, as the key file's write would.
 
 Key material in memory: the derived keys, the five factors, the opened
 root, the presentation key (`UmpEntry` and the on-disk `UmpRecord`), the
