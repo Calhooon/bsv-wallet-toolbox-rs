@@ -330,9 +330,10 @@ impl UmpToken {
         for _ in 0..11 {
             f.push(r.field()?);
         }
-        let profiles_encrypted = match version >= 2 && r.byte()? == 1 {
-            true => Some(r.field()?),
-            false => None,
+        let profiles_encrypted = if version >= 2 && r.byte()? == 1 {
+            Some(r.field()?)
+        } else {
+            None
         };
         let (mut ump_version, mut password_kdf) = (None, None);
         if version == 3 && r.byte()? == 1 {
