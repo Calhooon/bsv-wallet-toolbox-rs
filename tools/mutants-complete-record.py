@@ -22,7 +22,8 @@ p5-mutants-complete-box-d); the record's figure is the repaired one, and its
 section "The artifact" carries the run as it stood.
 
     python3 tools/mutants-complete-record.py [--ledger DIR]
-    python3 tools/mutants-complete-record.py --check   # the md against the json; exit 1 on a difference
+    python3 tools/mutants-complete-record.py --check   # the counts from the per-mutant list, the md from the json;
+                                                       # exit 1 on a difference
 """
 
 import argparse
@@ -456,7 +457,7 @@ def build(ledger):
         "artifact": artifact,
         "survivors": by_file(mutants, "MissedMutant"),
         "timeouts": timed_out(mutants, segs, moved),
-        "mutants": [{"n": m["n"], "verdict": m["verdict"], "host": m["host"], "threads": m["threads"] or 0,
+        "mutants": [{"n": m["n"], "file": m["file"], "verdict": m["verdict"], "host": m["host"], "threads": m["threads"] or 0,
                      "seconds": m["seconds"]} | ({"artifact_timeout": True} if m["n"] in moved else {})
                     for m in mutants],
     }
@@ -667,18 +668,74 @@ def render_md(record):
     return "\n".join(out) + "\n"
 
 
+VERDICT = {"CaughtMutant": "caught", "MissedMutant": "missed", "Timeout": "timeout", "Unviable": "unviable"}
+
+
+def verify(record, md_text):
+    """Recompute every file's counts, hosts, score and verdict, the totals, the survivors, the timeouts and
+    the artifact's totals from the json's per-mutant list; every difference from the json's own cells and
+    from the md's Totals row, one line each."""
+    rows, out = record["mutants"], []
+    files = {r["file"]: r for r in record["cells"][1:]}
+    by = {}
+    for m in rows:
+        by.setdefault(m["file"], []).append(m)
+    if set(by) != set(files):
+        out.append(f"files in the per-mutant list and the per-file cells differ: {sorted(set(by) ^ set(files))}")
+    for f, ms in sorted(by.items()):
+        r = files.get(f)
+        if r is None:
+            continue
+        c = Counter(VERDICT[m["verdict"]] for m in ms)
+        want = {**{k: c[k] for k in KEYS}, "mutants": len(ms), "score": pct(c),
+                "hosts": dict(sorted(Counter(m["host"] for m in ms).items())),
+                "verdict": floor_verdict(c, r["mutants"], r["floor"], r["verdict"] != "no floor entry")}
+        out += [f"{f}: {k} {r[k]} in the json, {v} from the per-mutant list" for k, v in want.items() if r[k] != v]
+    c = Counter(VERDICT[m["verdict"]] for m in rows)
+    head = record["cells"][0]
+    want = {**{k: c[k] for k in KEYS}, "mutants": len(rows), "tested": len(rows), "value": pct(c)}
+    out += [f"totals: {k} {head[k]} in the json, {v} from the per-mutant list" for k, v in want.items() if head[k] != v]
+    for key, verdict in (("survivors", "MissedMutant"), ("timeouts", "Timeout")):
+        listed = Counter({f: len(v) for f, v in record[key].items()})
+        counted_ = Counter(m["file"] for m in rows if m["verdict"] == verdict)
+        out += [f"{key}: {f} {listed[f]} in the json, {counted_[f]} from the per-mutant list"
+                for f in sorted(set(listed) | set(counted_)) if listed[f] != counted_[f]]
+    timed = sorted(t["n"] for ts in record["timeouts"].values() for t in ts)
+    if timed != sorted(m["n"] for m in rows if m["verdict"] == "Timeout"):
+        out.append("timeouts: the catalog indices differ from the per-mutant list's")
+    art = Counter("timeout" if m.get("artifact_timeout") else VERDICT[m["verdict"]] for m in rows)
+    a = record["artifact"]
+    out += [f"artifact: {k} {a[k]} in the json, {art[k]} from the per-mutant list" for k in KEYS if a[k] != art[k]]
+    if a["figure"] != pct(art):
+        out.append(f"artifact: figure {a['figure']} in the json, {pct(art)} from the per-mutant list")
+    viable = c["caught"] + c["missed"] + c["timeout"]
+    row = (f"| {len(rows)} | {len(rows)} | {viable} | {c['caught']} | {c['missed']} | {c['timeout']} | "
+           f"{c['unviable']} | {cell(pct(c))} |")
+    if row not in md_text.splitlines():
+        out.append(f"the md's Totals row is not {row}")
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", type=Path, default=LEDGER)
-    parser.add_argument("--check", action="store_true", help="render the md from the json; exit 1 on a difference")
+    parser.add_argument("--check", action="store_true",
+                        help="recompute the counts from the json's per-mutant list and render the md from the json; "
+                             "exit 1 on a difference")
     args = parser.parse_args()
     md, js = ROOT / f"{STEM}.md", ROOT / f"{STEM}.json"
     if args.check:
-        record = json.loads(js.read_text())
-        if md.read_text() != render_md(record) or js.read_text() != dump(record) + "\n":
+        record, text = json.loads(js.read_text()), md.read_text()
+        differences = verify(record, text)
+        for d in differences:
+            print(d)
+        if differences:
+            print(f"{STEM}.json's counts or the md's totals differ from the json's per-mutant list")
+            return 1
+        if text != render_md(record) or js.read_text() != dump(record) + "\n":
             print(f"{STEM}.md or .json differs from the json's own rendering; run the script over the ledger")
             return 1
-        print(f"{STEM}.md matches its json")
+        print(f"{STEM}.md matches its json; every count recomputes from the per-mutant list")
         return 0
     record = build(args.ledger)
     js.write_text(dump(record) + "\n")
