@@ -537,6 +537,29 @@ async fn opening_a_key_file_removes_a_stale_write_sibling() {
     assert!(other.exists(), "a name not of the write's shape is left");
 }
 
+/// A planted sibling of the write's shape that is a symlink to a file outside
+/// the directory is removed as a link: the target is byte-identical.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_sibling_is_removed_as_a_link_and_its_target_untouched() {
+    let (_, _, v1, _) = v1_parts();
+    let scratch = scratch_file("l.keys", &v1);
+    let outside = scratch_file("outside", b"not the manager's to zero");
+    let link = scratch.0.with_file_name("l.keys.tmp-0123456789abcdef");
+    std::os::unix::fs::symlink(&outside.0, &link).unwrap();
+    let (m, _) = manager();
+    m.open_key_file(&scratch.0).await.unwrap();
+    assert_eq!(m.get_profiles().await.len(), 1, "the open proceeds");
+    assert_eq!(
+        std::fs::read(&outside.0).unwrap(),
+        b"not the manager's to zero"
+    );
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "the link is gone"
+    );
+}
+
 #[tokio::test]
 async fn exports_carry_the_token_and_a_v1_export_reads_as_v1() {
     let (m, seen) = manager();
