@@ -1928,8 +1928,9 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
         validate_originator(originator)?;
-        // The trait adapter checks privilege fields omitted by the inherent API.
-        WalletInterface::reveal_counterparty_key_linkage(&self.proto_wallet, args, originator).await
+        self.key_route(originator)
+            .reveal_counterparty_key_linkage(args)
+            .await
     }
 
     async fn reveal_specific_key_linkage(
@@ -1938,8 +1939,9 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
         validate_originator(originator)?;
-        // Keep the beta.3 validator and its compressed-key result together.
-        WalletInterface::reveal_specific_key_linkage(&self.proto_wallet, args, originator).await
+        self.key_route(originator)
+            .reveal_specific_key_linkage(args)
+            .await
     }
 
     // =========================================================================
