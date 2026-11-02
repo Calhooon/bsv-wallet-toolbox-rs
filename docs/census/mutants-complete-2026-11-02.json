@@ -25,7 +25,7 @@
       {"lane": "p5-mutants-complete-box-c", "host": "box", "rule": "eight when the one-minute load at a round's opening is 50 or under, else four", "spans": [{"workers": 8, "RUST_TEST_THREADS": 2, "from": "2026-11-02T04:03:59Z", "to": "2026-11-02T07:03:39Z", "hours": 2.99, "rounds": 31}]},
       {"lane": "p5-mutants-complete-box-d", "host": "box", "rule": "four when the one-minute load at a round's opening is 55 or under, else two", "spans": [{"workers": 4, "RUST_TEST_THREADS": "default", "from": "2026-11-02T07:51:33Z", "to": "2026-11-02T10:23:24Z", "hours": 2.53, "rounds": 22}]}
     ],
-    "hosts": {"box": "the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK)", "studio": "the Studio (10 cores, its default toolchain and SDK)"},
+    "hosts": {"box": "the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK)", "studio": "the Studio (10 cores, rustc 1.95.0 by a reading after the run, its default SDK)"},
     "test_threads": [
       {"from": "2026-11-01T22:39:24Z", "RUST_TEST_THREADS": 2},
       {"from": "2026-11-01T23:46:46Z", "RUST_TEST_THREADS": "default"},
@@ -38,7 +38,7 @@
       {"host": "box", "cores": 18, "lane": "p5-mutants-complete-box-c", "start": "2026-11-02T04:03:59Z", "end": "2026-11-02T07:51:33Z", "mutants": 57, "verdicts": {"CaughtMutant": 32, "MissedMutant": 8, "Unviable": 17}},
       {"host": "box", "cores": 18, "lane": "p5-mutants-complete-box-d", "start": "2026-11-02T07:51:33Z", "end": "2026-11-02T10:23:32Z", "mutants": 288, "verdicts": {"CaughtMutant": 167, "MissedMutant": 96, "Timeout": 25}}
     ],
-    "toolchain": "box: rustc 1.98.1 (48a229cea 2026-09-01); the Studio's toolchain is not in the ledger",
+    "toolchain": "box: rustc 1.98.1 (48a229cea 2026-09-01); the Studio: rustc 1.95.0, not in the ledger: `rustc --version` read on the Studio after the run (2026-11-02), and the version the record of #571 (docs/census/mutants-oracle-2026-11-01.md) names for its run on the same host on 2026-11-01",
     "tool_version": "cargo-mutants 27.1.0",
     "lockfile": "Cargo.lock (no lock is committed; resolved once by cargo fetch, copied to every worker)",
     "logs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-mutants-complete-box: logs/rounds.log, logs/load.log, logs/baseline.log, logs/environment-restored.log, runs/i<N>.log, runs/i<N>/mutants.out, state/done/<N>, state/artifact-timeout/<N>, artifact/runs/"
