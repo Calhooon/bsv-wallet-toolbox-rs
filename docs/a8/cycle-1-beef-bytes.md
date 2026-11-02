@@ -282,8 +282,8 @@ and 100 inputs; `process` 700, 400 and 50; `internalize 1` 3000. Three runs
 a build, off and on alternated (r1 off then on, r2 on then off, r3 off then
 on). From each profile's json: `sha` is the sum of `share_pct` over the
 `functions` named `sha2::sha256::...compress...` (the symbol is
-`aarch64_sha2::compress` in the census's build and `compress256` at the
-tip's), `memmove` the `share_pct` of `_platform_memmove`, `ms` is
+`aarch64_sha2::compress` in the census's build and in a build of this tip;
+a build may name it `compress256`, and the sum catches either), `memmove` the `share_pct` of `_platform_memmove`, `ms` is
 `door_wall_ms` and `cpu_ms` is `on_cpu_ms`, each over `iterations`; a
 figure is the median of the three runs. The tables above are rendered from
 the json by `python3 tools/a8-record.py` (`--check` holds them).
@@ -291,6 +291,7 @@ the json by `python3 tools/a8-record.py` (`--check` holds them).
 The counts, in a scratch directory, never this checkout:
 
 ```bash
+S=$(mktemp -d) && mkdir -p "$S"/tree          # a scratch directory, never this checkout
 cp -R ~/.cargo/registry/src/*/bsv-rs-0.9.0-beta.6 "$S"/bsv-rs
 (cd "$S"/bsv-rs && git apply <checkout>/docs/a8/bsv-rs-hash-counter.diff)
 git archive HEAD | tar -x -C "$S"/tree
