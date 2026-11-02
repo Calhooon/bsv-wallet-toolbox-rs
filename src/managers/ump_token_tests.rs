@@ -309,3 +309,15 @@ fn record_a_rust_written_token_for_the_reference() {
         serde_json::to_string_pretty(&out).unwrap()
     );
 }
+
+#[test]
+fn the_records_key_material_is_zeroed_on_drop() {
+    fn zeroed_on_drop<T: ZeroizeOnDrop>() {}
+    zeroed_on_drop::<RefProfile>();
+    zeroed_on_drop::<Zeroizing<Vec<u8>>>();
+    // The record's key field is that type; the compiler holds it to it.
+    let key: fn(&UmpRecord) -> &Zeroizing<Vec<u8>> = |r| &r.presentation_key;
+    let _ = key;
+    let bytes: fn(&Entries) -> Result<Zeroizing<Vec<u8>>> = |e| encode_key_file(e, None);
+    let _ = bytes;
+}
