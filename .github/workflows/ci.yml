@@ -34,9 +34,12 @@ name: CI
 on:
   pull_request:
     branches: [main, beta]
-    # `labeled` and `unlabeled` so the `api-break` label is seen by the semver
-    # job on the run it triggers; a re-run replays the old event payload.
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # No `labeled` or `unlabeled`: `gh pr create --label` fired `opened` and
+    # `labeled` a second apart, the concurrency group cancelled one of the two
+    # runs, and the cancelled run's checks held the merge until it was re-run
+    # (#612). The semver job reads the PR's labels live instead, so a label
+    # added later reaches it through a plain re-run.
+    types: [opened, synchronize, reopened]
   push:
     branches: [main, beta]
   # release.yml runs the same jobs on a tag before it publishes.
@@ -351,9 +354,9 @@ jobs:
     name: semver
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
-    # The push path asks GitHub which merged PRs carried api-break; the
-    # workflow's permissions are contents: read, so the job names the one
-    # extra read it needs.
+    # The pull request path reads the PR's labels and the push path asks
+    # GitHub which merged PRs carried api-break; the workflow's permissions
+    # are contents: read, so the job names the one extra read it needs.
     permissions:
       contents: read
       pull-requests: read
@@ -388,19 +391,26 @@ jobs:
       # carries owner-worded breaks since its last tag is not red for them);
       # on a push, HEAD^'s last tag, never a tag on the commit itself, so the
       # line's whole distance from its last release is read. The api-break
-      # switch: on a pull request, the PR's own label; on a push, whether any
+      # switch: on a pull request, the PR's own label, read live from the API
+      # rather than the event payload, so a re-run after the label is added
+      # sees it (a re-run replays the old payload); on a push, whether any
       # PR merged into this branch since the baseline tag carried the label,
       # because a line collects its owner-worded breaks until its next tag
       # (the pin PR #391 landed with the label and the push run read none; the
       # next PR rebased onto it went red on the pin's breaks).
       - name: Check the public API against its baseline (a PR against its base branch, a push against the last release)
         env:
-          PR_API_BREAK: ${{ contains(github.event.pull_request.labels.*.name, 'api-break') }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          API_BREAK="$PR_API_BREAK"
+          API_BREAK=false
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            # Captured before use so a refused or faulted read stops the step
+            # under set -e instead of reading as no label.
+            API_BREAK="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
+              --jq '[.labels[].name] | index("api-break") != null')"
+            echo "pull request #${PR_NUMBER}: api-break label ${API_BREAK} (read live)" | tee -a "$GITHUB_STEP_SUMMARY"
             git fetch -q origin "${GITHUB_BASE_REF}"
             base="origin/${GITHUB_BASE_REF}"
           else
