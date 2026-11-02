@@ -86,6 +86,18 @@ ENVIRONMENT = {
     "witness_s": 0.08, "lib_s": 25.64, "witness_s_pile": 171.55, "lib_s_pile": 253.06,
     "lib_result": "test result: ok. 1730 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 25.64s",
 }
+# Each segment's worker rule, as its driver (round.py and its kept copies in the ledger) states it.
+RULES = {
+    "p5-mutants-complete-box": "eight by round.py.before-throttle-2240 until the captain's throttle to four at "
+                               "22:39:24Z; from 00:03:36Z eight when the one-minute load at a round's opening is "
+                               "50 or under, else four",
+    "p5-mutants-complete-studio-b": "eight when the one-minute load at a round's opening is 50 or under, else four",
+    "p5-mutants-complete-box-c": "eight when the one-minute load at a round's opening is 50 or under, else four",
+    "p5-mutants-complete-box-d": "four when the one-minute load at a round's opening is 55 or under, else two",
+}
+# The rounds log names its worker count from 00:03:36Z on; before, round.py held a fixed count, eight until
+# the captain's throttle line (THREADS[0]) and four after it.
+FIXED = (8, 4)
 HOSTS = {"box": "the box (18 cores, rustc 1.98.1, SDKROOT the Xcode 26.3 SDK)",
          "studio": "the Studio (10 cores, its default toolchain and SDK)"}
 THE = {"box": "the box", "studio": "the Studio"}
@@ -162,6 +174,36 @@ def over_time(run):
     kind = ("the log names no test over 60 s" if not over
             else "a loop or a wait the mutation made" if unfinished else "a slow test")
     return {"tests_over_60s": over, "unfinished": unfinished, "kind": kind}
+
+
+def workers(rounds, segs, switches):
+    """Each segment's spans of one worker count and one RUST_TEST_THREADS, by the rounds that opened in it.
+    A span runs from its first round's opening (the segment's own opening for its first) to the next
+    span's; the last to the segment's last round end, or its close when a stop ended it mid-round."""
+    throttle = switches[0][0]
+    ends = [stamp(l) for l in rounds if "round end" in l]
+    opened = []
+    for l in rounds:
+        if "round start" in l:
+            t, words = stamp(l), l.split()
+            n = int(words[words.index("workers,") - 1]) if "workers," in words else FIXED[t > throttle]
+            opened.append((t, n, next((v for s, v in reversed(switches) if s <= t), None)))
+    out = []
+    for seg in segs:
+        spans = []
+        for t, n, v in (o for o in opened if seg["start"] <= o[0] < seg["end"]):
+            if not spans or (spans[-1]["workers"], spans[-1]["threads"]) != (n, v):
+                spans.append({"workers": n, "threads": v, "from": t if spans else seg["start"], "rounds": 0})
+            spans[-1]["rounds"] += 1
+        last = max((t for t in ends if seg["start"] <= t < seg["end"]), default=None)
+        for i, sp in enumerate(spans):
+            sp["to"] = (spans[i + 1]["from"] if i + 1 < len(spans)
+                        else last if last and last > max(o[0] for o in opened if o[0] < seg["end"]) else seg["end"])
+        out.append({"lane": seg["lane"], "host": seg["host"], "rule": RULES[seg["lane"]], "spans": [
+            {"workers": sp["workers"], "RUST_TEST_THREADS": sp["threads"] or "default", "from": iso(sp["from"]),
+             "to": iso(sp["to"]), "hours": round((sp["to"] - sp["from"]).total_seconds() / 3600, 2),
+             "rounds": sp["rounds"]} for sp in spans]})
+    return out
 
 
 def verdicts_of(documents):
@@ -330,8 +372,8 @@ def build(ledger):
                    "cargo mutants --in-place --baseline skip --timeout 270 --build-timeout 400 "
                    f"--shard N/{len(catalog)} --sharding round-robin --output runs/iN",
         "driver": "round.py in the ledger (one foreground round per shell call, every round's date -u in "
-                  "logs/rounds.log and its opening uptime in logs/load.log; eight workers when the one-minute "
-                  "load at a round's opening is 50 or under, four above; in the repair four, two above 55; a run "
+                  "logs/rounds.log and its opening uptime in logs/load.log; the worker count per segment as "
+                  "workers names it; a run "
                   "still going at a round's deadline is killed, its output removed and the index run again whole "
                   "in a later round: it had no outcome)",
         "repair": f"the artifact run's {len(moved)} Timeout entries moved from state/done to "
@@ -347,6 +389,7 @@ def build(ledger):
         "host_hours": hours,
         "mutant_seconds": {"sum": round(sum(seconds)), "max": round(max(seconds))},
         "rounds": len(opens),
+        "workers": workers(rounds, segs, switches),
         "hosts": HOSTS,
         "test_threads": [{"from": iso(s), "RUST_TEST_THREADS": v or "default"} for s, v in switches],
         "segments": seg_rows(mutants),
@@ -481,15 +524,21 @@ def render_md(record):
            f"`{run['tool_version']}` over the Mutants workflow's set (`.cargo/mutants.toml`: "
            f"{head['mutants']} mutants over {len(files)} files), every catalogued mutant once, one mutant per "
            f"`--in-place --baseline skip` invocation after one green `cargo test --lib` on the base "
-           f"({run['baseline'].split(': ', 1)[1]}); test timeout 270 s, build timeout 400 s; eight workers "
-           f"(four when a round opened above a one-minute load of 50), each in its own scratch copy and target "
-           f"directory, `CARGO_BUILD_JOBS=2`, `RUST_TEST_THREADS=2` in the rounds the artifact section names "
-           f"(the default in the rest); the oracle is the workflow's (`--lib`). "
+           f"({run['baseline'].split(': ', 1)[1]}); test timeout 270 s, build timeout 400 s; the workers by segment "
+           f"below, each in its own scratch copy and target directory, `CARGO_BUILD_JOBS=2`, "
+           f"`RUST_TEST_THREADS=2` in the rounds named below (the default in the rest); the oracle is the "
+           f"workflow's (`--lib`). "
            f"A timeout is a timeout, never retried into a kill; a run killed at a round's deadline had no "
            f"outcome and ran again whole. Scored by `tools/mutants-score` (`collect()`, skipped baseline): "
            f"score = caught / (caught + missed + timeout), unviable excluded. Floors are the base's "
            f"`tools/mutants-floor.json`, reported only; no floor is written by this run.", "",
            f"The repair: {run['repair']}.", "",
+           "The workers, by segment and by the rounds that opened in it (`logs/rounds.log`; hours from a span's "
+           "first opening to the next span's, the last to the segment's last round end or to the stop that "
+           "ended it mid-round):", ""] + [
+           f"- {THE[w['host']]}, lane `{w['lane']}`, by its rule {w['rule']}: " + "; then ".join(
+               f"{sp['workers']} workers at {sp['RUST_TEST_THREADS']} test threads, {sp['from']} to {sp['to']} "
+               f"({sp['hours']} h, {sp['rounds']} round{'s' * (sp['rounds'] != 1)})" for sp in w["spans"]) for w in run["workers"]] + ["",
            "The hosts, by segment (a mutant's host is the segment holding its completion time, the mtime of "
            "its `state/done/N`):", ""] + seg_lines(run["segments"]) + ["",
            f"Toolchain: {run['toolchain']}.", "",
