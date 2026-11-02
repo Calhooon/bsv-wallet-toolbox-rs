@@ -1,7 +1,7 @@
-//! The key route of the seven key calls (#186, #142): a call with
-//! `privileged: true` goes to the wallet's `PrivilegedKeyManager` with the
-//! caller's arguments intact, as ts-stack@edf6e03 `Wallet.ts:455-570` sends
-//! it to `this.privilegedKeyManager`; with none configured it is the
+//! The key route of the seven key calls and the two key-linkage reveals
+//! (#186, #142, #569): a call with `privileged: true` goes to the wallet's
+//! `PrivilegedKeyManager` with the caller's arguments intact, as
+//! ts-stack@edf6e03 `Wallet.ts:455-570` sends it to `this.privilegedKeyManager`; with none configured it is the
 //! reference's refusal (`Wallet.ts:460-461`). Every other call stays with the
 //! everyday `ProtoWallet`, its arguments intact as before.
 //!
@@ -34,7 +34,7 @@ pub(super) fn privileged_refusal() -> bsv_rs::Error {
 
 /// The everyday `ProtoWallet`'s argument refusal, if its call gave one: its
 /// validators run before any key is touched and are the only source of the
-/// `InvalidParameter` class on the seven calls, so the everyday answer is
+/// `InvalidParameter` class on the nine calls, so the everyday answer is
 /// discarded and only the refusal kept. bsv-rs keeps the validators
 /// themselves crate-private; the call is how they are reached.
 fn argument_refusal<T>(everyday: bsv_rs::Result<T>) -> bsv_rs::Result<()> {
@@ -82,19 +82,34 @@ pub(super) use key_calls;
 
 // One routed method per key call: the manager for `privileged: true` once
 // the everyday ProtoWallet's validators pass the arguments, the everyday
-// ProtoWallet otherwise.
+// ProtoWallet otherwise. `$everyday` names how the ProtoWallet is asked:
+// `inherent` for the seven; `adapter` for the two reveals, whose validators
+// sit behind the ProtoWallet's `WalletInterface` adapter, which checks the
+// `privileged` and `privileged_reason` its inherent argument types omit.
 macro_rules! routed_key_calls {
-    ($($name:ident($args:ty) -> $result:ty;)*) => {
+    ($everyday:ident; $($name:ident($args:ty) -> $result:ty;)*) => {
         $(
             pub(super) async fn $name(&self, args: $args) -> bsv_rs::Result<$result> {
                 if args.privileged != Some(true) {
-                    return self.proto.$name(args);
+                    return $everyday!(self, $name, args);
                 }
-                argument_refusal(self.proto.$name(args.clone()))?;
+                argument_refusal($everyday!(self, $name, args.clone()))?;
                 let manager = self.manager.ok_or_else(privileged_refusal)?;
                 manager.$name(args, self.originator).await
             }
         )*
+    };
+}
+
+macro_rules! inherent {
+    ($route:expr, $name:ident, $args:expr) => {
+        $route.proto.$name($args)
+    };
+}
+
+macro_rules! adapter {
+    ($route:expr, $name:ident, $args:expr) => {
+        WalletInterface::$name($route.proto, $args, Some($route.originator)).await
     };
 }
 
@@ -111,14 +126,20 @@ impl<'a> KeyRoute<'a> {
         }
     }
 
-    key_calls!(routed_key_calls);
+    key_calls!(routed_key_calls { inherent; });
+
+    routed_key_calls! {
+        adapter;
+        reveal_counterparty_key_linkage(InterfaceRevealCounterpartyArgs) -> RevealCounterpartyKeyLinkageResult;
+        reveal_specific_key_linkage(InterfaceRevealSpecificArgs) -> RevealSpecificKeyLinkageResult;
+    }
 }
 
 // The route as a `WalletInterface`, for bsv-rs's certificate helpers
 // (`MasterCertificate::decrypt_fields`), which pass the caller's `privileged`
 // to the wallet they are given, as the reference passes it to `this`
-// (`Wallet.ts:705-724`): the seven key calls take the route, every other
-// method is the everyday ProtoWallet's.
+// (`Wallet.ts:705-724`): the seven key calls and the two reveals take the
+// route, every other method is the everyday ProtoWallet's.
 macro_rules! key_route_interface {
     (
         everyday { $(fn $name:ident(&self $(, $arg:ident: $arg_type:ty)*) -> $result:ty;)* }
@@ -146,8 +167,6 @@ macro_rules! key_route_interface {
 
 key_calls!(key_route_interface {
     everyday {
-        fn reveal_counterparty_key_linkage(&self, args: InterfaceRevealCounterpartyArgs, originator: Option<&str>) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult>;
-        fn reveal_specific_key_linkage(&self, args: InterfaceRevealSpecificArgs, originator: Option<&str>) -> bsv_rs::Result<RevealSpecificKeyLinkageResult>;
         fn create_action(&self, args: CreateActionArgs, originator: Option<&str>) -> bsv_rs::Result<CreateActionResult>;
         fn sign_action(&self, args: SignActionArgs, originator: Option<&str>) -> bsv_rs::Result<SignActionResult>;
         fn abort_action(&self, args: AbortActionArgs, originator: Option<&str>) -> bsv_rs::Result<AbortActionResult>;
@@ -168,4 +187,6 @@ key_calls!(key_route_interface {
         fn get_network(&self, originator: Option<&str>) -> bsv_rs::Result<GetNetworkResult>;
         fn get_version(&self, originator: Option<&str>) -> bsv_rs::Result<GetVersionResult>;
     }
+    reveal_counterparty_key_linkage(InterfaceRevealCounterpartyArgs) -> RevealCounterpartyKeyLinkageResult;
+    reveal_specific_key_linkage(InterfaceRevealSpecificArgs) -> RevealSpecificKeyLinkageResult;
 });
