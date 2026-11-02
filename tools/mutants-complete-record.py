@@ -183,8 +183,8 @@ def over_time(run):
 
 def workers(rounds, segs, switches):
     """Each segment's spans of one worker count and one RUST_TEST_THREADS, by the rounds that opened in it.
-    A span runs from its first round's opening (the segment's own opening for its first) to the next
-    span's; the last to the segment's last round end, or its close when a stop ended it mid-round."""
+    A span runs from its earliest round's opening (the segment's own opening for the segment's earliest
+    span) to the next span's; the last to the segment's last round end, or its close when a stop ended it mid-round."""
     throttle = switches[0][0]
     ends = [stamp(l) for l in rounds if "round end" in l]
     opened = []
@@ -463,7 +463,8 @@ def build(ledger):
         "artifact": artifact,
         "survivors": by_file(mutants, "MissedMutant"),
         "timeouts": timed_out(mutants, segs, moved),
-        "mutants": [{"n": m["n"], "file": m["file"], "verdict": m["verdict"], "host": m["host"], "threads": m["threads"] or 0,
+        "mutants": [{"n": m["n"], "file": m["file"], "verdict": m["verdict"], "host": m["host"],
+                     "threads": m["threads"] or 0,
                      "seconds": m["seconds"]} | ({"artifact_timeout": True} if m["n"] in moved else {})
                     for m in mutants],
     }
@@ -545,11 +546,12 @@ def render_md(record):
            f"`tools/mutants-floor.json`, reported only; no floor is written by this run.", "",
            f"The repair: {run['repair']}.", "",
            "The workers, by segment and by the rounds that opened in it (`logs/rounds.log`; hours from a span's "
-           "first opening to the next span's, the last to the segment's last round end or to the stop that "
+           "earliest opening to the next span's, the last to the segment's last round end or to the stop that "
            "ended it mid-round):", ""] + [
            f"- {THE[w['host']]}, lane `{w['lane']}`, by its rule {w['rule']}: " + "; then ".join(
                f"{sp['workers']} workers at {sp['RUST_TEST_THREADS']} test threads, {sp['from']} to {sp['to']} "
-               f"({sp['hours']} h, {sp['rounds']} round{'s' * (sp['rounds'] != 1)})" for sp in w["spans"]) for w in run["workers"]] + ["",
+               f"({sp['hours']} h, {sp['rounds']} round{'s' * (sp['rounds'] != 1)})" for sp in w["spans"])
+           for w in run["workers"]] + ["",
            "The hosts, by segment (a mutant's host is the segment holding its completion time, the mtime of "
            "its `state/done/N`):", ""] + seg_lines(run["segments"]) + ["",
            f"Toolchain: {run['toolchain']}.", "",
@@ -608,7 +610,7 @@ def render_md(record):
             "the 270 s timeout, where the unmutated base's whole `cargo test --lib` took "
             f"{record['artifact']['environment']['lib_s']} s in the restored environment, is a loop or a wait the "
             "mutation made; one with its result line is a slow test: "
-            + counted(Counter(t["kind"] for t in rows)) + ". The test named is the log's first that never "
+            + counted(Counter(t["kind"] for t in rows)) + ". The test named is the earliest in the log that never "
             "finished (every name in the json's `tests_over_60s` and `unfinished`).", ""] if rows else []
     for f, rows in record["timeouts"].items():
         out.append(f"- `{f}` ({len(rows)}):")
