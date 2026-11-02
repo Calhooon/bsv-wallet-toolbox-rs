@@ -169,6 +169,9 @@ fn parent_dir(path: &Path) -> &Path {
 /// Removes the write siblings an interrupted write left beside `path`,
 /// each overwritten with zeros in place and synced before removal: their bytes are
 /// key material (on a copy-on-write file system the overwrite is best effort).
+/// Only a regular file is opened, and written only when the open reached that
+/// file (a link swapped in meanwhile is left); a symlink is removed as a link,
+/// its target untouched (the manager writes no link, so one there was planted).
 async fn remove_stale_siblings(path: &Path) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let prefix = tmp_prefix(path)?;
@@ -176,18 +179,40 @@ async fn remove_stale_siblings(path: &Path) -> Result<()> {
     let mut dir = tokio::fs::read_dir(parent_dir(path)).await?;
     while let Some(item) = dir.next_entry().await? {
         let name = item.file_name().to_string_lossy().into_owned();
-        if name.strip_prefix(&prefix).is_some_and(stale) {
-            let len = usize::try_from(item.metadata().await?.len()).unwrap_or(0);
+        if !name.strip_prefix(&prefix).is_some_and(stale) {
+            continue;
+        }
+        let meta = tokio::fs::symlink_metadata(item.path()).await?;
+        if meta.is_file() {
             let mut file = tokio::fs::OpenOptions::new()
                 .write(true)
                 .open(item.path())
                 .await?;
+            if !same_file(&meta, &file.metadata().await?) {
+                continue;
+            }
+            let len = usize::try_from(meta.len()).unwrap_or(0);
             file.write_all(&vec![0u8; len]).await?;
             file.sync_all().await?;
-            tokio::fs::remove_file(item.path()).await?;
+        } else if !meta.file_type().is_symlink() {
+            continue;
         }
+        tokio::fs::remove_file(item.path()).await?;
     }
     Ok(())
+}
+
+/// Whether the entry read without following links is the file opened (unix:
+/// device and inode; std has no open that refuses a link without `libc`).
+#[cfg(unix)]
+fn same_file(entry: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    (entry.dev(), entry.ino()) == (opened.dev(), opened.ino())
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    opened.is_file()
 }
 
 /// Writes `bytes` over `path` atomically: a sibling in the same directory,
