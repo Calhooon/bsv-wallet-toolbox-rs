@@ -560,6 +560,22 @@ async fn a_symlink_sibling_is_removed_as_a_link_and_its_target_untouched() {
     );
 }
 
+/// A key file whose directory is absent is no profiles, as an absent file is;
+/// the stale-sibling scan is skipped, and a save then fails at the write.
+#[tokio::test]
+async fn a_key_file_in_an_absent_directory_is_no_profiles() {
+    let scratch = scratch_file("x", b"");
+    let path = scratch.0.with_file_name("absent").join("wallet.keys");
+    let (m, _) = manager();
+    m.open_key_file(&path).await.unwrap();
+    assert!(m.get_profiles().await.is_empty());
+    assert!(!path.parent().unwrap().exists(), "nothing is created");
+    assert!(
+        m.save_key_file().await.is_err(),
+        "the write needs the directory"
+    );
+}
+
 #[tokio::test]
 async fn exports_carry_the_token_and_a_v1_export_reads_as_v1() {
     let (m, seen) = manager();
