@@ -49,7 +49,10 @@
   trait is the reference's nine (`PrivilegedKeyManager.ts:343-385`); an
   implementor adds both (none exists in this repository or the CLI beyond
   the test double). Host note: a privileged reveal on a wallet with no
-  manager is now this refusal where it was an everyday answer.
+  manager is now this refusal where it was an everyday answer. Residue: a
+  privileged reveal asks no permission of a `WalletPermissionsManager` (the
+  reference asks a `linkageRevelation` permission in its wrapper,
+  `WalletPermissionsManager.ts:5190-5221`), #589.
 
 ## [0.14.0-beta.6] - 2026-11-01
 ### Added
