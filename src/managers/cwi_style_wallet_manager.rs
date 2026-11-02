@@ -114,7 +114,6 @@ impl Profile {
         Self {
             name,
             id: generate_random_bytes(PROFILE_ID_LENGTH),
-            // primary_pad = primary_key XOR derived_key
             primary_pad: ump_token::xor(primary_key, derived_key).to_vec(),
             privileged_pad: generate_random_bytes(PRIVILEGED_PAD_LENGTH),
             created_at: Utc::now(),
@@ -124,7 +123,6 @@ impl Profile {
 
     /// Derives the primary key from the profile pad and derived password key.
     pub fn derive_primary_key(&self, derived_key: &[u8]) -> Vec<u8> {
-        // primary_key = primary_pad XOR derived_key
         ump_token::xor(&self.primary_pad, derived_key).to_vec()
     }
 }
@@ -168,12 +166,11 @@ fn parent_dir(path: &Path) -> &Path {
     dir.unwrap_or(Path::new("."))
 }
 
-/// Removes the write siblings an interrupted write left beside `path`,
-/// each overwritten with zeros in place and synced before removal: their bytes are
-/// key material (on a copy-on-write file system the overwrite is best effort);
-/// an absent directory has none. Only a regular file is opened, and written only when the open reached that
-/// file (a link swapped in meanwhile is left); a symlink is removed as a link,
-/// its target untouched (the manager writes no link, so one there was planted).
+/// Removes the write siblings an interrupted write left beside `path` (an absent
+/// directory has none). A writer in the key directory can already replace the key
+/// file, so this never follows a link nor writes through a shared inode: zeroing
+/// (synced; best effort on copy-on-write) is a courtesy for the manager's own
+/// sibling of one link, done only when the open reached it; a link is unlinked.
 async fn remove_stale_siblings(path: &Path) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let prefix = tmp_prefix(path)?;
@@ -188,7 +185,11 @@ async fn remove_stale_siblings(path: &Path) -> Result<()> {
             continue;
         }
         let meta = tokio::fs::symlink_metadata(item.path()).await?;
-        if meta.is_file() {
+        #[cfg(unix)] // the manager's sibling is created fresh: one link
+        let sole = std::os::unix::fs::MetadataExt::nlink(&meta) == 1;
+        #[cfg(not(unix))] // std gives no link count: removed, never zeroed
+        let sole = false;
+        if meta.is_file() && sole {
             let mut file = tokio::fs::OpenOptions::new()
                 .write(true)
                 .open(item.path())
@@ -199,7 +200,7 @@ async fn remove_stale_siblings(path: &Path) -> Result<()> {
             let len = usize::try_from(meta.len()).unwrap_or(0);
             file.write_all(&vec![0u8; len]).await?;
             file.sync_all().await?;
-        } else if !meta.file_type().is_symlink() {
+        } else if !meta.is_file() && !meta.file_type().is_symlink() {
             continue;
         }
         tokio::fs::remove_file(item.path()).await?;
@@ -571,7 +572,6 @@ impl CWIStyleWalletManager {
             .await
             .clone()
             .ok_or(Error::AuthenticationRequired)?;
-        // Build wallet (the builder takes its own copy of the key)
         let wallet = (self.wallet_builder)(primary_key.to_vec(), pkm).await?;
         if let Some(next) = next {
             self.commit_entry(&entry, next).await?;
