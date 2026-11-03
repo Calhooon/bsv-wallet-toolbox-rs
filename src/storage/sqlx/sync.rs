@@ -708,6 +708,11 @@ pub async fn process_sync_chunk_internal(
 // =============================================================================
 // Helper Functions for Fetching Entities
 // =============================================================================
+//
+// Every finder binds its `u32` limit and offset as `i64` (#703, as #226 and
+// #697 did for the list finders): bound as `i32`, a value past `i32::MAX`
+// wrapped negative, and SQLite reads a negative OFFSET as 0 and a negative
+// LIMIT as none.
 
 fn estimate_size<T: Serialize>(items: &[T]) -> u32 {
     serde_json::to_string(items)
@@ -749,7 +754,7 @@ async fn fetch_baskets_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -795,7 +800,7 @@ async fn fetch_proven_txs_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -844,7 +849,7 @@ async fn fetch_proven_tx_reqs_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -950,7 +955,7 @@ async fn fetch_tx_labels_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -993,7 +998,7 @@ async fn fetch_output_tags_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -1038,7 +1043,7 @@ async fn fetch_transactions_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -1111,7 +1116,7 @@ async fn fetch_outputs_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -1177,7 +1182,7 @@ async fn fetch_tx_label_maps_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -1221,7 +1226,7 @@ async fn fetch_output_tag_maps_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -1265,7 +1270,7 @@ async fn fetch_certificates_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -1315,7 +1320,7 @@ async fn fetch_certificate_fields_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
@@ -1362,7 +1367,7 @@ async fn fetch_commissions_for_sync(
     if let Some(s) = since {
         query = query.bind(s);
     }
-    query = query.bind(limit as i32).bind(offset as i32);
+    query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
     let rows = query.fetch_all(storage.pool()).await?;
 
