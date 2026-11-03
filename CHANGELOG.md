@@ -4,6 +4,12 @@
 
 ### Changed
 
+- #614 and #618 (CI; no code): the workflow runs on beta's merge
+  queue (`merge_group`), every required context reporting there, semver
+  judging a group against its parent with its PR's `api-break` label;
+  a PR's own Test Suite runs the tests its changed paths reach
+  (`tools/affected-tests`, its cases a `checks` gate), the queue's run
+  the whole suite (`docs/census/ci-speed-2026-11-02.md`).
 - #617 (CI; no code): a PR run holds five jobs, not eleven: `lint`
   (Rustfmt, locks, Clippy, the ratchet) and `checks` (scoreboard,
   vectors, fixtures, Documentation) run each gate as its own step and
