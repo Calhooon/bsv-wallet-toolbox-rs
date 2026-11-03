@@ -591,3 +591,45 @@ async fn scene_wallet_script() -> LockingScript {
     let fields = strings(&[APP, &live().to_string(), BASKET]);
     token_script(&other.counted.inner, &fields).await
 }
+
+// =========================================================================
+// A fault is not absence: an underlying that cannot list (a `ProtoWallet`)
+// holds no token; any other list fault is the wallet's own (the reference
+// throws, `:3092`), never the `:1533` text and never a prompt
+// =========================================================================
+
+#[tokio::test]
+async fn a_proto_wallet_underlying_holds_no_token_and_the_path_is_as_before() {
+    let scene = scene().await;
+    let proto = ProtoWallet::new(Some(PrivateKey::random()));
+    let manager = WalletPermissionsManager::new(
+        Arc::new(proto),
+        ADMIN.to_string(),
+        WalletPermissionsManagerConfig::all_enabled(),
+    );
+    let scene = Scene { manager, ..scene };
+    assert_eq!(
+        refusal(protocol_call(&scene, false).await),
+        "No protocol permission token found (seekPermission=false)."
+    );
+}
+
+#[tokio::test]
+async fn a_store_fault_on_the_list_is_the_wallets_fault_not_absence() {
+    let scene = scene().await;
+    seed_protocol(&scene, live()).await;
+    sqlx::query("DROP TABLE output_tags_map")
+        .execute(scene.counted.inner.storage().writer())
+        .await
+        .unwrap();
+    for seek in [false, true] {
+        match protocol_call(&scene, seek).await {
+            Err(Error::SdkError(bsv_rs::Error::WalletFault(fault))) => {
+                assert_eq!(fault.family, bsv_rs::WalletFaultFamily::Storage);
+                assert!(fault.message.contains("no such table: output_tags_map"));
+            }
+            other => panic!("expected the store's fault, got {other:?}"),
+        }
+    }
+    assert_eq!(prompts(&scene), 0);
+}

@@ -885,7 +885,7 @@ impl WalletPermissionsManager {
             protocol,
             counterparty: counterparty.unwrap_or("self"),
         };
-        let stored = self.stored_token(originator, &query, &cache_key).await;
+        let stored = self.stored_token(originator, &query, &cache_key).await?;
         if stored == StoredToken::Live {
             return Ok(true);
         }
@@ -1001,7 +1001,7 @@ impl WalletPermissionsManager {
         }
         // The stored token (`:1595-1615`, #751); an expired one prompts.
         let query = TokenQuery::Basket { basket };
-        if self.stored_token(originator, &query, &cache_key).await == StoredToken::Live {
+        if self.stored_token(originator, &query, &cache_key).await? == StoredToken::Live {
             return Ok(true);
         }
 
@@ -1088,7 +1088,7 @@ impl WalletPermissionsManager {
             cert_type,
             fields,
         };
-        if self.stored_token(originator, &query, &cache_key).await == StoredToken::Live {
+        if self.stored_token(originator, &query, &cache_key).await? == StoredToken::Live {
             return Ok(true);
         }
 
@@ -1596,6 +1596,17 @@ fn token_source(beef: &Beef, output: &WalletOutput, count: usize) -> Option<Push
     valid.then_some(decoded)
 }
 
+/// `ProtoWallet::list_outputs`' refusal (bsv-rs 0.9.0-beta.6
+/// `proto_wallet/interface.rs:210-212`): the underlying keeps no outputs.
+const PROTO_WALLET_LIST_REFUSAL: &str =
+    "listOutputs requires a full wallet implementation with UTXO management";
+
+/// Whether a list failure is an underlying that cannot list, which holds no
+/// token, rather than a fault.
+fn cannot_list(error: &bsv_rs::Error) -> bool {
+    matches!(error, bsv_rs::Error::WalletError(message) if message == PROTO_WALLET_LIST_REFUSAL)
+}
+
 /// A stored token's standing for a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StoredToken {
@@ -1621,36 +1632,39 @@ impl StoredToken {
 impl WalletPermissionsManager {
     /// The stored token for `query` read before the seek-false refusal and
     /// the prompt (`:1522-1566`, `:1595-1615`, `:1669-1709`): a live token
-    /// is cached under `cache_key` with its expiry (`:1565`).
+    /// is cached under `cache_key` with its expiry (`:1565`); a list fault
+    /// is the wallet's own fault, never a verdict.
     pub(crate) async fn stored_token(
         &self,
         originator: &str,
         query: &TokenQuery<'_>,
         cache_key: &str,
-    ) -> StoredToken {
-        match self.find_stored_token(originator, query).await {
+    ) -> Result<StoredToken> {
+        Ok(match self.find_stored_token(originator, query).await? {
             None => StoredToken::Absent,
             Some(expiry) if is_token_expired(expiry) => StoredToken::Expired,
             Some(expiry) => {
                 self.cache_permission(cache_key.to_string(), expiry).await;
                 StoredToken::Live
             }
-        }
+        })
     }
 
     /// `findProtocolToken`, `findBasketToken` and `findCertificateToken`
     /// with `includeExpired` true (`:3080-3117`, `:3163-3194`,
     /// `:3196-3239`): per lookup value, `listOutputs` on the kind's admin
     /// basket with the tags, every tag required, entire transactions, as
-    /// the admin originator; the matched token's expiry. A read the
-    /// underlying wallet refuses (a `ProtoWallet`, which lists no outputs;
-    /// a store fault) ends the lookup with no token, where the reference
-    /// throws: the request's path stays as it was before the lookup.
+    /// the admin originator; the matched token's expiry. An underlying that
+    /// cannot list (a `ProtoWallet`) holds no token, and the request's path
+    /// stays as it was before the lookup; every other list fault is returned
+    /// as it came (the reference throws, `:3092`, `:3172`, `:3208`): the wallet could not look.
+    /// A field that does not decrypt is read raw, as the reference's
+    /// `decryptPermissionTokenField` does (`:2847-2850`).
     pub(crate) async fn find_stored_token(
         &self,
         originator: &str,
         query: &TokenQuery<'_>,
-    ) -> Option<u64> {
+    ) -> Result<Option<u64>> {
         let (normalized, lookup_values) = originator_lookup_values(originator);
         for origin in lookup_values {
             let args = ListOutputsArgs {
@@ -1669,7 +1683,11 @@ impl WalletPermissionsManager {
                 .underlying
                 .list_outputs(args, Some(&self.admin_originator))
                 .await;
-            let Ok(result) = listed else { return None };
+            let result = match listed {
+                Ok(result) => result,
+                Err(error) if cannot_list(&error) => return Ok(None),
+                Err(error) => return Err(Error::SdkError(error)),
+            };
             // One parse per result, as `transactionFromResultBeef` (`:2747`).
             let count = query.field_count();
             let sources: Vec<PushDrop> = match result.beef.as_deref().map(Beef::from_binary) {
@@ -1685,11 +1703,11 @@ impl WalletPermissionsManager {
                     continue;
                 };
                 if let Some(expiry) = self.token_expiry(&fields, &normalized, query).await {
-                    return Some(expiry);
+                    return Ok(Some(expiry));
                 }
             }
         }
-        None
+        Ok(None)
     }
 
     /// The decrypted fields' answer (`parseProtocolTokenOutput` `:2951`,
@@ -1846,10 +1864,9 @@ mod tests {
             _args: ListOutputsArgs,
             _originator: Option<&str>,
         ) -> bsv_rs::Result<ListOutputsResult> {
-            // The stored-token lookup's read (#751): no token held.
-            Err(bsv_rs::Error::WalletError(
-                "the mock holds no outputs".into(),
-            ))
+            // The stored-token lookup's read (#751): a `ProtoWallet`'s
+            // refusal, no token held.
+            Err(bsv_rs::Error::WalletError(PROTO_WALLET_LIST_REFUSAL.into()))
         }
         async fn relinquish_output(
             &self,
