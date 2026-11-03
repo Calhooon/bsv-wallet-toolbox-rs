@@ -68,6 +68,21 @@ for path in (".github/workflows/ci.yml", "Cargo.toml", "Cargo.lock", "build.rs",
 check("a workflow and a doc reach everything",
       out(["docs/NORTH-STAR.md", ".github/workflows/ci.yml"]) == EVERY)
 
+# A *.md under a directory a test walks (#644): everything. The planted
+# README of #632 failed every_rpc_method_has_a_witness.
+for path in ("tests/fixtures/data/storage-wire/README.md", "fuzz/README.md",
+             "test_vectors/README.md", "tools/README.md",
+             ".github/workflows/README.md"):
+    check(f"{path} reaches everything", out([path]) == EVERY, out([path]))
+
+# The walked set is tools/docs-only's own, loaded apart from the map's copy.
+dl = importlib.machinery.SourceFileLoader("docs_only_case", str(HERE / "docs-only"))
+docs_only = importlib.util.module_from_spec(importlib.util.spec_from_loader("docs_only_case", dl))
+dl.exec_module(docs_only)
+check("the map's walked set is tools/docs-only's",
+      set(at.WALKED_PREFIXES) == set(docs_only.NOT_DOC_PREFIXES),
+      sorted(set(at.WALKED_PREFIXES) ^ set(docs_only.NOT_DOC_PREFIXES)))
+
 # Docs only: no cargo test.
 o = out(["docs/ARCHITECTURE.md", "README.md", "src/wallet/CLAUDE.md", "CHANGELOG.md"])
 check("docs only runs no cargo test",
