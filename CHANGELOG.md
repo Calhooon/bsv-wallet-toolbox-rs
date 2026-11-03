@@ -39,7 +39,7 @@
   and are ignored with their reason in the remote-only job, the ladder cut
   test's pattern; `tools/ignore-sites` (with `tools/ignore-sites-test`)
   refuses a `cfg_attr(not(feature = "sqlite"), ignore` site the
-  `sqlite,remote` build does not run (`docs/census/ci-speed-2026-11-02.md`).
+  `sqlite,remote` build does not run (`docs/census/ci-speed-loop-2.md`, loop two's cut (3); the guard's CI wiring is #656).
 - #659 (manifest and two `use` sites; no behaviour change): the direct
   dependency on `futures-util` is removed from `Cargo.toml`; its two uses in
   `src/services/providers/arcade.rs` (`StreamExt`, `stream::iter`) read the
