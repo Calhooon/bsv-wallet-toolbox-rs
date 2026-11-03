@@ -187,6 +187,17 @@ GorillaPool's independent explorer, the third of the read ladders beside WhatsOn
 
 ---
 
+### Loopback table (`loopback_table.rs`, #683)
+
+Under `cfg(test)` or `feature = "bench-support"` only, a child of `http_client.rs`. A client built inside `LoopbackTable::building(|| ...)` (on that thread, captured at `ClientBuilder::build`) answers every request from the test's table, with no socket, TLS, DNS or timer, wherever it is later used; a client built outside keeps the socket and #182's `check_url`.
+
+- `LoopbackTable::new()`, `on(method, host, path, answer)` (host or `host:port`; path exact, path and query when the row has `?`, a prefix when it ends in `*`; the earliest matching row answers), `requests()` (`METHOD url`, in order).
+- `LoopbackAnswer::status(code, body)`, `::json(code, &value)`, `.with_header(name, value)`, `::SendFault`. An unmatched request is `SendFault`: `error sending request for url (<url>)`, reqwest 0.12's text for a refused connection, a timeout, a TLS and a DNS fault alike.
+- `send` returns `http_client::Response` (production: `reqwest::Response`; under the seam an enum of reqwest's and the table's, with `status`, `headers`, `text`, `json`, `bytes` as `Vec<u8>`, `bytes_stream`, `error_for_status`). The table's error texts are reqwest's (`HTTP status server error (503 Service Unavailable) for url (<url>)`, `error decoding response body`), carried as `RequestError::Loopback(text)`, which converts to `Error::HttpError(text)` as a `reqwest::Error` does.
+- A host's tests reach it as `benchmark_support::{LoopbackTable, LoopbackAnswer}`. The texts against the socket's, and the differences per fixture, are `docs/census/ci-speed-loop-4.md`; the tests are `loopback_table_tests.rs` and `tests/loopback_table_tests.rs`.
+
+---
+
 ### Rate gate (`pace.rs`, 0.12.0)
 
 `RateGate::new(provider, default_retry_after)` (`.with_per_minute(n)` for a token bucket): `admit()` before a request, `check(status, headers)` after. A 429 closes the rung for its `Retry-After` (seconds or an HTTP date, held to 600 s) and returns `Error::RateLimited`; the ladder records it with code `RATE_LIMITED` and moves on. `RateGate::shared(key, make)` hands every provider built in the process for one key (base URL, and the API key's fingerprint where the budget is a key's) the same gate, so several `Services` spend one budget. Used by WhatsOnChain, BananaBlocks and Bitails (each `rate_gate()`), and by the header services Chaintracks and BHS (#148, not exposed; `pace::shared_key` names their gates); their test constructors take a gate of their own, because fixture servers are recycled.

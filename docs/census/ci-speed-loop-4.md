@@ -1,5 +1,74 @@
 Loop four of the CI speed line (#638, #637), split from the record [ci-speed-2026-11-02.md](ci-speed-2026-11-02.md) (#670).
 
+## Loop four, the loopback transport (#683, the CLI's #526)
+
+The CLI's gate-vector tests (9.2 s), its four served-BEEF door tests (10.4 to 12.0 s) and wire's six corpus replays (10 to 15.6 s) on the runner, against 1.2 to 1.4 s each locally (the CLI's #526, read from its PR 521 log). The toolbox's row: a `bench-support` loopback transport that answers the explorer rungs from the test's own table with no socket, the texts a host sees the socket transport's or each difference named here.
+
+### The seam
+
+- **Where.** `src/services/providers/loopback_table.rs`, a child of the transport's `http_client.rs` under `cfg(any(test, feature = "bench-support"))`. Production (`not(any(test, feature = "bench-support"))`) re-exports reqwest's `Client`, `RequestBuilder`, `Error` and `Response` as before.
+- **The table.** `LoopbackTable::new()`, then `table.on(method, host, path, answer)`: the host is the URL's host or `host:port`; the path is the URL's path exactly, its path and query when the row's has a `?`, or a prefix when it ends in `*`. Rows are tried in the order added. `LoopbackAnswer::status(code, body)`, `LoopbackAnswer::json(code, &value)`, `.with_header(name, value)`, and `LoopbackAnswer::SendFault`. An unmatched request is the send fault. `table.requests()` is every request sent, `METHOD url`, in order.
+- **How a test installs it.** `table.building(|| Services::with_options(...))`: every client built inside the closure (on that thread, as `SharedClients::building` shapes it, #634) answers from the table wherever it is used later. A host reaches it as `bsv_wallet_toolbox_rs::benchmark_support::{LoopbackTable, LoopbackAnswer}` with the `bench-support` feature.
+- **No socket for any host.** A table client never calls `check_url`, since nothing it sends leaves the process; a client built outside `building` keeps the socket transport and the #182 refusal (`a_client_built_outside_the_table_keeps_the_check`).
+- **The response.** No `http` crate is a dependency and `reqwest::Response` has no constructor without it (`reqwest::Response::from(Default::default())` is E0283), so the seam's `send` returns `http_client::Response`, an enum of reqwest's response and the table's, with reqwest's own methods (`status`, `headers`, `text`, `json`, `bytes`, `bytes_stream`, `error_for_status`). Four production lines that named `reqwest::Response` now name `http_client::Response`, the same type in production (`arc.rs`, `whatsonchain.rs`, `chaintracks_client.rs`, `services.rs`); chaintracks' `Fault` takes the seam's `RequestError` under the cfg. `services.rs` named `reqwest` once (that annotation), so its ceiling in `src/architecture_tests.rs`'s HTTP scan comes down to none. `collection.rs` is unchanged: the ladders' failover, pacing and call history run over the table as over a socket.
+
+### The texts table
+
+Witnessed by `cargo test --lib --features sqlite,remote,bench-support loopback_table -- --nocapture`, each row one mock server read through the socket and then through the table at the same `host:port` (txids elided).
+
+| case | the socket's text | the table's | witness |
+|---|---|---|---|
+| a raw tx, every rung 500 | `WhatsOnChain: Service error: WoC getRawTx failed with status 500 Internal Server Error; BananaBlocks: Service error: BananaBlocks getRawTx failed with status 500 Internal Server Error; Bitails: Service error: Bitails getRawTx failed with status 500 Internal Server Error` (`could_not_look: true`) | identical | `a_raw_tx_every_rung_500_reads_the_same` |
+| the tip, chaintracks 500 (wire 085's shape) | `get_height: no header service gave the tip height (Service error: Chaintracks findChainTipHeaderHex failed: HTTP 500 Internal Server Error); no explorer is asked (set chaintracks_url or bhs_url)` | identical | `a_header_service_500_reads_the_same` |
+| a height, chaintracks 500 (wire 084's shape) | `get_header_for_height: no header service answered (chaintracks: Service error: Chaintracks findHeaderHexForHeight failed: HTTP 500 Internal Server Error)` | identical | `a_header_for_height_500_reads_the_same` |
+| reqwest's `error_for_status` (`/getChain` 503) | `HTTP error: HTTP status server error (503 Service Unavailable) for url (http://127.0.0.1:<port>/getChain)` | identical | `reqwest_status_and_decode_texts_read_the_same` |
+| reqwest's decode failure (`/getChain` 200 `{not json`) | `HTTP error: error decoding response body` | identical | the same |
+| an ARC 465, every result's status, data and service flag | `arcTaal 465 [("465", Some("ARC rejected transaction: fee too low (HTTP 465) - {...}"), false)]`, then Bitails' and WhatsOnChain's send faults | identical (the notes' `when` is the clock's, left out) | `an_arc_refusal_reads_the_same` |
+| a send fault: a refused connection (port 9) | `error sending request for url (http://127.0.0.1:9/refused)` | identical (the unmatched request) | `a_send_fault_reads_as_a_refused_connection`, `the_socket_faults_are_one_text_and_the_table_gives_it` |
+| a timeout (a listener that never answers, 200 ms) | `error sending request for url (http://127.0.0.1:<port>/silent)` | identical | the same |
+| a TLS fault (https at a plain listener) | `error sending request for url (https://127.0.0.1:<port>/tls)` | identical | the same |
+| a DNS fault (a resolver that answers nothing) | `error sending request for url (http://dns-fault.test/x)` | identical | the same |
+
+reqwest 0.12's Display is the kind and the URL, never its source, so a refused connection, a timeout, a TLS and a DNS fault read one text, and the table's unmatched request reads it. The differences, each named:
+
+| difference | the socket | the table | a fixture it moves |
+|---|---|---|---|
+| no table installed, `bench-support` on | a non-loopback host: production's `error sending request for url (<url>)` | `#182 rule 28: test/bench transport refuses non-loopback host <host>; use a loopback fixture URL` (no table: the existing #182 seam, unchanged) | any CLI test whose build turns `bench-support` on and does not build its `Services` inside `building`, the CLI binary its subprocess tests run included (cargo unifies a dev-dependency's features into that build) |
+| a client built at call time, outside `building` | as above | the #182 text: the fiat-rate client (`fetch_fiat_exchange_rates`), `ArcadeSseClient::new`, the BRC-104 peer transport (`sdk_transport_client`), and any lookup resolver or storage client built outside the closure | a fixture reading fiat rates, Arcade's event stream, or an authenticated storage or issuance peer |
+| the error's source chain and `is_connect`/`is_timeout` | reqwest's error with its hyper source | `RequestError::Loopback(text)`, no source | none: the crate reads neither, and a host sees the text in `Error::HttpError(String)` or a provider's own wrap of it |
+| a redirect | followed under the #182 policy | a recorded 3xx is the answer | none in the named sets |
+| a body cut short, a slow body | `error decoding response body` or `request or response body error` | no form: a body is whole | the toolbox's ladder replays (`ladder_cut.rs`, `delay_ms` scenes) stay on mockito |
+| a delayed answer, a client timeout | the client's timer | no timer; a timeout's text is `SendFault` | the ladder stall reading stays on mockito |
+| a charset other than UTF-8 | reqwest decodes by `Content-Type` | UTF-8 with replacement, a leading BOM dropped | none |
+| the per-test seconds | the socket's | below | |
+
+Per fixture class the CLI names (the CLI's tree read at `origin/beta` 9e99a33, not built here):
+
+| fixture class | how it builds its services | through the table | texts that move |
+|---|---|---|---|
+| gate vectors (`tests/gate_vectors.rs`) | `MockWalletServices`; no transport | nothing to answer; its 9.2 s is the 2 s `header_retry_pause` of `GateOptions::default()` (the CLI's `changelog.d/506.md`), not an explorer | none |
+| served-BEEF doors (`tests/served_beef_doors.rs`) | `Services::with_options(Chain::Main, ServicesOptions::mainnet())` in process; its header says no header service and no broadcaster is asked | build it inside `building`; any rung that is asked reads the table's answer, or the send fault, the socket's text for a refused or timed-out host | none for a rung the table answers as recorded; a rung left unmatched reads `error sending request for url (<url>)`, the runner's own text for its timeouts |
+| wire's six corpus replays (`tests/wire.rs`: `wire`, `a_recording_is_not_a_replay`, the four knob tests) | `wire_support::services()` in process; chaintracks at a loopback stub, ARC at `arc_stub` or a closed port, WhatsOnChain and Bitails at the closed proxy | build it inside `building`, the stubs' answers as rows | none where the stubs' answers become rows: 084's and 085's chaintracks 500 texts are the two header rows above; 169's `transport fault MAY_HAVE_BEEN_RECEIVED: header fixture unavailable` is the tracker fixture's, not the transport's; WhatsOnChain and Bitails unmatched read the closed proxy's text |
+| `tests/json_refusal.rs` | the `bsv-wallet` binary, a subprocess | the in-process table cannot reach it | none: the gate refuses before any service is asked; if `bench-support` is on in the binary's build, a request that did leave would read the #182 text (the no-table row of the differences) |
+| the toolbox's services tests | mockito, unchanged in this row | not rewritten | none |
+
+### The seconds
+
+The texts tests time each half on one mock server (three runs, `--test-threads=1`, on the lane's Mac):
+
+| case | the socket | the table |
+|---|---|---|
+| a raw tx, every rung 500 (three requests) | 857 to 875 µs | 55 to 63 µs |
+| the tip, chaintracks 500 | 316 to 321 µs | 38 to 39 µs |
+| a height, chaintracks 500 | 645 to 666 µs | 60 to 63 µs |
+| `/getChain` 503 | 266 to 307 µs | 32 to 38 µs |
+| `/getChain` decode failure | 260 to 298 µs | 31 to 33 µs |
+| an ARC 465 (three rungs) | 675 to 719 µs | 192 to 213 µs |
+
+Each rung test (`the_whatsonchain_rung_answers_from_the_table`, `the_bitails_rung_answers_after_two_send_faults`, `the_arc_rung_accepts_from_the_table`, `the_bhs_rung_answers_the_height_after_chaintracks_faults`, `the_chaintracks_rung_answers_the_height`) reads 0.00 s alone (`cargo test --exact`, three runs each), as do the mockito equivalents `a_raw_tx_429_moves_to_bananablocks`, `a_raw_tx_all_three_lack_is_not_found` and `get_height_is_the_header_services_tip_and_asks_no_explorer` (`mining_context_uses_one_tip_and_one_range_with_cached_network` 0.01 s). On loopback the socket already costs under a millisecond a request here; the CLI's ten seconds a test are the runner's TLS and real timeouts to hosts no fixture serves, which the table removes. The runner's after figure is the CLI's row (#526, step 3), not measured here.
+
+The CLI is told this table at the landing.
+
 ## Loop four, cut (2): the slot occupancy by hour (#638)
 
 The account's twenty hosted runners, read from the Actions API across its repositories over a week, by hour of the day (UTC). The tool is `tools/slot-occupancy` (python, `gh api` reads only), its cases `tools/slot-occupancy-test` on the recorded fixture `tools/fixtures/slot-occupancy/` (fourteen jobs across two repositories and three hours, each cell worked by hand and the whole output against `expected.md`). The `checks` job's cases step is not changed by this row; a later row wires `tools/slot-occupancy-test` in if the keeper wants it.

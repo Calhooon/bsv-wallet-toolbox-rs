@@ -44,6 +44,18 @@ Cargo does not set `cfg(test)` on that dependency, so integration isolation
 coverage must enable the feature. Keep the lane's proxy prefix on every
 `cargo test` as well.
 
+The loopback table (#683, `providers/loopback_table.rs`, same cfgs) answers
+the explorer rungs from a test's own rows with no socket: build the
+`Services` inside `LoopbackTable::building(|| ...)` and every client built
+there answers from the table, at any host (nothing leaves the process, so
+`check_url` is not asked); an unmatched request reads the socket's send
+fault, `error sending request for url (<url>)`. The ladders' failover,
+pacing and call history run unchanged over it (`collection.rs` has no
+hook). The texts a host sees through it are the socket transport's for the
+same answer, and each difference is named per fixture in
+`docs/census/ci-speed-loop-4.md`. Clients built at call time (fiat rates,
+Arcade SSE, the BRC-104 peer) stay on the socket and #182.
+
 The `*_network_isolation_tests.rs` files beside lookup, certificate issuance,
 and the storage client check remote refusals and redirects plus successful
 loopback requests with the existing request headers and bodies. Lookup keeps
