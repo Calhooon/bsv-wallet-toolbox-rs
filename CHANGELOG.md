@@ -22,6 +22,12 @@
   (#674). The totals' sums are checked; one past `u32::MAX` answers the
   count. `list_outputs`' `i32` offset never wrapped (#230); its bind and sum
   take the same shape. Found by the #686 lane.
+- #703: the twelve sync-chunk finders in `sync.rs` bind their `u32` limit
+  and offset as `i64` (as #697 made the list finders' offset and #226 the
+  limit), so a value past `i32::MAX` no longer wraps negative. A chunk asked
+  at an offset of 2^31 answered the head of the table (SQLite reads a
+  negative OFFSET as 0) and now answers no rows; below `i32::MAX` nothing
+  changes. Found by the #697 lane.
 - #686: `list_certificates`' `total_certificates` takes `list_outputs`'
   three branches (`short_page_total`, #674): a full page and an empty page
   past the start answer the stored count, every other page the offset plus
