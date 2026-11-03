@@ -29,16 +29,16 @@ still unmeasured. Pin endpoints describe direct dependents' toolbox requirements
 | Verify 10 MB BEEF, peak memory (bytes) | not yet measured | Flat memory as input grows; #58 | `beef_10mb_peak_bytes` |
 | Door with monitor beside it, p99 (ms) | not yet measured | Unchanged from door baseline; #69 | `writer_door_p99_ms` |
 | Explorer calls per block | not yet measured | Bounded by re-ask schedule; #72 | `explorer_calls_per_block` |
-| Rust files over 800 lines (count) | measured 2026-11-01: 33 | 0; #55, #61, #62 | `files_over_800` |
-| Largest Rust file (lines) | measured 2026-11-01: 7128 | <= 800; #55, #61, #62 | `max_file_lines` |
-| Unwrap/expect outside tests (count) | measured 2026-11-01: 60 | 0; #55, #56 | `unwraps_outside_tests` |
-| Door and ladders mutation score (%) | measured 2026-11-01: 59.22 | >= 80; #57 | `mutation_score_pct` |
-| Fuzz hours, twelve targets, last census (h) | measured 2026-11-01: 2.01 | No crash, corpus grows; #58 | `fuzz_hours` |
-| Undocumented public items (count) | measured 2026-11-01: 308 | 0; #55 | `undocumented_public_items` |
+| Rust files over 800 lines (count) | measured 2026-11-03: 33 | 0; #55, #61, #62 | `files_over_800` |
+| Largest Rust file (lines) | measured 2026-11-03: 7264 | <= 800; #55, #61, #62 | `max_file_lines` |
+| Unwrap/expect outside tests (count) | measured 2026-11-03: 60 | 0; #55, #56 | `unwraps_outside_tests` |
+| Door and ladders mutation score (%) | measured 2026-11-03: 59.22 | >= 80; #57 | `mutation_score_pct` |
+| Fuzz hours, twelve targets, last census (h) | measured 2026-11-03: 2.01 | No crash, corpus grows; #58 | `fuzz_hours` |
+| Undocumented public items (count) | measured 2026-11-03: 308 | 0; #55 | `undocumented_public_items` |
 | Direct dependents, oldest toolbox pin | measured 2026-10-23: 0.3.38 | Current minor or dated plan; #59 | `dependent_pin_min` |
 | Direct dependents, newest toolbox pin | measured 2026-10-23: 0.12.1 | Current minor or dated plan; #59 | `dependent_pin_max` |
 
-<!-- scoreboard:sha256 a6e8184c34e03dc9f74e11d9764ae62bcf16ff9941ceed94b53b4c4ab9e923c9 -->
+<!-- scoreboard:sha256 14e376d17e38c6d78ac3d99e14ed513b7540b45814f4f22c667cb4dea33e3812 -->
 <!-- scoreboard:end -->
 
 ### Feeding the table
