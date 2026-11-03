@@ -202,7 +202,8 @@ thread_local! {
 }
 
 /// Makes this thread's next argon2id reserve ask for `usize::MAX` blocks, a
-/// request no allocator grants, for a witness of the error path (#625).
+/// request that overflows the capacity before any allocator is asked, for a witness of
+/// the error path (#625); a real allocator refusal takes the same `map_err` path.
 #[cfg(test)]
 pub(super) fn fail_next_reserve() {
     FAIL_NEXT_RESERVE.with(|fail| fail.set(true));
