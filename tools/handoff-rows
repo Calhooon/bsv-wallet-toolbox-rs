@@ -30,7 +30,17 @@ a file wait for the fold, within a bound (the keeper's of 2026-11-03 11:1xZ):
 more than MAX_WAITING files waiting, or the oldest waiting file's header older
 than MAX_WAIT_HOURS against now (UTC), fails, so a day without a fold reads red
 at the next PR's checks run; the fold's --write at every landing keeps it under
-the bound:
+the bound.
+
+The bound covers the landed row files the fold clears: with --base REF, the
+waiting files on REF (the change's base, `git ls-tree` in the root, REF fetched
+at depth 1 from origin when the checkout lacks it). A PR adds its own row file
+at its open and that file reaches the base only at the landing, so no fold can
+bring it under the bound: a waiting file absent from REF is the change's own,
+named as waiting and kept outside the bound. Without --base every waiting file
+is in the bound (the captain's local fold check). The clock is each file's
+header time, its PR's open time, so a PR held past six hours reads past the
+bound from its landing to the fold that follows it:
 
   tools/handoff-rows --list            # print the rows, newest at the top
   tools/handoff-rows --write           # regenerate the section from every file
@@ -40,6 +50,8 @@ the bound:
                                        # on the page is named and waits, within
                                        # the bound
   tools/handoff-rows --check --strict  # exit 1 as well when a file waits (the fold)
+  --base REF                           # with --check: the change's base; the
+                                       # bound counts the waiting files on it
   --root DIR                           # the tree holding HANDOFF.md (default: this one)
   --now 'YYYY-MM-DD HH:MMZ'            # the clock the bound reads (default: now, UTC)
 """
@@ -47,6 +59,7 @@ the bound:
 import argparse
 import difflib
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -112,7 +125,8 @@ def read_row(path, rel):
         raise RowError(f"{rel}: the row is one paragraph after the header")
     text = " ".join(body)
     line = f"- {m['kind']} ({m['date']} {m['time']}Z, {KINDS[m['kind']]}): #{m['pr']} {text}"
-    return {"pr": int(m["pr"]), "key": (m["date"], m["time"], int(m["pr"])), "line": line}
+    return {"pr": int(m["pr"]), "key": (m["date"], m["time"], int(m["pr"])), "line": line,
+            "rel": rel}
 
 
 def read_rows(root):
@@ -153,6 +167,18 @@ def page_prs(section):
     return prs
 
 
+def base_rows(root, ref):
+    """The row files' paths on ref, ref fetched at depth 1 when the checkout lacks it."""
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+    if git("cat-file", "-e", f"{ref}^{{commit}}").returncode != 0:
+        git("fetch", "-q", "--no-tags", "--depth=1", "origin", ref)
+    out = git("ls-tree", "-r", "--name-only", ref, "--", ROWS)
+    if out.returncode != 0:
+        raise RowError(f"--base {ref!r} cannot be read: {out.stderr.strip()}")
+    return set(out.stdout.splitlines())
+
+
 def bound(waiting, now):
     """The words of each crossed bound on the waiting files; none when within."""
     if not waiting:
@@ -170,22 +196,25 @@ def bound(waiting, now):
     return crossed
 
 
-def check(root, strict, now):
+def check(root, strict, now, base=None):
     rows = read_rows(root)
+    on_base = base_rows(root, base) if base else None
     head, section, tail = split_page((root / PAGE).read_text(encoding="utf-8"))
     on_page = page_prs(section)
     by_pr = {r["pr"]: r for r in rows}
     missing = [pr for pr in on_page if pr not in by_pr]
     waiting = [r for r in rows if r["pr"] not in on_page]
     want = render(rows if strict else [r for r in rows if r["pr"] in on_page])
-    crossed = bound(waiting, now)
+    own = [] if on_base is None else [r for r in waiting if r["rel"] not in on_base]
+    crossed = bound([r for r in waiting if r not in own], now)
     ok = not missing and section == want and not (strict and waiting) and not crossed
     verdict = ("ok" if ok else "stale" if missing or section != want or (strict and waiting)
                else "past the bound")
     for pr in missing:
         print(f"#{pr}: on the page, no file under {ROWS}/")
     for r in waiting:
-        print(f"#{r['pr']}: its file waits for the fold (tools/handoff-rows --write)")
+        mine = " (this change's, outside the bound)" if r in own else ""
+        print(f"#{r['pr']}: its file waits for the fold (tools/handoff-rows --write){mine}")
     if section != want:
         sys.stdout.writelines(difflib.unified_diff(
             [s + "\n" for s in section], [s + "\n" for s in want],
@@ -214,6 +243,7 @@ def main():
     mode.add_argument("--check", action="store_true")
     ap.add_argument("--strict", action="store_true", help="with --check: no file may wait")
     ap.add_argument("--root", type=Path, default=ROOT)
+    ap.add_argument("--base", help="with --check: the change's base; the bound counts the waiting files on it")
     ap.add_argument("--now", help="with --check: the clock the bound reads, 'YYYY-MM-DD HH:MMZ'")
     args = ap.parse_args()
     try:
@@ -224,7 +254,7 @@ def main():
         if args.write:
             return write(args.root)
         now = parse_clock(args.now) if args.now else datetime.now(timezone.utc)
-        return check(args.root, args.strict, now)
+        return check(args.root, args.strict, now, args.base)
     except RowError as err:
         print(f"handoff rows: {err}")
         return 1
