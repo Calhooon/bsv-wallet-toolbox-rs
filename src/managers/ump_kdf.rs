@@ -3,8 +3,11 @@
 //! edf6e03) and its `passwordKdf` metadata. The design is
 //! `docs/design/ump-token-format.md`.
 
+use std::sync::Arc;
+
 use ring::pbkdf2;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 
 use super::token_error;
@@ -247,14 +250,28 @@ pub(crate) fn derive_password_key(
     }
 }
 
+/// A `kdf_in_flight` of 0: the manager has no permits, each derivation refused (#631).
+const NO_KDF_PERMITS: &str = "kdf_in_flight is 0: no password derivation can run";
+
 /// A password KDF and what it opens or seals, on the blocking pool over a zeroed
 /// copy of the password: argon2id's 128 MiB and ~330 ms stay off the worker (#624).
+/// It holds one of the manager's `kdf_in_flight` permits, granted in the order
+/// asked, until the key is back; the permit rides in the blocking task, so a
+/// caller that drops the future frees it only when the derivation ends (#631).
 pub(crate) async fn off_worker<T: Send + 'static>(
+    permits: Option<&Arc<Semaphore>>,
     password: &str,
     kdf: impl FnOnce(&str) -> Result<T> + Send + 'static,
 ) -> Result<T> {
+    let permits = permits.ok_or_else(|| Error::InvalidArgument(NO_KDF_PERMITS.into()))?;
+    let permit = permits.clone().acquire_owned().await;
+    let permit = permit.map_err(|_| Error::Internal("the KDF permits are closed".into()))?;
     let password = Zeroizing::new(password.to_owned());
-    tokio::task::spawn_blocking(move || kdf(&password))
-        .await
-        .map_err(|_| Error::Internal("the password KDF task panicked or was cancelled".into()))?
+    tokio::task::spawn_blocking(move || {
+        let derived = kdf(&password);
+        drop(permit);
+        derived
+    })
+    .await
+    .map_err(|_| Error::Internal("the password KDF task panicked or was cancelled".into()))?
 }

@@ -20,7 +20,7 @@ use bsv_rs::primitives::{PrivateKey, SymmetricKey};
 use bsv_rs::wallet::WalletInterface;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 use zeroize::Zeroizing;
 
@@ -62,6 +62,9 @@ pub struct CWIStyleWalletManagerConfig {
     pub password_rounds: u32,
     /// Whether to use PBKDF2 for key derivation.
     pub use_pbkdf2: bool,
+    /// Password derivations at once, the rest waiting in order (#631): 4 by
+    /// default, 512 MiB of argon2id at the reference's 128 MiB. 0 refuses each.
+    pub kdf_in_flight: usize,
 }
 
 impl Default for CWIStyleWalletManagerConfig {
@@ -69,6 +72,7 @@ impl Default for CWIStyleWalletManagerConfig {
         Self {
             password_rounds: DEFAULT_PASSWORD_ROUNDS,
             use_pbkdf2: true,
+            kdf_in_flight: 4,
         }
     }
 }
@@ -299,6 +303,7 @@ pub type CWIWalletBuilder = Arc<
 /// ```
 pub struct CWIStyleWalletManager {
     config: CWIStyleWalletManagerConfig,
+    kdf_permits: Option<Arc<Semaphore>>,
     /// All profiles by ID, with their tokens.
     entries: RwLock<Entries>,
     default_profile_id: RwLock<Option<Vec<u8>>>,
@@ -321,6 +326,8 @@ impl CWIStyleWalletManager {
         config: CWIStyleWalletManagerConfig,
     ) -> Self {
         Self {
+            kdf_permits: (config.kdf_in_flight > 0)
+                .then(|| Arc::new(Semaphore::new(config.kdf_in_flight))),
             config,
             entries: RwLock::new(HashMap::new()),
             default_profile_id: RwLock::new(None),
@@ -429,7 +436,10 @@ impl CWIStyleWalletManager {
     pub async fn create_profile(&self, name: &str, password: &str) -> Result<Profile> {
         let profile = Profile::new(name.to_string());
         let root = Zeroizing::new(generate_random_bytes(32));
-        let (profile, ump) = off_worker(password, |pw| Self::seal(profile, root, pw)).await?;
+        let (profile, ump) = off_worker(self.kdf_permits.as_ref(), password, |pw| {
+            Self::seal(profile, root, pw)
+        })
+        .await?;
         let mut entries = self.entries.write().await;
         let entry = Entry {
             profile: profile.clone(),
@@ -549,8 +559,10 @@ impl CWIStyleWalletManager {
     pub async fn switch_profile(&self, profile_id: &[u8], password: &str) -> Result<()> {
         let entry = self.entry(profile_id).await?;
         let (config, read) = (self.config.clone(), entry.clone());
-        let (primary_key, next) =
-            off_worker(password, move |pw| Self::unlock_entry(&config, &read, pw)).await?;
+        let (primary_key, next) = off_worker(self.kdf_permits.as_ref(), password, move |pw| {
+            Self::unlock_entry(&config, &read, pw)
+        })
+        .await?;
         let pkm = self
             .privileged_key_manager
             .read()
@@ -584,7 +596,7 @@ impl CWIStyleWalletManager {
         let ump = entry
             .ump
             .ok_or_else(|| Error::InvalidOperation("v1 profile: unlock it to migrate".into()))?;
-        off_worker(password, move |pw| {
+        off_worker(self.kdf_permits.as_ref(), password, move |pw| {
             let opened = ump_token::open_token(&ump.token, &ump.presentation_key, pw)?;
             let root_privileged = ump_token::open_root_privileged(&ump.token, &opened)?;
             ump_token::unwrap_factor(&root_privileged, &ump.token.recovery_key_encrypted)
