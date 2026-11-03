@@ -10,6 +10,13 @@ lines joined with a space):
 
   (#670: the speed record split by loop ...).
 
+The paragraph's shape, which every row file and the captain's script keep: it
+opens with a parenthesis holding the row's words, the issue the PR closes at
+their head where there is one ("(#<issue>: ..."), and ends with a full stop,
+after the closing parenthesis or after what follows it (" at <sha>, #<issue>
+closed."). The tool joins the paragraph as written and does not refuse another
+shape.
+
 The kind names the row's fixed words: "Landing" the round-two row written at
 the PR's open, "Landed" the earlier row written at the landing. A row renders
 as one bullet, "- Landing (2026-11-03 10:59Z, <the kind's words>): #671 <the
