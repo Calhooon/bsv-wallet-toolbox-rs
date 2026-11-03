@@ -4108,9 +4108,13 @@ mod tests {
     /// four starting rungs, each with and without `use_next`. The reading
     /// is the rule: `mined` wins (no row here holds one); WhatsOnChain and
     /// Bitails both `unknown` is `unknown`; else any provider's `known` is
-    /// `known`; else "could not look".
+    /// `known`; else "could not look". Each of the 648 asks builds its own
+    /// `Services` over clients shared on this thread
+    /// (`share_clients_on_this_thread`, #634: the builds, not the asks,
+    /// took this test's 164 s on the ubuntu runner).
     #[tokio::test]
     async fn test_the_status_verdict_is_the_rule_over_all_81_rows_from_both_starts() {
+        let _clients = crate::services::providers::http_client::share_clients_on_this_thread();
         #[derive(Clone, Copy, Debug, PartialEq)]
         enum Says {
             Known,
