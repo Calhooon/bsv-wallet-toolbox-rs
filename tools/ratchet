@@ -638,9 +638,11 @@ def measure():
         "rustc": rustc_version(),
         "toolchain": clippy_version(),
         "features": "default",
-        # The scoreboard (tools/scoreboard-write, #60) reads these two keys and
-        # nothing else from this file: the day the tree was measured, and the
-        # flat numbers docs/NORTH-STAR.md shows. The gate below ignores both.
+        # The scoreboard (tools/scoreboard-write, #60) reads these two keys from
+        # this file, the day the tree was measured and the flat numbers
+        # docs/NORTH-STAR.md shows, and since #587 a record section's own
+        # measured_at where it carries one (mutation_score, fuzz_hours). The
+        # gate below ignores them all.
         "measured_at": datetime.date.today().isoformat(),
         "metrics": {
             "files_over_800": files["count"],
