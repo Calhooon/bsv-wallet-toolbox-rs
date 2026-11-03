@@ -4,6 +4,11 @@
 
 ### Changed
 
+- #644 (CI; no code): on a PR's own run, a `*.md` under `tests/`,
+  `fuzz/`, `test_vectors/`, `tools/` or `.github/` reaches every test
+  under `tools/affected-tests`, the set read from `tools/docs-only`, since
+  tests walk those directories; `docs/` and a `*.md` elsewhere still run
+  none (`docs/census/ci-speed-2026-11-02.md`).
 - #635 (CI and dependencies; no code): the architecture doc gate
   (`tools/arch-doc-tests.sh`) lists each test binary once, not once per
   row (345 cargo calls to 14, 63 s to 11 s on the box, the same rows
