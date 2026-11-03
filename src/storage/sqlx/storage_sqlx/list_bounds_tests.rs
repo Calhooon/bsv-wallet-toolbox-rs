@@ -177,3 +177,80 @@ async fn labels_at_the_bound_pass_it() {
     let result = storage.list_actions(&auth, actions(LIMIT)).await;
     passes_the_bound(result, "labels");
 }
+
+// #226: the finders pass a limit past the door's 10000 through, as the
+// reference's storage does (listCertificates.ts:14, listOutputsKnex.ts:254,
+// listActionsKnex.ts:102); the wallet's door refuses it. 10001 rows seeded,
+// 10001 answered. `?1` is the user's id.
+
+const ROWS: &str =
+    "WITH RECURSIVE n(x) AS (SELECT 0 UNION ALL SELECT x + 1 FROM n WHERE x < 10000)";
+
+async fn seeded(inserts: &[&str]) -> (StorageSqlx, AuthId) {
+    let (storage, auth) = store().await;
+    for insert in inserts {
+        sqlx::query(insert)
+            .bind(auth.user_id)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+    }
+    (storage, auth)
+}
+
+#[tokio::test]
+async fn certificates_limit_past_ten_thousand_passes_through() {
+    let insert = format!(
+        "{ROWS} INSERT INTO certificates (user_id, serial_number, type, certifier, subject, \
+         revocation_outpoint, signature) \
+         SELECT ?1, 'serial-' || x, 'type', 'certifier', 'subject', 'outpoint', 'signature' FROM n"
+    );
+    let (storage, auth) = seeded(&[&insert]).await;
+    let mut args = certificates(0, 0);
+    args.limit = Some(10_001);
+    let result = storage.list_certificates(&auth, args).await.unwrap();
+    assert_eq!(
+        (result.certificates.len(), result.total_certificates),
+        (10_001, 10_001)
+    );
+}
+
+#[tokio::test]
+async fn outputs_limit_past_ten_thousand_passes_through() {
+    let insert = format!(
+        "{ROWS} INSERT INTO outputs (user_id, transaction_id, basket_id, spendable, vout, \
+         satoshis, provided_by, purpose, type) \
+         SELECT ?1, t.transaction_id, b.basket_id, 1, n.x, 1, 'you', '', 'custom' \
+         FROM n, transactions t, output_baskets b \
+         WHERE t.reference = 'limit-226' AND b.user_id = ?1 AND b.name = 'default'"
+    );
+    let (storage, auth) = seeded(&[
+        "INSERT INTO transactions (user_id, status, reference, is_outgoing, description) \
+         VALUES (?1, 'completed', 'limit-226', 0, 'limit witness')",
+        &insert,
+    ])
+    .await;
+    let mut args = outputs(0, "default");
+    args.limit = Some(10_001);
+    let result = storage.list_outputs(&auth, args).await.unwrap();
+    assert_eq!(
+        (result.outputs.len(), result.total_outputs),
+        (10_001, 10_001)
+    );
+}
+
+#[tokio::test]
+async fn actions_limit_past_ten_thousand_passes_through() {
+    let insert = format!(
+        "{ROWS} INSERT INTO transactions (user_id, status, reference, is_outgoing, description) \
+         SELECT ?1, 'completed', 'limit-226-' || x, 0, 'limit witness' FROM n"
+    );
+    let (storage, auth) = seeded(&[&insert]).await;
+    let mut args = actions(0);
+    args.limit = Some(10_001);
+    let result = storage.list_actions(&auth, args).await.unwrap();
+    assert_eq!(
+        (result.actions.len(), result.total_actions),
+        (10_001, 10_001)
+    );
+}

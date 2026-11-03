@@ -67,7 +67,9 @@ impl StorageSqlx {
             labels.push(normalize_label(label));
         }
 
-        let limit = args.limit.unwrap_or(10).min(10000);
+        // The wallet's door refuses a limit outside 1..=10000; the reference's
+        // storage passes the validated limit through (listActionsKnex.ts:102), no clamp (#226).
+        let limit = args.limit.unwrap_or(10);
         let offset = args.offset.unwrap_or(0);
         let label_query_mode = args.label_query_mode.unwrap_or(QueryMode::Any);
         let include_labels = args.include_labels.unwrap_or(false);
@@ -148,7 +150,7 @@ impl StorageSqlx {
             for status in &valid_statuses {
                 query = query.bind(*status);
             }
-            query = query.bind(limit as i32).bind(offset as i32);
+            query = query.bind(i64::from(limit)).bind(offset as i32);
 
             let rows = query.fetch_all(&self.reader).await?;
 
@@ -209,7 +211,7 @@ impl StorageSqlx {
             let query = sqlx::query(&sql)
                 .bind(user_id)
                 .bind(required_count as i32)
-                .bind(limit as i32)
+                .bind(i64::from(limit))
                 .bind(offset as i32);
 
             let rows = query.fetch_all(&self.reader).await?;
