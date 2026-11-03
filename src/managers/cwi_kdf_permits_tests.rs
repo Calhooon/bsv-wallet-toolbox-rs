@@ -21,7 +21,7 @@ async fn one_permit_runs_two_unlocks_one_after_the_other_and_both_succeed() {
     m.provide_privileged_key_manager(PrivateKey::random()).await;
     let a = m.create_profile("A", "pw a").await.unwrap();
     let b = m.create_profile("B", "pw b").await.unwrap();
-    let permits = m.kdf_permits.clone().unwrap();
+    let permits = m.kdf_permits.clone();
     slot.set(permits.clone()).unwrap();
     let held = permits.acquire_owned().await.unwrap();
     let m = Arc::new(m);
@@ -52,10 +52,10 @@ async fn four_derivations_run_at_once_by_default_and_a_fifth_waits_for_a_permit(
         "512 MiB of argon2id at the default"
     );
     let (m, _) = manager();
-    let held = m.kdf_permits.clone().unwrap().available_permits();
+    let held = m.kdf_permits.clone().available_permits();
     assert_eq!(held, DEFAULT_KDF_IN_FLIGHT, "new starts at the default");
     let m = m.with_kdf_in_flight(DEFAULT_KDF_IN_FLIGHT).unwrap();
-    let permits = m.kdf_permits.clone().unwrap();
+    let permits = m.kdf_permits.clone();
     let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
     let (mut releases, mut tasks) = (Vec::new(), Vec::new());
     for i in 0..5 {
@@ -63,7 +63,7 @@ async fn four_derivations_run_at_once_by_default_and_a_fifth_waits_for_a_permit(
         let (permits, started) = (permits.clone(), started.clone());
         releases.push(release);
         tasks.push(tokio::spawn(async move {
-            off_worker(Some(&permits), "pw", move |_| {
+            off_worker(&permits, "pw", move |_| {
                 started.send(i).unwrap();
                 let _ = wait.recv();
                 Ok(i)

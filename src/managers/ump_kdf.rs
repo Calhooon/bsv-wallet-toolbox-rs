@@ -250,9 +250,6 @@ pub(crate) fn derive_password_key(
     }
 }
 
-/// A `kdf_in_flight` of 0: the manager has no permits, each derivation refused (#631).
-const NO_KDF_PERMITS: &str = "kdf_in_flight is 0: no password derivation can run";
-
 /// The semaphore of `with_kdf_in_flight(permits)` (#631): 0 is refused, as is a
 /// count past tokio's `Semaphore::MAX_PERMITS`, where `Semaphore::new` panics.
 pub(crate) fn kdf_permits(permits: usize) -> Result<Arc<Semaphore>> {
@@ -270,11 +267,10 @@ pub(crate) fn kdf_permits(permits: usize) -> Result<Arc<Semaphore>> {
 /// asked, until the key is back; the permit rides in the blocking task, so a
 /// caller that drops the future frees it only when the derivation ends (#631).
 pub(crate) async fn off_worker<T: Send + 'static>(
-    permits: Option<&Arc<Semaphore>>,
+    permits: &Arc<Semaphore>,
     password: &str,
     kdf: impl FnOnce(&str) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    let permits = permits.ok_or_else(|| Error::InvalidArgument(NO_KDF_PERMITS.into()))?;
     let permit = permits.clone().acquire_owned().await;
     let permit = permit.map_err(|_| Error::Internal("the KDF permits are closed".into()))?;
     let password = Zeroizing::new(password.to_owned());

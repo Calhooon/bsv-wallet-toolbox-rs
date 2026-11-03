@@ -77,10 +77,6 @@ fn test_config_default() {
     let config = CWIStyleWalletManagerConfig::default();
     assert_eq!(config.password_rounds, DEFAULT_PASSWORD_ROUNDS);
     assert!(config.use_pbkdf2);
-    assert_eq!(
-        config.kdf_in_flight, 4,
-        "512 MiB of argon2id at the default"
-    );
 }
 
 /// A manager whose builder records the key it is handed.
