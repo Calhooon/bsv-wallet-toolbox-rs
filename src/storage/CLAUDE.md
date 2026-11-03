@@ -234,9 +234,11 @@ Controls how BEEF (Background Evaluation Extended Format) transactions are verif
 
 ## Storage Implementations
 
-### StorageSqlx (feature: `sqlite` or `mysql`)
+### StorageSqlx (feature: `sqlite`; `mysql` implies it)
 
-Local database storage using SQLx. Supports SQLite (default) and MySQL.
+Local database storage using SQLx, SQLite-typed throughout (`Pool<Sqlite>`,
+`SqliteConnection`). The `mysql` feature adds sqlx's MySQL driver and implies
+`sqlite`; no MySQL store exists (#684).
 
 ```rust
 use bsv_wallet_toolbox::storage::StorageSqlx;
@@ -472,7 +474,7 @@ let purge_result = storage.purge_data(PurgeParams {
 | Flag | Description |
 |------|-------------|
 | `sqlite` | Enable SQLite storage via StorageSqlx |
-| `mysql` | Enable MySQL storage via StorageSqlx |
+| `mysql` | Enables sqlx's MySQL driver and implies `sqlite` (#684); StorageSqlx is SQLite-typed, no MySQL store exists |
 | `remote` | Enable remote storage via StorageClient |
 
 ## Related
