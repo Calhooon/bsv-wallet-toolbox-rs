@@ -4,6 +4,14 @@
 
 ### Changed
 
+- #634 (tests; no behaviour): the ten slowest tests of run 41578469987
+  (583 of its 1434 test-seconds) cut: the status and utxo verdict tables
+  and the ladder replays build their `Services` over clients shared under
+  `cfg(test)` in the test transport (`share_clients_on_this_thread`,
+  `SharedClients::building`), the busy door's soak runs 60 rounds, the four
+  A8 census tests read the 1 MB census alone, and the ladder cut test runs
+  in the `sqlite` build only; every test's planted fault red before and
+  after (`docs/census/ci-speed-2026-11-02.md`).
 - #632 (CI; no code): a PR or a merge-queue group whose every changed
   path is a doc (`docs/` and every `*.md`, less the documents a gate
   reads and a `*.md` under `tests/`, `fuzz/`, `test_vectors/`, `tools/`
