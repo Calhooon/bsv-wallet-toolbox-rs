@@ -4,7 +4,9 @@ Status: stage one, the owner's word of 2026-11-02 13:2xZ ("the
 recommendation as given, no shortcuts; a key-file format, a public shape"),
 with the migration's shape on the owner's word of 2026-11-02 14:4xZ
 (#594, option (a): the v1 record stays beside the token until a later
-unlock opens it). Stage two (argon2id) waits for the owner's word on a dependency.
+unlock opens it). Stage two (argon2id, #593) on the owner's dependency word
+of 2026-11-02 14:4xZ: RustCrypto's `argon2`, new tokens at the reference's
+default (section 5).
 
 The reference is ts-stack at edf6e03,
 `packages/wallet/wallet-toolbox/src/CWIStyleWalletManager.ts`, read with
@@ -180,9 +182,9 @@ effect: it is a session cache, not a password-protected file.
   would put the root key on disk under a key beside it); it is the
   reference's session snapshot for a host that wants one.
 - `derive_password_key(token, password)`: the reference's
-  `derivePasswordKey`, PBKDF2-SHA512 at the token's iterations, 7777 when
-  the token has no metadata; argon2id is refused with a named error
-  (stage two).
+  `derivePasswordKey` (`src/managers/ump_kdf.rs`), PBKDF2-SHA512 at the
+  token's iterations, 7777 when the token has no metadata, argon2id at
+  the token's parameters (section 5).
 
 The current outpoint: the toolbox publishes nothing (no interactor; rule
 3), so its tokens carry `current_outpoint: None`. The reference has no
@@ -244,7 +246,7 @@ token:
   factor is the host's file, as v1's pad was. The token is the reference's
   and opens with the reference's presentation-and-password and
   presentation-and-recovery flows; a host that wants the presentation key
-  off the disk is stage two's question, not this format's.
+  off the disk is a later question, not this format's.
 - The recovery key is drawn with the token and recoverable after an
   unlock (`recovery_key(id, password)`), unwrapped from field 10 with the
   root privileged key. The reference's manager hands the recovery key to
@@ -266,10 +268,12 @@ token:
   `backup_all_profiles`) write the same record, so an exported v3 profile
   keeps its token (and its `"v1"` while kept); a v1 export (no `"ump"`)
   imports as a v1 record.
-- New tokens: `pbkdf2-sha512` at `config.password_rounds` (default 7777,
-  the reference's `PBKDF2_NUM_ROUNDS`), `umpVersion` 3, a 32-byte salt
-  from `crate::rng::os_fill` (#191), and every key above drawn the same
-  way.
+- New tokens: `argon2id` at the reference's defaults (iterations 7,
+  memoryKiB 131072, parallelism 1, hashLength 32; section 5), `umpVersion`
+  3, a 32-byte salt from `crate::rng::os_fill` (#191), and every key above
+  drawn the same way. `config.password_rounds` is the v1 records'
+  derivation alone. Before #593 they were `pbkdf2-sha512` at
+  `config.password_rounds`; such a token still opens at its own KDF.
 - `profilesEncrypted` is the reference's JSON (`name`, `id` and pads as
   byte arrays, `createdAt` in whole seconds) under the root primary key.
 
@@ -378,8 +382,9 @@ page cache, and what bsv-rs and `ring` hold inside their own types.
 - A v1 file of several profiles migrates one profile per unlock: each
   profile has its own password. The file is v3 from the earliest migrating
   unlock on, with the not-yet-unlocked v1 records inside it.
-- A reference-written token opens: v3 at its `iterations`, legacy (no
-  metadata, the reference's version 2 serialization) at 7777. A record
+- A reference-written token opens: v3 at its KDF (pbkdf2-sha512 at its
+  `iterations`, argon2id at its four parameters), legacy (no metadata,
+  the reference's version 2 serialization) at 7777. A record
   with a token alone is never re-written by an unlock.
 - The salt: after step 2 the file holds nothing derived at the profile
   id. The token's root is a fresh draw, so no blob opens under
@@ -403,30 +408,65 @@ guess: field 1 needs `presentationKey XOR passwordKey`.
 The toolbox's key file holds the presentation key beside the token, as
 v1 held its pad: the unlock is the password alone. So the toolbox's file
 has one factor. A holder of the file can test a password guess offline
-against field 1's GCM tag, at one PBKDF2-SHA512 of 7777 rounds a guess,
-with a per-token random salt (no precomputation across files or
-profiles). v1 offered no tag, but a guess yields a candidate key whose
+against field 1's GCM tag, at one derivation of the token's KDF a guess
+(argon2id at 128 MiB and 7 passes for a token written since #593, one
+PBKDF2-SHA512 of 7777 rounds for one written before), with a per-token
+random salt (no precomputation across files or profiles). v1 offered no tag, but a guess yields a candidate key whose
 public key can be compared with any key the wallet has shown (its
 identity key), so v1 was one factor too, at the profile-id salt. That
-the toolbox file is one factor at 7777 rounds is a finding for the
-owner's items (argon2id is #593; a presentation key off the file is a
-host's design), not this change's to alter.
+the toolbox file is one factor is a finding for the owner's items
+(argon2id, #593, raises the cost of a guess; a presentation key off the
+file is a host's design), not this change's to alter.
 
-## 5. Argon2id (stage two, out of this lane)
+## 5. Argon2id (stage two, #593)
 
 The reference's default for new tokens is argon2id (:1677) through
-hash-wasm (`utility/hashWasm.ts`). The toolbox has no argon2
-implementation; `ring` has none. Stage two needs a dependency (the
-`argon2` crate of RustCrypto is the usual one), which is the owner's word
-(rule 5: only the lane the brief names edits `Cargo.toml`). Until then:
-`KdfAlgorithm::Argon2id` parses, a token asking for it is refused at
-derivation with a named error, and new tokens are PBKDF2. A follow-up
-issue names the dependency.
+hash-wasm (`utility/hashWasm.ts`): `derivePasswordKey` (:330-347) calls
+`argon2id({ password, salt, iterations, memorySize: memoryKiB,
+parallelism, hashLength, outputType: 'binary' })`, version 0x13, no
+secret, no associated data. The toolbox derives the same through
+RustCrypto's `argon2` (`=0.5.3`, the owner's dependency word of
+2026-11-02 14:4xZ; no default features, so no `password-hash` and no
+`rand`; the `zeroize` feature), in `src/managers/ump_kdf.rs`. The memory
+blocks (memoryKiB KiB, 128 MiB at the default) are the derivation's own
+`Zeroizing` buffer, zeroed when it returns.
+
+- The parameters are the token's, bounded as `isValidKdfConfig` bounds
+  them (iterations 1 to 20, memoryKiB 1 to 262144, parallelism 1 to 16,
+  hashLength 1 to 64, each present). Outside them the token is refused
+  with the reference's text: `UMP token contains unsupported or unsafe
+  KDF parameters.` at derivation (:316), `Serialized UMP token contains
+  unsupported or unsafe KDF parameters.` at the reader (:2781).
+- A `hashLength` other than 32 derives that many bytes, as hash-wasm
+  does, and the open refuses it with the reference's `XOR length
+  mismatch: 32 vs <n>` (:2437-2441): the reference throws there too, so
+  no such token opens in either. A set inside the bounds that Argon2
+  itself refuses (memory under 8 KiB a lane, output under 4 bytes;
+  hash-wasm refuses the same) is an error naming argon2id.
+- New tokens are argon2id at the reference's defaults, iterations 7,
+  memoryKiB 131072, parallelism 1, hashLength 32 (:88-91), whose params
+  JSON is `{"iterations":7,"memoryKiB":131072,"parallelism":1,"hashLength":32}`,
+  the reference's byte for byte. The owner's word: the two wallets are
+  interchangeable on the key file. The migration (4.3) and every re-seal
+  write the same default. pbkdf2-sha512 tokens, the toolbox's before #593
+  and the reference's with `kdfConfig: { algorithm: 'pbkdf2-sha512' }`,
+  still open at their own iterations.
+- The cost: each unlock of an argon2id token at the default allocates
+  128 MiB; one derivation took under 0.4 s in the test profile on the
+  lane's machine. The dev profile builds `argon2` and `blake2` at
+  opt-level 3 so the tests derive at the default.
 
 ## 6. What a host sees
 
 - The key file's version moves from v1 to 3 at the next save after this
-  change or at the migrating unlock, whichever comes earlier. An older
+  change or at the migrating unlock, whichever comes earlier.
+- Since #593 a token the toolbox writes is argon2id at the reference's
+  default; opening it needs an argon2id-capable toolbox. A toolbox of
+  #560's stage one refuses that profile at derivation with its named
+  reason (`Error::InvalidOperation`, "UMP token asks argon2id; this
+  toolbox derives pbkdf2-sha512 only"); a host that may roll back keeps a
+  copy of its key file before upgrading. A pbkdf2 token already in a file
+  keeps its KDF until it is re-sealed. An older
   toolbox cannot read a v3 file (its `load_snapshot` takes the leading 32
   bytes as a key and fails the GCM tag); a host that may roll back keeps
   a copy of its v1 file before upgrading.
@@ -455,8 +495,9 @@ vectors both ways) and `src/managers/cwi_style_wallet_manager_tests.rs`
 (the key file and the migration):
 
 1. A new profile's token carries a 32-byte salt distinct from the
-   profile id, `umpVersion` 3 and `pbkdf2-sha512` at the configured
-   iterations; the salt is an OS draw.
+   profile id, `umpVersion` 3 and argon2id at the reference's default
+   (#593); the salt is an OS draw. A migrated v1 record's token carries
+   the same default.
 2. A v1 file opens with its password; after the unlock the file holds
    `keyFileVersion` 3, a token with a fresh 32-byte salt and the v1
    record beside it, and the same profile key decrypts from the token; a
@@ -498,3 +539,14 @@ vectors both ways) and `src/managers/cwi_style_wallet_manager_tests.rs`
    script stands one up locally (it answers the lookup with the token
    under test and records `buildAndSend` with a fixed outpoint), so no
    network is reached.
+9. The argon2id vectors (#593, `ump-token-reference-argon2id.json`,
+   `ump-token-rust-argon2id.json` and its `.result.json`): the
+   reference's manager built with `kdfConfig` omitted, its default, under
+   Node with hash-wasm 4.12.0, writes a token the Rust reader opens to the
+   recorded keys, through `open_token` and through `switch_profile`; a
+   token the Rust code writes at the same default opens on the
+   reference's code (`node ump-token-reference.mjs verify argon2id`,
+   eleven checks, all ok). argon2id at its own parameters opens and
+   another parameter set derives another key; every bound refuses with
+   the reference's text; a `hashLength` of 64 is refused with the XOR
+   text; a set Argon2 refuses is an error.

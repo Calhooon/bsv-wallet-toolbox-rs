@@ -11,6 +11,31 @@
   (remote only)`, beside it; and a PR opened with a label runs CI once,
   the semver job reading `api-break` live
   (`docs/census/ci-speed-2026-11-02.md`).
+- #593 (stage two of #560; the owner's dependency word of 2026-11-02
+  14:4xZ): the CWI key file's tokens derive argon2id, the reference's
+  default password KDF, through RustCrypto's `argon2` (`=0.5.3`, no
+  default features, version 0x13, in the deny gate). A token's KDF is
+  read from its metadata, so an argon2id token and a pbkdf2-sha512 token
+  open through one path, each at its own parameters, bounded as the
+  reference's `isValidKdfConfig` bounds them; a parameter set outside
+  them is refused with the reference's text (`UMP token contains
+  unsupported or unsafe KDF parameters.` at derivation, `Serialized UMP
+  token contains unsupported or unsafe KDF parameters.` at the reader),
+  and a `hashLength` other than 32 with its `XOR length mismatch`. New
+  tokens (a new profile's, the migration's, every re-seal) are written
+  with argon2id at the reference's defaults (iterations 7, memoryKiB
+  131072, parallelism 1, hashLength 32), as the reference's constructor
+  writes them, so a token either wallet writes at its default opens in
+  the other (`test_vectors/keys/ump-token-*-argon2id*.json`, both ways).
+  `CWIStyleWalletManagerConfig::password_rounds` now governs the v1
+  records' derivation alone. An offline guess against a new file costs
+  one argon2id at 128 MiB and 7 passes where it cost one PBKDF2 of 7777
+  rounds. Host note: an unlock or a new profile writes an argon2id token,
+  which needs this toolbox to open; a toolbox before it refuses that
+  profile at derivation with its named reason (`UMP token asks argon2id;
+  this toolbox derives pbkdf2-sha512 only`), so a host that may roll back
+  keeps a copy of its key file before upgrading. Each unlock of an
+  argon2id token holds 128 MiB for the derivation.
 - #534 (the owner's 23.5 (c) word; the keeper's reading of 2026-11-02
   10:4xZ): `tools/mutants-floor.json` takes its floors from the complete
   Mutants record (`docs/census/mutants-complete-2026-11-02`, 59.22
@@ -110,8 +135,7 @@
   manager methods: `open_key_file` and `save_key_file` (the migration
   re-writes the file the manager opened) and `recovery_key` (the
   reference's `getRecoveryKey`, :2356); exports carry the token.
-  argon2id parses and is refused at derivation until it has a dependency
-  (#593). Design: `docs/design/ump-token-format.md`. Host note: the
+  argon2id parsed and was refused at derivation until #593 (above). Design: `docs/design/ump-token-format.md`. Host note: the
   file's version moves at that unlock (or the next save), and an older
   toolbox cannot read it after; a host that may roll back keeps a copy of
   its v1 file. A wrong password while the v1 record is present (v1 has
