@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""The cases of tools/ignore-sites: scratch trees with their test lists, a
+"""The cases of tools/ignore-sites: scratch crates with their test lists, a
 site listed and runnable, a site ignored under both feature sets, a site the
-sqlite build does not list, the attribute across lines and on one, and a
-usage fault on an empty list.
+sqlite build does not list, the attribute across lines and on one, a usage
+fault on an empty list, and the full path (#656): a dead site sharing its
+name with a running test, the #[path] chain of the ladder fixtures, inline
+mods, the remote-only job's sites, an attribute in a comment or a string,
+and a file no crate reaches.
 
   tools/ignore-sites-test
 """
@@ -27,6 +30,12 @@ async fn {name}() {{}}
 ONE_LINE = '#[cfg_attr(not(feature = "sqlite"), ignore = "x")]\n#[test]\nfn {name}() {{}}\n'
 BOTH = '#[cfg_attr(not(feature = "sqlite"), ignore = "x")]\n#[ignore]\n#[test]\nfn {name}() {{}}\n'
 PLAIN = '#[test]\nfn {name}() {{}}\n#[ignore]\n#[test]\nfn live_only() {{}}\n'
+DEAD = ('#[cfg(not(feature = "sqlite"))]\n'
+        '#[cfg_attr(not(feature = "sqlite"), ignore = "x")]\n#[test]\nfn {name}() {{}}\n')
+REMOTE = '#[cfg_attr(feature = "sqlite", ignore = "x")]\n#[test]\nfn {name}() {{}}\n'
+QUOTED = ('// #[cfg_attr(not(feature = "sqlite"), ignore = "x")]\n'
+          'const S: &str = r#"#[cfg_attr(not(feature = "sqlite"), ignore)] {{"#;\n'
+          "const C: char = '{{';\n#[test]\nfn {name}() {{}}\n")
 
 passed = 0
 failed = 0
@@ -42,8 +51,8 @@ def check(name, ok, detail=""):
         print(f"FAIL {name} {detail}")
 
 
-def run(files, every, ignored):
-    """The guard's exit and output over a scratch tree and its two lists."""
+def run(files, every, ignored, job=None):
+    """The guard's exit and output over a scratch crate and its two lists."""
     tmp = Path(tempfile.mkdtemp(prefix="ignore-sites-test-", dir=os.environ.get("TMPDIR")))
     try:
         for rel, text in files.items():
@@ -54,40 +63,105 @@ def run(files, every, ignored):
         (tmp / "all.txt").write_text("".join(f"{t}: test\n" for t in every)
                                      + f"{len(every)} tests, 0 benchmarks\n")
         (tmp / "ignored.txt").write_text("".join(f"{t}: test\n" for t in ignored))
-        out = subprocess.run([sys.executable, str(SCRIPT), "--root", str(tmp),
-                              "--all", str(tmp / "all.txt"),
-                              "--ignored", str(tmp / "ignored.txt")],
-                             capture_output=True, text=True)
+        argv = [sys.executable, str(SCRIPT), "--root", str(tmp),
+                "--all", str(tmp / "all.txt"), "--ignored", str(tmp / "ignored.txt")]
+        if job:
+            argv += ["--job", job]
+        out = subprocess.run(argv, capture_output=True, text=True)
         return out.returncode, out.stdout + out.stderr
     finally:
         shutil.rmtree(tmp)
 
 
-code, out = run({"src/a.rs": CONFINED.format(name="slow_one")},
+IN_TESTS = "#[cfg(test)]\nmod tests {{\n" + CONFINED + "}}\n"
+
+code, out = run({"src/lib.rs": "mod a;\n", "src/a.rs": IN_TESTS.format(name="slow_one")},
                 ["a::tests::slow_one", "a::tests::other"], [])
 check("a confined site the sqlite build lists and runs is green",
-      code == 0 and "1 sites, 0 red" in out, out)
+      code == 0 and "1 sites, 0 red" in out and "ok   src/a.rs:4 a::tests::slow_one" in out,
+      out)
 
-code, out = run({"tests/fixtures/b.rs": ONE_LINE.format(name="cut")},
-                ["services::ladders::cut::cut"], [])
-check("the attribute on one line, under tests/, is a site", code == 0 and "ok   " in out, out)
+code, out = run({"tests/fixtures/main.rs": "mod b;\n",
+                 "tests/fixtures/b.rs": ONE_LINE.format(name="cut")},
+                ["b::cut"], [])
+check("the attribute on one line, in a test target's module, is a site",
+      code == 0 and "ok   tests/fixtures/b.rs:1 b::cut" in out, out)
 
-code, out = run({"src/a.rs": CONFINED.format(name="slow_one"),
+code, out = run({"src/lib.rs": "mod a;\nmod c;\n", "src/a.rs": CONFINED.format(name="slow_one"),
                  "src/c.rs": BOTH.format(name="planted")},
                 ["a::slow_one", "c::planted"], ["c::planted"])
 check("a site ignored under both feature sets is red",
-      code == 1 and "FAIL src/c.rs:1 planted: ignored in the sqlite build too" in out, out)
+      code == 1 and "FAIL src/c.rs:1 planted: ignored in the sqlite build's list too" in out,
+      out)
 
-code, out = run({"src/a.rs": CONFINED.format(name="slow_one")}, ["a::other"], [])
+code, out = run({"src/lib.rs": "mod a;\n", "src/a.rs": CONFINED.format(name="slow_one")},
+                ["a::other"], [])
 check("a site the sqlite build does not list is red",
-      code == 1 and "not in the sqlite build's list" in out, out)
+      code == 1 and "not in the sqlite build's list as a::slow_one" in out, out)
 
-code, out = run({"src/d.rs": PLAIN.format(name="plain")}, ["d::plain", "d::live_only"],
-                ["d::live_only"])
+code, out = run({"src/lib.rs": "mod d;\n", "src/d.rs": PLAIN.format(name="plain")},
+                ["d::plain", "d::live_only"], ["d::live_only"])
 check("a plain #[ignore] is not a site", code == 0 and "0 sites, 0 red" in out, out)
 
-code, out = run({"src/a.rs": CONFINED.format(name="slow_one")}, [], [])
+code, out = run({"src/lib.rs": "mod a;\n", "src/a.rs": CONFINED.format(name="slow_one")}, [], [])
 check("an empty sqlite list is a usage fault", code == 2, out)
+
+# The #655 read's plant: a dead test under #[cfg(not(feature = "sqlite"))]
+# named as a running test in another module.
+code, out = run({"src/lib.rs": "mod ladders;\nmod rule_28;\n",
+                 "src/ladders.rs": CONFINED.format(name="replay"),
+                 "src/rule_28.rs": DEAD.format(name="replay")},
+                ["ladders::replay"], [])
+check("a dead site sharing its name with a running test is red",
+      code == 1 and "ok   src/ladders.rs:2 ladders::replay" in out
+      and "FAIL src/rule_28.rs:2 replay: not in the sqlite build's list as rule_28::replay" in out,
+      out)
+
+# The ladder fixtures' chain: a #[path] up out of src/ and two more beside it,
+# a mod.rs owner and a non-mod-rs owner's directory.
+code, out = run({"src/lib.rs": "pub mod services;\n",
+                 "src/services/mod.rs": "pub mod services;\n",
+                 "src/services/services.rs": ('#[cfg(test)]\n#[path = "host.rs"]\nmod host;\n'
+                                              "mod inner;\n"),
+                 "src/services/services/inner.rs": ONE_LINE.format(name="inner_one"),
+                 "src/services/host.rs": '#[path = "../../tests/fixtures/ladders.rs"]\nmod ladders;\n',
+                 "tests/fixtures/ladders.rs": '#[path = "ladder_cut.rs"]\nmod cut;\n',
+                 "tests/fixtures/ladder_cut.rs": CONFINED.format(name="cut_short")},
+                ["services::services::host::ladders::cut::cut_short",
+                 "services::services::inner::inner_one"], [])
+check("a site reached through #[path] mods has its module path",
+      code == 0 and "2 sites, 0 red" in out
+      and "services::services::host::ladders::cut::cut_short" in out, out)
+
+code, out = run({"src/lib.rs": "mod a {\n    pub mod b {\n" + ONE_LINE.format(name="deep")
+                 + "    }\n}\nmod c;\n",
+                 "src/c.rs": "mod t {\n" + ONE_LINE.format(name="deep") + "}\n"},
+                ["a::b::deep"], [])
+check("inline mods are in the path, and close where their braces do",
+      code == 1 and "ok   src/lib.rs:3 a::b::deep" in out
+      and "not in the sqlite build's list as c::t::deep" in out, out)
+
+code, out = run({"src/lib.rs": "mod a;\nmod r;\n", "src/a.rs": CONFINED.format(name="slow_one"),
+                 "src/r.rs": REMOTE.format(name="remote_one")},
+                ["r::remote_one"], [], job="remote")
+check("the remote-only job's sites are its own, checked against its list",
+      code == 0 and "remote job, 1 sites, 0 red" in out and "ok   src/r.rs:1 r::remote_one" in out,
+      out)
+
+code, out = run({"src/lib.rs": "mod r;\n", "src/r.rs": REMOTE.format(name="remote_one")},
+                ["r::other"], [], job="remote")
+check("a remote-only site its build does not list is red",
+      code == 1 and "not in the remote-only build's list as r::remote_one" in out, out)
+
+code, out = run({"src/lib.rs": "mod q;\n", "src/q.rs": QUOTED.format(name="q_one")},
+                ["q::q_one"], [])
+check("the attribute in a comment or a string is not a site, nor a brace in a char",
+      code == 0 and "0 sites, 0 red" in out, out)
+
+code, out = run({"src/lib.rs": "\n", "src/orphan.rs": ONE_LINE.format(name="lost")},
+                ["lost"], [])
+check("a site in a file no crate reaches is red",
+      code == 1 and "no crate's module tree reaches the file" in out, out)
 
 print(f"ignore-sites-test: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

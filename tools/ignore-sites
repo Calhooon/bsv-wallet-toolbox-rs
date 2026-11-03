@@ -1,61 +1,283 @@
 #!/usr/bin/env python3
-"""No test confined to the sqlite builds is ignored in every job (#651).
+"""No test confined to one feature set is ignored in every job (#651, #656).
 
 A test that carries `#[cfg_attr(not(feature = "sqlite"), ignore = ...)]`
 (the ladder cut test of #634, the four services tests of #651) leaves the
-remote-only job and runs in the sqlite Test Suite job. This guard reads the
-sites from the sources and the sqlite build's test lists, and refuses a site
-that the sqlite build does not list or lists as ignored, so a site whose
+remote-only job and runs in the sqlite Test Suite job; one that carries
+`#[cfg_attr(feature = "sqlite", ignore = ...)]` (none yet) would run in the
+remote-only job alone. Each Test Suite job runs this guard on its own test
+lists (`--job`): it reads the job's sites from the sources and refuses a
+site the job's build does not list or lists as ignored, so a site whose
 test is ignored there too (a second `ignore`, a predicate true under both)
-is red rather than a test no job runs.
+or compiled out there (a `#[cfg]` on the test) is red rather than a test no
+job runs.
 
-  cargo test --lib --tests --features sqlite,remote -- --list > all.txt
-  cargo test --lib --tests --features sqlite,remote -- --list --ignored > ignored.txt
-  tools/ignore-sites --all all.txt --ignored ignored.txt [--root DIR]
+  # the sqlite Test Suite job, after its two builds
+  { cargo test --lib --features sqlite,remote -- --list
+    cargo test --test '*' --features sqlite,remote,bench-support -- --list; } > all.txt
+  { ... -- --list --ignored; } > ignored.txt
+  tools/ignore-sites --job sqlite --all all.txt --ignored ignored.txt [--root DIR]
+
+  # the remote-only job, after its build
+  cargo test --lib --tests --no-default-features --features remote -- --list > all.txt
+  ... -- --list --ignored > ignored.txt
+  tools/ignore-sites --job remote --all all.txt --ignored ignored.txt
 
 The lists are libtest's `--list` lines (`path::name: test`). A site matches
-a listed test by its function name, the last path segment. Exit 0 when
-every site is listed and none is ignored; 1 otherwise; 2 on a usage fault.
+a listed test by its full path: the module path of its file, resolved from
+the crate roots (src/lib.rs, tests/*.rs, tests/*/main.rs) through each
+`mod` and `#[path]`, then the inline `mod` blocks around it, then the
+function's name. A test of the same name elsewhere is not the site's (the
+#655 read: a dead `ladder_fixtures_replay` under `#[cfg(not(feature =
+"sqlite"))]` passed a guard matching on the name alone). Exit 0 when every
+site is listed and none is ignored; 1 otherwise; 2 on a usage fault.
 """
 
 import argparse
-import re
 import sys
+from collections import deque
 from pathlib import Path
 
-# The attribute, across lines: `cfg_attr(not(feature = "sqlite"), ignore`.
-SITE = re.compile(
-    r'#\[cfg_attr\(\s*not\(\s*feature\s*=\s*"sqlite"\s*\)\s*,\s*ignore\b', re.S)
-FN = re.compile(r'\bfn\s+([A-Za-z_][A-Za-z0-9_]*)')
+# A job's sites: the attribute's leading tokens, string literals as ("str", v).
+SITE_ATTRS = {
+    "sqlite": ["cfg_attr", "(", "not", "(", "feature", "=", ("str", "sqlite"),
+               ")", ",", "ignore"],
+    "remote": ["cfg_attr", "(", "feature", "=", ("str", "sqlite"), ",", "ignore"],
+}
+JOB_BUILD = {"sqlite": "the sqlite build's", "remote": "the remote-only build's"}
 
 
-def sites(root):
-    """Each site's (path, line, function name), in path order."""
+def lex(text):
+    """Rust tokens as (kind, value, offset): kind "id", "str" or "p" (one
+    punctuation character); comments, char literals and lifetimes dropped."""
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif text.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        elif c in "rbc" and _raw_or_byte(text, i):
+            start = i
+            i, value = _string(text, i)
+            yield ("str", value, start)
+        elif c == '"':
+            start = i
+            i, value = _string(text, i)
+            yield ("str", value, start)
+        elif c == "'":
+            if i + 1 < n and text[i + 1] == "\\":
+                j = text.find("'", i + 2)
+                i = n if j < 0 else j + 1
+            elif i + 2 < n and text[i + 2] == "'":
+                i += 3
+            else:
+                i += 1
+                while i < n and (text[i].isalnum() or text[i] == "_"):
+                    i += 1
+        elif c.isalpha() or c == "_":
+            start = i
+            while i < n and (text[i].isalnum() or text[i] == "_"):
+                i += 1
+            yield ("id", text[start:i], start)
+        elif c.isdigit():
+            while i < n and (text[i].isalnum() or text[i] == "_"):
+                i += 1
+        else:
+            yield ("p", c, i)
+            i += 1
+
+
+def _raw_or_byte(text, i):
+    """A string literal's prefix (r", r#", b", br", c", cr) starts at i."""
+    j = i
+    if text[j] in "bc":
+        j += 1
+    if j < len(text) and text[j] == "r":
+        j += 1
+        while j < len(text) and text[j] == "#":
+            j += 1
+    return j > i and j < len(text) and text[j] == '"' and (
+        i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_"))
+
+
+def _string(text, i):
+    """The end offset and value of the string literal starting at i."""
+    n = len(text)
+    while text[i] in "bc":
+        i += 1
+    if text[i] == "r":
+        i += 1
+        hashes = 0
+        while text[i] == "#":
+            hashes, i = hashes + 1, i + 1
+        close = '"' + "#" * hashes
+        j = text.find(close, i + 1)
+        j = n if j < 0 else j
+        return j + len(close), text[i + 1:j]
+    j, out = i + 1, []
+    while j < n and text[j] != '"':
+        if text[j] == "\\":
+            j += 1
+        out.append(text[j] if j < n else "")
+        j += 1
+    return j + 1, "".join(out)
+
+
+def _match(tokens, k, pattern):
+    """The tokens from k begin with the pattern."""
+    for off, want in enumerate(pattern):
+        if k + off >= len(tokens):
+            return False
+        kind, value, _ = tokens[k + off]
+        if isinstance(want, tuple):
+            if (kind, value) != want:
+                return False
+        elif kind == "str" or value != want:
+            return False
+    return True
+
+
+def scan(text, job):
+    """A file's out-of-line mods (name, #[path] or None, inline mods around
+    it) and its job's sites (line, inline mods around it, fn name or None)."""
+    tokens = list(lex(text))
+    mods, sites = [], []
+    stack = []          # per open brace: the inline mod's name, or None
+    path_attr = None    # the #[path] since the last item boundary
+    k = 0
+    while k < len(tokens):
+        kind, value, offset = tokens[k]
+        if kind == "p" and value == "#" and k + 1 < len(tokens) \
+                and tokens[k + 1][1] == "[":
+            # An outer attribute: its tokens up to the matching bracket.
+            depth, j = 0, k + 1
+            while j < len(tokens):
+                if tokens[j][0] == "p" and tokens[j][1] == "[":
+                    depth += 1
+                elif tokens[j][0] == "p" and tokens[j][1] == "]":
+                    depth -= 1
+                    if not depth:
+                        break
+                j += 1
+            if _match(tokens, k + 2, ["path", "="]) and k + 4 < len(tokens) \
+                    and tokens[k + 4][0] == "str":
+                path_attr = tokens[k + 4][1]
+            if _match(tokens, k + 2, SITE_ATTRS[job]):
+                name = None
+                for f in range(j + 1, len(tokens) - 1):
+                    if tokens[f][:2] == ("id", "fn") and tokens[f + 1][0] == "id":
+                        name = tokens[f + 1][1]
+                        break
+                line = text.count("\n", 0, offset) + 1
+                inline = tuple(m for m in stack if m is not None)
+                sites.append((line, inline, name))
+            k = j + 1
+            continue
+        if kind == "id" and value == "mod" and k + 2 < len(tokens) \
+                and tokens[k + 1][0] == "id" and tokens[k + 2][0] == "p":
+            name, after = tokens[k + 1][1], tokens[k + 2][1]
+            if after == ";":
+                mods.append((name, path_attr,
+                             tuple(m for m in stack if m is not None)))
+                path_attr = None
+                k += 3
+                continue
+            if after == "{":
+                stack.append(name)
+                path_attr = None
+                k += 3
+                continue
+        if kind == "p" and value == "{":
+            stack.append(None)
+            path_attr = None
+        elif kind == "p" and value == "}":
+            if stack:
+                stack.pop()
+            path_attr = None
+        elif kind == "p" and value == ";":
+            path_attr = None
+        k += 1
+    return mods, sites
+
+
+def module_paths(root, job):
+    """Each reached file's module paths (one per way a crate reaches it)
+    and its job's sites."""
+    roots = [root / "src" / "lib.rs"]
+    roots += sorted((root / "tests").glob("*.rs"))
+    roots += sorted((root / "tests").glob("*/main.rs"))
+    # (file, module path, its children's directory)
+    queue = deque((p.resolve(), (), p.resolve().parent) for p in roots if p.is_file())
+    paths, scanned, seen = {}, {}, set()
+    while queue:
+        path, mpath, owner = queue.popleft()
+        if (path, mpath) in seen:
+            continue
+        seen.add((path, mpath))
+        paths.setdefault(path, set()).add(mpath)
+        if path not in scanned:
+            scanned[path] = scan(path.read_text(), job)
+        for name, attr, inline in scanned[path][0]:
+            if attr is not None:
+                base = owner.joinpath(*inline) if inline else path.parent
+                child = (base / attr).resolve()
+                queue.append((child, mpath + inline + (name,), child.parent))
+                continue
+            base = owner.joinpath(*inline)
+            for child, child_owner in ((base / f"{name}.rs", base / name),
+                                       (base / name / "mod.rs", base / name)):
+                if child.is_file():
+                    queue.append((child.resolve(), mpath + inline + (name,),
+                                  child_owner.resolve()))
+                    break
+    return paths, scanned
+
+
+def all_sites(root, job):
+    """Each site's (path, line, full paths, fn name), in path order: every
+    .rs under src/ and tests/, a file no crate reaches with no full path."""
+    paths, scanned = module_paths(root, job)
     found = []
     for top in ("src", "tests"):
         for path in sorted((root / top).rglob("*.rs")):
-            text = path.read_text()
-            for m in SITE.finditer(text):
-                fn = FN.search(text, m.end())
-                line = text.count("\n", 0, m.start()) + 1
-                name = fn.group(1) if fn else None
-                found.append((path.relative_to(root), line, name))
+            real = path.resolve()
+            if real in scanned:
+                file_sites = scanned[real][1]
+            else:
+                file_sites = scan(path.read_text(), job)[1]
+            for line, inline, name in file_sites:
+                full = sorted("::".join(m + inline + (name,))
+                              for m in paths.get(real, ())) if name else []
+                found.append((path.relative_to(root), line, full, name))
     return found
 
 
 def listed(path):
-    """The function names of a libtest `--list` file's tests."""
+    """The full paths of a libtest `--list` file's tests."""
     names = set()
     for line in Path(path).read_text().splitlines():
         if line.endswith(": test"):
-            names.add(line[: -len(": test")].rsplit("::", 1)[-1])
+            names.add(line[: -len(": test")])
     return names
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--all", required=True, help="the sqlite build's --list")
-    ap.add_argument("--ignored", required=True, help="its --list --ignored")
+    ap.add_argument("--job", choices=sorted(SITE_ATTRS), default="sqlite",
+                    help="the job whose sites and lists these are")
+    ap.add_argument("--all", required=True, help="the job's builds' --list")
+    ap.add_argument("--ignored", required=True, help="their --list --ignored")
     ap.add_argument("--root", default=Path(__file__).resolve().parent.parent,
                     type=Path)
     args = ap.parse_args()
@@ -64,22 +286,26 @@ def main():
     if not every:
         print(f"ignore-sites: {args.all} lists no test", file=sys.stderr)
         return 2
+    build = JOB_BUILD[args.job]
     red = 0
-    found = sites(args.root)
-    for path, line, name in found:
+    found = all_sites(args.root.resolve(), args.job)
+    for path, line, full, name in found:
         where = f"{path}:{line}"
+        runs = [p for p in full if p in every and p not in ignored]
         if name is None:
             verdict = "no fn after the attribute"
-        elif name not in every:
-            verdict = "not in the sqlite build's list"
-        elif name in ignored:
-            verdict = "ignored in the sqlite build too: no job runs it"
-        else:
-            print(f"ok   {where} {name}")
+        elif not full:
+            verdict = "no crate's module tree reaches the file"
+        elif runs:
+            print(f"ok   {where} {runs[0]}")
             continue
+        elif any(p in every for p in full):
+            verdict = f"ignored in {build} list too: no job runs it"
+        else:
+            verdict = f"not in {build} list as {' or '.join(full)}"
         red += 1
         print(f"FAIL {where} {name or '?'}: {verdict}")
-    print(f"ignore-sites: {len(found)} sites, {red} red")
+    print(f"ignore-sites: {args.job} job, {len(found)} sites, {red} red")
     return 1 if red else 0
 
 
