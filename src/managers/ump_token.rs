@@ -19,7 +19,7 @@ use crate::error::{Error, Result};
 mod kdf;
 #[cfg(test)]
 use kdf::PBKDF2_NUM_ROUNDS;
-pub(crate) use kdf::{derive_password_key, off_worker, pbkdf2_sha512};
+pub(crate) use kdf::{derive_password_key, kdf_permits, off_worker, pbkdf2_sha512};
 pub use kdf::{KdfAlgorithm, PasswordKdf};
 
 /// The on-chain UMP version of a token with KDF metadata (:157).

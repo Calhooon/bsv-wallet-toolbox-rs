@@ -253,6 +253,17 @@ pub(crate) fn derive_password_key(
 /// A `kdf_in_flight` of 0: the manager has no permits, each derivation refused (#631).
 const NO_KDF_PERMITS: &str = "kdf_in_flight is 0: no password derivation can run";
 
+/// The semaphore of `with_kdf_in_flight(permits)` (#631): 0 is refused, as is a
+/// count past tokio's `Semaphore::MAX_PERMITS`, where `Semaphore::new` panics.
+pub(crate) fn kdf_permits(permits: usize) -> Result<Arc<Semaphore>> {
+    if permits == 0 || permits > Semaphore::MAX_PERMITS {
+        let range = format!("1..={}", Semaphore::MAX_PERMITS);
+        let e = format!("with_kdf_in_flight({permits}): kdf_in_flight must be in {range}");
+        return Err(Error::InvalidArgument(e));
+    }
+    Ok(Arc::new(Semaphore::new(permits)))
+}
+
 /// A password KDF and what it opens or seals, on the blocking pool over a zeroed
 /// copy of the password: argon2id's 128 MiB and ~330 ms stay off the worker (#624).
 /// It holds one of the manager's `kdf_in_flight` permits, granted in the order

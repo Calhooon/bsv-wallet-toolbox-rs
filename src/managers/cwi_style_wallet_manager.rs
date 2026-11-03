@@ -25,8 +25,8 @@ use tokio::sync::{RwLock, Semaphore};
 use zeroize::Zeroizing;
 
 use super::ump_token::{
-    self, decode_key_file, encode_key_file, off_worker, Entries, Entry, EntryRecord, Factors,
-    PasswordKdf, RefProfile, UmpEntry,
+    self, decode_key_file, encode_key_file, kdf_permits, off_worker, Entries, Entry, EntryRecord,
+    Factors, PasswordKdf, RefProfile, UmpEntry,
 };
 use crate::error::{Error, Result};
 
@@ -50,6 +50,10 @@ fn generate_scalar() -> Zeroizing<Vec<u8>> {
 /// Default number of PBKDF2 rounds (matches TypeScript).
 pub const DEFAULT_PASSWORD_ROUNDS: u32 = 7777;
 
+/// Password derivations at once by default (#631): argon2id holds 128 MiB per
+/// derivation at the token's parameters, so 512 MiB in all (`with_kdf_in_flight`).
+pub const DEFAULT_KDF_IN_FLIGHT: usize = 4;
+
 /// The profile id's length, and the primary and privileged pads', in bytes.
 const PROFILE_ID_LENGTH: usize = 16;
 const PRIMARY_PAD_LENGTH: usize = 32;
@@ -72,7 +76,7 @@ impl Default for CWIStyleWalletManagerConfig {
         Self {
             password_rounds: DEFAULT_PASSWORD_ROUNDS,
             use_pbkdf2: true,
-            kdf_in_flight: 4,
+            kdf_in_flight: DEFAULT_KDF_IN_FLIGHT,
         }
     }
 }
@@ -338,6 +342,14 @@ impl CWIStyleWalletManager {
             privileged_key_manager: RwLock::new(None),
             key_file: RwLock::new(None),
         }
+    }
+
+    /// Bounds the password derivations at once to `permits`, the rest waiting in
+    /// order (#631); 0 is refused. Called once after `new`, before any use: a
+    /// derivation already in flight would keep its permit of the old semaphore.
+    pub fn with_kdf_in_flight(mut self, permits: usize) -> Result<Self> {
+        self.kdf_permits = Some(kdf_permits(permits)?);
+        Ok(self)
     }
 
     /// Provides the privileged key manager.
