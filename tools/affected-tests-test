@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""The cases of tools/affected-tests, each a list of changed paths against
+this tree, and the map's coverage: every integration target under tests/ is
+in the map, reached by its own change, and every lib.rs module owns source.
+
+  tools/affected-tests-test
+"""
+
+import importlib.machinery
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SCRIPT = HERE / "affected-tests"
+loader = importlib.machinery.SourceFileLoader("affected_tests", str(SCRIPT))
+spec = importlib.util.spec_from_loader("affected_tests", loader)
+at = importlib.util.module_from_spec(spec)
+loader.exec_module(at)
+
+passed = 0
+failed = 0
+
+
+def check(name, ok, detail=""):
+    global passed, failed
+    if ok:
+        passed += 1
+        print(f"ok   {name}")
+    else:
+        failed += 1
+        print(f"FAIL {name} {detail}")
+
+
+def out(paths, event="pull_request"):
+    """The script's outputs, run as CI runs it, the paths on stdin."""
+    run = subprocess.run(
+        [sys.executable, str(SCRIPT), "--event", event, "--paths", "-"],
+        input="\n".join(paths) + "\n", capture_output=True, text=True,
+    )
+    if run.returncode != 0:
+        raise SystemExit(f"affected-tests exited {run.returncode}: {run.stderr}")
+    pairs = {}
+    for line in run.stdout.splitlines():
+        if "=" in line and not line.startswith(" "):
+            key, value = line.split("=", 1)
+            pairs[key] = value
+    return pairs
+
+
+EVERY = {"scope": "all", "unit_run": "true", "unit_filter": "", "tests_run": "true",
+         "tests_filter": "", "remote_run": "true", "remote_filter": "", "doc_run": "true"}
+
+# The whole suite: the queue's run, a push, a tag's call.
+for event in ("merge_group", "push"):
+    check(f"event {event} runs the whole suite", out([], event) == EVERY, out([], event))
+
+# Everything: the paths that reach every test.
+for path in (".github/workflows/ci.yml", "Cargo.toml", "Cargo.lock", "build.rs",
+             "tools/ratchet", "tests/common/transport_isolation.rs",
+             "tests/vectors/arcade_status_verdicts.json",
+             "tests/fixtures/data/brc104/body.json", "src/lib.rs",
+             "examples/basic_wallet.rs", "fuzz/corpus/beef_door/x", "clippy.toml"):
+    check(f"{path} reaches everything", out([path]) == EVERY, out([path]))
+
+# A workflow change beside a docs change is still everything.
+check("a workflow and a doc reach everything",
+      out(["docs/NORTH-STAR.md", ".github/workflows/ci.yml"]) == EVERY)
+
+# Docs only: no cargo test.
+o = out(["docs/ARCHITECTURE.md", "README.md", "src/wallet/CLAUDE.md", "CHANGELOG.md"])
+check("docs only runs no cargo test",
+      o["scope"] == "none" and o["unit_run"] == o["tests_run"] == o["remote_run"]
+      == o["doc_run"] == "false", o)
+
+# A test change: its own target, no unit run, no doc tests.
+o = out(["tests/services_tests.rs"])
+check("a test change reaches its own target",
+      o["scope"] == "some" and o["unit_run"] == "false" and o["doc_run"] == "false"
+      and o["tests_filter"] == "binary(=services_tests)"
+      and o["remote_filter"] == "(binary(=services_tests))", o)
+
+# A file two targets compile (#[path]): both.
+o = out(["tests/fixtures/internalize_order.rs"])
+check("a #[path] file reaches every target mounting it",
+      o["tests_filter"] == "binary(=fixtures) | binary(=storage_wire)", o)
+
+# A test change with a doc change: the target alone.
+o = out(["tests/monitor_tests.rs", "docs/ARCHITECTURE.md"])
+check("a doc beside a test change adds nothing",
+      o["tests_filter"] == "binary(=monitor_tests)" and o["unit_run"] == "false", o)
+
+# A module change: its unit tests, the closure, the tree readers.
+o = out(["src/managers/settings_manager.rs"])
+check("a module change runs its unit tests",
+      o["unit_run"] == "true" and "managers" in o["unit_filter"], o)
+check("a module change runs the architecture tests (they read the tree)",
+      "architecture_tests" in o["unit_filter"], o)
+check("a module change runs the doc tests", o["doc_run"] == "true", o)
+r = at.reach(["src/managers/settings_manager.rs"])
+check("a module change reaches the rule 28 scanners (they read the tree)",
+      {"rule_28_header_store_tests", "rule_28_unspent_hint_tests"} <= set(r["tests"]), r["tests"])
+check("a module change reaches the targets naming its items",
+      "sync_manager_tests" in r["tests"] and "concurrent_tests" in r["tests"], r["tests"])
+check("a module change leaves out a target naming none of the crate",
+      "wallet_client_pin" not in r["tests"], r["tests"])
+
+# A file the lib mounts at the root with #[path]: its owner and its unit path.
+o = out(["src/storage/sqlx/beef_verification/spend_verifier.rs"])
+check("the root-mounted spend verifier runs its own unit path",
+      "spend_verifier" in o["unit_filter"] and "storage" in o["unit_filter"], o)
+
+# A src file an integration target mounts with #[path].
+r = at.reach(["src/services/network_post_tests.rs"])
+check("a src file a target mounts reaches that target",
+      "network_isolation_tests" in r["tests"], r["tests"])
+
+# A src file outside every module: everything.
+check("an unknown src file reaches everything", out(["src/nowhere.rs"]) == EVERY)
+
+# Coverage: every integration target is in the map, reached by its own file.
+targets = at.targets(at.ROOT)
+tests_dir = at.ROOT / "tests"
+want = {p.stem for p in tests_dir.glob("*.rs")}
+want |= {d.name for d in tests_dir.iterdir() if d.is_dir() and (d / "main.rs").is_file()}
+check("every integration target is in the map", set(targets) == want,
+      sorted(set(targets) ^ want))
+missed = []
+for name in sorted(want):
+    own = f"tests/{name}.rs" if (tests_dir / f"{name}.rs").is_file() else f"tests/{name}/main.rs"
+    r = at.reach([own])
+    if r["scope"] != "some" or name not in r["tests"]:
+        missed.append(own)
+check("every target is reached by its own file", not missed, missed)
+
+# Coverage: every lib.rs module owns source the classifier maps to it.
+modules = at.lib_modules(at.ROOT)
+empty = sorted(m for m, mod in modules.items() if not mod["files"])
+check("every lib.rs module owns source", not empty, empty)
+for m, mod in sorted(modules.items()):
+    rel = mod["files"][0].relative_to(at.ROOT).as_posix() if mod["files"] else ""
+    if at.classify(rel, modules, targets) != ("module", m):
+        check(f"{rel} maps to {m}", False)
+
+print(f"{passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

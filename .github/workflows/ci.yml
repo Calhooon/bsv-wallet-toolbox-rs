@@ -92,7 +92,23 @@ jobs:
         os: [ubuntu-latest]
         rust: [stable]
     steps:
+      # Two commits deep: on a pull request HEAD is GitHub's merge commit and
+      # HEAD^1 its base, the diff the affected-tests step reads.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+
+      # The tests the PR's changed paths reach (#618; tools/affected-tests
+      # holds the map and tools/affected-tests-test its cases): on a pull
+      # request the run steps below run those; on a merge-queue group, a push
+      # and a tag's call, every test. The builds and the architecture doc
+      # tests run on every event either way: a compile error anywhere stays
+      # red on the PR, and the queue's run is the whole suite once.
+      - name: The affected tests
+        id: affected
+        env:
+          EVENT: ${{ github.event_name }}
+        run: python3 tools/affected-tests --event "$EVENT"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
@@ -143,14 +159,27 @@ jobs:
             fi
           done
 
+      # An empty filter is every test of the run; a run the change does not
+      # reach is skipped, and the job still reports. A filtered run may match
+      # no test of a feature set (a target whose tests all need `sqlite`, in
+      # the remote-only job), which nextest refuses by default: warn instead.
       - name: Run unit tests (sqlite)
-        run: cargo nextest run --lib --features sqlite,remote --no-fail-fast
+        if: ${{ steps.affected.outputs.unit_run == 'true' }}
+        run: |
+          filter=(); [ -z "$FILTER" ] || filter=(-E "$FILTER" --no-tests=warn)
+          cargo nextest run --lib --features sqlite,remote --no-fail-fast "${filter[@]}"
         env:
+          FILTER: ${{ steps.affected.outputs.unit_filter }}
           # Two replays for a ladder scene a runner stall failed (#513); one locally.
           LADDER_FIXTURES_STALL_REPLAYS: "2"
 
       - name: Run integration tests
-        run: cargo nextest run --test '*' --features sqlite,remote,bench-support --no-fail-fast
+        if: ${{ steps.affected.outputs.tests_run == 'true' }}
+        run: |
+          filter=(); [ -z "$FILTER" ] || filter=(-E "$FILTER" --no-tests=warn)
+          cargo nextest run --test '*' --features sqlite,remote,bench-support --no-fail-fast "${filter[@]}"
+        env:
+          FILTER: ${{ steps.affected.outputs.tests_filter }}
 
       # Every test the invariants tables of docs/ARCHITECTURE.md name exists
       # (and section 7's D7 row keeps its citations). The `--lib` rows list
@@ -164,6 +193,7 @@ jobs:
       # here and the job compiles it once less (#253). Doc tests stay on cargo
       # test: nextest does not run them.
       - name: Run doc tests
+        if: ${{ steps.affected.outputs.doc_run == 'true' }}
         run: cargo test --doc --features sqlite,remote,bench-support
 
   # The unit tests and every suite under tests/ with `remote` alone: a test
@@ -175,6 +205,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+
+      # As the Test Suite's step: the affected tests on a pull request.
+      - name: The affected tests
+        id: affected
+        env:
+          EVENT: ${{ github.event_name }}
+        run: python3 tools/affected-tests --event "$EVENT"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
@@ -202,8 +241,12 @@ jobs:
         run: cargo test --no-run --lib --tests --no-default-features --features remote
 
       - name: Run unit and integration tests (remote only)
-        run: cargo nextest run --lib --tests --no-default-features --features remote --no-fail-fast
+        if: ${{ steps.affected.outputs.remote_run == 'true' }}
+        run: |
+          filter=(); [ -z "$FILTER" ] || filter=(-E "$FILTER" --no-tests=warn)
+          cargo nextest run --lib --tests --no-default-features --features remote --no-fail-fast "${filter[@]}"
         env:
+          FILTER: ${{ steps.affected.outputs.remote_filter }}
           # Two replays for a ladder scene a runner stall failed (#513); one locally.
           LADDER_FIXTURES_STALL_REPLAYS: "2"
 
@@ -332,8 +375,8 @@ jobs:
           done <<< "$GATES"
 
   # The small checks in one job (#617), as the lint job does with the static
-  # gates: the north-star scoreboard, the vectors, the golden fixtures and the
-  # documentation build, each its own step run whether or not one before it
+  # gates: the north-star scoreboard, the affected-tests map's cases (#618),
+  # the vectors, the golden fixtures and the documentation build, each its own step run whether or not one before it
   # failed, the last step naming every gate's outcome. The vectors and the
   # fixtures build the same `sqlite` test set, so they compile it once.
   checks:
@@ -376,6 +419,14 @@ jobs:
         id: scoreboard
         if: ${{ !cancelled() }}
         run: python3 tools/scoreboard-write --check
+
+      # The affected-tests map's cases (#618): the classes, the #[path] and
+      # tree-reading targets, every target under tests/ reached by its own
+      # file. The Test Suite jobs run the map; this gate checks it.
+      - name: affected tests, the map's own cases
+        id: affected-cases
+        if: ${{ !cancelled() }}
+        run: python3 tools/affected-tests-test
 
       # The vector-backed tests: the Arcade status vector
       # (tests/vectors/arcade_status_verdicts.json) through its three surfaces and
@@ -424,6 +475,7 @@ jobs:
           GATES: |
             ${{ steps.scoreboard-cases.outcome }} scoreboard: the writer's own cases
             ${{ steps.scoreboard.outcome }} scoreboard: the table matches its sources
+            ${{ steps.affected-cases.outcome }} affected tests: the map's own cases
             ${{ steps.vector-files.outcome }} vectors: the vector files are present
             ${{ steps.vectors.outcome }} vectors: the vector tests
             ${{ steps.word-table.outcome }} vectors: the word table

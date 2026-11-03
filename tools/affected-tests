@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""The tests a pull request's changed paths reach (#618).
+
+On a pull request the two Test Suite jobs run the tests this script names; on
+a merge-queue group, a push and a tag they run the whole suite (the queue's
+run is the gate, the PR's own run is the early word). The map is built here,
+from the tree, on every run, so no committed table can go stale:
+
+  everything  .github/, Cargo.toml, a lock, tools/, build.rs, tests/common/,
+              a data file under tests/ (vectors, fixtures' data), src/lib.rs,
+              and any path no rule below names (the conservative default)
+  none        docs/ and every *.md: no cargo test (the architecture doc
+              gate still lists, the lint and checks jobs still run)
+  a module    src/<m>.rs or src/<m>/: the unit tests under <m>:: and under
+              every module whose source names crate::<m> or one of <m>'s
+              root re-exports (the closure), and every integration target
+              whose source names bsv_wallet_toolbox_rs::<m> or one of those
+              re-exports; a module or a target whose source reads the tree
+              at run time (env!("CARGO_MANIFEST_DIR"): the architecture
+              tests, the rule 28 scanners) is reached by every src/ change
+  a target    tests/<t>.rs, tests/<t>/ and any file a target includes with
+              #[path]: that target
+
+Usage:
+  tools/affected-tests --event pull_request            # diff HEAD^1 HEAD
+  tools/affected-tests --event pull_request --paths F  # F: one path a line
+  tools/affected-tests --event merge_group             # the whole suite
+With GITHUB_OUTPUT set the outputs are appended there: scope (all, some,
+none), unit_run, unit_filter, tests_run, tests_filter, remote_run,
+remote_filter, doc_run. An empty filter with its run true is every test of
+that run; a filter is a nextest filterset (`-E`).
+"""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CRATE = "bsv_wallet_toolbox_rs"
+
+# Prefixes and names that reach every test.
+EVERYTHING_PREFIXES = (".github/", "tools/", "tests/common/")
+EVERYTHING_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "src/lib.rs")
+
+# A file lib.rs mounts with #[path] as a root module: its unit tests live
+# under the root module's name, its source under the directory's module.
+PATH_MOUNTS = {"spend_verifier": "storage"}
+
+WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def read(path):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def rs_files(path):
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        return sorted(p for p in path.rglob("*.rs") if p.is_file())
+    return []
+
+
+def snippets(text, lead):
+    """The text after each `lead` up to the next `;`, the path or use it starts."""
+    out = []
+    for m in re.finditer(re.escape(lead), text):
+        end = text.find(";", m.end())
+        out.append(text[m.end() : end if end != -1 else len(text)])
+    return out
+
+
+def lib_modules(root):
+    """lib.rs's modules, each with its source files and its root re-exports."""
+    lib = read(root / "src/lib.rs")
+    names = re.findall(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;", lib, re.M)
+    modules = {}
+    for name in names:
+        if name in PATH_MOUNTS:
+            continue
+        files = rs_files(root / "src" / f"{name}.rs") + rs_files(root / "src" / name)
+        reads = any("CARGO_MANIFEST_DIR" in read(f) for f in files)
+        modules[name] = {"files": files, "exports": set(), "units": {name}, "reads": reads}
+    for mount, owner in PATH_MOUNTS.items():
+        if owner in modules:
+            modules[owner]["units"].add(mount)
+    # `pub use m::{...};` and `pub use m::Item;` at the root.
+    for m in re.finditer(r"^\s*pub\s+use\s+(\w+)::(.*?);", lib, re.M | re.S):
+        owner = PATH_MOUNTS.get(m.group(1), m.group(1))
+        if owner in modules:
+            body = re.sub(r"//[^\n]*", "", m.group(2))
+            modules[owner]["exports"].update(WORD.findall(body))
+    for module in modules.values():
+        module["exports"] -= {"self", "super", "crate", "pub", "use", "as"}
+    return modules
+
+
+def module_deps(modules):
+    """deps[x]: the modules x's source names through crate:: or super::."""
+    deps = {}
+    for x, mod in modules.items():
+        found = set()
+        for f in mod["files"]:
+            text = read(f)
+            words = set()
+            for s in snippets(text, "crate::"):
+                words.update(WORD.findall(s))
+            for s in re.findall(r"(?:super::)+(\w+)", text):
+                if s in modules and s != x:
+                    found.add(s)
+            words |= {PATH_MOUNTS[w] for w in words if w in PATH_MOUNTS}
+            for m, other in modules.items():
+                if m == x:
+                    continue
+                if m in words or words & other["exports"]:
+                    found.add(m)
+        deps[x] = found
+    return deps
+
+
+def path_includes(path, seen):
+    """path and every file it mounts with #[path = "..."], transitively."""
+    if path in seen or not path.is_file():
+        return
+    seen.add(path)
+    for rel in re.findall(r'#\[path\s*=\s*"([^"]+)"\]', read(path)):
+        for base in (path.parent, ROOT / "tests"):
+            cand = (base / rel).resolve()
+            if cand.is_file():
+                path_includes(cand, seen)
+                break
+
+
+def targets(root):
+    """Every integration target with the files it compiles."""
+    out = {}
+    tests = root / "tests"
+    for p in sorted(tests.glob("*.rs")):
+        out[p.stem] = [p]
+    for d in sorted(tests.iterdir()):
+        if d.is_dir() and (d / "main.rs").is_file():
+            out[d.name] = [d / "main.rs"] + [p for p in rs_files(d) if p.name != "main.rs"]
+    result = {}
+    for name, files in out.items():
+        seen = set()
+        for f in files:
+            path_includes(f.resolve(), seen)
+        result[name] = seen
+    return result
+
+
+def target_words(files):
+    """The crate's words a target names: (module paths, items, glob)."""
+    words = set()
+    glob = False
+    for f in files:
+        for s in snippets(read(f), f"{CRATE}::"):
+            words.update(WORD.findall(s))
+            if re.match(r"\s*\*", s) or re.search(r"[{,]\s*\*", s):
+                glob = True
+    return words, glob
+
+
+def classify(path, modules, tgts):
+    """('all'|'none'|'module'|'target', name) for one changed path."""
+    if path in EVERYTHING_FILES or path.startswith(EVERYTHING_PREFIXES):
+        return ("all", None)
+    if path.endswith(".md") or path.startswith("docs/"):
+        return ("none", None)
+    if path.startswith("tests/"):
+        resolved = (ROOT / path).resolve()
+        hits = sorted(t for t, files in tgts.items() if resolved in files)
+        if hits and path.endswith(".rs"):
+            return ("target", hits)
+        return ("all", None)
+    if path.startswith("src/"):
+        parts = path.split("/")
+        if len(parts) == 2:
+            name = parts[1][:-3] if parts[1].endswith(".rs") else None
+        else:
+            name = parts[1]
+        name = PATH_MOUNTS.get(name, name)
+        if name in modules:
+            return ("module", name)
+    return ("all", None)
+
+
+def reach(paths, root=ROOT):
+    """The affected sets for a list of changed paths."""
+    modules = lib_modules(root)
+    tgts = targets(root)
+    changed_modules, changed_targets, why = set(), set(), []
+    everything = False
+    for path in paths:
+        kind, name = classify(path, modules, tgts)
+        why.append(f"{path}: {kind}{'' if name is None else ' ' + (name if isinstance(name, str) else ','.join(name))}")
+        if kind == "all":
+            everything = True
+        elif kind == "module":
+            changed_modules.add(name)
+            resolved = (root / path).resolve()
+            changed_targets.update(t for t, files in tgts.items() if resolved in files)
+        elif kind == "target":
+            changed_targets.update(name)
+    if everything:
+        return {"scope": "all", "why": why}
+    deps = module_deps(modules)
+    reached = set(changed_modules)
+    while True:
+        more = {x for x, d in deps.items() if x not in reached and d & reached}
+        if not more:
+            break
+        reached |= more
+    if reached:
+        reached |= {m for m, mod in modules.items() if mod["reads"]}
+    tests = set(changed_targets)
+    if reached:
+        names = set(reached)
+        for m in reached:
+            names |= modules[m]["exports"]
+        for t, files in tgts.items():
+            words, glob = target_words(files)
+            reads = any("CARGO_MANIFEST_DIR" in read(f) for f in files)
+            if glob or reads or words & names:
+                tests.add(t)
+    units = set()
+    for m in reached:
+        units |= modules[m]["units"]
+    every_unit = reached >= set(modules)
+    return {
+        "scope": "some" if units or tests else "none",
+        "why": why,
+        "modules": sorted(reached),
+        "units": sorted(units),
+        "every_unit": every_unit,
+        "tests": sorted(tests),
+        "every_test": tests >= set(tgts),
+        "untested": sorted(set(tgts) - tests),
+    }
+
+
+def outputs(r):
+    if r["scope"] == "all":
+        return {
+            "scope": "all",
+            "unit_run": "true", "unit_filter": "",
+            "tests_run": "true", "tests_filter": "",
+            "remote_run": "true", "remote_filter": "",
+            "doc_run": "true",
+        }
+    unit = "" if r["every_unit"] else (
+        "test(/^(?:" + "|".join(r["units"]) + ")::/)" if r["units"] else "")
+    # The shorter of the targets named and every target but those left out.
+    tests = ""
+    if not r["every_test"]:
+        named = " | ".join(f"binary(={t})" for t in r["tests"])
+        tests = named
+        if len(r["untested"]) < len(r["tests"]):
+            left = " | ".join(f"binary(={t})" for t in r["untested"])
+            tests = f"kind(test) & not ({left})"
+    unit_run = bool(r["units"])
+    tests_run = bool(r["tests"])
+    if unit_run and tests_run and not unit and not tests:
+        remote = ""
+    else:
+        parts = []
+        if unit_run:
+            parts.append(f"(kind(lib) & {unit})" if unit else "kind(lib)")
+        if tests_run:
+            parts.append(f"({tests})" if tests else "kind(test)")
+        remote = " | ".join(parts)
+    return {
+        "scope": r["scope"],
+        "unit_run": str(unit_run).lower(), "unit_filter": unit,
+        "tests_run": str(tests_run).lower(), "tests_filter": tests,
+        "remote_run": str(unit_run or tests_run).lower(), "remote_filter": remote,
+        "doc_run": str(unit_run).lower(),
+    }
+
+
+def changed_paths():
+    """The PR's change: the merge commit against its first parent, the base."""
+    out = subprocess.run(
+        ["git", "diff", "--no-renames", "--name-only", "HEAD^1", "HEAD"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        return None
+    return [line for line in out.stdout.splitlines() if line]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--event", required=True)
+    ap.add_argument("--paths", help="a file of changed paths, one a line ('-' for stdin)")
+    args = ap.parse_args()
+    if args.event != "pull_request":
+        r = {"scope": "all", "why": [f"event {args.event}: the whole suite"]}
+    else:
+        if args.paths:
+            src = sys.stdin if args.paths == "-" else open(args.paths, encoding="utf-8")
+            paths = [line.strip() for line in src if line.strip()]
+        else:
+            paths = changed_paths()
+        if paths is None:
+            print("::warning title=affected tests::the PR's diff could not be read; the whole suite runs")
+            r = {"scope": "all", "why": ["the diff could not be read: the whole suite"]}
+        else:
+            r = reach(paths)
+    out = outputs(r)
+    for line in r["why"]:
+        print(f"  {line}")
+    if r["scope"] != "all":
+        print(f"modules reached: {' '.join(r['modules']) or '(none)'}")
+        print(f"integration targets reached: {' '.join(r['tests']) or '(none)'}")
+    for key, value in out.items():
+        print(f"{key}={value}")
+    gh = os.environ.get("GITHUB_OUTPUT")
+    if gh:
+        with open(gh, "a", encoding="utf-8") as f:
+            for key, value in out.items():
+                f.write(f"{key}={value}\n")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as f:
+            f.write(f"affected tests: scope {out['scope']}\n\n")
+            for key in ("unit_filter", "tests_filter", "remote_filter"):
+                if out[key]:
+                    f.write(f"- {key}: `{out[key]}`\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
