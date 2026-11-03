@@ -144,7 +144,7 @@ fn proof_height(bytes: &[u8]) -> u32 {
 fn header_with_root(bytes: &[u8], root: &str) -> serde_json::Value {
     serde_json::json!({
         "version": 1, "height": proof_height(bytes), "previousHash": "00".repeat(32),
-        "merkleRoot": root, "time": 1_700_000_000, "bits": 0x1d00ffff,
+        "merkleRoot": root, "time": 1_700_000_000, "bits": 0x1d00_ffff,
         "nonce": 0, "hash": "11".repeat(32)
     })
 }
