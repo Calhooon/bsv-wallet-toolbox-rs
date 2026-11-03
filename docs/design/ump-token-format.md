@@ -429,7 +429,10 @@ RustCrypto's `argon2` (`=0.5.3`, the owner's dependency word of
 2026-11-02 14:4xZ; no default features, so no `password-hash` and no
 `rand`; the `zeroize` feature), in `src/managers/ump_kdf.rs`. The memory
 blocks (memoryKiB KiB, 128 MiB at the default) are the derivation's own
-`Zeroizing` buffer, zeroed when it returns.
+`Zeroizing` buffer, zeroed when it returns. The buffer is reserved
+with `try_reserve_exact`, so a memory the host cannot allocate is
+`UMP token: argon2id: cannot allocate <n> KiB of memory: ...`, an error
+as hash-wasm throws, never an abort (#625).
 
 - The parameters are the token's, bounded as `isValidKdfConfig` bounds
   them (iterations 1 to 20, memoryKiB 1 to 262144, parallelism 1 to 16,
