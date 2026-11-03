@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- #686: `list_certificates`' `total_certificates` takes `list_outputs`'
+  three branches (`short_page_total`, #674): a full page and an empty page
+  past the start answer the stored count, every other page the offset plus
+  the page. Offset 100 over three certificates answered 100 and now answers
+  3; every non-empty page answers as before; limit 0 (a direct storage
+  call; the wallet's door refuses it, #226) now answers the offset where it
+  was the count. This is BRC-100's `totalCertificates`, "Total number of
+  certificates matching the criteria" (BRCs@5119a9b wallet/0100.md:2294),
+  and diverges from the reference's listCertificates.ts:67
+  (ts-stack@edf6e03), which answers a short page's length alone (1 at
+  offset 2 over three). The keeper's reading of 2026-11-03 takes the BRC's
+  definition; `docs/ARCHITECTURE.md` D31 carries the filing.
 - #674: `list_outputs`' `total_outputs` takes the reference's three branches
   (ts-stack@edf6e03 listOutputsKnex.ts `inferShortPageTotal`, 27-32): a
   full page and an empty page past the start answer the stored count,
