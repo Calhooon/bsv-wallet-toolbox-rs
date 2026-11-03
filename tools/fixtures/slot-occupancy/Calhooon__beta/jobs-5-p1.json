@@ -1,0 +1,17 @@
+{
+ "total_count": 1,
+ "jobs": [
+  {
+   "id": 501,
+   "name": "job 501",
+   "created_at": "2026-11-02T12:30:00Z",
+   "started_at": "2026-11-02T12:33:00Z",
+   "completed_at": "2026-11-02T12:43:00Z",
+   "conclusion": "success",
+   "labels": [
+    "ubuntu-latest"
+   ],
+   "runner_name": "GitHub Actions 501"
+  }
+ ]
+}
