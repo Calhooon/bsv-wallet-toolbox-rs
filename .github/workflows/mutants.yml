@@ -34,11 +34,10 @@ jobs:
       # pool across four repositories, so a heavy dispatch holds at most fourteen
       # of them and six stay for pull request and merge-queue runs. The sixteen
       # shards here run twelve at a time, which beside the two doors shards below
-      # makes the fourteen at the peak. A dispatch takes
-      # the toolbox's stagger slot (06:00Z) and never overlaps another
-      # repository's heavy run. The cap's cost and gain go in the census record at
-      # the next run; #638 (the slot occupancy by hour) moves the number from the
-      # API's reading.
+      # makes the fourteen at the peak. A dispatch takes the toolbox's stagger
+      # slot (06:00Z) and never overlaps another repository's heavy run. The cap's
+      # cost and gain go in the census record at the next run; #638 (the slot
+      # occupancy by hour) moves the number from the API's reading.
       max-parallel: 12
       matrix:
         # 2183 mutants at about 90 s each (build plus the whole lib suite) need 16
