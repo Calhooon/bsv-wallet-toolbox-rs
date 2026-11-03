@@ -517,9 +517,12 @@ async fn rule_row(
 /// depend on where the rotation began: review M1 of #43). Among them:
 /// P+2N is not listed (the positive is never the answer, wherever it
 /// sits), P+N+F and P+2F (the positive BananaBlocks', or any one's) could
-/// not look, 2P unspent.
+/// not look, 2P unspent. Each of the 192 asks builds its own `Services`
+/// over clients shared on this thread (`share_clients_on_this_thread`,
+/// #634: the builds took this test's 50 s on the ubuntu runner).
 #[tokio::test]
 async fn the_utxo_verdict_is_the_rule_from_every_start() {
+    let _clients = crate::services::providers::http_client::share_clients_on_this_thread();
     let says = [
         Says::Unspent,
         Says::NotListed,
@@ -544,38 +547,38 @@ async fn the_utxo_verdict_is_the_rule_from_every_start() {
         }
     }
     let urls: Vec<String> = servers.iter().map(|s| s.url()).collect();
-    for start in 0..3 {
-        // Concurrently: a row with a fault pending sleeps its retry round.
-        let verdicts = futures::future::join_all(rows.iter().map(|(answers, txid, script)| {
-            let urls = &urls;
-            async move {
-                let services =
-                    services_with_three(arcade_test_options(), &urls[0], &urls[1], &urls[2]);
-                {
-                    let mut collection = lock_write(&services.get_utxo_status_services).unwrap();
-                    for _ in 0..start {
-                        collection.next();
-                    }
+    // Concurrently, every start at once: a row with a fault pending sleeps
+    // its retry round, and the three starts share one round's 2 s (#634).
+    let asks = (0..3).flat_map(|start| rows.iter().map(move |row| (start, row)));
+    let verdicts = futures::future::join_all(asks.map(|(start, (answers, txid, script))| {
+        let urls = &urls;
+        async move {
+            let services = services_with_three(arcade_test_options(), &urls[0], &urls[1], &urls[2]);
+            {
+                let mut collection = lock_write(&services.get_utxo_status_services).unwrap();
+                for _ in 0..start {
+                    collection.next();
                 }
-                let hash = services.hash_output_script(script);
-                let result = services
-                    .get_utxo_status(&hash, None, Some(&format!("{txid}.0")), false)
-                    .await
-                    .unwrap();
-                (*answers, result)
             }
-        }))
-        .await;
-        for (answers, result) in verdicts {
-            assert_eq!(
-                (result.status.as_str(), result.is_utxo),
-                the_rule(answers),
-                "WoC {:?}, BananaBlocks {:?}, Bitails {:?}, start {start}: {result:?}",
-                answers[0],
-                answers[1],
-                answers[2]
-            );
+            let hash = services.hash_output_script(script);
+            let result = services
+                .get_utxo_status(&hash, None, Some(&format!("{txid}.0")), false)
+                .await
+                .unwrap();
+            (start, *answers, result)
         }
+    }))
+    .await;
+    assert_eq!(verdicts.len(), 3 * 64);
+    for (start, answers, result) in verdicts {
+        assert_eq!(
+            (result.status.as_str(), result.is_utxo),
+            the_rule(answers),
+            "WoC {:?}, BananaBlocks {:?}, Bitails {:?}, start {start}: {result:?}",
+            answers[0],
+            answers[1],
+            answers[2]
+        );
     }
 }
 
