@@ -395,6 +395,65 @@ mod tests {
         AuthId, ListOutputsArgs, StorageSqlx, WalletStorageReader, WalletStorageWriter,
     };
 
+    /// BRC-100's reverse-order paging at its ends (#230): -1 the newest,
+    /// -3 the oldest of three, i32::MIN past every output with no overflow.
+    #[tokio::test]
+    async fn test_list_outputs_negative_offset_down_to_i32_min() {
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        let identity = "b".repeat(66);
+        storage.migrate("offset", &"1".repeat(64)).await.unwrap();
+        storage.make_available().await.unwrap();
+        let user_id = storage
+            .find_or_insert_user(&identity)
+            .await
+            .unwrap()
+            .0
+            .user_id;
+        let auth = AuthId::with_user_id(&identity, user_id);
+
+        let txid = "ab".repeat(32);
+        let insert_tx = "INSERT INTO transactions (user_id, txid, status, reference, \
+             description, satoshis, version, lock_time, is_outgoing) \
+             VALUES (?, ?, 'completed', 'ref-offset', 'offset test tx', 0, 1, 0, 0)";
+        let tx_row = sqlx::query(insert_tx).bind(user_id).bind(&txid);
+        let tx_id = tx_row
+            .execute(storage.writer())
+            .await
+            .unwrap()
+            .last_insert_rowid();
+        let insert_output = "INSERT INTO outputs (user_id, transaction_id, spendable, change, \
+             vout, satoshis, provided_by, purpose, type, txid) \
+             VALUES (?, ?, 1, 1, ?, 1000, 'storage', 'change', 'P2PKH', ?)";
+        for vout in 0..3 {
+            let row = sqlx::query(insert_output).bind(user_id).bind(tx_id);
+            row.bind(vout)
+                .bind(&txid)
+                .execute(storage.writer())
+                .await
+                .unwrap();
+        }
+
+        let page = |offset: i32, limit: u32| -> ListOutputsArgs {
+            let args = serde_json::json!({ "basket": "", "limit": limit, "offset": offset });
+            serde_json::from_value(args).unwrap()
+        };
+        let vouts = |result: &bsv_rs::wallet::ListOutputsResult| -> Vec<u32> {
+            result.outputs.iter().map(|o| o.outpoint.vout).collect()
+        };
+
+        let newest = storage.list_outputs(&auth, page(-1, 1)).await.unwrap();
+        assert_eq!((vouts(&newest), newest.total_outputs), (vec![2], 3));
+        let oldest = storage.list_outputs(&auth, page(-3, 10)).await.unwrap();
+        assert_eq!((vouts(&oldest), oldest.total_outputs), (vec![0], 3));
+
+        // A short page's total is offset plus the page (`total_outputs`
+        // above), so past every output it is the offset itself.
+        let past = storage.list_outputs(&auth, page(i32::MIN, 10)).await;
+        let past = past.unwrap();
+        assert!(past.outputs.is_empty());
+        assert_eq!(past.total_outputs, i32::MAX as u32);
+    }
+
     #[tokio::test]
     async fn test_list_outputs_empty() {
         let storage = StorageSqlx::in_memory().await.unwrap();
