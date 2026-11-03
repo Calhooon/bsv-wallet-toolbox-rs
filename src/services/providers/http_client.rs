@@ -3,6 +3,8 @@
 
 #[cfg(test)]
 pub(crate) use isolated::check_url;
+#[cfg(test)]
+pub(crate) use isolated::shared::share_clients_on_this_thread;
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) use isolated::{Client, RequestBuilder, RequestError};
 #[cfg(not(any(test, feature = "bench-support")))]
@@ -126,8 +128,8 @@ mod isolated {
             // Ignore environment/system proxies, and pin localhost instead
             // of trusting DNS or the machine's hosts file. The policy checks
             // every redirect before reqwest can follow it.
-            ClientBuilder(
-                reqwest::Client::builder()
+            ClientBuilder {
+                inner: reqwest::Client::builder()
                     .no_proxy()
                     .resolve_to_addrs(
                         "localhost",
@@ -145,7 +147,9 @@ mod isolated {
                             attempt.follow()
                         }
                     })),
-            )
+                #[cfg(test)]
+                timeouts: (None, None),
+            }
         }
 
         pub(crate) fn get(&self, url: impl reqwest::IntoUrl) -> RequestBuilder {
@@ -171,7 +175,7 @@ mod isolated {
     /// (bsv-rs #320); the timeouts and idle pool of bsv-rs's own default.
     pub(crate) fn sdk_transport_client() -> reqwest::Client {
         match Client::builder()
-            .0
+            .inner
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
@@ -183,19 +187,40 @@ mod isolated {
         }
     }
 
-    pub(crate) struct ClientBuilder(reqwest::ClientBuilder);
+    pub(crate) struct ClientBuilder {
+        inner: reqwest::ClientBuilder,
+        /// The two settings a builder can differ in (`timeout`,
+        /// `connect_timeout`): the key of a shared client.
+        #[cfg(test)]
+        timeouts: (Option<Duration>, Option<Duration>),
+    }
 
     impl ClientBuilder {
         pub(crate) fn timeout(self, timeout: Duration) -> Self {
-            Self(self.0.timeout(timeout))
+            Self {
+                inner: self.inner.timeout(timeout),
+                #[cfg(test)]
+                timeouts: (Some(timeout), self.timeouts.1),
+            }
         }
 
         pub(crate) fn connect_timeout(self, timeout: Duration) -> Self {
-            Self(self.0.connect_timeout(timeout))
+            Self {
+                inner: self.inner.connect_timeout(timeout),
+                #[cfg(test)]
+                timeouts: (self.timeouts.0, Some(timeout)),
+            }
         }
 
         pub(crate) fn build(self) -> std::result::Result<Client, reqwest::Error> {
-            self.0.build().map(Client)
+            #[cfg(test)]
+            if let Some(client) = shared::lookup(self.timeouts) {
+                return Ok(client);
+            }
+            let client = self.inner.build().map(Client)?;
+            #[cfg(test)]
+            shared::keep(self.timeouts, &client);
+            Ok(client)
         }
     }
 
@@ -240,6 +265,72 @@ mod isolated {
                     RequestError::Transport(error)
                 }
             })
+        }
+    }
+
+    /// A test's opt-in to one client per setting on its thread (#634).
+    /// Building a client is dear on the ubuntu runner (native-tls there is
+    /// OpenSSL; cheap on macOS): in run 41578469987 a test that builds one
+    /// `Services` took 0.28 s, the 27-row status table 11.2 s for its 54,
+    /// and the 81-row table 164 s for its 648. Every client this builder
+    /// makes is the same but for its two timeouts, so a table's providers
+    /// can share one; each row still builds its own `Services`, gates and
+    /// collections.
+    #[cfg(test)]
+    pub(crate) mod shared {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        use super::Client;
+
+        type Key = (Option<Duration>, Option<Duration>);
+
+        thread_local! {
+            static CLIENTS: RefCell<Option<SharedClients>> = const { RefCell::new(None) };
+        }
+
+        /// One client per setting, for the builds made under it.
+        #[derive(Clone, Default)]
+        pub(crate) struct SharedClients(Arc<Mutex<HashMap<Key, Client>>>);
+
+        /// While held, every client this thread builds with one setting is
+        /// the same client. Dropped, the thread builds as it did before.
+        pub(crate) struct ShareClients(Option<SharedClients>);
+
+        /// Share clients on this thread until the guard drops (the table
+        /// tests run on `#[tokio::test]`'s current thread).
+        pub(crate) fn share_clients_on_this_thread() -> ShareClients {
+            ShareClients(CLIENTS.with(|clients| clients.replace(Some(SharedClients::default()))))
+        }
+
+        impl Drop for ShareClients {
+            fn drop(&mut self) {
+                let before = self.0.take();
+                CLIENTS.with(|clients| *clients.borrow_mut() = before);
+            }
+        }
+
+        pub(super) fn lookup(key: Key) -> Option<Client> {
+            CLIENTS.with(|clients| {
+                clients
+                    .borrow()
+                    .as_ref()?
+                    .0
+                    .lock()
+                    .unwrap()
+                    .get(&key)
+                    .cloned()
+            })
+        }
+
+        pub(super) fn keep(key: Key, client: &Client) {
+            CLIENTS.with(|clients| {
+                if let Some(set) = clients.borrow().as_ref() {
+                    set.0.lock().unwrap().insert(key, client.clone());
+                }
+            });
         }
     }
 }
