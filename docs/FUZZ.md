@@ -91,6 +91,8 @@ writes a name twice: that name keeps the later bytes even when another name
 already holds them (`tsc_proof`'s three `get_merkle_path` names hold one body
 this way; one name for `bhs`, whose header scenes all answer the same header;
 #724).
+`fuzz/seed_corpus_test.py` holds the held set's cases on a scratch corpus
+(`python3 -m unittest fuzz/seed_corpus_test.py`, in CI's checks job, #723).
 
 The hash-named files beside the seeds are what the targets found in their
 runs, minimized with `cargo fuzz cmin`. To keep a later run's growth, run
