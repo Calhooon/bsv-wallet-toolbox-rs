@@ -263,7 +263,7 @@ pub(crate) fn kdf_permits(permits: usize) -> Result<Arc<Semaphore>> {
 
 /// A password KDF and what it opens or seals, on the blocking pool over a zeroed
 /// copy of the password: argon2id's 128 MiB and ~330 ms stay off the worker (#624).
-/// It holds one of the manager's `kdf_in_flight` permits, granted in the order
+/// It holds one of the manager's `with_kdf_in_flight` permits, granted in the order
 /// asked, until the key is back; the permit rides in the blocking task, so a
 /// caller that drops the future frees it only when the derivation ends (#631).
 pub(crate) async fn off_worker<T: Send + 'static>(

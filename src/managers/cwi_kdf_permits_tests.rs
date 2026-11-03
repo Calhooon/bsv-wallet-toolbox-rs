@@ -1,4 +1,4 @@
-//! The bound on password derivations at once, `kdf_in_flight` (#631).
+//! The bound on password derivations at once, `with_kdf_in_flight` (#631).
 
 use super::*;
 use std::time::Duration;
