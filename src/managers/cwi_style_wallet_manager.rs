@@ -25,8 +25,8 @@ use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
 use super::ump_token::{
-    self, decode_key_file, encode_key_file, Entries, Entry, EntryRecord, Factors, PasswordKdf,
-    RefProfile, UmpEntry,
+    self, decode_key_file, encode_key_file, off_worker, Entries, Entry, EntryRecord, Factors,
+    PasswordKdf, RefProfile, UmpEntry,
 };
 use crate::error::{Error, Result};
 
@@ -262,18 +262,6 @@ async fn write_key_file(path: &Path, bytes: Zeroizing<Vec<u8>>) -> Result<()> {
 }
 
 type Unlocked = (Zeroizing<Vec<u8>>, Option<Entry>);
-
-/// A password KDF and what it opens or seals, on the blocking pool over a zeroed
-/// copy of the password: argon2id's 128 MiB and ~330 ms stay off the worker (#624).
-async fn off_worker<T: Send + 'static>(
-    password: &str,
-    kdf: impl FnOnce(&str) -> Result<T> + Send + 'static,
-) -> Result<T> {
-    let password = Zeroizing::new(password.to_owned());
-    tokio::task::spawn_blocking(move || kdf(&password))
-        .await
-        .map_err(|_| Error::Internal("the password KDF task panicked or was cancelled".into()))?
-}
 
 /// Type alias for the wallet builder function.
 pub type CWIWalletBuilder = Arc<
