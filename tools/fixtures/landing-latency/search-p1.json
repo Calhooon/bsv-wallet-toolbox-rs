@@ -1,0 +1,85 @@
+{
+ "total_count": 10,
+ "items": [
+  {
+   "number": 645,
+   "title": "CI speed loop two: a docs-only PR exits every required job green in seconds (a changed-files step at the head of each job, one shared script with its test); the five contexts still report; loop two's record section (#632)",
+   "created_at": "2026-11-03T03:36:17Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T03:58:43Z"
+   }
+  },
+  {
+   "number": 646,
+   "title": "Census: #632's After (PR #645's own and group runs) and the #642 seed's after witness; a docs-only PR as the short-circuit's own proof",
+   "created_at": "2026-11-03T03:59:35Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T04:01:42Z"
+   }
+  },
+  {
+   "number": 648,
+   "title": "CWI key file: concurrent password derivations bounded by a semaphore sized to the host's memory (kdf_in_flight, default four, 512 MiB at the defaults; #631, PR #630's read's risk)",
+   "created_at": "2026-11-03T04:17:19Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T04:38:12Z"
+   }
+  },
+  {
+   "number": 650,
+   "title": "CI speed loop two, cut (2): the ten slowest tests made fast, nightly-only or given a fixed input, their kills kept (the 81-row status verdict of #627 the opening item; #634)",
+   "created_at": "2026-11-03T05:40:38Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T06:14:36Z"
+   }
+  },
+  {
+   "number": 653,
+   "title": "Census: loop two cut (2)'s after figures (PR #650's runs) and the #647 seed keys' after witness",
+   "created_at": "2026-11-03T06:15:35Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T06:17:03Z"
+   }
+  },
+  {
+   "number": 661,
+   "title": "CI speed loop three, cut (1): compile time by evidence (cargo build --timings on the three CI builds; the cuts the evidence supported, each its own commit; #635)",
+   "created_at": "2026-11-03T07:52:57Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T08:13:12Z"
+   }
+  },
+  {
+   "number": 662,
+   "title": "Census: loop three cut (1)'s runner after figures (PR #661's own run and its group run)",
+   "created_at": "2026-11-03T08:14:33Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T08:16:01Z"
+   }
+  },
+  {
+   "number": 663,
+   "title": "CI: the affected-tests map stops treating a *.md under a walked directory (tests, fuzz, test_vectors, tools, .github) as running no test; a shared set with tools/docs-only and a case per directory (#644)",
+   "created_at": "2026-11-03T08:27:21Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T08:39:15Z"
+   }
+  },
+  {
+   "number": 665,
+   "title": "CI speed loop four, cut (2): the account's twenty-slot occupancy by hour from the Actions API across its repositories, tools/slot-occupancy with its cases, the record's reading and its recommendation for the fleet's cap and the stagger slots (#638)",
+   "created_at": "2026-11-03T09:57:07Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T10:29:55Z"
+   }
+  },
+  {
+   "number": 667,
+   "title": "CI: the fleet's runner cap revised on the #638 occupancy read, mutants.yml's sixteen shards four at a time beside its two doors shards and fuzz.yml's thirteen targets six at a time (six at the peak), the dispatch slot 16:00Z (the keeper's line of 2026-11-03 10:0xZ); the census carries the revised line",
+   "created_at": "2026-11-03T10:02:38Z",
+   "pull_request": {
+    "merged_at": "2026-11-03T10:17:45Z"
+   }
+  }
+ ]
+}

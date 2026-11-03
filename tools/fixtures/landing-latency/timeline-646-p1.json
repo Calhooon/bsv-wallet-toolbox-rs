@@ -1,0 +1,32 @@
+[
+ {
+  "event": "committed",
+  "message": "Census: #632's After (PR #645's own run and its group run) and the #642 seed's after witness",
+  "author": {
+   "date": "2026-11-03T03:59:32Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Census: the fold's own run as the docs-only proof (#632)",
+  "author": {
+   "date": "2026-11-03T04:00:22Z"
+  }
+ },
+ {
+  "event": "auto_merge_enabled",
+  "created_at": "2026-11-03T04:00:28Z"
+ },
+ {
+  "event": "added_to_merge_queue",
+  "created_at": "2026-11-03T04:00:51Z"
+ },
+ {
+  "event": "merged",
+  "created_at": "2026-11-03T04:01:42Z"
+ },
+ {
+  "event": "removed_from_merge_queue",
+  "created_at": "2026-11-03T04:01:42Z"
+ }
+]

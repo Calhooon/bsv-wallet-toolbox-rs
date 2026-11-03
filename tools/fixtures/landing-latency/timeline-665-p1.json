@@ -1,0 +1,96 @@
+[
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T10:00:03Z",
+  "body": "**The cold read's REPORT (review-p5-638-slot-occupancy-by-hour-ci, the Studio, Opus, an account, 09:58Z to 09:59Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T10:11:51Z",
+  "body": "**The lane's REPORT (p5-638-slot-occupancy-by-hour, the Studio, Opus, an account, 09:04Z to 09:5xZ; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T10:11:54Z",
+  "body": "**The fix lane's REPORT (p5-638b-slot-occupancy-fix, the Studio, Opus, an account, 10:0xZ to 10:08Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T10:11:56Z",
+  "body": "**The narrow re-read's REPORT (review-p5-638-slot-occupancy-by-hour-b-narrow, the Studio, Opus, an account, 10:09Z to 10:11Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "auto_merge_enabled",
+  "created_at": "2026-11-03T10:12:11Z"
+ },
+ {
+  "event": "added_to_merge_queue",
+  "created_at": "2026-11-03T10:14:48Z"
+ },
+ {
+  "event": "removed_from_merge_queue",
+  "created_at": "2026-11-03T10:17:45Z"
+ },
+ {
+  "event": "committed",
+  "message": "Tools: slot-occupancy reads the account's Actions runs and jobs and prints the runner-slot occupancy by hour, with its cases on a recorded fixture (#638)",
+  "author": {
+   "date": "2026-11-03T09:29:44Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Docs: loop four cut (2), the slot occupancy by hour across the account's repositories, the reading and the cap and slot recommendation, and the CHANGELOG line (#638)",
+  "author": {
+   "date": "2026-11-03T09:29:44Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "HANDOFF: the row for PR #665 at its open (the round-two rule: the row rides in the code PR)",
+  "author": {
+   "date": "2026-11-03T09:57:13Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Tools: slot-occupancy prints what the record cites: the concurrency by hour (non-heavy p50/p75/p90/p95, minutes at 20+, heavy-held minutes, peak by OS), the window's line, the minutes above the pool, the heavy runs' starts and the cap line (#638)",
+  "author": {
+   "date": "2026-11-03T10:04:47Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Docs: loop four cut (2) follows the tool: the concurrency table and lines, the heavy table pasted, the pool's size by OS, the filter=latest note, every figure from the --from-cache run (#638)",
+  "author": {
+   "date": "2026-11-03T10:06:34Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "CHANGELOG: the #638 line names the slot-occupancy outputs the fix round added (#638)",
+  "author": {
+   "date": "2026-11-03T10:06:41Z"
+  }
+ },
+ {
+  "event": "head_ref_force_pushed",
+  "created_at": "2026-11-03T10:18:40Z"
+ },
+ {
+  "event": "auto_merge_enabled",
+  "created_at": "2026-11-03T10:19:02Z"
+ },
+ {
+  "event": "added_to_merge_queue",
+  "created_at": "2026-11-03T10:24:31Z"
+ },
+ {
+  "event": "merged",
+  "created_at": "2026-11-03T10:29:55Z"
+ },
+ {
+  "event": "removed_from_merge_queue",
+  "created_at": "2026-11-03T10:29:55Z"
+ }
+]

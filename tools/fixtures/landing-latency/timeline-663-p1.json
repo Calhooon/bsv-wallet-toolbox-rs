@@ -1,0 +1,56 @@
+[
+ {
+  "event": "committed",
+  "message": "affected-tests: a *.md under tests/, fuzz/, test_vectors/, tools/ or .github/ reaches everything, the set read from tools/docs-only (#644)",
+  "author": {
+   "date": "2026-11-03T08:19:49Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "affected-tests-test: one case per walked directory, the #632 planted README among them, and the walked set agreeing with tools/docs-only's (#644)",
+  "author": {
+   "date": "2026-11-03T08:20:49Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Census and CHANGELOG: loop two's hygiene row, the map's walked set (#644)",
+  "author": {
+   "date": "2026-11-03T08:21:27Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "HANDOFF: the row for PR #663 at its open (the round-two rule: the row rides in the code PR)",
+  "author": {
+   "date": "2026-11-03T08:27:25Z"
+  }
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T08:30:15Z",
+  "body": "**The lane's REPORT (p5-644-affected-map-walked-md, the Studio, Opus, an account, 08:18Z to 08:27Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T08:30:18Z",
+  "body": "**The cold read's REPORT (review-p5-644-affected-map-walked-md-ci, the Studio, Opus, an account, 08:28Z to 08:29Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "auto_merge_enabled",
+  "created_at": "2026-11-03T08:30:23Z"
+ },
+ {
+  "event": "added_to_merge_queue",
+  "created_at": "2026-11-03T08:34:19Z"
+ },
+ {
+  "event": "merged",
+  "created_at": "2026-11-03T08:39:15Z"
+ },
+ {
+  "event": "removed_from_merge_queue",
+  "created_at": "2026-11-03T08:39:15Z"
+ }
+]
