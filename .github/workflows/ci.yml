@@ -523,7 +523,11 @@ jobs:
       # three waiting, or the oldest older than six hours, fails). The --check
       # step runs on a docs-only run too (python3, seconds), since a row file
       # and HANDOFF.md are docs: a hand edit is checked on its own PR's run and
-      # in the queue.
+      # in the queue. The bound counts the waiting files on the change's base
+      # (--base), the change's own row file named outside it: on a pull request
+      # HEAD^1 (the merge commit's base parent, as the docs-only step reads it),
+      # on a merge-queue group merge_group.base_sha, on a push to a line
+      # github.event.before (the tip before the landing), on a tag's call HEAD^1.
       - name: handoff rows, the tool's own cases
         id: handoff-cases
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
@@ -532,7 +536,9 @@ jobs:
       - name: handoff rows, the page matches its files
         id: handoff
         if: ${{ !cancelled() }}
-        run: python3 tools/handoff-rows --check
+        env:
+          BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') && github.event.before || 'HEAD^1' }}
+        run: python3 tools/handoff-rows --check --base "$BASE"
 
       # The vector-backed tests: the Arcade status vector
       # (tests/vectors/arcade_status_verdicts.json) through its three surfaces and
