@@ -333,6 +333,14 @@
   outside file in that window: the outside file stays byte-identical and
   the sibling is unlinked unzeroed. With the check replaced by `true` the
   outside file is zeroed and the witness fails. No behaviour change.
+- #727 (tests only): `src/wallet/privileged_keys_tests.rs` sat at 793
+  lines, under the ratchet's 800 by one witness (the #581 reach read's
+  risk). The permission witnesses of the seven key calls (the grant
+  under `privileged`, the usage type, the prompt's counterparty and
+  reason) move to `privileged_keys_permission_tests.rs` under the same
+  `cfg(all(test, feature = "sqlite"))`; no test renamed or changed, the
+  wallet module's 433 test names equal before and after. No behaviour
+  change.
 - #715 (tests only): the sync-chunk wrap-edge witness (#703) seeds a row
   in each of the twelve synced tables through the sync chunk door before
   the chunk is asked, and reads each table's head row at offset 0 and no
