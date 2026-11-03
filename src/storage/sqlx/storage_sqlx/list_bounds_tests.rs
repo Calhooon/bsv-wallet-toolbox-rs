@@ -254,3 +254,87 @@ async fn actions_limit_past_ten_thousand_passes_through() {
         (10_001, 10_001)
     );
 }
+
+// #697: an offset past i32::MAX reaches SQL unchanged (the bind is `i64`, as
+// #226 made the limit's) and the total's sum never overflows. Bound as i32,
+// 2^31 wrapped negative, SQLite skipped nothing and answered the head of the
+// store, and u32::MAX plus that page panicked in a debug build. Three rows;
+// the reference's `validateInteger(args.offset, 'offset', 0, 0)` has no upper
+// bound (ts-stack@edf6e03 validationHelpers.ts:1200, :1709), so no refusal.
+
+const THREE: &str = "WITH RECURSIVE n(x) AS (SELECT 0 UNION ALL SELECT x + 1 FROM n WHERE x < 2)";
+const PAST_I32: [u32; 2] = [i32::MAX as u32 + 1, u32::MAX];
+
+#[tokio::test]
+async fn certificates_offset_past_i32_max_is_an_empty_page_counted() {
+    let insert = format!(
+        "{THREE} INSERT INTO certificates (user_id, serial_number, type, certifier, subject, \
+         revocation_outpoint, signature) \
+         SELECT ?1, 'serial-' || x, 'type', 'certifier', 'subject', 'outpoint', 'signature' FROM n"
+    );
+    let (storage, auth) = seeded(&[&insert]).await;
+    for offset in PAST_I32 {
+        let mut args = certificates(0, 0);
+        args.offset = Some(offset);
+        let result = storage.list_certificates(&auth, args).await.unwrap();
+        let page = (result.certificates.len(), result.total_certificates);
+        assert_eq!(page, (0, 3), "offset {offset}");
+    }
+}
+
+#[tokio::test]
+async fn outputs_offset_at_the_i32_ends_is_an_empty_page_counted() {
+    let insert = format!(
+        "{THREE} INSERT INTO outputs (user_id, transaction_id, basket_id, spendable, vout, \
+         satoshis, provided_by, purpose, type) \
+         SELECT ?1, t.transaction_id, b.basket_id, 1, n.x, 1, 'you', '', 'custom' \
+         FROM n, transactions t, output_baskets b \
+         WHERE t.reference = 'offset-697' AND b.user_id = ?1 AND b.name = 'default'"
+    );
+    let (storage, auth) = seeded(&[
+        "INSERT INTO transactions (user_id, status, reference, is_outgoing, description) \
+         VALUES (?1, 'completed', 'offset-697', 0, 'offset witness')",
+        &insert,
+    ])
+    .await;
+    // listOutputs' offset is i32: its ends normalize to 2147483646 and
+    // 2147483647 (#230), the largest offsets this finder binds.
+    for offset in [i32::MAX, i32::MIN] {
+        let mut args = outputs(0, "default");
+        args.offset = Some(offset);
+        let result = storage.list_outputs(&auth, args).await.unwrap();
+        let page = (result.outputs.len(), result.total_outputs);
+        assert_eq!(page, (0, 3), "offset {offset}");
+    }
+}
+
+#[tokio::test]
+async fn actions_offset_past_i32_max_is_an_empty_page_at_the_offset() {
+    let insert = format!(
+        "{THREE} INSERT INTO transactions (user_id, status, reference, is_outgoing, description) \
+         SELECT ?1, 'completed', 'offset-697-' || x, 0, 'offset witness' FROM n"
+    );
+    let (storage, auth) = seeded(&[&insert]).await;
+    // listActions' own rule (listActionsKnex.ts 233-238, #674): an empty
+    // page past the end answers the offset plus the page, the offset itself.
+    for offset in PAST_I32 {
+        let mut args = actions(0);
+        args.offset = Some(offset);
+        let result = storage.list_actions(&auth, args).await.unwrap();
+        let page = (result.actions.len(), result.total_actions);
+        assert_eq!(page, (0, offset), "offset {offset}");
+    }
+}
+
+/// Past a bound offset the sums are unreachable through SQL (a non-empty page
+/// at offset k needs k plus the page rows); the checked sums answer the
+/// count where the `u32` would not hold them.
+#[test]
+fn a_sum_past_u32_max_answers_the_count() {
+    use super::super::list_outputs::short_page_total;
+    use super::super::transactions::list_actions_total;
+    assert_eq!(short_page_total(1, 10, u32::MAX), None);
+    assert_eq!(short_page_total(1, 10, u32::MAX - 1), Some(u32::MAX));
+    assert_eq!(list_actions_total(1, 10, u32::MAX, 3), 3);
+    assert_eq!(list_actions_total(1, 10, u32::MAX - 1, 3), u32::MAX);
+}
