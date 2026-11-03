@@ -1,3 +1,4 @@
+use super::list_outputs::short_page_total;
 #[cfg(test)]
 use super::StoreBusyReason;
 
@@ -294,12 +295,12 @@ impl StorageSqlx {
             });
         }
 
-        // Calculate total based on whether we hit the limit
-        let total_certificates = if (certificates.len() as u32) < limit {
-            offset + certificates.len() as u32
-        } else {
-            total as u32
-        };
+        // BRC-100's total, the certificates matching the criteria (BRCs@5119a9b
+        // wallet/0100.md:2294), by listOutputs' three branches (#686). The
+        // reference's listCertificates.ts:67 (ts-stack@edf6e03) answers a short
+        // page's length alone, the offset ignored: 1 at offset 2 over three.
+        let total_certificates =
+            short_page_total(certificates.len() as u32, limit, offset).unwrap_or(total as u32);
 
         Ok(ListCertificatesResult {
             total_certificates,

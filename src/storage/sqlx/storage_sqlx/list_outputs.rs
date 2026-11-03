@@ -396,8 +396,9 @@ impl StorageSqlx {
 /// for a full page and for an empty page past the start, which proves only
 /// that the offset is at or past the end; otherwise the end was reached and
 /// the total is the skipped outputs plus the page (#674). `skipped` is the
-/// normalized offset (`normalizeKnexListOffset` at 20-25).
-fn short_page_total(outputs_length: u32, limit: u32, skipped: u32) -> Option<u32> {
+/// normalized offset (`normalizeKnexListOffset` at 20-25). `list_certificates`
+/// takes the same rule (#686).
+pub(super) fn short_page_total(outputs_length: u32, limit: u32, skipped: u32) -> Option<u32> {
     if limit > 0 && outputs_length >= limit {
         return None;
     }
