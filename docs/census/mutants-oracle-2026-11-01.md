@@ -51,6 +51,7 @@ Before: the Mutants workflow's oracle before this lane: `cargo test --lib`, defa
 | `src/storage/sqlx/create_action/must_spend.rs` | after #574 | 19 | 0 | 0 | 3 | 100.00% |
 | `src/storage/sqlx/create_action/own_word.rs` | before | 5 | 2 | 0 | 2 | 71.43% |
 | `src/storage/sqlx/create_action/own_word.rs` | after | 5 | 2 | 0 | 2 | 71.43% |
+| `src/storage/sqlx/create_action/own_word.rs` | after #573 | 6 | 1 | 0 | 2 | 85.71% |
 | `src/storage/sqlx/create_action/review_beef.rs` | before | 13 | 0 | 0 | 1 | 100.00% |
 | `src/storage/sqlx/create_action/review_beef.rs` | after | 13 | 0 | 0 | 1 | 100.00% |
 
@@ -79,8 +80,8 @@ The rule: a coin is offered, and so spent, only under the spend guard: no action
 
 The rule: the wallet's own newly signed transaction is judged at its signing by the evaluator's verdict, the chain tier's word (`wallet.md:13`; the host's act is build on signing), before any writer (#450); the verdict is the node's script rules, the sibling's S6 cited through the tracker and never restated (`wallet.md:5`; bsv-script-lean `v1.1.1` `CLAUDE.md` rules 1, 2 and 19, its corpus by family under `corpus/`), at the tip read before the writer (the era words of #422 in this repository's `CLAUDE.md`).
 
-- `src/storage/sqlx/create_action/own_word.rs:46:47: replace match guard text == NO_HEADER_SERVICE with true in own_word_tip` (MissedMutant)
-- `src/storage/sqlx/create_action/own_word.rs:92:44: replace || with && in judge_own_tx` (MissedMutant)
+- `src/storage/sqlx/create_action/own_word.rs:46:47: replace match guard text == NO_HEADER_SERVICE with true in own_word_tip` (MissedMutant here; killed by #573, the section below)
+- `src/storage/sqlx/create_action/own_word.rs:92:44: replace || with && in judge_own_tx` (MissedMutant here; declared equivalent by #573, the section below)
 
 **`src/storage/sqlx/create_action/review_beef.rs`** (0 survivors; before the widening 0)
 
@@ -145,3 +146,25 @@ The file under the door oracle (`.cargo/mutants-doors.toml`'s targets and featur
 | `src/storage/sqlx/create_action/must_spend.rs:147:34: replace && with || in NamedCoin::read` | CaughtMutant |
 | `src/storage/sqlx/create_action/must_spend.rs:147:19: replace != with == in NamedCoin::read` | CaughtMutant |
 | `src/storage/sqlx/create_action/must_spend.rs:147:44: replace != with == in NamedCoin::read` | CaughtMutant |
+
+## The survivors at 46:47 and 92:44, killed and declared equivalent (#573)
+
+The lane p5-573-own-word-survivors, on beta `ed1b904e`, the tree at `355120e1` (the run's; the witness's helper since shared with the route's `sign` as `sign_on`, the ratchet's duplicated blocks, its claim unchanged, and the plant repeated by hand on beta `4d22d3c7` at `09fb4120`: red, `Ok("sending")`); the record's json under `issue_573`, the outputs under `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-573-own-word-survivors/run`.
+
+**46:47, killed.** The mutant: the guard `text == NO_HEADER_SERVICE` read as `true`, so every `ServiceError` from the services' `get_chain_tracker` gives the own word the latest era, where the rule gives it only for the not-configured answer. The rule (`own_word_tip`'s, #506 and #464): services with no header service (`Services` built with no `chaintracks_url`) judge as a tracker with no tip does, at the latest era; any other `get_chain_tracker` error holds with `header_fault`'s text, a fault being could-not-look and never an admit (the rule `reachable_tracker` keeps for the caller's roots, #515). The witness, `storage::sqlx::process_action::script_word_route_tests::no_header_source::own_word_holds_for_a_header_service_fault_other_than_not_configured` (the lib's door tests, `src/storage/sqlx/tests/no_header_source.rs`): the signAction route, a new signed transaction whose every judged input is valid, no tracker on the storage, the services faulting with another text (`UnreachableHeaders`). At the tip, posted or delayed: `Service error: ChainTracker verification failed: Service error: the header service is unreachable: connection refused`, the services asked once, the action still `unsigned` with no request; the control, `Services::mainnet()` with no `chaintracks_url`, is sent. Under the mutant (planted by hand, then by cargo-mutants): `Ok("sending")`. The only failure under the mutant, in the lib.
+
+**92:44, equivalent.** The mutant: `sources.contains_key(&txid) || stored.contains(&txid)` read as `&&`, the skip of an input whose source transaction an earlier input already placed. Each txid is placed in exactly one of the two: `sources` when `beef_source(beef, txid)` answers, `stored` when it does not, and `beef_source` is a function of the call's parsed input BEEF and the txid alone. No txid is ever in both, so the `&&` is never true and the mutant never skips: a later input of the same parent runs the same placement again. A BEEF source is re-inserted with an equal `SourceTx`; a stored one is pushed twice and `get_tx_with_proof` reads it twice on the same connection with nothing written between (two `SELECT`s, no write in this function or under it), giving the same row, the same `SourceTx`, the same skip for `Ok(None)` and `FailedAncestor`, and any other error already returned at the earlier read. `verify_own` receives the same map, so the verdict is the same for every input; the mutant costs only the repeated read. The rule it serves (the own word judges each source transaction once; an input with neither bytes nor a live word is skipped, `verifyUnlockScripts.ts:316-321`) holds under it. cargo-mutants counts an equivalent as missed, and the figure below counts it so.
+
+The file under the door oracle (`.cargo/mutants-doors.toml`'s targets and features, given with `--no-config`; `--in-place` in a `git archive` tree with the worktree's `Cargo.lock`, serial), timeouts 900 s, with the unmutated baseline (73 s build, 25 s test): `9 mutants tested in 10m: 1 missed, 6 caught, 2 unviable`. Score 85.71% (6/7); the floor raised from 71 to 80.
+
+| Mutant | Verdict |
+|---|---|
+| `src/storage/sqlx/create_action/own_word.rs:42:5: replace own_word_tip -> Result<Option<OwnTip>> with Ok(None)` | CaughtMutant |
+| `src/storage/sqlx/create_action/own_word.rs:42:5: replace own_word_tip -> Result<Option<OwnTip>> with Ok(Some(Default::default()))` | Unviable |
+| `src/storage/sqlx/create_action/own_word.rs:46:47: replace match guard text == NO_HEADER_SERVICE with true in own_word_tip` | CaughtMutant |
+| `src/storage/sqlx/create_action/own_word.rs:46:47: replace match guard text == NO_HEADER_SERVICE with false in own_word_tip` | CaughtMutant |
+| `src/storage/sqlx/create_action/own_word.rs:46:52: replace == with != in own_word_tip` | CaughtMutant |
+| `src/storage/sqlx/create_action/own_word.rs:59:5: replace beef_source -> Option<SourceTx> with None` | CaughtMutant |
+| `src/storage/sqlx/create_action/own_word.rs:59:5: replace beef_source -> Option<SourceTx> with Some(Default::default())` | Unviable |
+| `src/storage/sqlx/create_action/own_word.rs:83:5: replace judge_own_tx -> Result<()> with Ok(())` | CaughtMutant |
+| `src/storage/sqlx/create_action/own_word.rs:92:44: replace || with && in judge_own_tx` | MissedMutant |
