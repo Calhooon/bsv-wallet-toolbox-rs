@@ -451,8 +451,8 @@ jobs:
     name: semver
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
-    # The pull request path reads the PR's labels and the push path asks
-    # GitHub which merged PRs carried api-break; the workflow's permissions
+    # The pull request and merge-queue paths read the PR's labels and the push
+    # path asks GitHub which merged PRs carried api-break; the workflow's permissions
     # are contents: read, so the job names the one extra read it needs.
     permissions:
       contents: read
@@ -488,6 +488,12 @@ jobs:
       # The baseline: on a pull request, the base branch's tip, so the check
       # reads the PR's own breaks alone (a PR rebased onto a line that already
       # carries owner-worded breaks since its last tag is not red for them);
+      # on a merge-queue group, the group's parent commit (merge_group.base_sha:
+      # beta's tip, or the head of the group queued ahead), so the check reads
+      # the queued PR's own commits alone, rebased as the queue will land them,
+      # with that PR's label read live; its number is the one the group's head
+      # ref names (refs/heads/gh-readonly-queue/beta/pr-<n>-<sha>), the PR the
+      # queue built this group for (#614);
       # on a push, HEAD^'s last tag, never a tag on the commit itself, so the
       # line's whole distance from its last release is read. The api-break
       # switch: on a pull request, the PR's own label, read live from the API
@@ -497,14 +503,36 @@ jobs:
       # because a line collects its owner-worded breaks until its next tag
       # (the pin PR #391 landed with the label and the push run read none; the
       # next PR rebased onto it went red on the pin's breaks).
-      - name: Check the public API against its baseline (a PR against its base branch, a push against the last release)
+      - name: Check the public API against its baseline (a PR or a queue group against its base, a push against the last release)
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_ref }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           API_BREAK=false
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "merge_group" ]; then
+            # refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>: the number
+            # between `pr-` and the next `-`. A head ref of another shape, or
+            # a parent commit not fetchable, stops the step: a group is never
+            # judged without its PR's label or against another baseline.
+            PR_NUMBER="${GROUP_HEAD##*/pr-}"
+            PR_NUMBER="${PR_NUMBER%%-*}"
+            case "$PR_NUMBER" in
+              ''|*[!0-9]*)
+                echo "::error title=semver merge group::no PR number in the group's head ref (${GROUP_HEAD:-empty})"
+                exit 1;;
+            esac
+            if [ -z "$GROUP_BASE" ] || ! git fetch -q --no-tags origin "$GROUP_BASE"; then
+              echo "::error title=semver merge group::the group's parent commit (${GROUP_BASE:-empty}) is not fetchable"
+              exit 1
+            fi
+            API_BREAK="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
+              --jq '[.labels[].name] | index("api-break") != null')"
+            echo "merge group ${GROUP_HEAD} for pull request #${PR_NUMBER}: api-break label ${API_BREAK} (read live), baseline the group's parent ${GROUP_BASE}" | tee -a "$GITHUB_STEP_SUMMARY"
+            base="$GROUP_BASE"
+          elif [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             # Captured before use so a refused or faulted read stops the step
             # under set -e instead of reading as no label.
             API_BREAK="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels \
@@ -558,8 +586,11 @@ jobs:
           # The release type the version names: minor or major above the baseline's
           # (0.x: the minor is the breaking release) is a major check; the same
           # line is a minor check. A prerelease suffix is not part of the comparison.
+          # A tag names its version; a branch tip or a group's parent is read.
           base_version="$base"
-          case "$base" in origin/*) base_version="$(git show "$base:Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)";; esac
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            base_version="$(git show "$base:Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+          fi
           release_type="$(python3 - "$base_version" "$version" <<'EOP'
           import sys
           def mm(v):
