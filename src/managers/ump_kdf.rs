@@ -173,6 +173,21 @@ pub(crate) fn pbkdf2_sha512(
     Ok(derived)
 }
 
+/// The argon2id memory, `block_count` zeroed blocks reserved with
+/// `try_reserve_exact`: a token may ask for 256 MiB, and an allocation the
+/// host cannot make is an error, as hash-wasm throws, never an abort (#625).
+fn argon2id_memory(block_count: usize) -> Result<Zeroizing<Vec<argon2::Block>>> {
+    let mut memory = Zeroizing::new(Vec::new());
+    // An argon2 block is 1 KiB.
+    memory.try_reserve_exact(block_count).map_err(|e| {
+        token_error(&format!(
+            "argon2id: cannot allocate {block_count} KiB of memory: {e}"
+        ))
+    })?;
+    memory.resize(block_count, argon2::Block::new());
+    Ok(memory)
+}
+
 /// Argon2id version 0x13 with no secret and no associated data, as hash-wasm's
 /// `argon2id` (:332-346), `hashLength` bytes out. The memory blocks are the
 /// caller's here so they are zeroed on drop.
@@ -185,7 +200,7 @@ fn argon2id(password: &str, salt: &[u8], kdf: &PasswordKdf) -> Result<Zeroizing<
         Some(hash_length),
     )
     .map_err(|e| token_error(&format!("argon2id: {e}")))?;
-    let mut memory = Zeroizing::new(vec![argon2::Block::new(); params.block_count()]);
+    let mut memory = argon2id_memory(params.block_count())?;
     let mut derived = Zeroizing::new(vec![0u8; hash_length]);
     argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
         .hash_password_into_with_memory(password.as_bytes(), salt, &mut derived, &mut *memory)
