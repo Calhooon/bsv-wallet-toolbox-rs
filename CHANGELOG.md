@@ -9,6 +9,23 @@
   writing one name), so a later seed with the replaced bytes under a new
   name is written rather than skipped; the set counts the files holding
   each digest. The committed corpus is unchanged. Found in PR #712's read.
+- #581: the seven key calls (`get_public_key` with a protocol, `encrypt`,
+  `decrypt`, `create_hmac`, `verify_hmac`, `create_signature`,
+  `verify_signature`) pass the request's counterparty and
+  `privileged_reason` to the permissions manager, as the reference passes
+  `requestArgs.counterparty || 'self'` and `requestArgs.privilegedReason`
+  (ts-stack@edf6e03 `WalletPermissionsManager.ts:5165-5384`); both were
+  absent. The manager drops the counterparty of a level-1 protocol, as the
+  reference's `:1505` does, so a level-1 grant covers every counterparty
+  and its prompt carries none. Host note (bsv-wallet-cli#386): a
+  `PermissionRequestHandler` sees, for a key call at level 2,
+  `counterparty` filled (`self`, `anyone` or the key's hex, `self` when the
+  request names none), and `reason` the request's `privilegedReason` at
+  either level, where both were `None`; a level-2 grant is now cached per
+  counterparty. A direct `ensure_protocol_permission` caller passing a
+  counterparty at level 1 is answered without it. No type changes shape.
+  A witness per call pins its usage type, which no test read (a wrong
+  type left the suite green). Found in PR #579's cold read.
 - #587: `tools/scoreboard-write` dates a cell from its record section's own
   `measured_at` where the section carries one (`mutation_score`,
   `fuzz_hours` in `tools/ratchet.json`), the top-level date otherwise, and

@@ -368,13 +368,15 @@ Full BRC-98/99 permission enforcement with four categories, in-memory caching, a
 
 Each `ensure_*` method follows the same pattern:
 1. **Admin bypass** - Admin originator always allowed
-2. **Level/reserved check** - Security level 0 bypasses protocol checks; admin-reserved names blocked
+2. **Level/reserved check** - Security level 0 bypasses protocol checks; admin-reserved names blocked; a level-1 protocol's counterparty is dropped (the reference's `WalletPermissionsManager.ts:1505`), so its grant and prompt name none (#581)
 3. **Config flag bypass** - Per-usage-type config flags can disable specific checks
 4. **Cache check** - In-memory cache with 5-minute TTL (`CACHE_TTL_SECS`)
 5. **Permission request flow** - Invokes `PermissionRequestHandler` callback for user consent
 6. **Cache result** - Granted permissions are cached for subsequent calls
 
 ### Permission Request Handler
+
+A key call's protocol prompt (`PermissionRequest`, `request_type: Protocol`) carries the request's `counterparty` (`self`, `anyone` or the key's hex; `self` when absent; none at level 1) and its `privilegedReason` as `reason` (#581). The wallet's seven key calls pass them as the reference's `requestArgs.counterparty || 'self'` and `requestArgs.privilegedReason` (`WalletPermissionsManager.ts:5165-5384`); before #581 both were `None`.
 
 ```rust
 pub type PermissionRequestHandler = Arc<
@@ -402,7 +404,7 @@ cache_permission(key, expiry)              // Store with expiry timestamp
 purge_expired_tokens()                     // Remove expired entries
 ```
 
-Cache key formats: `proto:originator:privileged:level,name:counterparty`, `basket:originator:name`, `cert:originator:privileged:verifier:type:field1|field2`, `spend:originator:amount`
+Cache key formats: `proto:originator:privileged:level,name:counterparty` (`undefined` at level 1), `basket:originator:name`, `cert:originator:privileged:verifier:type:field1|field2`, `spend:originator:amount`
 
 ### Legacy Operation-Level Checking
 
