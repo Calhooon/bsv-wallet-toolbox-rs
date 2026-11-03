@@ -516,6 +516,20 @@ jobs:
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: python3 tools/docs-only-test
 
+      # HANDOFF.md's landing rows (#669): a file per PR under docs/handoff/,
+      # the Next section generated from them. A row on the page that differs
+      # from its file, has none, or stands out of order fails; a file not yet
+      # on the page waits for the captain's fold.
+      - name: handoff rows, the tool's own cases
+        id: handoff-cases
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
+        run: python3 tools/handoff-rows-test
+
+      - name: handoff rows, the page matches its files
+        id: handoff
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
+        run: python3 tools/handoff-rows --check
+
       # The vector-backed tests: the Arcade status vector
       # (tests/vectors/arcade_status_verdicts.json) through its three surfaces and
       # the push, the same vector's word table in the library, the six rows of the
@@ -565,6 +579,8 @@ jobs:
             ${{ steps.scoreboard.outcome }} scoreboard: the table matches its sources
             ${{ steps.affected-cases.outcome }} affected tests: the map's own cases
             ${{ steps.docs-only-cases.outcome }} docs only: the set's own cases
+            ${{ steps.handoff-cases.outcome }} handoff rows: the tool's own cases
+            ${{ steps.handoff.outcome }} handoff rows: the page matches its files
             ${{ steps.vector-files.outcome }} vectors: the vector files are present
             ${{ steps.vectors.outcome }} vectors: the vector tests
             ${{ steps.word-table.outcome }} vectors: the word table
