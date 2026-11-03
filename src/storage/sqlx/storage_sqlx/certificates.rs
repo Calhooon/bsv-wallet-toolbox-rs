@@ -299,8 +299,15 @@ impl StorageSqlx {
         // wallet/0100.md:2294), by listOutputs' three branches (#686). The
         // reference's listCertificates.ts:67 (ts-stack@edf6e03) answers a short
         // page's length alone, the offset ignored: 1 at offset 2 over three.
-        let total_certificates =
-            short_page_total(certificates.len() as u32, limit, offset).unwrap_or(total as u32);
+        // Limit 0 answers the count: BRC-100's total and the reference's own
+        // branch (0 < 0 is false at listCertificates.ts:67) agree there; the
+        // wallet's door refuses limit 0 (#226), so only a direct storage call
+        // reaches this.
+        let total_certificates = if limit == 0 {
+            total as u32
+        } else {
+            short_page_total(certificates.len() as u32, limit, offset).unwrap_or(total as u32)
+        };
 
         Ok(ListCertificatesResult {
             total_certificates,
