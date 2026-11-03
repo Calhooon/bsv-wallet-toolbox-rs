@@ -14,26 +14,37 @@ job runs.
 
   # the sqlite Test Suite job, after its two builds
   { cargo test --lib --features sqlite,remote -- --list
-    cargo test --test '*' --features sqlite,remote,bench-support -- --list; } > all.txt
-  { ... -- --list --ignored; } > ignored.txt
+    cargo test --test '*' --features sqlite,remote,bench-support -- --list; } > all.txt 2>&1
+  { ... -- --list --ignored; } > ignored.txt 2>&1
   tools/ignore-sites --job sqlite --all all.txt --ignored ignored.txt [--root DIR]
 
   # the remote-only job, after its build
-  cargo test --lib --tests --no-default-features --features remote -- --list > all.txt
-  ... -- --list --ignored > ignored.txt
+  cargo test --lib --tests --no-default-features --features remote -- --list > all.txt 2>&1
+  ... -- --list --ignored > ignored.txt 2>&1
   tools/ignore-sites --job remote --all all.txt --ignored ignored.txt
 
-The lists are libtest's `--list` lines (`path::name: test`). A site matches
-a listed test by its full path: the module path of its file, resolved from
-the crate roots (src/lib.rs, tests/*.rs, tests/*/main.rs) through each
-`mod` and `#[path]`, then the inline `mod` blocks around it, then the
-function's name. A test of the same name elsewhere is not the site's (the
-#655 read: a dead `ladder_fixtures_replay` under `#[cfg(not(feature =
-"sqlite"))]` passed a guard matching on the name alone). Exit 0 when every
-site is listed and none is ignored; 1 otherwise; 2 on a usage fault.
+The lists are cargo's output with its stderr: a `Running` line (colour
+codes dropped) names a test binary by its crate root (`unittests
+src/lib.rs`, `tests/<name>.rs`, `tests/<name>/main.rs`), and libtest's
+`--list` lines after it (`path::name: test`) are that binary's tests; a
+test line before any `Running` line is a usage fault. A site matches a test
+of its own binary by its full path: the module path of its file, resolved
+from each crate root the lists name through each `mod` and `#[path]`, then
+the inline `mod` blocks around it, then the function's name. A test of the
+same path in another binary is not the site's (#693: a dead `a::slow` under
+`tests/t/` beside a live `a::slow` in the lib), nor one of the same name
+elsewhere (the #655 read: a dead `ladder_fixtures_replay` under
+`#[cfg(not(feature = "sqlite"))]` passed a guard matching on the name
+alone). A file one binary reaches through `#[path]` (the ladder fixtures
+under tests/fixtures/, reached from the lib) is matched in each binary that
+reaches it. The .rs files under src/ and tests/ are scanned; benches/ and
+examples/ are not, since neither job's lists build them as tests. Exit 0
+when every site is listed and none is ignored; 1 otherwise; 2 on a usage
+fault.
 """
 
 import argparse
+import re
 import sys
 from collections import deque
 from pathlib import Path
@@ -211,43 +222,41 @@ def scan(text, job):
     return mods, sites
 
 
-def module_paths(root, job):
-    """Each reached file's module paths (one per way a crate reaches it)
-    and its job's sites."""
-    roots = [root / "src" / "lib.rs"]
-    roots += sorted((root / "tests").glob("*.rs"))
-    roots += sorted((root / "tests").glob("*/main.rs"))
-    # (file, module path, its children's directory)
-    queue = deque((p.resolve(), (), p.resolve().parent) for p in roots if p.is_file())
+def module_paths(roots, job):
+    """Each reached file's (crate root, module path) pairs, one per way a
+    crate reaches it, and its job's sites."""
+    # (file, crate root, module path, its children's directory)
+    queue = deque((p, p, (), p.parent) for p in roots if p.is_file())
     paths, scanned, seen = {}, {}, set()
     while queue:
-        path, mpath, owner = queue.popleft()
-        if (path, mpath) in seen:
+        path, croot, mpath, owner = queue.popleft()
+        if (path, croot, mpath) in seen:
             continue
-        seen.add((path, mpath))
-        paths.setdefault(path, set()).add(mpath)
+        seen.add((path, croot, mpath))
+        paths.setdefault(path, set()).add((croot, mpath))
         if path not in scanned:
             scanned[path] = scan(path.read_text(), job)
         for name, attr, inline in scanned[path][0]:
             if attr is not None:
                 base = owner.joinpath(*inline) if inline else path.parent
                 child = (base / attr).resolve()
-                queue.append((child, mpath + inline + (name,), child.parent))
+                queue.append((child, croot, mpath + inline + (name,), child.parent))
                 continue
             base = owner.joinpath(*inline)
             for child, child_owner in ((base / f"{name}.rs", base / name),
                                        (base / name / "mod.rs", base / name)):
                 if child.is_file():
-                    queue.append((child.resolve(), mpath + inline + (name,),
+                    queue.append((child.resolve(), croot, mpath + inline + (name,),
                                   child_owner.resolve()))
                     break
     return paths, scanned
 
 
-def all_sites(root, job):
-    """Each site's (path, line, full paths, fn name), in path order: every
-    .rs under src/ and tests/, a file no crate reaches with no full path."""
-    paths, scanned = module_paths(root, job)
+def all_sites(root, roots, job):
+    """Each site's (path, line, (crate root, full path) pairs, fn name), in
+    path order: every .rs under src/ and tests/, a file none of the crate
+    roots reaches with no pair."""
+    paths, scanned = module_paths(roots, job)
     found = []
     for top in ("src", "tests"):
         for path in sorted((root / top).rglob("*.rs")):
@@ -257,19 +266,31 @@ def all_sites(root, job):
             else:
                 file_sites = scan(path.read_text(), job)[1]
             for line, inline, name in file_sites:
-                full = sorted("::".join(m + inline + (name,))
-                              for m in paths.get(real, ())) if name else []
+                full = sorted((c, "::".join(m + inline + (name,)))
+                              for c, m in paths.get(real, ())) if name else []
                 found.append((path.relative_to(root), line, full, name))
     return found
 
 
-def listed(path):
-    """The full paths of a libtest `--list` file's tests."""
-    names = set()
+COLOUR = re.compile(r"\x1b\[[0-9;]*m")
+RUNNING = re.compile(r"^\s*Running (?:unittests )?(\S+\.rs) \(")
+
+
+def listed(path, root):
+    """Each binary's tests in a `--list` file with cargo's stderr: its crate
+    root, resolved from root, to the full paths of its tests; None when a
+    test line comes before any `Running` line."""
+    binaries, tests = {}, None
     for line in Path(path).read_text().splitlines():
-        if line.endswith(": test"):
-            names.add(line[: -len(": test")])
-    return names
+        line = COLOUR.sub("", line)
+        head = RUNNING.match(line)
+        if head:
+            tests = binaries.setdefault((root / head.group(1)).resolve(), set())
+        elif line.endswith(": test"):
+            if tests is None:
+                return None
+            tests.add(line[: -len(": test")])
+    return binaries
 
 
 def main():
@@ -282,27 +303,39 @@ def main():
                     type=Path)
     args = ap.parse_args()
 
-    every, ignored = listed(args.all), listed(args.ignored)
-    if not every:
+    root = args.root.resolve()
+    every, ignored = listed(args.all, root), listed(args.ignored, root)
+    for given, lists in ((args.all, every), (args.ignored, ignored)):
+        if lists is None:
+            print(f"ignore-sites: {given} has a test before any Running line:"
+                  " list with cargo's stderr (2>&1)", file=sys.stderr)
+            return 2
+    if not any(every.values()):
         print(f"ignore-sites: {args.all} lists no test", file=sys.stderr)
         return 2
     build = JOB_BUILD[args.job]
     red = 0
-    found = all_sites(args.root.resolve(), args.job)
+    found = all_sites(root, sorted(every), args.job)
+
+    def named(pair):
+        crate, test = pair
+        return f"{test} ({crate.relative_to(root) if crate.is_relative_to(root) else crate})"
+
     for path, line, full, name in found:
         where = f"{path}:{line}"
-        runs = [p for p in full if p in every and p not in ignored]
+        runs = [(c, p) for c, p in full
+                if p in every[c] and p not in ignored.get(c, ())]
         if name is None:
             verdict = "no fn after the attribute"
         elif not full:
             verdict = "no crate's module tree reaches the file"
         elif runs:
-            print(f"ok   {where} {runs[0]}")
+            print(f"ok   {where} {named(runs[0])}")
             continue
-        elif any(p in every for p in full):
+        elif any(p in every[c] for c, p in full):
             verdict = f"ignored in {build} list too: no job runs it"
         else:
-            verdict = f"not in {build} list as {' or '.join(full)}"
+            verdict = f"not in {build} list as {' or '.join(map(named, full))}"
         red += 1
         print(f"FAIL {where} {name or '?'}: {verdict}")
     print(f"ignore-sites: {args.job} job, {len(found)} sites, {red} red")
