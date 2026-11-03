@@ -1215,7 +1215,7 @@ impl Services {
 
         // Not a chain question (fiat rates), so Rule 28's test does not apply.
         let url = "https://open.er-api.com/v6/latest/USD";
-        let response: reqwest::Response = client
+        let response: crate::services::providers::http_client::Response = client
             .get(url)
             .send()
             .await

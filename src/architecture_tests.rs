@@ -20,7 +20,6 @@ use scan::*;
 // their raw reqwest allowances are retired so those clients cannot bypass it.
 const HTTP_CEILINGS: &[(&str, usize)] = &[
     ("src/error.rs", 2),               // reqwest error conversion, not a request
-    ("src/services/services.rs", 1),   // fiat exchange rate client
     ("src/storage/client/auth.rs", 1), // remote response authentication
 ];
 

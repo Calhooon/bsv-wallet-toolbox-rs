@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{self, Client};
 use crate::services::providers::pace::{shared_key, RateGate};
 use crate::services::{traits::BlockHeader, Chain};
 use crate::{Error, Result};
@@ -144,7 +144,11 @@ impl ChaintracksServiceClient {
 
     /// One GET through the gate: no request inside a Retry-After window,
     /// and a 429 closes the rung. `what` names the call in a send fault.
-    async fn get(&self, url: &str, what: &str) -> std::result::Result<reqwest::Response, Fault> {
+    async fn get(
+        &self,
+        url: &str,
+        what: &str,
+    ) -> std::result::Result<http_client::Response, Fault> {
         self.gate.admit().map_err(Fault::Unread)?;
         let response = self.build_request(url).send().await.map_err(|e| {
             Fault::Unread(Error::NetworkError(format!("Chaintracks {}: {}", what, e)))
@@ -441,6 +445,15 @@ impl From<Fault> for Error {
 /// `error_for_status` refused, a body that fails to decode) is unread.
 impl From<reqwest::Error> for Fault {
     fn from(e: reqwest::Error) -> Self {
+        Fault::Unread(e.into())
+    }
+}
+
+/// The same under the test and bench seam, whose transport error wraps
+/// reqwest's or gives the loopback table's text (#683).
+#[cfg(any(test, feature = "bench-support"))]
+impl From<http_client::RequestError> for Fault {
+    fn from(e: http_client::RequestError) -> Self {
         Fault::Unread(e.into())
     }
 }
