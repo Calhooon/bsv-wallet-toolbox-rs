@@ -433,6 +433,14 @@ pub(crate) fn open_token(
 ) -> Result<Opened> {
     let password_key =
         derive_password_key(&token.password_salt, token.password_kdf.as_ref(), password)?;
+    if password_key.len() != presentation_key.len() {
+        // The reference's `XOR` (:2437-2441): an argon2id `hashLength` other than 32.
+        return Err(Error::ValidationError(format!(
+            "XOR length mismatch: {} vs {}",
+            presentation_key.len(),
+            password_key.len()
+        )));
+    }
     let root_primary = open(
         &xor(presentation_key, &password_key),
         &token.password_presentation_primary,
