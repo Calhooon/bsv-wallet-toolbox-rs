@@ -5,14 +5,15 @@ name: CI
 # runs is exactly the set branch protection requires (the stack keeper's rule
 # for every public repository of the stack, the owner's word behind it,
 # 2026-10-26): a job that runs on a PR but cannot refuse it is noise, a job that
-# could refuse but is not required is a hole. Beta requires eleven contexts:
-# `Test Suite (ubuntu-latest, stable)`, `Test Suite (remote only)`, `Clippy`,
-# `Rustfmt`, `vectors`, `locks`, `ratchet`, `scoreboard`, `fixtures`,
-# `Documentation`, `semver` (the remote-only context from #612); main requires
-# the six its older workflow has (those five and `Documentation`) until beta
-# merges into it. Renaming one of those jobs removes its context and blocks
-# every PR into that branch until the protection is updated. Every action is
-# pinned by commit sha.
+# could refuse but is not required is a hole. Beta requires five contexts:
+# `Test Suite (ubuntu-latest, stable)`, `Test Suite (remote only)`, `lint`,
+# `checks`, `semver` (#617 bundled the eleven of #612 into these: `lint` holds
+# Rustfmt, locks, Clippy and the ratchet, `checks` the scoreboard, vectors,
+# fixtures and Documentation, each as its own step); main requires the six its
+# older workflow has until beta merges into it, when its protection moves to
+# these five. Renaming one of those jobs removes its context and blocks every
+# PR into that branch until the protection is updated. Every action is pinned
+# by commit sha.
 # The required test and clippy steps build `sqlite,remote`, so the storage client's
 # wire witnesses (tests/storage_wire.rs, #202) gate every pull request. The
 # integration step and the doc-test step also enable `bench-support` (the four
