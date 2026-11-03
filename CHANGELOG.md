@@ -4,6 +4,11 @@
 
 ### Changed
 
+- #670 (docs; no code): the CI speed record
+  `docs/census/ci-speed-2026-11-02.md` keeps loop one and the fleet's
+  runner cap, under the 800-line bound; loops two, three and four move
+  verbatim to `docs/census/ci-speed-loop-2.md`, `ci-speed-loop-3.md` and
+  `ci-speed-loop-4.md`, each linked from the record's "The loops".
 - #638 (tools; no code): `tools/slot-occupancy` reads the account's
   Actions runs and jobs with `gh api` (reads only, `--days`, `--repos`,
   `--from-cache`) and prints the runner-slot occupancy by hour of the day:
@@ -13,18 +18,18 @@
   workflow, a one-line recommendation for the heavy runs' cap and slots,
   and the cap formula's inputs on one line. Its cases are
   `tools/slot-occupancy-test` on a recorded fixture.
-  The week's reading is in `docs/census/ci-speed-2026-11-02.md`.
+  The week's reading is in `docs/census/ci-speed-loop-4.md`.
 - #637 (tools; no code): `tools/landing-latency` stages every landing
   into beta from the lane's DONE to the merge (the open, the read, the fix
   rounds, the PR's own run, the queue, the fold) from the PRs' timelines
   and the cca run records, reads only, with its cases on a recorded
   fixture; the night's figures and the cuts they support are in
-  `docs/census/ci-speed-2026-11-02.md`.
+  `docs/census/ci-speed-loop-4.md`.
 - #644 (CI; no code): on a PR's own run, a `*.md` under `tests/`,
   `fuzz/`, `test_vectors/`, `tools/` or `.github/` reaches every test
   under `tools/affected-tests`, the set read from `tools/docs-only`, since
   tests walk those directories; `docs/` and a `*.md` elsewhere still run
-  none (`docs/census/ci-speed-2026-11-02.md`).
+  none (`docs/census/ci-speed-loop-2.md`).
 - #660 (CI and build metadata; no code): the `a8_census` example declares
   `required-features = ["sqlite"]`, so a `--no-default-features --features
   remote` build skips it instead of failing, and the lint job's remote-only
@@ -34,7 +39,7 @@
   row (345 cargo calls to 14, 63 s to 11 s on the box, the same rows
   judged); `anyhow` moves to dev-dependencies, so a dependent no longer
   compiles it, and the unused `tokio-test` dev-dependency is dropped
-  (`docs/census/ci-speed-2026-11-02.md`).
+  (`docs/census/ci-speed-loop-3.md`).
 - #634 (tests; no behaviour): the ten slowest tests of run 41578469987
   (583 of its 1434 test-seconds) cut: the status and utxo verdict tables
   and the ladder replays build their `Services` over clients shared under
@@ -42,14 +47,14 @@
   `SharedClients::building`), the busy door's soak runs 60 rounds, the four
   A8 census tests read the 1 MB census alone, and the ladder cut test runs
   in the `sqlite` build only; every test's planted fault red before and
-  after (`docs/census/ci-speed-2026-11-02.md`).
+  after (`docs/census/ci-speed-loop-2.md`).
 - #632 (CI; no code): a PR or a merge-queue group whose every changed
   path is a doc (`docs/` and every `*.md`, less the documents a gate
   reads and a `*.md` under `tests/`, `fuzz/`, `test_vectors/`, `tools/`
   or `.github/`) skips every step after each job's docs-only step
   (`tools/docs-only`, its cases a `checks` gate), so the five required
   jobs report green in seconds; a push and a tag's call run everything
-  (`docs/census/ci-speed-2026-11-02.md`).
+  (`docs/census/ci-speed-loop-2.md`).
 - #614 and #618 (CI; no code): the workflow runs on beta's merge
   queue (`merge_group`), every required context reporting there, semver
   judging a group against its parent with its PR's `api-break` label;
