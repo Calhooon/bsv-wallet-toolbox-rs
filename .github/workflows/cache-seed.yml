@@ -1,0 +1,105 @@
+name: Cache seed
+
+# Why this file exists (#642): beta lands through GitHub's merge queue, and a
+# merge_group run restores caches only from its own ref and the default branch.
+# The default branch is main, and nothing on main saves the Test Suite's caches,
+# so every queue run built cold. This workflow runs on main (a schedule runs
+# from the default branch's workflow file alone), checks out beta and builds the
+# two Test Suite feature sets under rust-cache with beta's exact keys, so the
+# save lands under main's scope and every queue run restores it warm.
+#
+# What it mirrors: beta's .github/workflows/ci.yml, jobs `test` (Test Suite)
+# and `test-remote` (Test Suite (remote only)). rust-cache's key is its prefix,
+# the shared key, the runner OS and arch, a hash of `rustc -vV` and of every
+# CARGO*, CC*, CFLAGS*, CXX*, CMAKE*, RUST* environment variable set when its
+# step runs, and a hash of the workspace manifests, Cargo.lock and any
+# .cargo/config.toml or rust-toolchain file. So a change on beta to any of these
+# must be mirrored here the same day, or the seed saves a key no queue run asks
+# for: the workflow `env:` block; the `runs-on`; the checkout and `Install
+# Rust` steps (the dtolnay/rust-toolchain sha and its `toolchain:`, since that
+# action exports CARGO_* variables); the `Resolve the dependency lock` step;
+# the `Cache the dependency build` step (the rust-cache sha and `shared-key`,
+# or any `key`, `env-vars`, `prefix-key`, `cache-targets` input added there);
+# and the build steps (`Build unit tests (sqlite)` and `Build integration
+# tests` in `test`, `Build unit and integration tests (remote only)` in
+# `test-remote`), which fill target/. No test runs here.
+#
+# Two jobs in parallel, one per feature set, as beta's: two slots at most,
+# each with its own target/, so neither save carries the other feature set's
+# artifacts.
+on:
+  # The toolbox's slot in the fleet's stagger: bsv-rs 00:00Z, the CLI 03:00Z,
+  # the toolbox 06:00Z.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One seed at a time; a running seed is never cancelled (its save is the point).
+concurrency:
+  group: cache-seed
+  cancel-in-progress: false
+
+# Beta's ci.yml workflow env, byte for byte: rust-cache hashes the CARGO* and
+# RUST* variables into its key.
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # Beta's `test` job (Test Suite): the `sqlite,remote` builds.
+  seed-test:
+    name: Seed Test Suite cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: beta
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Resolve the dependency lock
+        run: test -f Cargo.lock || cargo generate-lockfile
+
+      - name: Cache the dependency build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test-sqlite-remote
+
+      - name: Build unit tests (sqlite)
+        run: cargo test --no-run --lib --features sqlite,remote
+
+      - name: Build integration tests
+        run: cargo test --no-run --test '*' --features sqlite,remote,bench-support
+
+  # Beta's `test-remote` job (Test Suite (remote only)): the `remote` build.
+  seed-test-remote:
+    name: Seed Test Suite (remote only) cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: beta
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Resolve the dependency lock
+        run: test -f Cargo.lock || cargo generate-lockfile
+
+      - name: Cache the dependency build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test-remote
+
+      - name: Build unit and integration tests (remote only)
+        run: cargo test --no-run --lib --tests --no-default-features --features remote
