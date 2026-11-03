@@ -745,8 +745,8 @@ impl WalletPermissionsManager {
     /// (ts-stack@edf6e03 `WalletPermissionsManager.ts:1487`, `:1533`; #720).
     /// A grant admits a seek-false call only while this manager's cache
     /// holds it (`CACHE_TTL_SECS`, lost on a restart): the reference looks
-    /// up the stored token first (`:1522-1529`), which the port does not
-    /// (its own row). The cache holds no expired grant, so the reference's
+    /// up the stored token before refusing (`:1522-1529`), which the port
+    /// does not (#751). The cache holds no expired grant, so the reference's
     /// expired-token text at `:1549` reads as this one.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn ensure_protocol_permission_seeking(
