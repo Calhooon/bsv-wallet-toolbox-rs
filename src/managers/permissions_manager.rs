@@ -15,10 +15,17 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use bsv_rs::wallet::{Protocol, SecurityLevel, WalletInterface};
+use bsv_rs::primitives::ec::Signature;
+use bsv_rs::primitives::hash::sha256;
+use bsv_rs::script::templates::PushDrop;
+use bsv_rs::transaction::Beef;
+use bsv_rs::wallet::{
+    Counterparty, DecryptArgs, GetPublicKeyArgs, ListOutputsArgs, OutputInclude, Protocol,
+    QueryMode, SecurityLevel, WalletInterface, WalletOutput,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{OnceCell, RwLock};
 
 use crate::error::{Error, Result};
 
@@ -500,6 +507,8 @@ pub struct WalletPermissionsManager {
     /// Counterparty identity keys (hex) to the protocol names admitted for
     /// them with no prompt; empty unless set (#725).
     whitelisted_counterparties: HashMap<String, Vec<String>>,
+    /// The stored tokens' locking key, read once (#751).
+    permission_token_locking_key: OnceCell<String>,
 }
 
 impl WalletPermissionsManager {
@@ -516,6 +525,7 @@ impl WalletPermissionsManager {
             permission_cache: RwLock::new(HashMap::new()),
             permission_request_handler: RwLock::new(None),
             whitelisted_counterparties: HashMap::new(),
+            permission_token_locking_key: OnceCell::new(),
         }
     }
 
@@ -737,7 +747,8 @@ impl WalletPermissionsManager {
     /// 4. Usage-type config flag bypass
     /// 5. Whitelisted counterparty bypass for an everyday call
     /// 6. Cache check
-    /// 7. Permission request flow (if handler registered)
+    /// 7. The stored token in the admin basket (#751)
+    /// 8. Permission request flow (if handler registered)
     pub async fn ensure_protocol_permission(
         &self,
         originator: &str,
@@ -763,11 +774,12 @@ impl WalletPermissionsManager {
     /// `seekPermission` (the reference's default `true`): with it false, no
     /// grant is refused with the reference's text and no prompt
     /// (ts-stack@edf6e03 `WalletPermissionsManager.ts:1487`, `:1533`; #720).
-    /// A grant admits a seek-false call only while this manager's cache
-    /// holds it (`CACHE_TTL_SECS`, lost on a restart): the reference looks
-    /// up the stored token before refusing (`:1522-1529`), which the port
-    /// does not (#751). The cache holds no expired grant, so the reference's
-    /// expired-token text at `:1549` reads as this one.
+    /// Ahead of the refusal and the prompt the stored token is looked up
+    /// (`:1522-1566`, #751 step 1): a live token admits and is cached, an
+    /// expired one refuses a seek-false call with `:1549`'s text and prompts
+    /// otherwise. The port mints no token yet, so its own grants admit a
+    /// seek-false call only while the cache holds them (`CACHE_TTL_SECS`,
+    /// lost on a restart).
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn ensure_protocol_permission_seeking(
         &self,
@@ -866,13 +878,22 @@ impl WalletPermissionsManager {
         if self.is_permission_cached(&cache_key).await {
             return Ok(true);
         }
+
+        // 7) The stored token (ts-stack@edf6e03 `:1522-1566`, #751)
+        let query = TokenQuery::Protocol {
+            privileged: priv_flag,
+            protocol,
+            counterparty: counterparty.unwrap_or("self"),
+        };
+        let stored = self.stored_token(originator, &query, &cache_key).await;
+        if stored == StoredToken::Live {
+            return Ok(true);
+        }
         if !seek_permission {
-            return Err(Error::AccessDenied(
-                "No protocol permission token found (seekPermission=false).".to_string(),
-            ));
+            return Err(Error::AccessDenied(stored.seek_false_refusal().to_string()));
         }
 
-        // 7) Request permission flow
+        // 8) Request permission flow
         self.request_permission_flow(PermissionRequest {
             request_type: PermissionType::Protocol,
             originator: originator.to_string(),
@@ -923,7 +944,7 @@ impl WalletPermissionsManager {
     /// 1. Admin originator bypass
     /// 2. Admin-reserved basket blocking
     /// 3. Usage-type config flag bypass
-    /// 4. Cache check
+    /// 4. Cache check, then the stored token (#751)
     /// 5. Permission request flow
     pub async fn ensure_basket_access(
         &self,
@@ -978,6 +999,11 @@ impl WalletPermissionsManager {
         if self.is_permission_cached(&cache_key).await {
             return Ok(true);
         }
+        // The stored token (`:1595-1615`, #751); an expired one prompts.
+        let query = TokenQuery::Basket { basket };
+        if self.stored_token(originator, &query, &cache_key).await == StoredToken::Live {
+            return Ok(true);
+        }
 
         // 5) Request permission flow
         self.request_permission_flow(PermissionRequest {
@@ -1002,7 +1028,7 @@ impl WalletPermissionsManager {
     /// 1. Admin originator bypass
     /// 2. Usage-type config flag bypass
     /// 3. Privileged normalization
-    /// 4. Cache check
+    /// 4. Cache check, then the stored token (#751)
     /// 5. Permission request flow
     #[allow(clippy::too_many_arguments)]
     pub async fn ensure_certificate_access(
@@ -1053,6 +1079,16 @@ impl WalletPermissionsManager {
             None,
         );
         if self.is_permission_cached(&cache_key).await {
+            return Ok(true);
+        }
+        // The stored token (`:1669-1709`, #751); an expired one prompts.
+        let query = TokenQuery::Certificate {
+            privileged: priv_flag,
+            verifier,
+            cert_type,
+            fields,
+        };
+        if self.stored_token(originator, &query, &cache_key).await == StoredToken::Live {
             return Ok(true);
         }
 
@@ -1299,6 +1335,445 @@ impl WalletPermissionsManager {
 }
 
 // =============================================================================
+// Stored Permission Tokens (#751 step 1)
+// =============================================================================
+//
+// The read-only lookup of the protocol, basket and certificate tokens a
+// wallet already holds in the reference's admin baskets (ts-stack@edf6e03
+// `WalletPermissionsManager.ts:3080-3239`). Nothing here mints, renews or
+// revokes; the spending token stays out (no monthly tally, the #751 note).
+
+/// The tokens' field protocol, keyID `"1"` (`:2711-2714`, `:2726-2737`).
+const PERM_TOKEN_ENCRYPTION_PROTOCOL: &str = "admin permission token encryption";
+/// The admin baskets of the three kinds read here (`BASKET_MAP`, `:418-423`).
+const PROTOCOL_TOKEN_BASKET: &str = "admin protocol-permission";
+const BASKET_TOKEN_BASKET: &str = "admin basket-access";
+const CERTIFICATE_TOKEN_BASKET: &str = "admin certificate-access";
+/// The decoder's bounds (`:52-54`).
+const MAX_PERMISSION_TOKEN_FIELD_BYTES: usize = 1024 * 1024;
+const MAX_PERMISSION_TOKEN_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PERMISSION_TOKEN_LIST_FIELDS: usize = 256;
+/// JavaScript's `Number.MAX_SAFE_INTEGER`, the integer bound at `:57-64`.
+const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+/// The lookup's page (`limit: 10000`, `:3098`).
+const TOKEN_LOOKUP_LIMIT: u32 = 10_000;
+
+fn permission_token_protocol() -> Protocol {
+    Protocol::new(SecurityLevel::Counterparty, PERM_TOKEN_ENCRYPTION_PROTOCOL)
+}
+
+/// The reference's `isTokenExpired` (`:2900-2903`): 0 never expires.
+fn is_token_expired(expiry: u64) -> bool {
+    expiry > 0 && expiry < Utc::now().timestamp().unsigned_abs()
+}
+
+/// What a stored token must say to answer a request.
+pub(crate) enum TokenQuery<'a> {
+    /// A DPACP token; `counterparty` is read at level 2 alone.
+    Protocol {
+        privileged: bool,
+        protocol: &'a Protocol,
+        counterparty: &'a str,
+    },
+    /// A DBAP token.
+    Basket { basket: &'a str },
+    /// A DCAP token holding every one of `fields`.
+    Certificate {
+        privileged: bool,
+        verifier: &'a str,
+        cert_type: &'a str,
+        fields: &'a [String],
+    },
+}
+
+impl TokenQuery<'_> {
+    fn basket(&self) -> &'static str {
+        match self {
+            Self::Protocol { .. } => PROTOCOL_TOKEN_BASKET,
+            Self::Basket { .. } => BASKET_TOKEN_BASKET,
+            Self::Certificate { .. } => CERTIFICATE_TOKEN_BASKET,
+        }
+    }
+
+    /// The data fields ahead of the signature (`buildPushdropFields`,
+    /// `:3708-3749`).
+    fn field_count(&self) -> usize {
+        match self {
+            Self::Basket { .. } => 3,
+            Self::Protocol { .. } | Self::Certificate { .. } => 6,
+        }
+    }
+
+    /// The lookup's tags, `originator <o>` omitted for the untagged pass
+    /// (`protocolTokenTags` `:2941-2956`; `:3171-3175`; `:3209-3214`).
+    fn tags(&self, origin: Option<&str>) -> Vec<String> {
+        let mut tags: Vec<String> = origin
+            .map(|o| format!("originator {o}"))
+            .into_iter()
+            .collect();
+        match self {
+            Self::Protocol {
+                privileged,
+                protocol,
+                counterparty,
+            } => {
+                let level = protocol.security_level.as_u8();
+                tags.push(format!("privileged {privileged}"));
+                tags.push(format!("protocolName {}", protocol.protocol_name));
+                tags.push(format!("protocolSecurityLevel {level}"));
+                if level == 2 {
+                    tags.push(format!("counterparty {counterparty}"));
+                }
+            }
+            Self::Basket { basket } => tags.push(format!("basket {basket}")),
+            Self::Certificate {
+                privileged,
+                verifier,
+                cert_type,
+                ..
+            } => {
+                tags.push(format!("privileged {privileged}"));
+                tags.push(format!("type {cert_type}"));
+                tags.push(format!("verifier {verifier}"));
+            }
+        }
+        tags
+    }
+
+    /// The token's expiry when its decrypted fields after the domain answer
+    /// the request (`:2970-2975`, `:3008-3009`, `:3043-3047`); `None` for a
+    /// token that does not answer or does not parse.
+    fn expiry_if_matches(&self, texts: &[String]) -> Option<u64> {
+        let expiry = canonical_integer(&texts[1], MAX_SAFE_INTEGER)?;
+        let matches = match self {
+            Self::Protocol {
+                privileged,
+                protocol,
+                counterparty,
+            } => {
+                let level = canonical_integer(&texts[3], 2)?;
+                permission_boolean(&texts[2])? == *privileged
+                    && level == u64::from(protocol.security_level.as_u8())
+                    && texts[4] == protocol.protocol_name
+                    && (level != 2 || texts[5] == *counterparty)
+            }
+            Self::Basket { basket } => texts[2] == *basket,
+            Self::Certificate {
+                privileged,
+                verifier,
+                cert_type,
+                fields,
+            } => {
+                let held = certificate_fields(&texts[4])?;
+                permission_boolean(&texts[2])? == *privileged
+                    && texts[3] == *cert_type
+                    && texts[5] == *verifier
+                    && fields.iter().all(|field| held.contains(field))
+            }
+        };
+        matches.then_some(expiry)
+    }
+}
+
+/// `parseCanonicalPermissionInteger` (`:57-64`).
+fn canonical_integer(text: &str, maximum: u64) -> Option<u64> {
+    let canonical = text == "0"
+        || (!text.starts_with('0') && !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()));
+    let value: u64 = if canonical {
+        text.parse().ok()?
+    } else {
+        return None;
+    };
+    (value <= maximum).then_some(value)
+}
+
+/// `parsePermissionBoolean` (`:66-69`).
+fn permission_boolean(text: &str) -> Option<bool> {
+    match text {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// `parsePermissionCertificateFields` (`:71-90`): a bounded JSON array of
+/// distinct non-empty names under 50 bytes.
+fn certificate_fields(text: &str) -> Option<Vec<String>> {
+    let fields: Vec<String> = serde_json::from_str(text).ok()?;
+    let mut seen = std::collections::HashSet::new();
+    let valid = fields.len() <= MAX_PERMISSION_TOKEN_LIST_FIELDS
+        && fields
+            .iter()
+            .all(|field| !field.is_empty() && field.len() < 50 && seen.insert(field.as_str()));
+    valid.then_some(fields)
+}
+
+/// `normalizeOriginator` (`:5707-5729`): the lowercase hostname, a scheme,
+/// credentials, path and port dropped. The URL parser's IDN mapping and
+/// percent decoding are not ported.
+fn normalize_originator(originator: &str) -> String {
+    let trimmed = originator.trim();
+    let rest = match trimmed.split_once("://") {
+        Some((scheme, rest))
+            if scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) =>
+        {
+            rest
+        }
+        _ => trimmed,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match host_port.find(']') {
+        Some(end) if host_port.starts_with('[') => &host_port[..=end],
+        _ => match host_port.rsplit_once(':') {
+            Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) => host,
+            _ => host_port,
+        },
+    };
+    if host.is_empty() {
+        trimmed.to_lowercase()
+    } else {
+        host.to_lowercase()
+    }
+}
+
+/// `prepareOriginator`'s lookup values (`:5788-5794`): the trimmed form,
+/// the normalized form and the untagged pass, each once. The reference's
+/// refusals of a scheme, a path or an IP originator (`:5759-5785`) are not
+/// ported here.
+fn originator_lookup_values(originator: &str) -> (String, Vec<Option<String>>) {
+    let trimmed = originator.trim();
+    let normalized = normalize_originator(trimmed);
+    let mut values = vec![Some(trimmed.to_string())];
+    if normalized != trimmed {
+        values.push(Some(normalized.clone()));
+    }
+    values.push(None);
+    (normalized, values)
+}
+
+/// `authenticatedPermissionTokenSource`'s source (`:2798-2816`): the
+/// output's transaction from the BEEF under its txid, one satoshi, and a
+/// canonical lock-before `PushDrop` of `count` data fields and a signature,
+/// within the decoder's bounds.
+fn token_source(beef: &Beef, output: &WalletOutput, count: usize) -> Option<PushDrop> {
+    let txid = bsv_rs::primitives::to_hex(&output.outpoint.txid);
+    let tx = beef.find_atomic_transaction(&txid)?;
+    let tx_output = tx
+        .outputs
+        .get(usize::try_from(output.outpoint.vout).ok()?)?;
+    if tx.id() != txid || tx_output.satoshis != Some(1) || output.satoshis != 1 {
+        return None;
+    }
+    let script = tx_output.locking_script.to_binary();
+    let decoded = PushDrop::decode(&tx_output.locking_script).ok()?;
+    let relocked = PushDrop::new(decoded.locking_public_key.clone(), decoded.fields.clone());
+    let payload: usize = decoded.fields.iter().map(Vec::len).sum();
+    let valid = relocked.lock().to_binary() == script
+        && decoded.fields.len() == count + 1
+        && payload <= MAX_PERMISSION_TOKEN_PAYLOAD_BYTES
+        && decoded
+            .fields
+            .iter()
+            .all(|field| field.len() <= MAX_PERMISSION_TOKEN_FIELD_BYTES);
+    valid.then_some(decoded)
+}
+
+/// A stored token's standing for a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredToken {
+    /// No token answers the request.
+    Absent,
+    /// A token answers it and has expired.
+    Expired,
+    /// A token answers it; the grant is cached as a prompt's would be.
+    Live,
+}
+
+impl StoredToken {
+    /// The protocol door's seek-false refusal: `:1549` for an expired
+    /// token, `:1533` otherwise.
+    fn seek_false_refusal(self) -> &'static str {
+        match self {
+            Self::Expired => "Protocol permission expired and no further user consent allowed (seekPermission=false).",
+            Self::Absent | Self::Live => "No protocol permission token found (seekPermission=false).",
+        }
+    }
+}
+
+impl WalletPermissionsManager {
+    /// The stored token for `query` read before the seek-false refusal and
+    /// the prompt (`:1522-1566`, `:1595-1615`, `:1669-1709`): a live token
+    /// is cached under `cache_key` with its expiry (`:1565`).
+    pub(crate) async fn stored_token(
+        &self,
+        originator: &str,
+        query: &TokenQuery<'_>,
+        cache_key: &str,
+    ) -> StoredToken {
+        match self.find_stored_token(originator, query).await {
+            None => StoredToken::Absent,
+            Some(expiry) if is_token_expired(expiry) => StoredToken::Expired,
+            Some(expiry) => {
+                self.cache_permission(cache_key.to_string(), expiry).await;
+                StoredToken::Live
+            }
+        }
+    }
+
+    /// `findProtocolToken`, `findBasketToken` and `findCertificateToken`
+    /// with `includeExpired` true (`:3080-3117`, `:3163-3194`,
+    /// `:3196-3239`): per lookup value, `listOutputs` on the kind's admin
+    /// basket with the tags, every tag required, entire transactions, as
+    /// the admin originator; the matched token's expiry. A read the
+    /// underlying wallet refuses (a `ProtoWallet`, which lists no outputs;
+    /// a store fault) ends the lookup with no token, where the reference
+    /// throws: the request's path stays as it was before the lookup.
+    pub(crate) async fn find_stored_token(
+        &self,
+        originator: &str,
+        query: &TokenQuery<'_>,
+    ) -> Option<u64> {
+        let (normalized, lookup_values) = originator_lookup_values(originator);
+        for origin in lookup_values {
+            let args = ListOutputsArgs {
+                basket: query.basket().to_string(),
+                tags: Some(query.tags(origin.as_deref())),
+                tag_query_mode: Some(QueryMode::All),
+                include: Some(OutputInclude::EntireTransactions),
+                include_custom_instructions: None,
+                include_tags: None,
+                include_labels: None,
+                limit: Some(TOKEN_LOOKUP_LIMIT),
+                offset: None,
+                seek_permission: None,
+            };
+            let listed = self
+                .underlying
+                .list_outputs(args, Some(&self.admin_originator))
+                .await;
+            let Ok(result) = listed else { return None };
+            // One parse per result, as `transactionFromResultBeef` (`:2747`).
+            let count = query.field_count();
+            let sources: Vec<PushDrop> = match result.beef.as_deref().map(Beef::from_binary) {
+                Some(Ok(beef)) => result
+                    .outputs
+                    .iter()
+                    .filter_map(|output| token_source(&beef, output, count))
+                    .collect(),
+                _ => continue,
+            };
+            for source in sources {
+                let Some(fields) = self.signed_token_fields(source, count).await else {
+                    continue;
+                };
+                if let Some(expiry) = self.token_expiry(&fields, &normalized, query).await {
+                    return Some(expiry);
+                }
+            }
+        }
+        None
+    }
+
+    /// The decrypted fields' answer (`parseProtocolTokenOutput` `:2951`,
+    /// `parseBasketTokenOutput`, `parseCertificateTokenOutput`): the domain
+    /// normalized against the request's originator, then the kind's match.
+    async fn token_expiry(
+        &self,
+        fields: &[Vec<u8>],
+        normalized: &str,
+        query: &TokenQuery<'_>,
+    ) -> Option<u64> {
+        let domain = self.decrypt_token_text(&fields[0]).await?;
+        if normalize_originator(&domain) != normalized {
+            return None;
+        }
+        let mut texts = vec![domain];
+        for field in &fields[1..] {
+            texts.push(self.decrypt_token_text(field).await?);
+        }
+        query.expiry_if_matches(&texts)
+    }
+
+    /// The rest of `authenticatedPermissionTokenSource` (`:2817-2823`):
+    /// the lock under this wallet's token key and the signature under it
+    /// over the data fields; the data fields, else `None`.
+    async fn signed_token_fields(&self, source: PushDrop, count: usize) -> Option<Vec<Vec<u8>>> {
+        let key = source.locking_public_key.to_hex().to_lowercase();
+        if self.token_locking_key().await? != key {
+            return None;
+        }
+        let (fields, signature) = source.fields.split_at(count);
+        let signature = Signature::from_der(&signature[0]).ok()?;
+        let digest = sha256(&fields.concat());
+        let signed = source.locking_public_key.verify(&digest, &signature);
+        signed.then(|| fields.to_vec())
+    }
+
+    /// `permissionTokenLockingKey` (`:2770-2796`): the token protocol's key
+    /// for `self`, `forSelf`, read once; a failed read is read again.
+    async fn token_locking_key(&self) -> Option<&str> {
+        let read = || async {
+            let args = GetPublicKeyArgs {
+                identity_key: false,
+                protocol_id: Some(permission_token_protocol()),
+                key_id: Some("1".to_string()),
+                counterparty: Some(Counterparty::Self_),
+                for_self: Some(true),
+                ..Default::default()
+            };
+            let key = self
+                .underlying
+                .get_public_key(args, Some(&self.admin_originator))
+                .await?
+                .public_key;
+            let valid = key.len() == 66
+                && (key.starts_with("02") || key.starts_with("03"))
+                && key.bytes().all(|b| b.is_ascii_hexdigit());
+            if valid {
+                Ok(key.to_lowercase())
+            } else {
+                Err(Error::AccessDenied(
+                    "Wallet returned an invalid permission-token locking key.".to_string(),
+                ))
+            }
+        };
+        let key = self
+            .permission_token_locking_key
+            .get_or_try_init(read)
+            .await;
+        key.ok().map(String::as_str)
+    }
+
+    /// `decryptPermissionTokenText` (`:2830-2854`): the field under the
+    /// token protocol as the admin originator, the raw bytes where it does
+    /// not decrypt; `None` for text that is not UTF-8 (`toUTF8Strict`).
+    async fn decrypt_token_text(&self, ciphertext: &[u8]) -> Option<String> {
+        let args = DecryptArgs {
+            ciphertext: ciphertext.to_vec(),
+            protocol_id: permission_token_protocol(),
+            key_id: "1".to_string(),
+            counterparty: None,
+            ..Default::default()
+        };
+        let plaintext = match self
+            .underlying
+            .decrypt(args, Some(&self.admin_originator))
+            .await
+        {
+            Ok(result) => result.plaintext,
+            Err(_) => ciphertext.to_vec(),
+        };
+        String::from_utf8(plaintext).ok()
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1355,7 +1830,10 @@ mod tests {
             _args: ListOutputsArgs,
             _originator: Option<&str>,
         ) -> bsv_rs::Result<ListOutputsResult> {
-            unimplemented!()
+            // The stored-token lookup's read (#751): no token held.
+            Err(bsv_rs::Error::WalletError(
+                "the mock holds no outputs".into(),
+            ))
         }
         async fn relinquish_output(
             &self,
