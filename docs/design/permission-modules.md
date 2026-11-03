@@ -37,11 +37,14 @@ bsv-rs `0.9.0-beta.6` (the crate's pin, read from the cargo registry); this crat
   keyed by scheme id (`"btms"`); a module "handles basket/protocol names of the form
   `p <schemeID> <rest...>`" (`:457`); "If no module exists for a given schemeID, the wallet will
   reject access" (`:462`).
-- `:792-826` the constructor spreads the host's map, then sets `nosend`, the built-in BRC-177
-  module, after it: a host's `nosend` entry is overwritten (`pmodules.test.ts:117-180`, "enables
-  and reserves the BRC-177 nosend module"). The built-in module refuses every method other than
-  `createAction` and `listActions` (`:798-801`, after its label parse), so a `p nosend ...` protocol name on a key call
-  is refused by it.
+- `:792-826` the constructor spreads the host's map (`:793`), then sets `nosend`, the built-in
+  BRC-177 module, after it (`:795`): a host's `nosend` entry is overwritten, silently, with no
+  error from the constructor (`pmodules.test.ts:117-180`, "enables and reserves the BRC-177
+  nosend module": the host's module is never called). The built-in module parses the request's
+  labels (`:798`; a key call's arguments carry none, so the parse answers `undefined`,
+  `utility/brc177NoSendExpiry.ts:92-94`), then throws `BRC-177 noSend expiry labels are only valid
+  for createAction and listActions` for every other method (`:799-801`). So a `p nosend ...`
+  protocol name on a key call is refused with that text, whatever the host registered.
 - There is no registration call after construction: the config is the registration.
 
 ### 1.3 The helper, `delegateToPModuleIfNeeded`
@@ -55,7 +58,8 @@ underlyingCall)`:
 2. `:855` the scheme id is `name.split(' ')[1]` (`"p btms x"` gives `btms`; `"p  x"` gives the
    empty string).
 3. `:856-860` no module under that id: throws `new Error(\`Unsupported P-module scheme: p
-   ${schemeID}\`)`, a plain `Error` with no WERR class (`pmodules.test.ts:593-599`, `:1147-1155`).
+   ${schemeID}\`)`, a plain `Error` with no WERR class (`:859`, the helper's own `throw`; `pmodules.test.ts:593-599`
+   checks the text on the basket path).
 4. `:862-871` the module has `handleRequest`: its answer is the call's answer; `next` calls
    `underlyingCall(transformedArgs, originator)`, and a second `next` throws `P-module p
    ${schemeID} called its underlying wallet operation more than once` (`pmodules.test.ts:1295-1380`).
@@ -148,7 +152,8 @@ ECPM's.
   values and a `String` refusal; it has no `handleRequest`.
 - `:325-327` `WalletPermissionsManagerConfig.permission_modules: HashMap<String, Arc<dyn
   PermissionsModule>>`, a public field of a public, constructible, `Default` struct; `:401-403`
-  `all_enabled()` sets it empty. No built-in `nosend` entry.
+  `all_enabled()` sets it empty. No built-in `nosend` entry, and nothing stops a host putting one
+  in the map.
 - Nothing reads the field: the only matches for `permission_modules` and `PermissionsModule`
   in `src/` are the declaration, the two constructors and the re-exports.
 - `src/wallet/wallet.rs:1819-1847` the `key_permission!` macro expands to
@@ -157,6 +162,19 @@ ECPM's.
   `self.key_route(originator).<method>(args)`. The manager is a checker the `Wallet` holds
   (`:451`, set by `set_permissions_manager` at `:637`); unlike the reference it does not wrap
   the wallet and does not implement `WalletInterface`.
+
+**The reference's shape, weighed.** The reference's manager is itself a `WalletInterface` that
+wraps the underlying wallet: each method checks or delegates, then calls `this.underlying`. The
+port's manager already holds one (`WalletPermissionsManager::new` takes `underlying: Arc<dyn
+WalletInterface + Send + Sync>`, `permissions_manager.rs:507-510`) but implements no
+`WalletInterface` over it. A port in the reference's shape (the manager implementing the trait
+over that field) would make the delegation a plain method body per call, as `:5223-5247` is, with
+no macro, and would let a host stack the manager over any wallet, as the reference's hosts do. Its
+cost: a public `WalletInterface` impl of 28 methods on a public type (the owner's word); a
+second path to the wallet beside today's `set_permissions_manager`, whose callers would move or
+keep two shapes; and the `Wallet`'s own routing (the privileged key manager behind `key_route`,
+the admin originator) would have to be reached from outside through the trait. The macro inside
+the `Wallet` keeps the public shape as it is. Recorded, not decided.
 - `ensure_protocol_permission_seeking` (`permissions_manager.rs:772`) treats a `p btms x`
   protocol like any other: the admin bypass (`:782`), then a cached grant or a prompt.
 
@@ -211,7 +229,12 @@ with `None` meaning "no hook, use the pair". `next` needs a type a host can name
 boxed async callable (`Box<dyn FnOnce(serde_json::Value) -> BoxFuture<'_, Result<Value,
 String>> + Send + '_>`, a `FnOnce` making the reference's call-once rule a type rule instead of
 the `:866-867` runtime text). A defaulted method on a public trait does not break an implementor,
-but the `next` alias is a new public item.
+but the `next` alias is a new public item. Written with `futures::future::BoxFuture`, it would also
+put the `futures` crate (`Cargo.toml:92`, a private dependency today) into the public API, so a
+`futures` major release would become a breaking change of this crate: one more public-shape cost
+for the owner. The `std` spelling avoids it: `Pin<Box<dyn Future<Output = Result<Value, String>>
++ Send + 'a>>`, the same type `BoxFuture` aliases, behind a crate-owned alias (the `next` type
+itself, or a second alias beside it).
 
 ### 3.2 The public-shape answer
 
@@ -223,11 +246,20 @@ but the `next` alias is a new public item.
   (`PermissionsModuleNext` or a name the owner picks) and `PermissionsModule::handle_request`,
   defaulted. No crate-private shape suffices: a host implements the trait, so the type of an
   argument it receives must be nameable outside the crate. That is the owner's word.
-- **A built-in `nosend` module** (the reference's `:795-825`) is not needed for the key calls:
-  the port refuses `p nosend ` labels at both doors since #312 and #357, and on a key call the
-  reference's module refuses every method except `createAction`/`listActions` (`:799-801`), so
-  the port's "Unsupported P-module scheme: p nosend" refuses the same requests with different
-  text. Recorded as a divergence, not a gap.
+- **A built-in `nosend` module** (the reference's `:795-825`) is not needed for the key calls,
+  but the id is reserved. The port refuses `p nosend ` labels at both doors since #312 and #357,
+  and on a key call the reference's module refuses every method except
+  `createAction`/`listActions` (`:799-801`). The port refuses the same requests only if the
+  delegation never reads a host's `nosend` entry: `permission_modules` is a public map
+  (`permissions_manager.rs:327`), so a host can put one there, and a plain lookup would ask it
+  where the reference refuses. The reservation: a host's `nosend` entry is **ignored**, as the
+  reference ignores it (`:793-795`, the overwrite), and a key call under `p nosend ...` is refused
+  with the reference's text, `BRC-177 noSend expiry labels are only valid for createAction and
+  listActions` (`:800`), ahead of the map lookup. Ignored, not refused at construction, because
+  the reference's constructor accepts the map without error and
+  `WalletPermissionsManager::new` (`permissions_manager.rs:507`) is infallible: refusing would
+  change a public signature or panic, where the reference does neither. With the reservation the
+  refusal and its text match the reference's.
 
 ### 3.3 Where it sits in `key_permission!`
 
@@ -268,9 +300,24 @@ So:
 
 | Refusal | Port error | Class at the boundary | Text |
 |---|---|---|---|
+| `p nosend ...` (reserved, section 3.2) | `internal_fault` | `WalletFault { family: Internal }` | `BRC-177 noSend expiry labels are only valid for createAction and listActions` |
 | Unregistered scheme | `internal_fault` | `WalletFault { family: Internal }` | `Unsupported P-module scheme: p <id>` |
 | A module's `Err(String)` from `on_request`/`on_response` | `internal_fault` | the same | the module's string, unchanged |
 | A module's arguments that do not parse back | `ValidationError` | `InvalidParameter` | the parse's detail (port-only; the reference passes `object` through) |
+
+**The route.** `internal_fault` is a private function of `wallet.rs` (`:2975`) returning
+`bsv_rs::Error`, and the manager's functions return the crate's `Error`, whose `Internal` variant
+displays `Internal error: {0}` (`src/error.rs:268`); a refusal built as `Error::Internal` in the
+manager would reach the host with that prefix, not the reference's text. Of the two routes that
+keep the text, the brief takes the delegation returning `bsv_rs::Error`: `delegate_key_call`
+builds its refusals with `crate::error::direct_fault(WalletFaultFamily::Internal, text)`
+(`src/error.rs:464`, `pub(crate)`, the function `internal_fault` wraps), and the underlying call
+it runs (`self.key_route(originator).<method>(args)`, which returns `bsv_rs::Result`) passes its
+own error through untouched. The other route, the delegation answering a crate-private outcome
+that `wallet.rs` maps through `internal_fault`, keeps the text too, but the underlying call's
+`bsv_rs::Error` would then cross the manager's crate-`Error` return and need a carrier variant or
+a second mapping to come back unchanged. The class is the same `Internal` either way, and stays a
+reading below.
 
 The alternative is `AccessDenied` (`Unauthorized`, `Access denied: ` prefixed): a host could then
 match a module's refusal as a permission refusal, at the cost of the reference's text and of
@@ -314,17 +361,22 @@ Risks:
 
 > Lane p5-726-pmodule-key-calls. Read this note, `WPM.ts:843-885` and `:5142-5385` at
 > ts-stack `edf6e03`, `pmodules.test.ts:892-1293`. (1) In `permissions_manager.rs`, a
-> crate-private `delegate_key_call`: the name's `p ` match and scheme as `:851-855`, the module
-> from `config.permission_modules`, `Unsupported P-module scheme: p <id>` as `internal_fault`
-> when absent, `on_request`, the underlying call, `on_response`; a module's `Err(String)` as
-> `internal_fault` with its text. (2) Seven crate-private request and result JSON mappings, each
+> crate-private `delegate_key_call` returning `bsv_rs::Result`: the name's `p ` match and scheme
+> as `:851-855`; the scheme `nosend` reserved ahead of the lookup, refused with `:800`'s text and
+> a host's `nosend` entry never read (section 3.2); the module from
+> `config.permission_modules`, `Unsupported P-module scheme: p <id>` when absent, `on_request`,
+> the underlying call, `on_response`; a module's `Err(String)` with its text; every refusal
+> through `crate::error::direct_fault(WalletFaultFamily::Internal, ..)`, never `Error::Internal`
+> (section 3.4). (2) Seven crate-private request and result JSON mappings, each
 > with a fixture in the reference's JSON shape. (3) In `wallet.rs`, `key_call!` beside
 > `key_permission!` so each of the seven stays one line; `get_public_key` delegates inside its
 > protocol arm and returns before the identity-key check; the two linkage calls unchanged.
 > (4) Witnesses: a module registered for `btms` is asked on each of the seven and its
 > transformed arguments and answer are taken; an admin originator is delegated; no module for
 > the scheme refuses with the text and no prompt; a non-`p` name takes the ordinary check; a
-> module's `Err` crosses with its text; the plant (the match removed) red. (5) CHANGELOG
+> module's `Err` crosses with its text, no `Internal error: ` prefix; a host's `nosend` module
+> registered, `encrypt` under `p nosend x` refused with `:800`'s text and the host's module never
+> asked; the plant (the match removed) red. (5) CHANGELOG
 > under `### Changed` and the host note on bsv-wallet-cli#386. No new public item; no
 > `handle_request`; no `Cargo.toml`. The fixtures suite among the gates.
 
