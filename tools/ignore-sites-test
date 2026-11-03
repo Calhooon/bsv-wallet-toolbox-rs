@@ -5,7 +5,10 @@ sqlite build does not list, the attribute across lines and on one, a usage
 fault on an empty list, and the full path (#656): a dead site sharing its
 name with a running test, the #[path] chain of the ladder fixtures, inline
 mods, the remote-only job's sites, an attribute in a comment or a string,
-and a file no crate reaches.
+and a file no crate reaches; and each site against its own binary's list
+(#693): a dead site in a test binary whose path a live lib test has, a live
+and a dead site in one binary, cargo's coloured `Running` lines, and a list
+with no `Running` line.
 
   tools/ignore-sites-test
 """
@@ -51,7 +54,24 @@ def check(name, ok, detail=""):
         print(f"FAIL {name} {detail}")
 
 
-def run(files, every, ignored, job=None):
+def listing(lists, colour):
+    """Cargo's `--list` output with its stderr: a list of tests is the lib's,
+    a dict maps each crate root to its tests, None is a bare list."""
+    if lists is None:
+        return ""
+    if not isinstance(lists, dict):
+        lists = {"src/lib.rs": lists}
+    on, off = ("\x1b[1m\x1b[92m", "\x1b[0m") if colour else ("", "")
+    out = [f"{on}    Finished{off} `test` profile [unoptimized] target(s) in 0.30s\n"]
+    for crate, tests in lists.items():
+        unit = "unittests " if crate.startswith("src/") else ""
+        out.append(f"{on}     Running{off} {unit}{crate} (target/debug/deps/x-0)\n")
+        out += [f"{t}: test\n" for t in tests]
+        out.append(f"\n{len(tests)} tests, 0 benchmarks\n")
+    return "".join(out)
+
+
+def run(files, every, ignored, job=None, colour=False):
     """The guard's exit and output over a scratch crate and its two lists."""
     tmp = Path(tempfile.mkdtemp(prefix="ignore-sites-test-", dir=os.environ.get("TMPDIR")))
     try:
@@ -60,9 +80,11 @@ def run(files, every, ignored, job=None):
             (tmp / rel).write_text(text)
         (tmp / "src").mkdir(exist_ok=True)
         (tmp / "tests").mkdir(exist_ok=True)
-        (tmp / "all.txt").write_text("".join(f"{t}: test\n" for t in every)
-                                     + f"{len(every)} tests, 0 benchmarks\n")
-        (tmp / "ignored.txt").write_text("".join(f"{t}: test\n" for t in ignored))
+        if every is None:
+            (tmp / "all.txt").write_text("a::slow: test\n1 tests, 0 benchmarks\n")
+        else:
+            (tmp / "all.txt").write_text(listing(every, colour))
+        (tmp / "ignored.txt").write_text(listing(ignored, colour))
         argv = [sys.executable, str(SCRIPT), "--root", str(tmp),
                 "--all", str(tmp / "all.txt"), "--ignored", str(tmp / "ignored.txt")]
         if job:
@@ -83,7 +105,7 @@ check("a confined site the sqlite build lists and runs is green",
 
 code, out = run({"tests/fixtures/main.rs": "mod b;\n",
                  "tests/fixtures/b.rs": ONE_LINE.format(name="cut")},
-                ["b::cut"], [])
+                {"tests/fixtures/main.rs": ["b::cut"]}, [])
 check("the attribute on one line, in a test target's module, is a site",
       code == 0 and "ok   tests/fixtures/b.rs:1 b::cut" in out, out)
 
@@ -162,6 +184,36 @@ code, out = run({"src/lib.rs": "\n", "src/orphan.rs": ONE_LINE.format(name="lost
                 ["lost"], [])
 check("a site in a file no crate reaches is red",
       code == 1 and "no crate's module tree reaches the file" in out, out)
+
+# #693: the #691 read's plant, a dead a::slow in a test binary beside a live
+# a::slow in the lib; one set of every binary's paths read both as ok.
+CROSS = {"src/lib.rs": "mod a;\n", "src/a.rs": ONE_LINE.format(name="slow"),
+         "tests/t/main.rs": "mod a;\n", "tests/t/a.rs": DEAD.format(name="slow")}
+code, out = run(CROSS, {"src/lib.rs": ["a::slow"], "tests/t/main.rs": []}, {})
+check("a dead site whose path a live test of another binary has is red",
+      code == 1 and "ok   src/a.rs:1 a::slow (src/lib.rs)" in out
+      and "FAIL tests/t/a.rs:2 slow: not in the sqlite build's list as"
+      " a::slow (tests/t/main.rs)" in out and "2 sites, 1 red" in out, out)
+
+code, out = run({"tests/t.rs": "mod a;\nmod b;\n", "tests/a.rs": ONE_LINE.format(name="live"),
+                 "tests/b.rs": DEAD.format(name="dead")},
+                {"src/lib.rs": ["b::dead"], "tests/t.rs": ["a::live"], "tests/a.rs": [],
+                 "tests/b.rs": []}, {})
+check("a live and a dead site in one binary: the dead one alone is red",
+      code == 1 and "ok   tests/a.rs:1 a::live (tests/t.rs)" in out
+      and "FAIL tests/b.rs:2 dead: not in the sqlite build's list as dead (tests/b.rs)"
+      " or b::dead (tests/t.rs)" in out and "2 sites, 1 red" in out, out)
+
+code, out = run({"src/lib.rs": "mod a;\n", "src/a.rs": ONE_LINE.format(name="slow"),
+                 "tests/u.rs": "#[test]\nfn u() {}\n"},
+                {"src/lib.rs": ["a::slow"], "tests/u.rs": ["u"]},
+                {"src/lib.rs": [], "tests/u.rs": []}, colour=True)
+check("cargo's coloured Running lines name the binaries",
+      code == 0 and "ok   src/a.rs:1 a::slow (src/lib.rs)" in out, out)
+
+code, out = run({"src/lib.rs": "mod a;\n", "src/a.rs": ONE_LINE.format(name="slow")}, None, {})
+check("a list with a test before any Running line is a usage fault",
+      code == 2 and "before any Running line" in out, out)
 
 print(f"ignore-sites-test: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
