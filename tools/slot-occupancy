@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+"""The account's runner-slot occupancy by hour of the day, UTC (#638).
+
+Reads the Actions API with `gh api` (reads only): each repository's workflow
+runs over the last --days, and the jobs of the runs created in the last
+--jobs-days (a job is what holds a runner slot); the runs before that count by
+their run-level times alone, so the call count stays inside the API's hour.
+Every raw page is cached as JSON under --cache (default
+$TMPDIR/slot-occupancy), with a manifest of the window and the call count;
+--from-cache DIR reads such a directory and makes no call.
+
+For each hour of the day, summed over the days of the jobs window:
+
+  runner-min   the minutes of job run time (started_at to completed_at)
+               falling in that hour, split at the hour's edges
+  peak         the most jobs running at once, sampled at each minute's start
+  non-heavy    the same peak counting the jobs of non-heavy runs only
+  heavy        the same peak counting the jobs of heavy runs only
+  mean slots   runner-min over the minutes of that hour in the jobs window
+               (--jobs-days times 60): the slots held on average
+  wait         the queue wait, job started_at minus job created_at (the
+               moment the job was queued, so a `needs` chain is not counted
+               as queue), bucketed by the hour the job was queued: the median
+               and the worst; "pr/queue" counts pull_request and merge_group
+               runs only
+  run-min      the run-level minutes (run_started_at to updated_at) over the
+               whole --days window, every run
+
+Under the table, the pull_request and merge_group waits split by whether a
+heavy run's job held a slot at the minute the job was queued.
+
+A heavy run is a schedule-event run or one whose workflow name matches
+HEAVY_PATTERN (Mutants, matrix, fuzz, coverage, bench, dependents, nightly).
+A job on a self-hosted runner holds no hosted slot and is left out (counted);
+so is a job no runner took (runner_name empty: a skipped job, or one
+cancelled while queued, whose started_at is its created_at and whose
+completed_at is the cancel, with no steps), from the waits as well.
+
+The one-line recommendation: the reserve is the 95th percentile of the
+per-minute non-heavy concurrency over the busy minutes plus MARGIN, the cap
+is SLOTS minus the reserve, and the quiet hours (peak under QUIET_BELOW) are
+named, with whether each stagger slot sits in one.
+
+Usage:
+  tools/slot-occupancy --repos Calhooon/bsv-rs,Calhooon/bsv-wallet-cli
+  tools/slot-occupancy --days 7 --jobs-days 3 --repos a,b --cache DIR
+  tools/slot-occupancy --from-cache DIR
+A repository without an owner takes --owner (default Calhooon).
+"""
+
+import argparse
+import json
+import math
+import os
+import re
+import statistics
+import subprocess
+import sys
+import threading
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import quote
+
+SLOTS = 20
+QUIET_BELOW = 6
+MARGIN = 2
+STAGGER = (0, 3, 6)
+HEAVY_PATTERN = re.compile(r"mutant|matrix|fuzz|coverage|bench|dependent|nightly", re.I)
+PR_EVENTS = ("pull_request", "pull_request_target", "merge_group")
+# A listing query returns at most this many runs; a slice above it is halved.
+LIST_LIMIT = 1000
+
+
+def ts(s):
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) if s else None
+
+
+def iso(d):
+    return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------- the reads
+
+class Reader:
+    """`gh api` reads, each page written to the cache; or the cache alone."""
+
+    def __init__(self, cache, offline):
+        self.cache = Path(cache)
+        self.offline = offline
+        self.calls = 0
+        self.lock = threading.Lock()
+
+    def page(self, name, path):
+        f = self.cache / name
+        if f.exists():
+            return json.loads(f.read_text())
+        if self.offline:
+            raise SystemExit(f"slot-occupancy: {f} is not in the cache")
+        out = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+        with self.lock:
+            self.calls += 1
+        if out.returncode != 0:
+            raise SystemExit(f"slot-occupancy: gh api {path}: {out.stderr.strip()}")
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(out.stdout)
+        return json.loads(out.stdout)
+
+
+def slug(repo):
+    return repo.replace("/", "__")
+
+
+def list_runs(reader, repo, start, end):
+    """Every run created in [start, end), the window sliced under LIST_LIMIT."""
+    runs = {}
+    slices = []
+    t = start
+    while t < end:
+        slices.append((t, min(t + timedelta(days=1), end)))
+        t += timedelta(days=1)
+    while slices:
+        a, b = slices.pop(0)
+        rng = quote(f"{iso(a)}..{iso(b - timedelta(seconds=1))}")
+        key = f"{slug(repo)}/runs-{a:%Y%m%dT%H%M%S}-{b:%Y%m%dT%H%M%S}"
+        p = 1
+        while True:
+            data = reader.page(f"{key}-p{p}.json",
+                               f"repos/{repo}/actions/runs?per_page=100&page={p}&created={rng}")
+            if p == 1 and data["total_count"] > LIST_LIMIT and (b - a) > timedelta(minutes=10):
+                mid = a + (b - a) / 2
+                slices[:0] = [(a, mid), (mid, b)]
+                break
+            for r in data["workflow_runs"]:
+                runs[r["id"]] = r
+            if len(data["workflow_runs"]) < 100:
+                break
+            p += 1
+    return list(runs.values())
+
+
+def list_jobs(reader, repo, run_id):
+    jobs = []
+    p = 1
+    while True:
+        data = reader.page(f"{slug(repo)}/jobs-{run_id}-p{p}.json",
+                           f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={p}")
+        jobs.extend(data["jobs"])
+        if len(data["jobs"]) < 100:
+            return jobs
+        p += 1
+
+
+def pages(cache):
+    return sum(1 for f in Path(cache).rglob("*.json") if f.name != "manifest.json")
+
+
+def gather_cached(cache, repos, now, days, jobs_days):
+    """The same from a cache directory: every runs page, then each run's jobs."""
+    start, jobs_from = now - timedelta(days=days), now - timedelta(days=jobs_days)
+    runs, jobs = [], []
+    for repo in repos:
+        d = Path(cache) / slug(repo)
+        seen = {}
+        for f in sorted(d.glob("runs-*.json")):
+            for r in json.loads(f.read_text())["workflow_runs"]:
+                seen[r["id"]] = r
+        for r in sorted(seen.values(), key=lambda r: r["id"]):
+            created = ts(r["created_at"])
+            if not start <= created < now:
+                continue
+            r = dict(r, repo=repo)
+            runs.append(r)
+            if created >= jobs_from:
+                for f in sorted(d.glob(f"jobs-{r['id']}-p*.json")):
+                    jobs.extend(dict(j, repo=repo, run=r) for j in json.loads(f.read_text())["jobs"])
+    return runs, jobs
+
+
+def gather(reader, repos, now, days, jobs_days):
+    """(runs, jobs): runs as dicts with 'repo'; jobs with 'repo', 'run'."""
+    start = now - timedelta(days=days)
+    jobs_from = now - timedelta(days=jobs_days)
+    runs = []
+    for repo in repos:
+        for r in sorted(list_runs(reader, repo, start, now), key=lambda r: r["id"]):
+            runs.append(dict(r, repo=repo))
+    recent = [r for r in runs if ts(r["created_at"]) >= jobs_from]
+    # Eight reads at once: the jobs pages are one call a run.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pages_ = pool.map(lambda r: list_jobs(reader, r["repo"], r["id"]), recent)
+        jobs = [dict(j, repo=r["repo"], run=r) for r, js in zip(recent, pages_) for j in js]
+    return runs, jobs
+
+
+# ---------------------------------------------------------------- the arithmetic
+
+def is_heavy(run):
+    return run.get("event") == "schedule" or bool(HEAVY_PATTERN.search(run.get("name") or ""))
+
+
+def ran(job):
+    """Whether a hosted runner took the job."""
+    return bool(job.get("runner_name")) and "self-hosted" not in (job.get("labels") or [])
+
+
+def held(job):
+    """The (start, end) a job held a hosted slot, or None."""
+    if not ran(job):
+        return None
+    a, b = ts(job.get("started_at")), ts(job.get("completed_at"))
+    if a is None or b is None or b <= a:
+        return None
+    return a, b
+
+
+def split_by_hour(a, b):
+    """Yield (hour of day, seconds) for the interval [a, b)."""
+    t = a
+    while t < b:
+        edge = t.replace(minute=0, second=0) + timedelta(hours=1)
+        e = min(edge, b)
+        yield t.hour, (e - t).total_seconds()
+        t = e
+
+
+def minutes_of(a, b):
+    """The minute starts in [a, b): the samples a job is counted at."""
+    m = a.replace(second=0)
+    if m < a:
+        m += timedelta(minutes=1)
+    while m < b:
+        yield m
+        m += timedelta(minutes=1)
+
+
+def wait_secs(job):
+    q = ts(job.get("created_at")) or ts(job["run"]["created_at"])
+    s = ts(job.get("started_at"))
+    if q is None or s is None:
+        return None
+    return q, max(0.0, (s - q).total_seconds())
+
+
+class Table:
+    def __init__(self):
+        self.min = defaultdict(float)
+        self.conc = defaultdict(int)       # minute -> jobs running
+        self.conc_light = defaultdict(int)  # minute -> non-heavy jobs running
+        self.waits = defaultdict(list)
+        self.pr_waits = defaultdict(list)
+        self.pr_queued = []  # (minute queued, wait) of pull request and queue jobs
+        self.run_min = defaultdict(float)
+        self.jobs = defaultdict(int)
+
+    def add_job(self, job):
+        if not ran(job):
+            return
+        span = held(job)
+        if span is not None:
+            a, b = span
+            self.jobs[a.hour] += 1
+            for h, s in split_by_hour(a, b):
+                self.min[h] += s / 60
+            heavy = is_heavy(job["run"])
+            for m in minutes_of(a, b):
+                self.conc[m] += 1
+                if not heavy:
+                    self.conc_light[m] += 1
+        w = wait_secs(job)
+        if w is not None and job.get("started_at"):
+            q, secs = w
+            self.waits[q.hour].append(secs)
+            if job["run"].get("event") in PR_EVENTS:
+                self.pr_waits[q.hour].append(secs)
+                self.pr_queued.append((q.replace(second=0), secs))
+
+    def add_run(self, run):
+        a, b = ts(run.get("run_started_at")), ts(run.get("updated_at"))
+        if a and b and b > a:
+            for h, s in split_by_hour(a, b):
+                self.run_min[h] += s / 60
+
+    def peak(self, h, light=False):
+        conc = self.conc_light if light else self.conc
+        return max((c for m, c in conc.items() if m.hour == h), default=0)
+
+    def heavy_peak(self, h):
+        return max((c - self.conc_light[m] for m, c in self.conc.items() if m.hour == h),
+                   default=0)
+
+    def pr_split(self):
+        """{heavy holding a slot at the minute queued: [waits]}."""
+        split = {True: [], False: []}
+        for m, secs in self.pr_queued:
+            split[self.conc.get(m, 0) > self.conc_light.get(m, 0)].append(secs)
+        return split
+
+
+def build(runs, jobs, left=None):
+    total, per = Table(), defaultdict(Table)
+    for r in runs:
+        total.add_run(r)
+        per[r["repo"]].add_run(r)
+    for j in jobs:
+        if left is not None:
+            if "self-hosted" in (j.get("labels") or []):
+                left["self-hosted"] += 1
+            elif not j.get("runner_name"):
+                left["no runner"] += 1
+        total.add_job(j)
+        per[j["repo"]].add_job(j)
+    return total, per
+
+
+def mmss(secs):
+    if secs is None:
+        return "-"
+    secs = int(round(secs))
+    return f"{secs // 60}:{secs % 60:02d}"
+
+
+def med(xs):
+    return statistics.median(xs) if xs else None
+
+
+def p95(xs):
+    if not xs:
+        return 0
+    xs = sorted(xs)
+    return xs[max(0, math.ceil(0.95 * len(xs)) - 1)]
+
+
+def hour_table(t, jobs_days):
+    out = ["| hour (UTC) | jobs | runner-min | mean slots | peak | non-heavy peak | heavy peak "
+           "| wait median | wait worst | pr/queue wait median | pr/queue wait worst | run-min |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for h in range(24):
+        out.append(
+            f"| {h:02d} | {t.jobs[h]} | {t.min[h]:.0f} | {t.min[h] / (jobs_days * 60):.1f} "
+            f"| {t.peak(h)} | {t.peak(h, True)} | {t.heavy_peak(h)} "
+            f"| {mmss(med(t.waits[h]))} | {mmss(max(t.waits[h], default=None))} "
+            f"| {mmss(med(t.pr_waits[h]))} | {mmss(max(t.pr_waits[h], default=None))} "
+            f"| {t.run_min[h]:.0f} |")
+    return out
+
+
+def repo_table(per):
+    names = sorted(per)
+    out = ["| hour (UTC) | " + " | ".join(n.split("/")[-1] for n in names) + " |",
+           "|---" * (len(names) + 1) + "|"]
+    for h in range(24):
+        cells = [f"{per[n].min[h]:.0f} / {per[n].peak(h)} / {mmss(med(per[n].waits[h]))}"
+                 for n in names]
+        out.append(f"| {h:02d} | " + " | ".join(cells) + " |")
+    return out
+
+
+def heavy_table(jobs):
+    rows = defaultdict(lambda: {"runs": set(), "jobs": 0, "hours": set(), "min": 0.0})
+    for j in jobs:
+        if not is_heavy(j["run"]):
+            continue
+        span = held(j)
+        row = rows[(j["repo"].split("/")[-1], j["run"]["name"], j["run"]["event"])]
+        row["runs"].add(j["run"]["id"])
+        if span:
+            a, b = span
+            row["jobs"] += 1
+            row["min"] += (b - a).total_seconds() / 60
+            row["hours"].update(h for h, _ in split_by_hour(a, b))
+    out = ["| repository | workflow | event | runs | jobs | hours (UTC) | runner-min |",
+           "|---|---|---|---|---|---|---|"]
+    for (repo, name, event), r in sorted(rows.items(), key=lambda kv: -kv[1]["min"]):
+        hours = ",".join(f"{h:02d}" for h in sorted(r["hours"])) or "-"
+        out.append(f"| {repo} | {name} | {event} | {len(r['runs'])} | {r['jobs']} "
+                   f"| {hours} | {r['min']:.0f} |")
+    return out
+
+
+def recommend(t):
+    busy = [c for c in t.conc_light.values() if c > 0]
+    reserve = p95(busy) + MARGIN
+    cap = max(1, SLOTS - reserve)
+    quiet = [h for h in range(24) if t.peak(h) < QUIET_BELOW]
+    slots = ", ".join(f"{h:02d}:00Z {'quiet' if h in quiet else 'hot'}" for h in STAGGER)
+    qs = ",".join(f"{h:02d}" for h in quiet) or "none"
+    light = ",".join(f"{h:02d}" for h in sorted(sorted(range(24), key=lambda h: t.min[h])[:4]))
+    return (f"recommendation: max-parallel {cap} (non-heavy p95 {p95(busy)} + margin {MARGIN} "
+            f"of {SLOTS} slots; non-heavy peak {max(busy, default=0)}); quiet hours {qs}; "
+            f"lightest hours by runner-min {light}; stagger {slots}")
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--days", type=int, default=7)
+    ap.add_argument("--jobs-days", type=int, default=3)
+    ap.add_argument("--repos", help="owner/name or name, comma separated")
+    ap.add_argument("--owner", default="Calhooon")
+    ap.add_argument("--cache", default=str(Path(os.environ.get("TMPDIR", ".")) / "slot-occupancy"))
+    ap.add_argument("--from-cache", help="read a cache directory, no call")
+    ap.add_argument("--now", help="the window's end, ISO UTC (default: now, or the manifest's)")
+    args = ap.parse_args()
+
+    cache = Path(args.from_cache or args.cache)
+    manifest_f = cache / "manifest.json"
+    manifest = json.loads(manifest_f.read_text()) if args.from_cache and manifest_f.exists() else {}
+    repos = ([r if "/" in r else f"{args.owner}/{r}" for r in args.repos.split(",")]
+             if args.repos else manifest.get("repos"))
+    if not repos:
+        ap.error("--repos is required without a manifest")
+    now = ts(args.now or manifest.get("now")) or datetime.now(timezone.utc).replace(microsecond=0)
+    days = manifest.get("days", args.days) if args.from_cache else args.days
+    jobs_days = manifest.get("jobs_days", args.jobs_days) if args.from_cache else args.jobs_days
+
+    reader = Reader(cache, offline=bool(args.from_cache))
+    if args.from_cache:
+        runs, jobs = gather_cached(cache, repos, now, days, jobs_days)
+    else:
+        runs, jobs = gather(reader, repos, now, days, jobs_days)
+    if not args.from_cache:
+        cache.mkdir(parents=True, exist_ok=True)
+        manifest_f.write_text(json.dumps({"repos": repos, "now": iso(now), "days": days,
+                                          "jobs_days": jobs_days, "calls": reader.calls,
+                                          "pages": pages(cache)}, indent=1))
+    left = {"self-hosted": 0, "no runner": 0}
+    total, per = build(runs, jobs, left)
+
+    print(f"window: runs {iso(now - timedelta(days=days))} to {iso(now)} ({days} days), "
+          f"jobs from {iso(now - timedelta(days=jobs_days))} ({jobs_days} days)")
+    print(f"repositories: {', '.join(repos)}")
+    print(f"runs {len(runs)}, jobs {len(jobs)}, left out: self-hosted {left['self-hosted']}, "
+          f"no runner (skipped, or cancelled queued) {left['no runner']}; "
+          f"api calls this run {reader.calls}"
+          + f", pages in the cache {pages(cache)} (one call each)")
+    print("\n## Total\n")
+    print("\n".join(hour_table(total, jobs_days)))
+    split = total.pr_split()
+    print("\npr/queue wait, queued while a heavy job held a slot: "
+          f"median {mmss(med(split[True]))}, worst {mmss(max(split[True], default=None))} "
+          f"({len(split[True])} jobs); while none did: median {mmss(med(split[False]))}, "
+          f"worst {mmss(max(split[False], default=None))} ({len(split[False])} jobs)")
+    print("\n## Per repository (runner-min / peak / wait median)\n")
+    print("\n".join(repo_table(per)))
+    print("\n## Heavy runs\n")
+    print("\n".join(heavy_table(jobs)))
+    print()
+    print(recommend(total))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
