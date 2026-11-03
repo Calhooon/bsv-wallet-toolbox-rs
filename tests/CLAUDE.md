@@ -17,7 +17,7 @@ cargo test -- --test-threads=1       # Serialize tests sharing resources
 cargo test -- --ignored              # Run network-dependent tests only
 ```
 
-Most integration tests require the `sqlite` feature (default). The `valid_create_action_args` module in `test_vectors.rs` requires the `remote` feature. A test that opens a `StorageSqlx` carries a `sqlite` gate (the file's `#![cfg]`, or the module's or statement's), so `cargo test --lib --tests --no-default-features --features remote` builds and runs; CI's Test Suite job runs it (#429).
+Most integration tests require the `sqlite` feature (default). The `valid_create_action_args` module in `test_vectors.rs` requires the `remote` feature. A test that opens a `StorageSqlx` carries a `sqlite` gate (the file's `#![cfg]`, or the module's or statement's), so `cargo test --lib --tests --no-default-features --features remote` builds and runs; CI's `Test Suite (remote only)` job runs it (#429, #612).
 
 ## Files
 
