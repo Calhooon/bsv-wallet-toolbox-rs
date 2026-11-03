@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- fuzz corpus: the four `bhs` seeds under #148's old fixture names (`get_chain_tip_header` and
+  `get_header_for_height`, `429_is_an_error_asked_again` and `429_without_retry_after`, answer
+  `0_0`) removed; their bytes sit under nine other committed `bhs` names (one header), so the
+  target loses nothing. The seeder's stale report (#743) named them; a corpus removal is its own
+  commit by the captain's hand.
 
 - #735: the sync chunk's lengths (`estimate_size`'s serialized length and
   the twelve row counts into `ChunkingState::add_items` in
