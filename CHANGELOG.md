@@ -458,6 +458,19 @@
   divergence, the CLI's `origin_grants` at its layer). The recommendation
   is parity in two steps, the read-only token lookup ahead of the mint.
   Nothing is decided; no behaviour moves.
+- #769 (the keeper's 2026-11-03 22:3xZ reading on LOW's L59 row): a
+  witness per cause a tracker gives the internalize door, and
+  `docs/DIVERGENCES.md`, the divergence register beside the reorg one,
+  with D1: a proof at a height the header service does not have holds as
+  a retryable `ServiceError` (family `Service`) and is admitted on the
+  next try, where the reference refuses it as an invalid root
+  (ts-stack@edf6e03 `ChaintracksChainTracker.ts:189`, the SDK's
+  `MerklePath.ts:499`); the owner's ruling pending, the keeper's
+  recommendation to keep the hold. Host note (bsv-wallet-cli#386): an
+  unknown height answers 502 `SERVICE_ERROR` and is retried where the
+  reference answers a refusal; a tracker transport fault is the SDK's
+  typed `TransportFault`, 502 Service; a wrong root at a known height is
+  `InvalidBeef`, `InvalidParameter`, 400 Validation. No behaviour moves.
 
 ### Fixed
 
