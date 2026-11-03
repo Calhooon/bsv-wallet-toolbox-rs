@@ -591,7 +591,8 @@ it is the refusal before the proof, nothing stored. The issuance path reads
 no privileged key, as the reference's does not (`Wallet.ts:769-824`).
 The two linkage calls no longer stay with the everyday key: the gap #569
 named closed with the trait's two reveal methods. Witnesses:
-`privileged_keys_tests.rs` (the grant separation among them),
+`privileged_keys_tests.rs`, `privileged_keys_permission_tests.rs` (the
+grant separation among them),
 `privileged_linkage_tests.rs`, `privileged_certificate_tests.rs`.
 
 ### LookupResolver (legacy stub)
