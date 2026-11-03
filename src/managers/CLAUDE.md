@@ -355,7 +355,7 @@ reset()                                // Reset to default settings
 
 Full BRC-98/99 permission enforcement with four categories, in-memory caching, and pluggable consent flows.
 
-A grant lives only in the five-minute cache; the reference keeps it as a PushDrop token in an admin basket. The two shapes for a stored grant (#751), for the owner's word: `docs/design/permission-token-store.md`.
+A grant the port makes lives only in the five-minute cache; the reference keeps it as a PushDrop token in an admin basket. The two shapes for a stored grant (#751), for the owner's word: `docs/design/permission-token-store.md`. Step 1 of that note is in: the manager reads the tokens a wallet already holds (`find_stored_token`, crate-private, the reference's `find*Token` at `WalletPermissionsManager.ts:3080-3239`) after the cache and before the seek-false refusal and the prompt, for the protocol, basket and certificate kinds: `list_outputs` on `admin protocol-permission`, `admin basket-access` or `admin certificate-access` with the reference's tags (`originator <o>` for the trimmed and normalized originator, then untagged), entire transactions, as the admin originator; the source checked (one satoshi, a canonical lock-before PushDrop under the wallet's `[2, 'admin permission token encryption']` key `"1"` for `self`, its signature over the fields); each field decrypted under that protocol; the domain normalized against the request, then the kind's fields and the expiry (0 never). A live token admits and is cached; an expired protocol token refuses a seek-false call with the reference's `:1549` text; otherwise the path is as before. The manager's `underlying` must be a full wallet for the read (a `ProtoWallet` refuses `list_outputs`, which answers no token, where the reference throws). Reads per uncached call: two `list_outputs` for an absent token; one `list_outputs`, one `get_public_key` (once per manager) and six `decrypt` (three for a basket) for a live one. Nothing mints, renews or revokes, and spending reads the cache alone (step 2). The witnesses are `permission_token_lookup_tests.rs`.
 
 ### Permission Categories
 
@@ -372,7 +372,7 @@ Each `ensure_*` method follows the same pattern:
 1. **Admin bypass** - Admin originator always allowed
 2. **Level/reserved check** - Security level 0 bypasses protocol checks; admin-reserved names blocked; a level-1 protocol's counterparty is dropped (the reference's `WalletPermissionsManager.ts:1505`), so its grant and prompt name none (#581)
 3. **Config flag bypass** - Per-usage-type config flags can disable specific checks; for a protocol, an everyday call (privileged reads as everyday without `differentiate_privileged_operations`) whose counterparty is whitelisted for the protocol's name is admitted with no prompt (the reference's `WalletPermissionsManager.ts:1516`, #725; level 1 names no counterparty, so it never matches)
-4. **Cache check** - In-memory cache with 5-minute TTL (`CACHE_TTL_SECS`)
+4. **Cache check** - In-memory cache with 5-minute TTL (`CACHE_TTL_SECS`), then the stored token in the kind's admin basket (protocol, basket, certificate; #751 step 1)
 5. **Permission request flow** - Invokes `PermissionRequestHandler` callback for user consent
 6. **Cache result** - Granted permissions are cached for subsequent calls
 
