@@ -296,41 +296,33 @@ async fn other_create_options_keep_tx() {
     }
 }
 
-/// The `beef-<txid8>.hex` files under the temp folder, with their modified times.
-fn beef_dumps() -> std::collections::HashMap<std::path::PathBuf, std::time::SystemTime> {
-    std::fs::read_dir(std::env::temp_dir())
-        .unwrap()
-        .filter_map(std::result::Result::ok)
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with("beef-") && name.ends_with(".hex")
-        })
-        .filter_map(|entry| Some((entry.path(), entry.metadata().ok()?.modified().ok()?)))
-        .collect()
+/// The modified time of one path, `None` when nothing is there.
+fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 /// An immediate broadcast writes no `beef-<txid8>.hex` under the temp folder (#530).
+///
+/// #584: the witness reads no folder. The #530 dump's name was fixed by the
+/// txid, so one `metadata` call on that path before and after the broadcast
+/// answers what a scan of the shared temp folder answered, and a pile of
+/// unrelated files there (1.3 million took a scan 171 s) costs it nothing.
+/// The txid is known only after the call, so the clock read before it
+/// stands for the snapshot: a file of that name modified before the call is
+/// not this run's.
 #[tokio::test]
 async fn immediate_broadcast_writes_no_beef_dump() {
     let (wallet, parent) = funded_wallet().await;
-    let before = beef_dumps();
+    let started = std::time::SystemTime::now();
     let result = created(wallet.create_action(txid_only_payment(&parent), None).await);
     let txid = hex::encode(result.txid.expect("the answer carries its txid"));
     assert_eq!(wallet.services().mock.call_count("post_beef"), 1);
 
-    let name = format!("beef-{}.hex", &txid[..8]);
-    let written: Vec<_> = beef_dumps()
-        .into_iter()
-        .filter(|(path, modified)| {
-            path.file_name().is_some_and(|file| file == name.as_str())
-                && before.get(path) != Some(modified)
-        })
-        .map(|(path, _)| path)
-        .collect();
-    // Only a file this run created is removed; one it overwrote is left.
-    for path in written.iter().filter(|path| !before.contains_key(*path)) {
-        let _ = std::fs::remove_file(path);
+    let path = std::env::temp_dir().join(format!("beef-{}.hex", &txid[..8]));
+    let written = modified(&path).filter(|time| *time >= started);
+    // Only a file this run wrote is removed.
+    if written.is_some() {
+        let _ = std::fs::remove_file(&path);
     }
-    assert!(written.is_empty(), "the broadcast wrote {written:?}");
+    assert!(written.is_none(), "the broadcast wrote {}", path.display());
 }

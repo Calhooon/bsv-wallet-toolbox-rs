@@ -104,31 +104,18 @@ async fn test_validate_stored_beef_tracker_error_rejects() {
     );
 }
 
-/// This process's `beef-rejected-<millis>-<pid>-<n>.hex` names under
-/// `std::env::temp_dir()`. The folder is shared, so another process's dumps
-/// between the two reads are not this tree's; the `<pid>` segment keeps
-/// only names this process wrote.
-fn rejected_dumps() -> HashSet<String> {
-    let pid = std::process::id().to_string();
-    std::fs::read_dir(std::env::temp_dir())
-        .map(|dir| {
-            dir.filter_map(std::result::Result::ok)
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "hex"))
-                .filter_map(|p| p.file_name()?.to_str().map(str::to_string))
-                .filter(|n| n.starts_with("beef-rejected-"))
-                .filter(|n| n.split('-').nth(3) == Some(pid.as_str()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// #546: a refused graph is described, never written to disk. The text
-/// names what the sorter knows; no new `beef-rejected-*.hex` appears under
-/// the temp folder (the reference has no such write).
+/// names what the sorter knows and names no `beef-rejected-*.hex` dump (the
+/// reference has no such write).
+///
+/// #584: the witness reads no folder. The dump's name carried the
+/// millisecond it was written, so a scan was the only way to find one, and a
+/// scan of the shared temp folder took 171 s under a pile of 1.3 million
+/// files. `describe_invalid_beef` returns a string and touches no file since
+/// #563; the dump, while it existed, named its path in that string, so the
+/// `names no dump` assertion carries the claim the scan made.
 #[test]
 fn test_describe_invalid_beef_names_the_missing_parent() {
-    let before = rejected_dumps();
     let chain = synth_chain(3); // a <- b <- c
     let mut beef = Beef::new();
     // c spends b, and b is absent: the BEEF cannot be valid.
@@ -152,8 +139,6 @@ fn test_describe_invalid_beef_names_the_missing_parent() {
         text.contains(&format!("roots [{c16}]")),
         "names the root: {text}"
     );
-    let new: Vec<String> = rejected_dumps().difference(&before).cloned().collect();
-    assert!(new.is_empty(), "a refused graph wrote {new:?}: {text}");
     assert!(!text.contains("beef-rejected-"), "names no dump: {text}");
 }
 
