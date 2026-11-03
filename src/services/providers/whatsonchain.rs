@@ -13,7 +13,7 @@
 //! - Mainnet: `https://api.whatsonchain.com/v1/bsv/main`
 //! - Testnet: `https://api.whatsonchain.com/v1/bsv/test`
 
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{self, Client};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -186,7 +186,7 @@ impl WhatsOnChain {
     /// rung is skipped without a request until that passes, so the ladder
     /// moves to the next explorer (the owner's word of 2026-10-22,
     /// bsv-wallet-cli#50). Before 0.12.0 this slept 2 s and retried twice.
-    async fn get_once(&self, url: &str) -> Result<reqwest::Response> {
+    async fn get_once(&self, url: &str) -> Result<http_client::Response> {
         self.gate.admit()?;
         let response = self
             .client

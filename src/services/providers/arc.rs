@@ -360,7 +360,7 @@ impl Arc {
     async fn read_submit_response(
         &self,
         response: std::result::Result<
-            reqwest::Response,
+            crate::services::providers::http_client::Response,
             crate::services::providers::http_client::RequestError,
         >,
         txid: String,

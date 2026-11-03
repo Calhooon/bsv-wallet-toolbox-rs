@@ -7,8 +7,13 @@ pub(crate) use isolated::check_url;
 pub(crate) use isolated::shared::{share_clients_on_this_thread, SharedClients};
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) use isolated::{Client, RequestBuilder, RequestError};
+#[cfg(any(test, feature = "bench-support"))]
+pub(crate) use loopback_table::Response;
+// A host's tests reach the table through `benchmark_support` (#683).
+#[cfg(feature = "bench-support")]
+pub use loopback_table::{LoopbackAnswer, LoopbackTable};
 #[cfg(not(any(test, feature = "bench-support")))]
-pub(crate) use reqwest::{Client, Error as RequestError, RequestBuilder};
+pub(crate) use reqwest::{Client, Error as RequestError, RequestBuilder, Response};
 // URL parsing for argument guards outside providers (issuance certifierUrl).
 pub(crate) use reqwest::Url;
 
@@ -82,11 +87,18 @@ pub(crate) mod test_support;
 #[path = "../../../tests/common/brc104_door_cases.rs"]
 pub(crate) mod brc104_door_cases;
 
+// #683: the test's table, answered without a socket.
+#[cfg(any(test, feature = "bench-support"))]
+#[path = "loopback_table.rs"]
+mod loopback_table;
+
 #[cfg(any(test, feature = "bench-support"))]
 mod isolated {
     use std::net::{Ipv6Addr, SocketAddr};
+    use std::sync::Arc;
     use std::time::Duration;
 
+    use super::loopback_table::{self, LoopbackTable, Response};
     use crate::{Error, Result};
 
     #[derive(Debug, thiserror::Error)]
@@ -95,6 +107,10 @@ mod isolated {
         Transport(#[from] reqwest::Error),
         #[error(transparent)]
         Isolated(#[from] Error),
+        /// A text the loopback table gives where reqwest gives its own
+        /// error: reqwest's Display, and the same `Error::HttpError` (#683).
+        #[error("{0}")]
+        Loopback(String),
     }
 
     impl From<RequestError> for Error {
@@ -102,6 +118,7 @@ mod isolated {
             match error {
                 RequestError::Transport(error) => error.into(),
                 RequestError::Isolated(error) => error,
+                RequestError::Loopback(text) => Error::HttpError(text),
             }
         }
     }
@@ -116,8 +133,10 @@ mod isolated {
         }
     }
 
+    /// The policy's client, and the table it answers from when it was
+    /// built under [`LoopbackTable::building`] (#683).
     #[derive(Clone, Debug)]
-    pub(crate) struct Client(reqwest::Client);
+    pub(crate) struct Client(reqwest::Client, Option<Arc<LoopbackTable>>);
 
     impl Client {
         pub(crate) fn new() -> Self {
@@ -153,11 +172,11 @@ mod isolated {
         }
 
         pub(crate) fn get(&self, url: impl reqwest::IntoUrl) -> RequestBuilder {
-            RequestBuilder(self.0.get(url))
+            RequestBuilder(self.0.get(url), self.1.clone())
         }
 
         pub(crate) fn post(&self, url: impl reqwest::IntoUrl) -> RequestBuilder {
-            RequestBuilder(self.0.post(url))
+            RequestBuilder(self.0.post(url), self.1.clone())
         }
     }
 
@@ -213,58 +232,68 @@ mod isolated {
         }
 
         pub(crate) fn build(self) -> std::result::Result<Client, reqwest::Error> {
+            let table = loopback_table::current();
             #[cfg(test)]
             if let Some(client) = shared::lookup(self.timeouts) {
-                return Ok(client);
+                return Ok(Client(client.0, table));
             }
-            let client = self.inner.build().map(Client)?;
+            let client = Client(self.inner.build()?, table);
             #[cfg(test)]
             shared::keep(self.timeouts, &client);
             Ok(client)
         }
     }
 
-    pub(crate) struct RequestBuilder(reqwest::RequestBuilder);
+    pub(crate) struct RequestBuilder(reqwest::RequestBuilder, Option<Arc<LoopbackTable>>);
 
     impl RequestBuilder {
         pub(crate) fn header(self, key: &str, value: impl AsRef<str>) -> Self {
-            Self(self.0.header(key, value.as_ref()))
+            Self(self.0.header(key, value.as_ref()), self.1)
         }
 
         pub(crate) fn headers(self, headers: reqwest::header::HeaderMap) -> Self {
-            Self(self.0.headers(headers))
+            Self(self.0.headers(headers), self.1)
         }
 
         pub(crate) fn timeout(self, timeout: Duration) -> Self {
-            Self(self.0.timeout(timeout))
+            Self(self.0.timeout(timeout), self.1)
         }
 
         pub(crate) fn json<T: serde::Serialize + ?Sized>(self, json: &T) -> Self {
-            Self(self.0.json(json))
+            Self(self.0.json(json), self.1)
         }
 
         pub(crate) fn body(self, body: impl Into<reqwest::Body>) -> Self {
-            Self(self.0.body(body))
+            Self(self.0.body(body), self.1)
         }
 
-        pub(crate) async fn send(self) -> std::result::Result<reqwest::Response, RequestError> {
+        pub(crate) async fn send(self) -> std::result::Result<Response, RequestError> {
             let (client, request) = self.0.build_split();
             let request = request?;
+            // A table client opens no socket for any host, so nothing it
+            // sends can leave the machine: #182 holds without the check.
+            if let Some(table) = self.1 {
+                return table.answer(request.method(), request.url().clone());
+            }
             check_url(request.url())?;
-            client.execute(request).await.map_err(|error| {
-                if error.is_redirect() {
-                    // reqwest's Display omits the policy error. Keep its
-                    // host and rule in the typed error returned to the test.
-                    RequestError::Isolated(Error::NetworkError(format!(
-                        "{error}: {}",
-                        std::error::Error::source(&error)
-                            .map(ToString::to_string)
-                            .unwrap_or_default()
-                    )))
-                } else {
-                    RequestError::Transport(error)
-                }
-            })
+            client
+                .execute(request)
+                .await
+                .map(Response::Socket)
+                .map_err(|error| {
+                    if error.is_redirect() {
+                        // reqwest's Display omits the policy error. Keep its
+                        // host and rule in the typed error returned to the test.
+                        RequestError::Isolated(Error::NetworkError(format!(
+                            "{error}: {}",
+                            std::error::Error::source(&error)
+                                .map(ToString::to_string)
+                                .unwrap_or_default()
+                        )))
+                    } else {
+                        RequestError::Transport(error)
+                    }
+                })
         }
     }
 

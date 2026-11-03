@@ -2,8 +2,12 @@
 //!
 //! These helpers are hidden from the supported wallet API. The allocation
 //! seam delegates to the existing allocator; the explorer seam only replaces
-//! provider endpoints so the real ladders can run against local fixtures.
+//! provider endpoints so the real ladders can run against local fixtures;
+//! the loopback table answers the explorer rungs without a socket (#683).
 
+/// The loopback table (#683): clients built under
+/// [`LoopbackTable::building`] answer from the test's own rows, no socket.
+pub use crate::services::providers::http_client::{LoopbackAnswer, LoopbackTable};
 use crate::services::providers::{BananaBlocks, Bitails, RateGate, WhatsOnChain};
 use crate::{Chain, Result, Services, ServicesOptions};
 use std::sync::Arc;
