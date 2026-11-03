@@ -1808,6 +1808,22 @@ where
     }
 }
 
+// The BRC-98/99 protocol check a key call asks: the request's `privileged`,
+// counterparty and `privileged_reason`, as the reference's
+// `ensureProtocolPermission` takes them (#581).
+macro_rules! key_permission {
+    ($wallet:expr, $originator:expr, $args:expr, $protocol:expr, $usage:ident) => {
+        $wallet.check_protocol_permission(
+            $originator,
+            $args.privileged == Some(true),
+            $protocol,
+            $args.counterparty.as_ref(),
+            $args.privileged_reason.as_deref(),
+            crate::managers::PermissionUsageType::$usage,
+        )
+    };
+}
+
 #[async_trait]
 impl<S, V> WalletInterface for Wallet<S, V>
 where
@@ -1827,15 +1843,7 @@ where
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for public key revelation
         if let Some(ref protocol_id) = args.protocol_id {
-            self.check_protocol_permission(
-                originator,
-                args.privileged == Some(true),
-                protocol_id,
-                args.counterparty.as_ref(),
-                args.privileged_reason.as_deref(),
-                crate::managers::PermissionUsageType::PublicKey,
-            )
-            .await?;
+            key_permission!(self, originator, args, protocol_id, PublicKey).await?;
         }
         self.key_route(originator).get_public_key(args).await
     }
@@ -1847,15 +1855,7 @@ where
     ) -> bsv_rs::Result<EncryptResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for encryption
-        self.check_protocol_permission(
-            originator,
-            args.privileged == Some(true),
-            &args.protocol_id,
-            args.counterparty.as_ref(),
-            args.privileged_reason.as_deref(),
-            crate::managers::PermissionUsageType::Encrypting,
-        )
-        .await?;
+        key_permission!(self, originator, args, &args.protocol_id, Encrypting).await?;
         self.key_route(originator).encrypt(args).await
     }
 
@@ -1866,15 +1866,7 @@ where
     ) -> bsv_rs::Result<DecryptResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for decryption
-        self.check_protocol_permission(
-            originator,
-            args.privileged == Some(true),
-            &args.protocol_id,
-            args.counterparty.as_ref(),
-            args.privileged_reason.as_deref(),
-            crate::managers::PermissionUsageType::Encrypting,
-        )
-        .await?;
+        key_permission!(self, originator, args, &args.protocol_id, Encrypting).await?;
         self.key_route(originator).decrypt(args).await
     }
 
@@ -1885,15 +1877,7 @@ where
     ) -> bsv_rs::Result<CreateHmacResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for HMAC
-        self.check_protocol_permission(
-            originator,
-            args.privileged == Some(true),
-            &args.protocol_id,
-            args.counterparty.as_ref(),
-            args.privileged_reason.as_deref(),
-            crate::managers::PermissionUsageType::Hmac,
-        )
-        .await?;
+        key_permission!(self, originator, args, &args.protocol_id, Hmac).await?;
         self.key_route(originator).create_hmac(args).await
     }
 
@@ -1904,15 +1888,7 @@ where
     ) -> bsv_rs::Result<VerifyHmacResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for HMAC verification
-        self.check_protocol_permission(
-            originator,
-            args.privileged == Some(true),
-            &args.protocol_id,
-            args.counterparty.as_ref(),
-            args.privileged_reason.as_deref(),
-            crate::managers::PermissionUsageType::Hmac,
-        )
-        .await?;
+        key_permission!(self, originator, args, &args.protocol_id, Hmac).await?;
         self.key_route(originator).verify_hmac(args).await
     }
 
@@ -1923,15 +1899,7 @@ where
     ) -> bsv_rs::Result<CreateSignatureResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for signing
-        self.check_protocol_permission(
-            originator,
-            args.privileged == Some(true),
-            &args.protocol_id,
-            args.counterparty.as_ref(),
-            args.privileged_reason.as_deref(),
-            crate::managers::PermissionUsageType::Signing,
-        )
-        .await?;
+        key_permission!(self, originator, args, &args.protocol_id, Signing).await?;
         self.key_route(originator).create_signature(args).await
     }
 
@@ -1942,16 +1910,7 @@ where
     ) -> bsv_rs::Result<VerifySignatureResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for signature verification
-        let privileged = args.privileged == Some(true);
-        self.check_protocol_permission(
-            originator,
-            privileged,
-            &args.protocol_id,
-            args.counterparty.as_ref(),
-            args.privileged_reason.as_deref(),
-            crate::managers::PermissionUsageType::Signing,
-        )
-        .await?;
+        key_permission!(self, originator, args, &args.protocol_id, Signing).await?;
         self.key_route(originator).verify_signature(args).await
     }
 
