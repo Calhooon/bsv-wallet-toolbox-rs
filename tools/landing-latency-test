@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""The cases of tools/landing-latency on the recorded fixture, no network.
+
+The fixture (tools/fixtures/landing-latency/) is seven landings of 2026-11-03
+and their three folds, trimmed to the fields the tool reads, the accounts in
+the REPORT headers replaced: #645, #650 and #661 with every stage and a fold;
+#665 removed from the queue as #667 landed and enqueued again; #648 with a
+fix lane; #663 and #665 timed from run records. Every expected figure below
+is worked by hand from the raw stamps in the fixture.
+
+  tools/landing-latency-test
+"""
+
+import datetime as dt
+import importlib.machinery
+import importlib.util
+import io
+import contextlib
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+HERE = Path(__file__).resolve().parent
+FIX = HERE / "fixtures" / "landing-latency"
+_loader = importlib.machinery.SourceFileLoader("landing_latency", str(HERE / "landing-latency"))
+_spec = importlib.util.spec_from_loader("landing_latency", _loader)
+ll = importlib.util.module_from_spec(_spec)
+_loader.exec_module(ll)
+
+passed = 0
+failed = 0
+
+
+def check(name, ok, detail=""):
+    global passed, failed
+    if ok:
+        passed += 1
+        print(f"ok   {name}")
+    else:
+        failed += 1
+        print(f"FAIL {name} {detail}")
+
+
+def near(a, b):
+    return a is not None and abs(a - b) < 0.01
+
+
+def build(since="2026-11-03T03:00:00Z"):
+    src = ll.Source(ll.REPO, None, str(FIX))
+    prs = [p for p in src.merged(since) if ll.ts(p["merged_at"]) >= ll.ts(since)]
+    runs = ll.load_runs(str(FIX / "runs"))
+    landings = [ll.landing(p, src.timeline(p["number"]), runs) for p in prs]
+    ll.link(landings, prs)
+    return {x["number"]: x for x in landings}, runs, src
+
+
+L, RUNS, SRC = build()
+
+
+def stage(n, s):
+    st = L[n]["stages"].get(s)
+    return st["min"] if st else None
+
+
+# ---- the records
+check("runs: the six named done records, the nameless and the running one skipped",
+      sorted(RUNS) == ["p5-638-slot-occupancy-by-hour", "p5-638b-slot-occupancy-fix",
+                       "p5-644-affected-map-walked-md",
+                       "review-p5-638-slot-occupancy-by-hour-b-narrow",
+                       "review-p5-638-slot-occupancy-by-hour-ci",
+                       "review-p5-644-affected-map-walked-md-ci"], sorted(RUNS))
+check("from the cache: no gh api call", SRC.calls == 0, SRC.calls)
+check("the set: seven landings and three folds merged since 03:00Z",
+      sorted(L) == [645, 646, 648, 650, 653, 661, 662, 663, 665, 667], sorted(L))
+check("folds: #646, #653, #662 classed as folds and nothing else",
+      sorted(n for n, x in L.items() if x["is_fold"]) == [646, 653, 662])
+
+# ---- #645: every stage, DONE from the header, the read before the open held
+x = L[645]
+check("#645 done from the header 03:20", x["src"]["done"] == "hdr"
+      and ll.hhmm(x["marks"]["done"]) == "03:20")
+check("#645 open: 03:20:00 to 03:36:17 = 16.28", near(stage(645, "open"), 16.283))
+check("#645 wait: the read's 03:36 held at the open 03:36:17, zero",
+      near(stage(645, "wait"), 0.0) and x["held"])
+check("#645 read: 03:36:17 to 03:39:00 = 2.72", near(stage(645, "read"), 2.717))
+check("#645 fix: none, zero", near(stage(645, "fix"), 0.0))
+check("#645 post: 03:39:00 to the enqueue 03:41:43 = 2.72", near(stage(645, "post"), 2.717))
+check("#645 ci: 03:41:43 to the add 03:50:20 = 8.62", near(stage(645, "ci"), 8.617))
+check("#645 queue: 03:50:20 to the merge 03:58:43 = 8.38", near(stage(645, "queue"), 8.383))
+check("#645 total: 03:20:00 to 03:58:43 = 38.72", near(x["total"], 38.717))
+check("#645 the stages sum to the total",
+      near(sum(s["min"] for s in x["stages"].values()), x["total"]))
+check("#645 fold #646: 03:58:43 to 04:01:42 = 2.98",
+      x["fold"] and x["fold"]["number"] == 646 and near(x["fold"]["min"], 2.983), x["fold"])
+check("#645 the row within a minute of the open", x["row"] is not None and 0 <= x["row"] < 1)
+check("#645 no removal: the removal in the merge's second is the merge's", x["removed"] == [])
+
+# ---- #665: a removal as #667 landed, re-enqueued; DONE, read and fix from records
+x = L[665]
+check("#665 done from its record 09:30:14", x["src"]["done"] == "rec"
+      and x["marks"]["done"].strftime("%H:%M:%S") == "09:30:14")
+check("#665 one removal at 10:17:45 as #667 landed, re-added 10:24:31 (+6.77)",
+      len(x["removed"]) == 1 and x["removed"][0]["ahead"] == 667
+      and near(x["removed"][0]["requeue"], 6.767), x["removed"])
+check("#665 enqueue: the auto-merge 10:12:11 before the earliest add; ci to 10:14:48 = 2.62",
+      near(stage(665, "ci"), 2.617))
+check("#665 queue: the earliest add 10:14:48 to the merge 10:29:55 = 15.12, the requeue inside",
+      near(stage(665, "queue"), 15.117))
+check("#665 wait: the open 09:57:07 to the lens record's 09:57:18 = 0.18; read to 09:59:28 = 2.17",
+      near(stage(665, "wait"), 0.183) and near(stage(665, "read"), 2.167))
+check("#665 fix: the read's end 09:59:28 to the re-read's 10:11:30 = 12.03",
+      near(stage(665, "fix"), 12.033))
+check("#665 the fix lane's record 10:00:45 to 10:07:54 = 7.15",
+      x["fixes"] == 1 and near(x["fix_min"], 7.15))
+check("#665 total: 09:30:14 to 10:29:55 = 59.68", near(x["total"], 59.683))
+
+# ---- #648: the fix lane before the read; no auto-merge, the add is the enqueue
+x = L[648]
+check("#648 the fix lane 03:54Z to 04:1xZ read as 16.0, rough",
+      x["fixes"] == 1 and near(x["fix_min"], 16.0))
+check("#648 open: the DONE 03:51 to 04:17:19 = 26.32, the fix lane inside",
+      near(stage(648, "open"), 26.317))
+check("#648 read: 04:17:19 to 04:29:00 = 11.68", near(stage(648, "read"), 11.683))
+check("#648 post 0.75 and ci zero (enqueued by the add at 04:29:45)",
+      near(stage(648, "post"), 0.75) and near(stage(648, "ci"), 0.0))
+check("#648 queue: 04:29:45 to 04:38:12 = 8.45", near(stage(648, "queue"), 8.45))
+
+# ---- #663: everything from the records
+x = L[663]
+check("#663 open: the record's 08:26:47 to 08:27:21 = 0.57", near(stage(663, "open"), 0.567))
+check("#663 wait 0.15 and read 1.95 from the review record 08:27:30 to 08:29:27",
+      near(stage(663, "wait"), 0.15) and near(stage(663, "read"), 1.95))
+check("#663 post 0.93, ci 3.93, queue 4.93, total 12.47",
+      near(stage(663, "post"), 0.933) and near(stage(663, "ci"), 3.933)
+      and near(stage(663, "queue"), 4.933) and near(x["total"], 12.467))
+
+# ---- #661 rough, #667 with no lane
+check("#661 an x in the header's end: done 07:40, marked rough", L[661]["src"]["done"] == "hdr~")
+check("#661 and #650 folded by #662 and #653",
+      L[661]["fold"]["number"] == 662 and L[650]["fold"]["number"] == 653)
+check("#667 no lane REPORT: done is the open, the open stage absent, the total a bound",
+      L[667]["src"]["done"] == "open" and stage(667, "open") is None)
+
+# ---- the figures
+S = ll.summary(list(L.values()))
+check("queue median over seven: 4.88 4.93 5.55 5.60 8.38 8.45 15.12 -> 5.60",
+      S["queue"]["n"] == 7 and near(S["queue"]["median"], 5.6), S["queue"])
+check("queue worst #665", S["queue"]["worst"][1] == 665)
+check("total: six with a DONE (the bound #667 out), median of 12.47 33.2 34.6 38.72 47.2 59.68",
+      S["total"]["n"] == 6 and near(S["total"]["median"], (34.6 + 38.717) / 2), S["total"])
+check("fold median over three: 2.45 (#650) 2.82 (#661) 2.98 (#645) -> 2.82",
+      S["fold"]["n"] == 3 and near(S["fold"]["median"], 2.817), S["fold"])
+check("largest: #650's read, then the two opens of #665 and #648",
+      [(n, s) for _, n, s in S["largest"]] == [(650, "read"), (665, "open"), (648, "open")],
+      S["largest"])
+
+check("share of open over the six timed: 83.63 of 225.87 (#667 a bound, out); the shares sum to one",
+      abs(S["share"]["open"] - (16.283 + 26.317 + 0.633 + 12.95 + 0.567 + 26.883)
+          / (38.717 + 47.2 + 34.6 + 33.2 + 12.467 + 59.683)) < 0.0005
+      and abs(sum(S["share"].values()) - 1) < 1e-9, S["share"])
+
+# ---- the header's times
+posted = ll.ts("2026-11-03T00:05:00Z")
+sp = ll.header_span("(x-y, a, b, c, 23:50Z to 23:58Z; z)", posted)
+check("a header span before midnight is the day before",
+      sp and sp[0] == ll.ts("2026-11-02T23:50:00Z") and sp[1] == ll.ts("2026-11-02T23:58:00Z"))
+sp = ll.header_span("(x-y, a, 23:5xZ to 00:02Z; z)", posted)
+check("a span across midnight, its x read as 0 and rough",
+      sp and sp[0] == ll.ts("2026-11-02T23:50:00Z") and sp[1] == ll.ts("2026-11-03T00:02:00Z")
+      and sp[2])
+
+# ---- the since filter and the rendering
+L2, _, _ = build("2026-11-03T08:00:00Z")
+check("--since 08:00Z: #661 #662 #663 #665 #667", sorted(L2) == [661, 662, 663, 665, 667], sorted(L2))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = ll.main(["--since", "2026-11-03T03:00:00Z", "--from-cache", str(FIX),
+                  "--runs", str(FIX / "runs")])
+out = buf.getvalue()
+rows = [line for line in out.splitlines() if line.startswith("#")]
+check("the table: a line per landing, the folds apart, exit 0",
+      rc == 0 and len(rows) == 7 and "folds (open to merged): #646 2.1, #653 1.5, #662 1.5" in out,
+      out)
+check("the table names the removal", "removed 10:17 as #667 landed, requeued +6.8" in out)
+check("the call count line", "gh api calls: 0" in out)
+
+print(f"\n{passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

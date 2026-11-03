@@ -1,0 +1,99 @@
+[
+ {
+  "event": "committed",
+  "message": "Refactor: off_worker moves beside the KDF in ump_kdf.rs, a pure move (the manager at its 800-line bound; #631)",
+  "author": {
+   "date": "2026-11-03T03:36:12Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "CWI manager: password derivations at once bounded by a semaphore, kdf_in_flight (default 4, 512 MiB of argon2id; 0 refused by name) (#631)",
+  "author": {
+   "date": "2026-11-03T03:41:01Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "CWI manager tests: one permit runs two unlocks one after the other, the default runs four and the fifth waits, 0 refuses (#631)",
+  "author": {
+   "date": "2026-11-03T03:41:01Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Docs: design 5, the managers CLAUDE.md and the CHANGELOG name the kdf_in_flight bound, its default and the reasoning (#631)",
+  "author": {
+   "date": "2026-11-03T03:42:06Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "CWI manager: with_kdf_in_flight(permits), the bound as a consuming builder, 0 refused there; DEFAULT_KDF_IN_FLIGHT = 4 a named constant (#631)",
+  "author": {
+   "date": "2026-11-03T03:56:57Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "CWI manager tests: the one-permit and fifth-waits witnesses build through with_kdf_in_flight; with_kdf_in_flight(0) is an Err naming the knob and nothing derives (#631)",
+  "author": {
+   "date": "2026-11-03T03:58:28Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "CWI manager: CWIStyleWalletManagerConfig back to beta's shape, kdf_in_flight leaves; new starts at DEFAULT_KDF_IN_FLIGHT and with_kdf_in_flight alone changes it (#631)",
+  "author": {
+   "date": "2026-11-03T04:00:50Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Docs: design 5, the managers CLAUDE.md and the CHANGELOG name with_kdf_in_flight, DEFAULT_KDF_IN_FLIGHT and the builder's refusal of 0; no config field named (#631)",
+  "author": {
+   "date": "2026-11-03T04:02:17Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Ratchet: clippy_pedantic.total 3231 -> 3227 and duplicated_blocks.count 6642 -> 6637, the falls tools/ratchet --check measures on this tip (#631)",
+  "author": {
+   "date": "2026-11-03T04:03:03Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "HANDOFF: the row for PR #648 at its open (the round-two rule: the row rides in the code PR)",
+  "author": {
+   "date": "2026-11-03T04:17:24Z"
+  }
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T04:29:39Z",
+  "body": "**The lane's REPORT (p5-631-kdf-semaphore, the box, Opus, an account, 03:34Z to 03:51Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T04:29:40Z",
+  "body": "**The fix lane's REPORT (p5-631b-kdf-knob, the box, Opus, an account, 03:54Z to 04:1xZ; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "added_to_merge_queue",
+  "created_at": "2026-11-03T04:29:45Z"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T04:30:02Z",
+  "body": "**The cold read's REPORT (review-p5-631-kdf-semaphore-standard, the box, Opus, an account, 04:17Z to 04:29Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "removed_from_merge_queue",
+  "created_at": "2026-11-03T04:38:11Z"
+ },
+ {
+  "event": "merged",
+  "created_at": "2026-11-03T04:38:12Z"
+ }
+]

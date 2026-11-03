@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""The landing latency of every pull request merged into beta, end to end (#637).
+
+Reads only: the GitHub API through `gh api` (the search for the merged pull
+requests, each one's issue timeline) and the cca run records on this host.
+Every raw page is cached under --cache (default $TMPDIR/landing-latency/);
+--from-cache DIR reads a cache, or the recorded fixture, with no network.
+
+The marks of one landing, in their order:
+
+  done        the lane's DONE: its run record's `ended` (rec); else the end
+              time in the header of "The lane's REPORT (<lane>, ..., HH:MMZ to
+              HH:MMZ; ...)" (hdr, [D]); else the PR's open, a lower bound (open)
+  open        the PR's created_at
+  read_start  the earliest read's start (a read: a comment whose words before
+              its "(" say read, re-read or lens; its record, else its header)
+  read_end    that read's end; a read with no times: its comment's time (posted)
+  ready       the latest end of any read or fix round (a comment headed "fix
+              lane" or "fix round"); the captain's word to land
+  enqueue     the auto_merge_enabled event before the queue's add; else the add
+  queue_add   the added_to_merge_queue event, the earliest
+  merged      merged_at
+
+The stages are named by the mark that ends them: open (done to open), wait
+(open to read_start), read, fix (read_end to ready), post (ready to enqueue:
+the rebase, the row, the REPORTs posted), ci (enqueue to queue_add: the PR's
+own run), queue (queue_add to merged: the group run, any removal inside). A
+stage whose start mark is absent spans from the last present mark and is
+starred; a mark earlier than the one before it (comment times have minute
+resolution) is held at that one, the stage zero. The total is done to merged;
+a stage's share is its sum over the landings with a DONE and no starred stage
+against the sum of their totals.
+A removal is a removed_from_merge_queue event that is not the merge's; its
+cost runs to the next add; the PR merged in that second, if any, is named.
+A fold is a later PR in the set titled "HANDOFF: the rows landed" or
+"Census:" that names the PR as "(<n>:" or "#<n>"; its stage is merged to
+the fold's merge, outside the total.
+
+Usage:
+  tools/landing-latency --since 2026-11-02T21:00:00Z [--repo OWNER/NAME]
+                        [--runs DIR] [--cache DIR | --from-cache DIR] [--json]
+"""
+
+import argparse
+import datetime as dt
+import glob
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+
+REPO = "Calhooon/bsv-wallet-toolbox-rs"
+MARKS = ["done", "open", "read_start", "read_end", "ready", "enqueue",
+         "queue_add", "merged"]
+STAGES = {"open": "open", "read_start": "wait", "read_end": "read",
+          "ready": "fix", "enqueue": "post", "queue_add": "ci",
+          "merged": "queue"}
+STAGE_ORDER = ["open", "wait", "read", "fix", "post", "ci", "queue"]
+
+NAME = re.compile(r"\(([a-z0-9]+(?:-[\w.]+)+),")
+SPAN = re.compile(r"(\d\d):(\d[\dx])Z to (\d\d):(\d[\dx])Z")
+LANE = re.compile(r"^the lane's report\b")
+FIX = re.compile(r"\bfix (?:lane|round)\b")
+READ = re.compile(r"\b(?:read|re-read|lens)\b")
+FOLD_TITLE = re.compile(r"^(HANDOFF: the rows landed|Census:)")
+
+
+def ts(s):
+    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+
+
+def iso(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ") if t else None
+
+
+def hhmm(t):
+    return t.strftime("%H:%M") if t else "-"
+
+
+def minutes(a, b):
+    return (b - a).total_seconds() / 60.0
+
+
+# ---------------------------------------------------------------- the sources
+
+class Source:
+    """The pages: fetched with gh api and cached, or read from a cache."""
+
+    def __init__(self, repo, cache, from_cache):
+        self.repo, self.cache, self.from_cache = repo, cache, from_cache
+        self.calls = 0
+        if not from_cache:
+            os.makedirs(cache, exist_ok=True)
+
+    def _pages(self, stem, path):
+        pages, page = [], 1
+        while True:
+            name = os.path.join(self.from_cache or self.cache, f"{stem}-p{page}.json")
+            if self.from_cache:
+                if not os.path.exists(name):
+                    break
+                with open(name) as f:
+                    data = json.load(f)
+            else:
+                sep = "&" if "?" in path else "?"
+                out = subprocess.run(["gh", "api", f"{path}{sep}per_page=100&page={page}"],
+                                     capture_output=True, text=True)
+                self.calls += 1
+                if out.returncode != 0:
+                    raise SystemExit(f"gh api {path} page {page}: {out.stderr.strip()}")
+                data = json.loads(out.stdout)
+                with open(name, "w") as f:
+                    json.dump(data, f)
+            pages.append(data)
+            items = data["items"] if isinstance(data, dict) else data
+            if len(items) < 100:
+                break
+            page += 1
+        return pages
+
+    def merged(self, since):
+        q = f"repo:{self.repo}+is:pr+is:merged+base:beta+merged:>={since}"
+        items = [i for p in self._pages("search", f"search/issues?q={q}") for i in p["items"]]
+        return [{"number": i["number"], "title": i["title"], "created_at": i["created_at"],
+                 "merged_at": i["pull_request"]["merged_at"]} for i in items]
+
+    def timeline(self, n):
+        return [e for p in self._pages(f"timeline-{n}", f"repos/{self.repo}/issues/{n}/timeline")
+                for e in p]
+
+
+def load_runs(path):
+    """name -> (started, ended) of the latest done record, epoch seconds as UTC."""
+    runs = {}
+    for f in sorted(glob.glob(os.path.join(path, "*.json"))):
+        try:
+            with open(f) as h:
+                d = json.load(h)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict) or d.get("status") != "done" or not d.get("ended") \
+                or not d.get("name"):
+            continue
+        s = dt.datetime.fromtimestamp(d["started"], dt.timezone.utc).replace(microsecond=0)
+        e = dt.datetime.fromtimestamp(d["ended"], dt.timezone.utc).replace(microsecond=0)
+        if d.get("name") not in runs or runs[d["name"]][1] < e:
+            runs[d["name"]] = (s, e)
+    return runs
+
+
+# ---------------------------------------------------------------- one landing
+
+def header_span(text, posted):
+    """The (start, end, rough) of a header's "HH:MMZ to HH:MMZ" on the comment's day.
+
+    An "x" minute digit reads as 0 and marks the span rough. A time later
+    than the comment is the day before."""
+    m = SPAN.search(text)
+    if not m:
+        return None
+    rough = "x" in m.group(2) + m.group(4)
+    out = []
+    for h, mm in ((m.group(1), m.group(2)), (m.group(3), m.group(4))):
+        t = posted.replace(hour=int(h), minute=int(mm.replace("x", "0")), second=0)
+        if t > posted:
+            t -= dt.timedelta(days=1)
+        out.append(t)
+    if out[0] > out[1]:
+        out[0] -= dt.timedelta(days=1)
+    return out[0], out[1], rough
+
+
+def reports(events, runs):
+    """Each REPORT comment: its kind, its lane's name, its span and the span's source."""
+    out = []
+    for e in events:
+        if e.get("event") != "commented":
+            continue
+        line = (e.get("body") or "").split("\n")[0]
+        if "(" not in line:
+            continue
+        pre = line.split("(")[0].strip("* ").lower()
+        posted = ts(e["created_at"])
+        kind = "lane" if LANE.search(pre) else "fix" if FIX.search(pre) else \
+            "read" if READ.search(pre) else None
+        if kind is None:
+            continue
+        m = NAME.search(line)
+        name = m.group(1) if m else None
+        if name and name in runs:
+            start, end, src = runs[name][0], runs[name][1], "rec"
+        else:
+            span = header_span(line, posted)
+            if span:
+                start, end, src = span[0], span[1], "hdr~" if span[2] else "hdr"
+            else:
+                start, end, src = None, posted, "posted"
+        out.append({"kind": kind, "name": name, "start": start, "end": end, "src": src,
+                    "posted": posted})
+    return out
+
+
+def landing(pr, events, runs):
+    rep = reports(events, runs)
+    lane = [r for r in rep if r["kind"] == "lane"]
+    reads = sorted((r for r in rep if r["kind"] == "read"),
+                   key=lambda r: (r["start"] or r["end"]))
+    fixes = [r for r in rep if r["kind"] == "fix"]
+    marks, src = {}, {}
+    marks["open"], marks["merged"] = ts(pr["created_at"]), ts(pr["merged_at"])
+    if lane and lane[0]["src"] != "posted":
+        marks["done"], src["done"] = lane[0]["end"], lane[0]["src"]
+    else:
+        marks["done"], src["done"] = marks["open"], "open"
+    if reads:
+        if reads[0]["start"]:
+            marks["read_start"] = reads[0]["start"]
+        marks["read_end"], src["read"] = reads[0]["end"], reads[0]["src"]
+        marks["ready"] = max(r["end"] for r in reads + fixes)
+    adds = sorted(ts(e["created_at"]) for e in events if e.get("event") == "added_to_merge_queue")
+    autos = sorted(ts(e["created_at"]) for e in events if e.get("event") == "auto_merge_enabled")
+    if adds:
+        marks["queue_add"] = adds[0]
+        pre = [a for a in autos if a <= adds[0]]
+        marks["enqueue"] = pre[0] if pre else adds[0]
+    elif autos:
+        marks["enqueue"] = autos[0]
+    removals = [ts(e["created_at"]) for e in events
+                if e.get("event") == "removed_from_merge_queue"
+                and abs(minutes(ts(e["created_at"]), marks["merged"])) > 0.1]
+    row = None
+    for e in events:
+        msg = (e.get("message") or "").split("\n")[0]
+        if e.get("event") == "committed" and msg.startswith(f"HANDOFF: the row for PR #{pr['number']}"):
+            row = ts(e["author"]["date"])
+
+    stages, prev, held = {}, None, False
+    for mk in MARKS:
+        if mk not in marks:
+            continue
+        if prev is not None:
+            if marks[mk] < marks[prev]:
+                marks[mk], held = marks[prev], True
+            name = STAGES[mk]
+            starred = MARKS.index(prev) != MARKS.index(mk) - 1
+            stages[name] = {"min": minutes(marks[prev], marks[mk]), "star": starred}
+        prev = mk
+    if src["done"] == "open":
+        stages.pop("open", None)
+    total = minutes(marks["done"], marks["merged"])
+    return {
+        "number": pr["number"], "title": pr["title"], "marks": marks, "src": src,
+        "stages": stages, "total": total, "held": held,
+        "lane": lane[0]["name"] if lane else None,
+        "reads": len(reads), "fixes": len(fixes),
+        "fix_min": sum(minutes(f["start"], f["end"]) for f in fixes if f["start"]),
+        "row": minutes(marks["open"], row) if row else None,
+        "removals": removals, "adds": adds, "fold": None,
+    }
+
+
+def link(landings, prs):
+    """The folds, and the PR merged in a removal's second."""
+    by_merge = {}
+    for p in prs:
+        by_merge.setdefault(p["merged_at"], []).append(p["number"])
+    folds = {}
+    for p in sorted(prs, key=lambda p: p["merged_at"]):
+        if not FOLD_TITLE.search(p["title"]):
+            continue
+        for n in re.findall(r"\((\d+):|#(\d+)", p["title"]):
+            n = int(n[0] or n[1])
+            if n != p["number"] and n not in folds:
+                folds[n] = p
+    for x in landings:
+        x["is_fold"] = bool(FOLD_TITLE.search(x["title"]))
+        f = folds.get(x["number"])
+        if f and ts(f["merged_at"]) > x["marks"]["merged"]:
+            x["fold"] = {"number": f["number"],
+                         "min": minutes(x["marks"]["merged"], ts(f["merged_at"]))}
+        x["removed"] = []
+        for r in x["removals"]:
+            ahead = [n for n in by_merge.get(iso(r), []) if n != x["number"]]
+            back = [a for a in x["adds"] if a > r]
+            x["removed"].append({"at": r, "ahead": ahead[0] if ahead else None,
+                                 "requeue": minutes(r, back[0]) if back else None})
+
+
+# ---------------------------------------------------------------- the figures
+
+def summary(landings):
+    code = [x for x in landings if not x["is_fold"]]
+    out = {}
+    for s in STAGE_ORDER:
+        vals = [(x["stages"][s]["min"], x["number"]) for x in code
+                if s in x["stages"] and not x["stages"][s]["star"]]
+        if vals:
+            out[s] = {"n": len(vals), "median": statistics.median(v for v, _ in vals),
+                      "worst": max(vals)}
+    tot = [(x["total"], x["number"]) for x in code if x["src"]["done"] != "open"]
+    if tot:
+        out["total"] = {"n": len(tot), "median": statistics.median(v for v, _ in tot),
+                        "worst": max(tot)}
+    timed = [x for x in code if x["src"]["done"] != "open"
+             and not any(st["star"] for st in x["stages"].values())]
+    whole = sum(x["total"] for x in timed)
+    if whole > 0:
+        out["share"] = {s: sum(x["stages"][s]["min"] for x in timed if s in x["stages"]) / whole
+                        for s in STAGE_ORDER}
+    folds = [(x["fold"]["min"], x["number"]) for x in code if x["fold"]]
+    if folds:
+        out["fold"] = {"n": len(folds), "median": statistics.median(v for v, _ in folds),
+                       "worst": max(folds)}
+    costs = sorted(((x["stages"][s]["min"], x["number"], s + ("*" if x["stages"][s]["star"] else ""))
+                    for x in code for s in x["stages"]), reverse=True)
+    out["largest"] = costs[:3]
+    return out
+
+
+def fmt(v):
+    return "-" if v is None else f"{v:.1f}"
+
+
+def render(landings, summ):
+    lines = ["PR    done(src)    " + " ".join(f"{s:>6}" for s in STAGE_ORDER)
+             + "   total  share(largest)      row  rm  fold"]
+    for x in sorted(landings, key=lambda x: x["marks"]["merged"]):
+        if x["is_fold"]:
+            continue
+        cells = []
+        for s in STAGE_ORDER:
+            st = x["stages"].get(s)
+            cells.append(f"{fmt(st['min']) + ('*' if st['star'] else ''):>6}" if st else f"{'-':>6}")
+        big = max(x["stages"].items(), key=lambda kv: kv[1]["min"], default=None)
+        share = f"{big[0]} {100 * big[1]['min'] / x['total']:.0f}%" if big and x["total"] > 0 else "-"
+        bound = ">=" if x["src"]["done"] == "open" else ""
+        rm = "".join(f" (removed {hhmm(r['at'])}" + (f" as #{r['ahead']} landed" if r["ahead"] else "")
+                     + (f", requeued +{r['requeue']:.1f})" if r["requeue"] is not None else ")")
+                     for r in x["removed"])
+        fold = f"#{x['fold']['number']} +{x['fold']['min']:.1f}" if x["fold"] else "-"
+        lines.append(f"#{x['number']:<4} {hhmm(x['marks']['done'])}({x['src']['done']:<6}) "
+                     + " ".join(cells)
+                     + f"  {bound + fmt(x['total']):>6}  {share:<16} {fmt(x['row']):>5}  {len(x['removed']):>2}  {fold}"
+                     + (f"  reads {x['reads']} fixes {x['fixes']}" if x["fixes"] or x["reads"] > 1 else "")
+                     + (f" (fix lanes {x['fix_min']:.1f})" if x["fix_min"] else "")
+                     + rm)
+    lines.append("")
+    lines.append("stage    n  median   worst")
+    for s in STAGE_ORDER + ["total", "fold"]:
+        if s in summ:
+            v = summ[s]
+            lines.append(f"{s:<7} {v['n']:>2}  {v['median']:>6.1f}  {v['worst'][0]:>6.1f} (#{v['worst'][1]})")
+    if "share" in summ:
+        lines.append("share of the timed totals: " + ", ".join(
+            f"{s} {100 * summ['share'][s]:.0f}%" for s in STAGE_ORDER))
+    lines.append("")
+    lines.append("largest: " + "; ".join(f"#{n} {s} {m:.1f}" for m, n, s in summ["largest"]))
+    folds = [x for x in landings if x["is_fold"]]
+    if folds:
+        lines.append("folds (open to merged): " + ", ".join(
+            f"#{x['number']} {minutes(x['marks']['open'], x['marks']['merged']):.1f}"
+            for x in sorted(folds, key=lambda x: x["number"])))
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--since", required=True, help="merged at or after, ISO UTC")
+    ap.add_argument("--repo", default=REPO)
+    ap.add_argument("--runs", default=os.path.expanduser("~/.cca/runs"))
+    ap.add_argument("--cache", default=os.path.join(os.environ.get("TMPDIR", "."), "landing-latency"))
+    ap.add_argument("--from-cache", default=None)
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    src = Source(a.repo, a.cache, a.from_cache)
+    since = ts(a.since)
+    prs = [p for p in src.merged(a.since) if ts(p["merged_at"]) >= since]
+    runs = load_runs(a.runs)
+    landings = [landing(p, src.timeline(p["number"]), runs) for p in prs]
+    link(landings, prs)
+    summ = summary(landings)
+    if a.json:
+        def enc(o):
+            return iso(o) if isinstance(o, dt.datetime) else str(o)
+        print(json.dumps({"landings": landings, "summary": summ, "calls": src.calls},
+                         default=enc, indent=1))
+    else:
+        print(render(landings, summ))
+        print(f"gh api calls: {src.calls}" + (f" (from {a.from_cache})" if a.from_cache else
+                                              f"; pages cached under {a.cache}"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

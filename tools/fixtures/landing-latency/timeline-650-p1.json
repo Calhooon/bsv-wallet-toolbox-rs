@@ -1,0 +1,94 @@
+[
+ {
+  "event": "committed",
+  "message": "Test transport: a test may share one client per timeout on its thread (cfg(test) only), and the 81-row status verdict builds its 648 Services over it (#634, #627)",
+  "author": {
+   "date": "2026-11-03T05:22:15Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Rule 28 tests: the utxo verdict table's 192 asks build over shared clients and run every start at once (#634)",
+  "author": {
+   "date": "2026-11-03T05:22:15Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Ladder replay host: services_at builds each scene's Services over one set of shared clients (#634)",
+  "author": {
+   "date": "2026-11-03T05:24:10Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Busy door tests: the shared-writer soak runs 60 joined rounds, not 300 (#634)",
+  "author": {
+   "date": "2026-11-03T05:22:29Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "A8 differential tests: the four census tests read the 1 MB census BEEF, not 1, 4 and 10 MB (CENSUS_MEGABYTES, #634)",
+  "author": {
+   "date": "2026-11-03T05:24:10Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Ladder cut test: runs where sqlite is on and is ignored in the remote-only build, which reaches the same code (#634)",
+  "author": {
+   "date": "2026-11-03T05:22:29Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Docs: loop two, cut (2) in the CI speed record (the ten slowest tests, their cuts, the box's before and after, the plants), the tests CLAUDE.md note on the ladder host and the cut test, the CHANGELOG line (#634)",
+  "author": {
+   "date": "2026-11-03T05:24:34Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Services tests: the 81-row table takes its client share after its enum, not ahead of it (clippy pedantic items_after_statements, tools/ratchet, #634)",
+  "author": {
+   "date": "2026-11-03T05:37:01Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "HANDOFF: the row for PR #650 at its open (the round-two rule: the row rides in the code PR)",
+  "author": {
+   "date": "2026-11-03T05:40:42Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Census: the seed's lint, checks and semver keys (#647; PR #649 on main), cut (1)'s second addendum",
+  "author": {
+   "date": "2026-11-03T05:40:46Z"
+  }
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T06:09:37Z",
+  "body": "**The lane's REPORT (p5-634-slowest-tests, the box, Opus, an account, 04:45Z to 05:40Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T06:09:39Z",
+  "body": "**The cold read's REPORT (review-p5-634-slowest-tests-standard, the Studio, Opus, an account, 05:41Z to 06:09Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "added_to_merge_queue",
+  "created_at": "2026-11-03T06:09:43Z"
+ },
+ {
+  "event": "removed_from_merge_queue",
+  "created_at": "2026-11-03T06:14:35Z"
+ },
+ {
+  "event": "merged",
+  "created_at": "2026-11-03T06:14:36Z"
+ }
+]

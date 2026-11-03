@@ -1,0 +1,59 @@
+[
+ {
+  "event": "committed",
+  "message": "Gate: tools/arch-doc-tests.sh lists each binary once, not once per row (#635: 345 cargo calls in 63s on the box become 14 in 11s, the same 345 matches)",
+  "author": {
+   "date": "2026-11-03T07:05:23Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Deps: drop the tokio-test dev-dependency, which no test, bench, example or doc names (#635)",
+  "author": {
+   "date": "2026-11-03T07:09:44Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Deps: anyhow moves to dev-dependencies, the storage fixtures' error type; the library names it nowhere, so a dependent no longer compiles it (#635)",
+  "author": {
+   "date": "2026-11-03T07:10:28Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Census: loop three, cut (1): compile time by evidence (#635), the builds' timings, the gate's parts, the cuts and the rows not cut; the CHANGELOG line",
+  "author": {
+   "date": "2026-11-03T07:14:48Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "HANDOFF: the row for PR #661 at its open (the round-two rule: the row rides in the code PR)",
+  "author": {
+   "date": "2026-11-03T07:53:01Z"
+  }
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T08:07:30Z",
+  "body": "**The lane's REPORT (p5-635-compile-time-by-evidence, the box, Opus, an account, 06:58Z to 07:4xZ; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T08:07:32Z",
+  "body": "**The cold read's REPORT (review-p5-635-compile-time-by-evidence-standard, the box, Opus, an account, 07:54Z to 08:07Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "added_to_merge_queue",
+  "created_at": "2026-11-03T08:07:36Z"
+ },
+ {
+  "event": "merged",
+  "created_at": "2026-11-03T08:13:12Z"
+ },
+ {
+  "event": "removed_from_merge_queue",
+  "created_at": "2026-11-03T08:13:12Z"
+ }
+]

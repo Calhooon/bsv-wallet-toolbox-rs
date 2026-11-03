@@ -1,0 +1,88 @@
+[
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T03:40:36Z",
+  "body": "**The lane's REPORT (p5-632-docs-only-short-circuit, the box, Opus, an account, 03:05Z to 03:20Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "commented",
+  "created_at": "2026-11-03T03:40:38Z",
+  "body": "**The cold read's REPORT (review-p5-632-docs-only-short-circuit-ci, the box, Opus, an account, 03:36Z to 03:39Z; the rest of the REPORT trimmed):**"
+ },
+ {
+  "event": "committed",
+  "message": "tools/docs-only: whether a change is docs only, with its cases (#632)",
+  "author": {
+   "date": "2026-11-03T03:09:09Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "CI: the docs-only step at the head of every required job (#632)",
+  "author": {
+   "date": "2026-11-03T03:12:14Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Census: loop two's cut (1), the docs-only short-circuit (#632)",
+  "author": {
+   "date": "2026-11-03T03:18:57Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Docs: a docs-only PR's run in the lanes README, and the CHANGELOG line (#632)",
+  "author": {
+   "date": "2026-11-03T03:19:18Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Wording: the banned word out of two ci.yml comments and a test variable (#632; rule 7 of the lanes README)",
+  "author": {
+   "date": "2026-11-03T03:30:10Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "HANDOFF: the row for PR #645 at its open (the round-two rule: the row rides in the code PR)",
+  "author": {
+   "date": "2026-11-03T03:36:21Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Docs: root CLAUDE.md's CI section names the docs-only step (#632)",
+  "author": {
+   "date": "2026-11-03T03:36:26Z"
+  }
+ },
+ {
+  "event": "committed",
+  "message": "Census: cut (1)'s addendum, the cache seed on main (#642; PR #643 landed b5befacb), with the queue's opening batch as its before",
+  "author": {
+   "date": "2026-11-03T03:36:30Z"
+  }
+ },
+ {
+  "event": "head_ref_force_pushed",
+  "created_at": "2026-11-03T03:41:43Z"
+ },
+ {
+  "event": "auto_merge_enabled",
+  "created_at": "2026-11-03T03:41:43Z"
+ },
+ {
+  "event": "added_to_merge_queue",
+  "created_at": "2026-11-03T03:50:20Z"
+ },
+ {
+  "event": "merged",
+  "created_at": "2026-11-03T03:58:43Z"
+ },
+ {
+  "event": "removed_from_merge_queue",
+  "created_at": "2026-11-03T03:58:43Z"
+ }
+]
