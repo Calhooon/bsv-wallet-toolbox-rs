@@ -2,14 +2,19 @@
 """The cases of tools/slot-occupancy: the hour table of a recorded fixture of
 runs and jobs (tools/fixtures/slot-occupancy/: fourteen jobs across two
 repositories and three hours, one skipped, one cancelled while queued with no
-runner, one self-hosted, one run's jobs outside the jobs window and one run
-outside the window), each cell against
-the value worked by hand, then the whole output against expected.md. No
-network: the tool reads the fixture with --from-cache.
+runner, one self-hosted, one macOS and one windows job, one re-run run, one
+run's jobs outside the jobs window and one run outside the window), each cell
+of the hour table and the concurrency table against the value worked by hand,
+the window's percentiles, the peaks by OS, the heavy rows and the cap line,
+then the whole output against expected.md; and the minutes above the pool on
+twenty-two jobs built in the test. No network: the tool reads the fixture
+with --from-cache.
 
   tools/slot-occupancy-test
 """
 
+import importlib.machinery
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -90,8 +95,73 @@ check("beta hour 12: the nightly and the push, the self-hosted job out",
 check("alpha hour 12: 203's last minute, no job queued", per[12][0] == "1 / 1 / -", per[12])
 
 heavy = [line for line in lines if line.startswith("| alpha | Mutants") or line.startswith("| beta | Nightly")]
-check("heavy rows", heavy == ["| alpha | Mutants | workflow_dispatch | 1 | 4 | 11,12 | 146 |",
-                              "| beta | Nightly | schedule | 1 | 1 | 12 | 45 |"], heavy)
+check("heavy rows, each run's start", heavy == [
+    "| alpha | Mutants | workflow_dispatch | 1 | 4 | 11,12 | 146 | 11-02 11:00 |",
+    "| beta | Nightly | schedule | 1 | 1 | 12 | 45 | 11-02 12:00 |"], heavy)
+
+conc = section("Concurrency by hour")
+# runner-min | peak | non-heavy p50 p75 p90 p95 (nearest rank, the ceil(q n)-th
+# smallest, over the hour's minutes with a non-heavy job) | minutes at 20+ |
+# heavy-held minutes | ubuntu, windows, macOS peak; minutes sampled at each
+# minute's start, so a job from 10:02 to 10:32 counts at 10:02 to 10:31:
+#  10: non-heavy 101, 102, 103 only: 1 at 10:02-03, 10:20 and 10:32-59 (31
+#      minutes), 2 at 10:04-19 and 10:21-31 (27); n 58: p50 the 29th (1), p75
+#      the 44th, p90 the 53rd, p95 the 56th (2); no heavy job; ubuntu 2
+#  11: non-heavy 103 at 11:00-14 (15 of 1), 301 (macOS) at 11:20-39 and 302
+#      (windows) at 11:25-34: 1 for 10 minutes, 2 for 10; n 35, 25 ones: p50
+#      the 18th (1), p75 the 27th, p90 the 32nd, p95 the 34th (2); heavy-held
+#      11:01-59 (203; 201 starts 11:00:30), 59; ubuntu 5 at 11:02-14 (103 and
+#      201 to 204), windows 1, macOS 1
+#  12: non-heavy 501 alone at 12:33-42, n 10 of 1; heavy-held 12:00-44 (401,
+#      and 203 at 12:00), 45; ubuntu 2 at 12:00
+WANT_CONC = {
+    10: ["85", "2", "1", "2", "2", "2", "0", "0", "2", "0", "0"],
+    11: ["190", "6", "1", "2", "2", "2", "0", "59", "5", "1", "1"],
+    12: ["56", "2", "1", "1", "1", "1", "0", "45", "2", "0", "0"],
+}
+for h, want in WANT_CONC.items():
+    check(f"concurrency hour {h:02d}", conc.get(h) == want, f"got {conc.get(h)} want {want}")
+check("concurrency: every other hour empty",
+      all(conc[h] == ["0"] * 11 for h in range(24) if h not in WANT_CONC) and len(conc) == 24)
+
+# The window: 4320 minutes; runner-min 85 + 190 + 56 = 331, 331 / 4320 = 0.1;
+# heavy-held 59 + 45 = 104; non-heavy n 58 + 35 + 10 = 103, 66 ones and 37
+# twos: p50 the 52nd (1), p75 the 78th, p90 the 93rd, p95 the 98th (2); none
+# above 6.
+check("concurrency over the window",
+      "over the 4320 minutes of the jobs window: 20 or more jobs running 0 minutes (0%); "
+      "mean slots held 0.1; a heavy job running 104 minutes; non-heavy per minute over the "
+      "103 minutes with a non-heavy job: p50 1, p75 2, p90 2, p95 2; above 6 (20 less a heavy "
+      "run at 14) in 0 minutes, 0% of those minutes" in lines)
+check("peak by OS: ubuntu at 11:02, 302 windows at 11:25, 301 macOS at 11:20",
+      "peak by OS: ubuntu 5 at 2026-11-02T11:02Z, windows 1 at 2026-11-02T11:25Z, "
+      "macOS 1 at 2026-11-02T11:20Z" in lines)
+check("minutes above 20: none in the fixture", "minutes above 20: none" in lines)
+
+check("re-run count: run 5 at attempt 2",
+      "re-run runs in the jobs window (run_attempt above 1) 1: the jobs endpoint's default "
+      "filter=latest lists their latest attempt's jobs only" in lines)
+
+# Above the pool, from the tool's own functions: 21 ubuntu jobs and one macOS
+# job from 10:00 to 10:03 hold the minutes 10:00, 10:01, 10:02 at 22.
+loader = importlib.machinery.SourceFileLoader("slot_occupancy", str(SCRIPT))
+spec = importlib.util.spec_from_loader("slot_occupancy", loader)
+so = importlib.util.module_from_spec(spec)
+loader.exec_module(so)
+t = so.Table()
+run = {"id": 9, "name": "CI", "event": "push", "created_at": "2026-11-02T10:00:00Z"}
+for i in range(22):
+    t.add_job({"runner_name": f"r{i}", "labels": ["macos-latest" if i == 0 else "ubuntu-latest"],
+               "created_at": "2026-11-02T10:00:00Z", "started_at": "2026-11-02T10:00:00Z",
+               "completed_at": "2026-11-02T10:03:00Z", "run": run})
+over = so.concurrency_lines(t, 3)[2]
+check("minutes above 20: one range, the worst minute by OS",
+      over == "minutes above 20: 3, 2026-11-02T10:00Z to 10:02Z; the worst 2026-11-02T10:00Z, "
+      "22 jobs: 21 ubuntu, 0 windows, 1 macOS", over)
+m = so.ts("2026-11-02T10:00:00Z")
+check("ranges: a gap splits, a lone minute stands alone",
+      so.ranges([m, m + so.timedelta(minutes=2), m + so.timedelta(minutes=3)])
+      == ["2026-11-02T10:00Z", "2026-11-02T10:02Z to 10:03Z"])
 
 check("header counts", "runs 6, jobs 14, left out: self-hosted 1, no runner (skipped, "
       "or cancelled queued) 2; api calls this run 0" in out.stdout)
@@ -100,6 +170,14 @@ check("recommendation: non-heavy p95 2 + 2 of 20 is 16; hour 11 hot",
       rec == ["recommendation: max-parallel 16 (non-heavy p95 2 + margin 2 of 20 slots; "
               "non-heavy peak 2); quiet hours 00,01,02,03,04,05,06,07,08,09,10,12,13,14,15,"
               "16,17,18,19,20,21,22,23; lightest hours by runner-min 00,01,02,03; stagger 00:00Z quiet, 03:00Z quiet, 06:00Z quiet"], rec)
+
+cap = [line for line in lines if line.startswith("cap:")]
+# 20 - (2 + 2) = 16; ubuntu alone (301, 302 out): 101, 102, 103, 501, 83
+# minutes, 56 ones and 27 twos, p95 the 79th (2); per hour 1 (12) and 2 (10, 11)
+check("cap line: the formula's inputs and the number",
+      cap == ["cap: max-parallel = slots 20 - (non-heavy p95 2 over 103 minutes with a non-heavy "
+              "job + margin 2) = 16; ubuntu jobs alone: non-heavy p95 2; per-hour non-heavy p95 "
+              "from 1 (12) to 2 (10,11)"], cap)
 
 check("the whole output is expected.md",
       out.stdout == (FIXTURE / "expected.md").read_text())

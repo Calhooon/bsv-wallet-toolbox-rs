@@ -29,12 +29,37 @@ For each hour of the day, summed over the days of the jobs window:
 Under the table, the pull_request and merge_group waits split by whether a
 heavy run's job held a slot at the minute the job was queued.
 
+The concurrency by hour, per minute sampled as above, over the same days:
+
+  non-heavy p50 p75 p90 p95
+               the percentiles (nearest rank) of the non-heavy jobs running
+               at once, over the hour's minutes with a non-heavy job running
+  at 20+       the minutes with SLOTS or more jobs running
+  heavy-held   the minutes with a heavy run's job running
+  ubuntu, windows, macOS peak
+               the peak by the job's runner label (macos-*, windows-*, any
+               other label counts as ubuntu)
+
+Under it, the same over the whole jobs window (the minutes at SLOTS or more,
+the mean slots held, the heavy-held minutes, the non-heavy percentiles and
+the share of those minutes above SLOTS less CURRENT_CAP), each OS's peak and
+its minute, and the minutes above SLOTS as ranges with the worst minute's
+count by OS. The heavy runs table names each workflow's run starts
+(created_at). The cap line names the formula's inputs: SLOTS, the non-heavy
+p95 and the minutes it is over, MARGIN, the same p95 for ubuntu jobs alone,
+and the range of the per-hour p95.
+
 A heavy run is a schedule-event run or one whose workflow name matches
 HEAVY_PATTERN (Mutants, matrix, fuzz, coverage, bench, dependents, nightly).
 A job on a self-hosted runner holds no hosted slot and is left out (counted);
 so is a job no runner took (runner_name empty: a skipped job, or one
 cancelled while queued, whose started_at is its created_at and whose
 completed_at is the cancel, with no steps), from the waits as well.
+
+The jobs endpoint is read with its default filter=latest: a re-run run lists
+the jobs of its latest attempt only, so an earlier attempt's jobs hold no
+slot here. The header counts the runs in the jobs window with run_attempt
+above 1, the runs whose earlier attempts are not counted.
 
 The one-line recommendation: the reserve is the 95th percentile of the
 per-minute non-heavy concurrency over the busy minutes plus MARGIN, the cap
@@ -64,6 +89,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 SLOTS = 20
+# The heavy runs' max-parallel at the time of the reading (#638).
+CURRENT_CAP = 14
+OSES = ("ubuntu", "windows", "macOS")
 QUIET_BELOW = 6
 MARGIN = 2
 STAGGER = (0, 3, 6)
@@ -205,6 +233,11 @@ def ran(job):
     return bool(job.get("runner_name")) and "self-hosted" not in (job.get("labels") or [])
 
 
+def os_of(job):
+    labels = " ".join(job.get("labels") or []).lower()
+    return "macOS" if "macos" in labels else "windows" if "windows" in labels else "ubuntu"
+
+
 def held(job):
     """The (start, end) a job held a hosted slot, or None."""
     if not ran(job):
@@ -253,6 +286,8 @@ class Table:
         self.pr_queued = []  # (minute queued, wait) of pull request and queue jobs
         self.run_min = defaultdict(float)
         self.jobs = defaultdict(int)
+        self.conc_os = {o: defaultdict(int) for o in OSES}  # minute -> jobs on that OS
+        self.conc_light_ubuntu = defaultdict(int)
 
     def add_job(self, job):
         if not ran(job):
@@ -264,10 +299,14 @@ class Table:
             for h, s in split_by_hour(a, b):
                 self.min[h] += s / 60
             heavy = is_heavy(job["run"])
+            os_ = os_of(job)
             for m in minutes_of(a, b):
                 self.conc[m] += 1
+                self.conc_os[os_][m] += 1
                 if not heavy:
                     self.conc_light[m] += 1
+                    if os_ == "ubuntu":
+                        self.conc_light_ubuntu[m] += 1
         w = wait_secs(job)
         if w is not None and job.get("started_at"):
             q, secs = w
@@ -289,6 +328,26 @@ class Table:
     def heavy_peak(self, h):
         return max((c - self.conc_light[m] for m, c in self.conc.items() if m.hour == h),
                    default=0)
+
+    def os_peak(self, os_, h=None):
+        """(peak, its earliest minute) on one OS, in hour h or over the window."""
+        best = (0, None)
+        for m, c in sorted(self.conc_os[os_].items()):
+            if (h is None or m.hour == h) and c > best[0]:
+                best = (c, m)
+        return best
+
+    def light_busy(self, h=None, ubuntu=False):
+        """The non-heavy counts of the minutes with a non-heavy job running."""
+        conc = self.conc_light_ubuntu if ubuntu else self.conc_light
+        return [c for m, c in conc.items() if c > 0 and (h is None or m.hour == h)]
+
+    def full(self, h=None):
+        return sum(1 for m, c in self.conc.items() if c >= SLOTS and (h is None or m.hour == h))
+
+    def heavy_held(self, h=None):
+        return sum(1 for m, c in self.conc.items()
+                   if c > self.conc_light.get(m, 0) and (h is None or m.hour == h))
 
     def pr_split(self):
         """{heavy holding a slot at the minute queued: [waits]}."""
@@ -325,11 +384,30 @@ def med(xs):
     return statistics.median(xs) if xs else None
 
 
-def p95(xs):
+def pctl(xs, q):
+    """The nearest-rank percentile: the ceil(q n)-th smallest."""
     if not xs:
         return 0
     xs = sorted(xs)
-    return xs[max(0, math.ceil(0.95 * len(xs)) - 1)]
+    return xs[max(0, math.ceil(q * len(xs)) - 1)]
+
+
+def p95(xs):
+    return pctl(xs, 0.95)
+
+
+QS = (0.50, 0.75, 0.90, 0.95)
+
+
+def ranges(minutes):
+    """Sorted minutes as 'HH:MM to HH:MM' runs of consecutive minutes."""
+    out = []
+    for m in sorted(minutes):
+        if out and m - out[-1][1] == timedelta(minutes=1):
+            out[-1][1] = m
+        else:
+            out.append([m, m])
+    return [f"{a:%Y-%m-%dT%H:%M}Z" + (f" to {b:%H:%M}Z" if b != a else "") for a, b in out]
 
 
 def hour_table(t, jobs_days):
@@ -346,6 +424,50 @@ def hour_table(t, jobs_days):
     return out
 
 
+def concurrency_table(t):
+    out = ["| hour (UTC) | runner-min | peak | non-heavy p50 | non-heavy p75 | non-heavy p90 "
+           "| non-heavy p95 | minutes at 20+ | heavy-held minutes | ubuntu peak | windows peak "
+           "| macOS peak |",
+           "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for h in range(24):
+        busy = t.light_busy(h)
+        ps = " | ".join(str(pctl(busy, q)) for q in QS)
+        oses = " | ".join(str(t.os_peak(o, h)[0]) for o in OSES)
+        out.append(f"| {h:02d} | {t.min[h]:.0f} | {t.peak(h)} | {ps} | {t.full(h)} "
+                   f"| {t.heavy_held(h)} | {oses} |")
+    return out
+
+
+def concurrency_lines(t, jobs_days):
+    minutes = jobs_days * 1440
+    busy = t.light_busy()
+    above = SLOTS - CURRENT_CAP
+    n_above = sum(1 for c in busy if c > above)
+    share = 100 * n_above / len(busy) if busy else 0
+    full = t.full()
+    out = [f"over the {minutes} minutes of the jobs window: {SLOTS} or more jobs running "
+           f"{full} minutes ({100 * full / minutes:.0f}%); mean slots held "
+           f"{sum(t.min.values()) / minutes:.1f}; a heavy job running {t.heavy_held()} minutes; "
+           f"non-heavy per minute over the {len(busy)} minutes with a non-heavy job: "
+           + ", ".join(f"p{round(q * 100)} {pctl(busy, q)}" for q in QS)
+           + f"; above {above} ({SLOTS} less a heavy run at {CURRENT_CAP}) in {n_above} "
+           f"minutes, {share:.0f}% of those minutes"]
+    peaks = []
+    for o in OSES:
+        c, m = t.os_peak(o)
+        peaks.append(f"{o} {c}" + (f" at {m:%Y-%m-%dT%H:%M}Z" if m else ""))
+    out.append("peak by OS: " + ", ".join(peaks))
+    over = [m for m, c in t.conc.items() if c > SLOTS]
+    if over:
+        worst = max(over, key=lambda m: (t.conc[m], -m.timestamp()))
+        split = ", ".join(f"{t.conc_os[o].get(worst, 0)} {o}" for o in OSES)
+        out.append(f"minutes above {SLOTS}: {len(over)}, " + "; ".join(ranges(over))
+                   + f"; the worst {worst:%Y-%m-%dT%H:%M}Z, {t.conc[worst]} jobs: {split}")
+    else:
+        out.append(f"minutes above {SLOTS}: none")
+    return out
+
+
 def repo_table(per):
     names = sorted(per)
     out = ["| hour (UTC) | " + " | ".join(n.split("/")[-1] for n in names) + " |",
@@ -358,24 +480,26 @@ def repo_table(per):
 
 
 def heavy_table(jobs):
-    rows = defaultdict(lambda: {"runs": set(), "jobs": 0, "hours": set(), "min": 0.0})
+    rows = defaultdict(lambda: {"runs": {}, "jobs": 0, "hours": set(), "min": 0.0})
     for j in jobs:
         if not is_heavy(j["run"]):
             continue
         span = held(j)
         row = rows[(j["repo"].split("/")[-1], j["run"]["name"], j["run"]["event"])]
-        row["runs"].add(j["run"]["id"])
+        row["runs"][j["run"]["id"]] = ts(j["run"]["created_at"])
         if span:
             a, b = span
             row["jobs"] += 1
             row["min"] += (b - a).total_seconds() / 60
             row["hours"].update(h for h, _ in split_by_hour(a, b))
-    out = ["| repository | workflow | event | runs | jobs | hours (UTC) | runner-min |",
-           "|---|---|---|---|---|---|---|"]
+    out = ["| repository | workflow | event | runs | jobs | hours (UTC) | runner-min "
+           "| run starts (UTC) |",
+           "|---|---|---|---|---|---|---|---|"]
     for (repo, name, event), r in sorted(rows.items(), key=lambda kv: -kv[1]["min"]):
         hours = ",".join(f"{h:02d}" for h in sorted(r["hours"])) or "-"
+        starts = ", ".join(f"{s:%m-%d %H:%M}" for s in sorted(r["runs"].values()))
         out.append(f"| {repo} | {name} | {event} | {len(r['runs'])} | {r['jobs']} "
-                   f"| {hours} | {r['min']:.0f} |")
+                   f"| {hours} | {r['min']:.0f} | {starts} |")
     return out
 
 
@@ -390,6 +514,20 @@ def recommend(t):
     return (f"recommendation: max-parallel {cap} (non-heavy p95 {p95(busy)} + margin {MARGIN} "
             f"of {SLOTS} slots; non-heavy peak {max(busy, default=0)}); quiet hours {qs}; "
             f"lightest hours by runner-min {light}; stagger {slots}")
+
+
+def cap_line(t):
+    busy = t.light_busy()
+    p, pu = p95(busy), p95(t.light_busy(ubuntu=True))
+    hours = {h: p95(t.light_busy(h)) for h in range(24) if t.light_busy(h)}
+    lo, hi = min(hours.values(), default=0), max(hours.values(), default=0)
+
+    def at(v):
+        return ",".join(f"{h:02d}" for h, x in sorted(hours.items()) if x == v)
+    return (f"cap: max-parallel = slots {SLOTS} - (non-heavy p95 {p} over {len(busy)} minutes "
+            f"with a non-heavy job + margin {MARGIN}) = {max(1, SLOTS - p - MARGIN)}; "
+            f"ubuntu jobs alone: non-heavy p95 {pu}; "
+            f"per-hour non-heavy p95 from {lo} ({at(lo)}) to {hi} ({at(hi)})")
 
 
 # ---------------------------------------------------------------- main
@@ -428,6 +566,9 @@ def main():
                                           "pages": pages(cache)}, indent=1))
     left = {"self-hosted": 0, "no runner": 0}
     total, per = build(runs, jobs, left)
+    jobs_from = now - timedelta(days=jobs_days)
+    reruns = sum(1 for r in runs
+                 if ts(r["created_at"]) >= jobs_from and (r.get("run_attempt") or 1) > 1)
 
     print(f"window: runs {iso(now - timedelta(days=days))} to {iso(now)} ({days} days), "
           f"jobs from {iso(now - timedelta(days=jobs_days))} ({jobs_days} days)")
@@ -436,6 +577,8 @@ def main():
           f"no runner (skipped, or cancelled queued) {left['no runner']}; "
           f"api calls this run {reader.calls}"
           + f", pages in the cache {pages(cache)} (one call each)")
+    print(f"re-run runs in the jobs window (run_attempt above 1) {reruns}: the jobs endpoint's "
+          "default filter=latest lists their latest attempt's jobs only")
     print("\n## Total\n")
     print("\n".join(hour_table(total, jobs_days)))
     split = total.pr_split()
@@ -443,12 +586,17 @@ def main():
           f"median {mmss(med(split[True]))}, worst {mmss(max(split[True], default=None))} "
           f"({len(split[True])} jobs); while none did: median {mmss(med(split[False]))}, "
           f"worst {mmss(max(split[False], default=None))} ({len(split[False])} jobs)")
+    print("\n## Concurrency by hour\n")
+    print("\n".join(concurrency_table(total)))
+    print()
+    print("\n".join(concurrency_lines(total, jobs_days)))
     print("\n## Per repository (runner-min / peak / wait median)\n")
     print("\n".join(repo_table(per)))
     print("\n## Heavy runs\n")
     print("\n".join(heavy_table(jobs)))
     print()
     print(recommend(total))
+    print(cap_line(total))
     return 0
 
 

@@ -9,7 +9,7 @@
    "completed_at": "2026-11-02T11:40:00Z",
    "conclusion": "success",
    "labels": [
-    "ubuntu-latest"
+    "macos-latest"
    ],
    "runner_name": "GitHub Actions 301"
   },
@@ -21,7 +21,7 @@
    "completed_at": "2026-11-02T11:35:00Z",
    "conclusion": "success",
    "labels": [
-    "ubuntu-latest"
+    "windows-latest"
    ],
    "runner_name": "GitHub Actions 302"
   },
