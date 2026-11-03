@@ -304,6 +304,13 @@
   manager's `Unauthorized` refusal when the prompt is refused.
 ### Added
 
+- #616 (tests only): a witness for the CWI key file's stale-sibling
+  cleanup's second link-count check (#609), which the cold read of PR #611
+  proved by reading alone. A `cfg(test)` hook between the sibling's open
+  and its fstat, compiled out of production, hard-links the sibling to an
+  outside file in that window: the outside file stays byte-identical and
+  the sibling is unlinked unzeroed. With the check replaced by `true` the
+  outside file is zeroed and the witness fails. No behaviour change.
 - #683 (bench-support and tests only): a loopback transport for a host's
   tests. Under `bench-support`, `benchmark_support::LoopbackTable` and
   `LoopbackAnswer` answer every request of the clients built inside
