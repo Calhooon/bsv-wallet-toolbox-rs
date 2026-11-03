@@ -244,8 +244,8 @@ jobs:
             cargo test --lib --features sqlite,remote -- --list "$@"
             cargo test --test '*' --features sqlite,remote,bench-support -- --list "$@"
           }
-          list > "$RUNNER_TEMP/tests.txt" 2>&1
-          list --ignored > "$RUNNER_TEMP/ignored.txt" 2>&1
+          list > "$RUNNER_TEMP/tests.txt" 2>&1 || { cat "$RUNNER_TEMP/tests.txt"; exit 1; }
+          list --ignored > "$RUNNER_TEMP/ignored.txt" 2>&1 || { cat "$RUNNER_TEMP/ignored.txt"; exit 1; }
           python3 tools/ignore-sites --job sqlite --all "$RUNNER_TEMP/tests.txt" --ignored "$RUNNER_TEMP/ignored.txt"
 
   # The unit tests and every suite under tests/ with `remote` alone: a test
@@ -324,8 +324,8 @@ jobs:
         if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: |
           list() { cargo test --lib --tests --no-default-features --features remote -- --list "$@"; }
-          list > "$RUNNER_TEMP/tests.txt" 2>&1
-          list --ignored > "$RUNNER_TEMP/ignored.txt" 2>&1
+          list > "$RUNNER_TEMP/tests.txt" 2>&1 || { cat "$RUNNER_TEMP/tests.txt"; exit 1; }
+          list --ignored > "$RUNNER_TEMP/ignored.txt" 2>&1 || { cat "$RUNNER_TEMP/ignored.txt"; exit 1; }
           python3 tools/ignore-sites --job remote --all "$RUNNER_TEMP/tests.txt" --ignored "$RUNNER_TEMP/ignored.txt"
 
   # The static gates in one job (#617), so a PR run holds one queue slot for
