@@ -5,6 +5,9 @@ use super::*;
 use crate::managers::ump_token::{KdfAlgorithm, KeyFile, UmpToken};
 use bsv_rs::wallet::ProtoWallet;
 
+#[path = "cwi_kdf_permits_tests.rs"]
+mod kdf_permits;
+
 #[test]
 fn test_profile_new() {
     let profile = Profile::new("Test".to_string());
@@ -74,24 +77,33 @@ fn test_config_default() {
     let config = CWIStyleWalletManagerConfig::default();
     assert_eq!(config.password_rounds, DEFAULT_PASSWORD_ROUNDS);
     assert!(config.use_pbkdf2);
+    assert_eq!(
+        config.kdf_in_flight, 4,
+        "512 MiB of argon2id at the default"
+    );
 }
 
 /// A manager whose builder records the key it is handed.
 fn manager() -> (CWIStyleWalletManager, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+    manager_with(CWIStyleWalletManagerConfig::default(), || {})
+}
+
+/// A manager at `config` whose builder runs `on_build`, then records the key.
+fn manager_with(
+    config: CWIStyleWalletManagerConfig,
+    on_build: impl Fn() + Send + Sync + 'static,
+) -> (CWIStyleWalletManager, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
     let seen: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::default();
     let log = seen.clone();
     let builder: CWIWalletBuilder = Arc::new(move |key, _pkm| {
+        on_build();
         log.lock().unwrap().push(key.clone());
         Box::pin(async move {
             let wallet = ProtoWallet::new(Some(PrivateKey::from_bytes(&key)?));
             Ok(Arc::new(wallet) as Arc<dyn WalletInterface + Send + Sync>)
         })
     });
-    let m = CWIStyleWalletManager::new(
-        "admin.test".into(),
-        builder,
-        CWIStyleWalletManagerConfig::default(),
-    );
+    let m = CWIStyleWalletManager::new("admin.test".into(), builder, config);
     (m, seen)
 }
 
