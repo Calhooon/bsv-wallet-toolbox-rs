@@ -41,6 +41,24 @@ reaches it. The .rs files under src/ and tests/ are scanned; benches/ and
 examples/ are not, since neither job's lists build them as tests. Exit 0
 when every site is listed and none is ignored; 1 otherwise; 2 on a usage
 fault.
+
+A site is an outer `#[cfg_attr(PREDICATE, ATTR, ...)]` whose list holds
+`ignore` (bare or `ignore = "..."`, in any place of the list, a nested
+`cfg_attr(Q, ..., ignore)` read as `all(PREDICATE, Q)`), and whose
+predicate is false under the job's features and true under the other
+job's: the test is confined to the job. The predicate is parsed, spacing
+and line breaks aside: `feature = "..."` leaves under `any`, `all` and
+`not`, and `test` (true: every list is a test build). The jobs' features
+are the ones their builds turn on: the sqlite job `sqlite`, `remote` and
+`bench-support` (the integration build's; its lib build has no
+`bench-support`, which its list shows), the remote-only job `remote`. Not
+a site: a plain `#[ignore]`; a `cfg_attr` with no `ignore` in its list
+(`cfg_attr(not(feature = "sqlite"), tokio::test)`); a predicate the same
+in both jobs (`feature = "mysql"`, false in both, runs in both; one true in
+both is a plain `#[ignore]` by another spelling); a predicate holding any
+other leaf (`unix`, `target_os = "..."`) whose value decides it, since the
+guard cannot say where it holds; and the attribute in a comment or a
+string.
 """
 
 import argparse
@@ -49,12 +67,9 @@ import sys
 from collections import deque
 from pathlib import Path
 
-# A job's sites: the attribute's leading tokens, string literals as ("str", v).
-SITE_ATTRS = {
-    "sqlite": ["cfg_attr", "(", "not", "(", "feature", "=", ("str", "sqlite"),
-               ")", ",", "ignore"],
-    "remote": ["cfg_attr", "(", "feature", "=", ("str", "sqlite"), ",", "ignore"],
-}
+# The features each job's builds turn on, and the job a site is ignored in.
+JOB_FEATURES = {"sqlite": {"sqlite", "remote", "bench-support"}, "remote": {"remote"}}
+OTHER_JOB = {"sqlite": "remote", "remote": "sqlite"}
 JOB_BUILD = {"sqlite": "the sqlite build's", "remote": "the remote-only build's"}
 
 
@@ -159,6 +174,98 @@ def _match(tokens, k, pattern):
     return True
 
 
+def _split(tokens):
+    """A token run's comma-separated items at its own depth."""
+    items, item, depth = [], [], 0
+    for tok in tokens:
+        if tok[0] == "p" and tok[1] in "([{":
+            depth += 1
+        elif tok[0] == "p" and tok[1] in ")]}":
+            depth -= 1
+        if not depth and tok[:2] == ("p", ","):
+            items.append(item)
+            item = []
+        else:
+            item.append(tok)
+    if item:
+        items.append(item)
+    return items
+
+
+def _call(tokens):
+    """(name, the tokens inside its parentheses) for `name(...)`, else None."""
+    if len(tokens) >= 3 and tokens[0][0] == "id" and tokens[1][:2] == ("p", "(") \
+            and tokens[-1][:2] == ("p", ")"):
+        return tokens[0][1], tokens[2:-1]
+    return None
+
+
+def predicate(tokens):
+    """A cfg predicate's tree: ("feature", name), ("test",), ("any" or
+    "all", [trees]), ("not", tree), or ("other",) for any other leaf."""
+    kinds = [tok[:2] for tok in tokens]
+    if len(kinds) == 3 and kinds[0] == ("id", "feature") and kinds[1] == ("p", "=") \
+            and kinds[2][0] == "str":
+        return ("feature", kinds[2][1])
+    if kinds == [("id", "test")]:
+        return ("test",)
+    call = _call(tokens)
+    if call and call[0] in ("any", "all"):
+        return (call[0], [predicate(item) for item in _split(call[1])])
+    if call and call[0] == "not" and len(_split(call[1])) == 1:
+        return ("not", predicate(_split(call[1])[0]))
+    return ("other",)
+
+
+def holds(tree, features):
+    """The predicate's value with these features on: True, False, or None
+    where an other leaf decides it."""
+    kind = tree[0]
+    if kind == "feature":
+        return tree[1] in features
+    if kind == "test":
+        return True
+    if kind == "not":
+        value = holds(tree[1], features)
+        return None if value is None else not value
+    if kind in ("any", "all"):
+        values = [holds(t, features) for t in tree[1]]
+        decides = kind == "any"
+        if decides in values:
+            return decides
+        return None if None in values else not decides
+    return None
+
+
+def ignored_when(tokens):
+    """The predicate under which a `cfg_attr` attribute's tokens apply
+    `ignore`, a nested one's folded in with `all`; None if they apply none."""
+    call = _call(tokens)
+    if not call or call[0] != "cfg_attr":
+        return None
+    items = _split(call[1])
+    if len(items) < 2:
+        return None
+    pred = predicate(items[0])
+    for attr in items[1:]:
+        if not attr:
+            continue
+        if attr[0][:2] == ("id", "ignore") and (len(attr) == 1 or attr[1][:2] == ("p", "=")):
+            return pred
+        inner = ignored_when(attr)
+        if inner is not None:
+            return ("all", [pred, inner])
+    return None
+
+
+def is_site(tokens, job):
+    """An attribute's tokens make a site of the job: ignored in the other
+    job, not in this one."""
+    when = ignored_when(tokens)
+    return when is not None and holds(when, JOB_FEATURES[job]) is False \
+        and holds(when, JOB_FEATURES[OTHER_JOB[job]]) is True
+
+
 def scan(text, job):
     """A file's out-of-line mods (name, #[path] or None, inline mods around
     it) and its job's sites (line, inline mods around it, fn name or None)."""
@@ -184,7 +291,7 @@ def scan(text, job):
             if _match(tokens, k + 2, ["path", "="]) and k + 4 < len(tokens) \
                     and tokens[k + 4][0] == "str":
                 path_attr = tokens[k + 4][1]
-            if _match(tokens, k + 2, SITE_ATTRS[job]):
+            if is_site(tokens[k + 2:j], job):
                 name = None
                 for f in range(j + 1, len(tokens) - 1):
                     if tokens[f][:2] == ("id", "fn") and tokens[f + 1][0] == "id":
@@ -295,7 +402,7 @@ def listed(path, root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--job", choices=sorted(SITE_ATTRS), default="sqlite",
+    ap.add_argument("--job", choices=sorted(JOB_FEATURES), default="sqlite",
                     help="the job whose sites and lists these are")
     ap.add_argument("--all", required=True, help="the job's builds' --list")
     ap.add_argument("--ignored", required=True, help="their --list --ignored")
