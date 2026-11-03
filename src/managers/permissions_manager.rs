@@ -497,6 +497,9 @@ pub struct WalletPermissionsManager {
     permission_cache: RwLock<HashMap<String, CachedPermission>>,
     /// Optional permission request handler for user consent.
     permission_request_handler: RwLock<Option<PermissionRequestHandler>>,
+    /// Counterparty identity keys (hex) to the protocol names admitted for
+    /// them with no prompt; empty unless set (#725).
+    whitelisted_counterparties: HashMap<String, Vec<String>>,
 }
 
 impl WalletPermissionsManager {
@@ -512,7 +515,23 @@ impl WalletPermissionsManager {
             config,
             permission_cache: RwLock::new(HashMap::new()),
             permission_request_handler: RwLock::new(None),
+            whitelisted_counterparties: HashMap::new(),
         }
+    }
+
+    /// The manager admitting, with no prompt, an everyday protocol call
+    /// whose counterparty is a key in `whitelist` and whose protocol name is
+    /// in that key's list: the reference's `whitelistedCounterparties`
+    /// (ts-stack@edf6e03 `WalletPermissionsManager.ts:581-586`), a
+    /// counterparty identity key's hex to protocol names (#725). A
+    /// privileged call under `differentiate_privileged_operations` and a
+    /// level-1 call, which names no counterparty, still ask.
+    pub fn with_whitelisted_counterparties(
+        mut self,
+        whitelist: HashMap<String, Vec<String>>,
+    ) -> Self {
+        self.whitelisted_counterparties = whitelist;
+        self
     }
 
     /// Gets the underlying wallet.
@@ -716,8 +735,9 @@ impl WalletPermissionsManager {
     /// 2. Security level 0 (Silent) bypass
     /// 3. Admin-reserved protocol blocking
     /// 4. Usage-type config flag bypass
-    /// 5. Cache check
-    /// 6. Permission request flow (if handler registered)
+    /// 5. Whitelisted counterparty bypass for an everyday call
+    /// 6. Cache check
+    /// 7. Permission request flow (if handler registered)
     pub async fn ensure_protocol_permission(
         &self,
         originator: &str,
@@ -826,8 +846,13 @@ impl WalletPermissionsManager {
         } else {
             false
         };
+        // 5) A whitelisted counterparty's everyday call needs no grant
+        // (ts-stack@edf6e03 `WalletPermissionsManager.ts:1516`, #725).
+        if !priv_flag && self.is_whitelisted_counterparty_protocol(counterparty, protocol) {
+            return Ok(true);
+        }
 
-        // 5) Cache check
+        // 6) Cache check
         let cache_key = Self::build_cache_key(
             PermissionType::Protocol,
             originator,
@@ -847,7 +872,7 @@ impl WalletPermissionsManager {
             ));
         }
 
-        // 6) Request permission flow
+        // 7) Request permission flow
         self.request_permission_flow(PermissionRequest {
             request_type: PermissionType::Protocol,
             originator: originator.to_string(),
@@ -862,6 +887,34 @@ impl WalletPermissionsManager {
             operation: None,
         })
         .await
+    }
+
+    /// Whether `counterparty` is whitelisted for `protocol`'s name: the
+    /// counterparty as passed or in either case, never `self`, `anyone` or
+    /// none; the name compared case-blind (ts-stack@edf6e03
+    /// `WalletPermissionsManager.ts:5731-5742`).
+    fn is_whitelisted_counterparty_protocol(
+        &self,
+        counterparty: Option<&str>,
+        protocol: &Protocol,
+    ) -> bool {
+        let counterparty = match counterparty {
+            None | Some("" | "self" | "anyone") => return false,
+            Some(counterparty) => counterparty,
+        };
+        let whitelist = &self.whitelisted_counterparties;
+        let protocols = [
+            counterparty.to_string(),
+            counterparty.to_lowercase(),
+            counterparty.to_uppercase(),
+        ]
+        .iter()
+        .find_map(|key| whitelist.get(key));
+        let name = protocol.protocol_name.to_lowercase();
+        match protocols {
+            Some(names) if !name.is_empty() => names.iter().any(|n| n.to_lowercase() == name),
+            _ => false,
+        }
     }
 
     /// Ensures the originator has basket access permission (DBAP).
