@@ -24,9 +24,11 @@ name: Cache seed
 # tests` in `test`, `Build unit and integration tests (remote only)` in
 # `test-remote`), which fill target/. No test runs here.
 #
-# Two jobs in parallel, one per feature set, as beta's: two slots at most,
-# each with its own target/, so neither save carries the other feature set's
-# artifacts.
+# Each job asks before the build whether main's scope already holds the exact key
+# (`lookup-only`); on a hit it skips the build, so a quiet day costs seconds and
+# a lock or toolchain change costs one build. Two jobs in parallel, one per
+# feature set, as beta's: two slots at most, each with its own target/, so
+# neither save carries the other feature set's artifacts.
 on:
   # The toolbox's slot in the fleet's stagger: bsv-rs 00:00Z, the CLI 03:00Z,
   # the toolbox 06:00Z.
@@ -68,15 +70,27 @@ jobs:
       - name: Resolve the dependency lock
         run: test -f Cargo.lock || cargo generate-lockfile
 
+      # The exact key under main's scope already: nothing to build.
+      - name: Look up the seed
+        id: lookup
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test-sqlite-remote
+          lookup-only: true
+          save-if: false
+
       - name: Cache the dependency build
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test-sqlite-remote
 
       - name: Build unit tests (sqlite)
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
         run: cargo test --no-run --lib --features sqlite,remote
 
       - name: Build integration tests
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
         run: cargo test --no-run --test '*' --features sqlite,remote,bench-support
 
   # Beta's `test-remote` job (Test Suite (remote only)): the `remote` build.
@@ -96,10 +110,20 @@ jobs:
       - name: Resolve the dependency lock
         run: test -f Cargo.lock || cargo generate-lockfile
 
+      - name: Look up the seed
+        id: lookup
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test-remote
+          lookup-only: true
+          save-if: false
+
       - name: Cache the dependency build
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test-remote
 
       - name: Build unit and integration tests (remote only)
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
         run: cargo test --no-run --lib --tests --no-default-features --features remote
