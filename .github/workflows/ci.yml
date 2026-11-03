@@ -388,7 +388,9 @@ jobs:
           bash tools/workflow-grants-check.sh
           bash tools/workflow-grants-check-test.sh
 
-      # Clippy covers SQL storage with remote, plus remote without default features.
+      # Clippy covers SQL storage with remote, plus remote without default features,
+      # each on every target; a target that needs `sqlite` declares it in
+      # `required-features`, so the remote-only build skips it (#660).
       - name: Clippy
         id: clippy
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
@@ -397,7 +399,7 @@ jobs:
       - name: Clippy (remote only)
         id: clippy-remote
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
-        run: cargo clippy --no-default-features --features remote -- -D warnings
+        run: cargo clippy --all-targets --no-default-features --features remote -- -D warnings
 
       # The numbers that may only fall (#55): tools/ratchet measures the tree and
       # fails when one rises above tools/ratchet.json. The toolchain is pinned to
