@@ -13,7 +13,8 @@
   `--strict` at the fold), its cases in `tools/handoff-rows-test`; the
   `checks` job runs both, `--check` on a docs-only run too. `--check`
   fails past the keeper's bound on waiting files: more than three, or the
-  oldest older than six hours. Two open PRs' rows no longer conflict in the
+  oldest older than six hours, counting the waiting files on the change's
+  base (`--base`), its own row file outside the bound. Two open PRs' rows no longer conflict in the
   merge queue.
 - #670 (docs; no code): the CI speed record
   `docs/census/ci-speed-2026-11-02.md` keeps loop one and the fleet's
