@@ -355,6 +355,8 @@ reset()                                // Reset to default settings
 
 Full BRC-98/99 permission enforcement with four categories, in-memory caching, and pluggable consent flows.
 
+A grant lives only in the five-minute cache; the reference keeps it as a PushDrop token in an admin basket. The two shapes for a stored grant (#751), for the owner's word: `docs/design/permission-token-store.md`.
+
 ### Permission Categories
 
 | Category | Abbrev | Method | Protects |
