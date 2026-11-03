@@ -278,12 +278,13 @@ const PROTOCOL_TAGS: [&str; 5] = [
 /// A protocol token for `APP` on the witness protocol, everyday, `self`,
 /// under the reference's stored tags.
 async fn seed_protocol(scene: &Scene, expiry: i64) {
-    seed_protocol_under(scene, expiry, &PROTOCOL_TAGS).await;
+    seed_protocol_under(scene, APP, expiry, &PROTOCOL_TAGS).await;
 }
 
-async fn seed_protocol_under(scene: &Scene, expiry: i64, tags: &[&str]) {
+/// A protocol token for `domain` on the witness protocol under `tags`.
+async fn seed_protocol_under(scene: &Scene, domain: &str, expiry: i64, tags: &[&str]) {
     let fields = strings(&[
-        APP,
+        domain,
         &expiry.to_string(),
         "false",
         "2",
@@ -435,7 +436,7 @@ async fn a_token_under_mixed_case_tags_is_not_found() {
         "protocolSecurityLevel 2",
         "counterparty self",
     ];
-    seed_protocol_under(&scene, live(), &mixed).await;
+    seed_protocol_under(&scene, APP, live(), &mixed).await;
     assert_eq!(
         refusal(protocol_call(&scene, false).await),
         "No protocol permission token found (seekPermission=false)."
@@ -632,4 +633,54 @@ async fn a_store_fault_on_the_list_is_the_wallets_fault_not_absence() {
         }
     }
     assert_eq!(prompts(&scene), 0);
+}
+
+// =========================================================================
+// The untagged pass's cost (`:3092` with `originator` dropped): every
+// other originator's token for the same protocol, basket or certificate is
+// listed, its signature verified and its domain decrypted
+// =========================================================================
+
+#[tokio::test]
+async fn another_originators_token_costs_one_decrypt_on_the_untagged_pass() {
+    let scene = scene().await;
+    let mut tags = PROTOCOL_TAGS;
+    tags[0] = "originator other.example.com";
+    seed_protocol_under(&scene, "other.example.com", live(), &tags).await;
+    assert_eq!(
+        refusal(protocol_call(&scene, false).await),
+        "No protocol permission token found (seekPermission=false)."
+    );
+    // The tagged pass finds nothing; the untagged pass lists the foreign
+    // token, reads the key, verifies the signature and decrypts the domain
+    // alone, which is not `APP`'s. The absent result is not cached.
+    assert_eq!(scene.counted.reads(), (2, 1, 1));
+    assert!(protocol_call(&scene, false).await.is_err());
+    assert_eq!(scene.counted.reads(), (4, 2, 1));
+}
+
+#[tokio::test]
+async fn a_token_under_this_wallets_key_with_a_bad_signature_does_not_answer() {
+    let scene = scene().await;
+    let wallet = &scene.counted.inner;
+    let fields = strings(&[APP, &live().to_string(), BASKET]);
+    let decoded = PushDrop::decode(&token_script(wallet, &fields).await).unwrap();
+    let mut pushed = decoded.fields.clone();
+    let other = CreateSignatureArgs {
+        data: Some(b"not the token's fields".to_vec()),
+        protocol_id: token_protocol(),
+        key_id: "1".to_string(),
+        counterparty: Some(Counterparty::Self_),
+        ..Default::default()
+    };
+    let signature = wallet.create_signature(other, Some(ADMIN)).await.unwrap();
+    *pushed.last_mut().unwrap() = signature.signature;
+    let script = PushDrop::new(decoded.locking_public_key, pushed).lock();
+    let tags = strings(&["originator app.example.com", "basket tickets"]);
+    store_token(wallet, script, "admin basket-access", &tags).await;
+    assert!(basket_call(&scene).await.unwrap());
+    assert_eq!(prompts(&scene), 1);
+    // Both passes list it; the key matches; the signature does not, so no
+    // field is decrypted.
+    assert_eq!(scene.counted.reads(), (2, 0, 1));
 }
