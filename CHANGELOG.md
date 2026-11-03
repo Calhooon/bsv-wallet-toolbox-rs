@@ -30,12 +30,19 @@
   `CWIStyleWalletManagerConfig::password_rounds` now governs the v1
   records' derivation alone. An offline guess against a new file costs
   one argon2id at 128 MiB and 7 passes where it cost one PBKDF2 of 7777
-  rounds. Host note: an unlock or a new profile writes an argon2id token,
-  which needs this toolbox to open; a toolbox before it refuses that
-  profile at derivation with its named reason (`UMP token asks argon2id;
-  this toolbox derives pbkdf2-sha512 only`), so a host that may roll back
-  keeps a copy of its key file before upgrading. Each unlock of an
-  argon2id token holds 128 MiB for the derivation.
+  rounds. Host note: a migrating unlock, a re-seal or a new profile
+  writes an argon2id token, which needs this toolbox to open; a pbkdf2
+  token that opens keeps its KDF until its next re-seal, as the
+  reference's changePassword keeps it; a toolbox of #560's stage one
+  refuses an argon2id profile at derivation with its named reason (`UMP
+  token asks argon2id; this toolbox derives pbkdf2-sha512 only (#560
+  stage two)`), and a toolbox from before #560 fails at the snapshot
+  load, so a host that may roll back keeps a copy of its key file before
+  upgrading. Each unlock of an argon2id token holds 128 MiB for the
+  derivation, and a host's debug build derives it unoptimised (tens of
+  seconds) unless the host's own dev profile carries the two overrides
+  this crate's Cargo.toml sets for `argon2` and `blake2` (`opt-level =
+  3`); a host's test suite copies them.
 - #534 (the owner's 23.5 (c) word; the keeper's reading of 2026-11-02
   10:4xZ): `tools/mutants-floor.json` takes its floors from the complete
   Mutants record (`docs/census/mutants-complete-2026-11-02`, 59.22
@@ -135,7 +142,8 @@
   manager methods: `open_key_file` and `save_key_file` (the migration
   re-writes the file the manager opened) and `recovery_key` (the
   reference's `getRecoveryKey`, :2356); exports carry the token.
-  argon2id parsed and was refused at derivation until #593 (above). Design: `docs/design/ump-token-format.md`. Host note: the
+  argon2id parsed and was refused at derivation until #593 (above).
+  Design: `docs/design/ump-token-format.md`. Host note: the
   file's version moves at that unlock (or the next save), and an older
   toolbox cannot read it after; a host that may roll back keeps a copy of
   its v1 file. A wrong password while the v1 record is present (v1 has

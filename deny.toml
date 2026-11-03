@@ -18,6 +18,7 @@ ignore = []
 [bans]
 # Direct dependency: regex for the reference identity tokenizer's five Unicode boolean classes and the fold's Mn category (#474).
 # Direct dependency: unicode-normalization for the reference identity fold's NFD (#474); bsv-rs already depends on it.
+# Direct dependency: argon2 for the UMP token's argon2id KDF, the reference's default (#593; the owner's dependency word of 2026-11-02 14:4xZ); no default features, zeroize alone.
 # multiple-versions: warn while ecosystem major versions coexist; no skips.
 multiple-versions = "warn"
 # wildcards: require an explicit version requirement.
