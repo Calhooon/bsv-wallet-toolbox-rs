@@ -27,8 +27,10 @@
   where none came, unless its config turns
   `seek_permissions_for_identity_key_revelation` off; and a
   `get_public_key` request with `seekPermission` false is answered without
-  a prompt, as the reference answers it: admitted under a grant, else
-  refused.
+  a prompt: admitted under a grant the manager's cache still holds (five
+  minutes, lost on a restart; the reference also finds a stored token,
+  which the port does not, its own row), else refused. A `StorageClient`
+  over a permission-managed wallet now meets the identity-key prompt too.
 - #735: the sync chunk's lengths (`estimate_size`'s serialized length and
   the twelve row counts into `ChunkingState::add_items` in
   `src/storage/sqlx/sync.rs`) convert to `u32` saturating at `u32::MAX`
