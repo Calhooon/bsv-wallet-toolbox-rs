@@ -442,11 +442,8 @@ mod tests {
              VALUES (?, ?, 1, 1, ?, 1000, 'storage', 'change', 'P2PKH', ?)";
         for vout in 0..3 {
             let row = sqlx::query(insert_output).bind(user_id).bind(tx_id);
-            row.bind(vout)
-                .bind(&txid)
-                .execute(storage.writer())
-                .await
-                .unwrap();
+            let inserted = row.bind(vout).bind(&txid).execute(storage.writer()).await;
+            assert_eq!(inserted.unwrap().rows_affected(), 1);
         }
         (storage, auth)
     }
