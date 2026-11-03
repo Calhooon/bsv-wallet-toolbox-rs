@@ -30,7 +30,8 @@ This module provides manager components that sit above the core storage, service
 | `mod.rs` | 317 | Module declarations, re-exports, `WalletLogger`, `SetupWalletOptions`, `setup_wallet()` |
 | `storage_manager.rs` | 1392 | Multi-storage orchestration with active/backup semantics, lock queues, MonitorStorage impl with task locking, sync-safe cached settings/services |
 | `cwi_style_wallet_manager.rs` | 800 | CWI-compatible multi-profile manager: the v3 key file, the v1 read and migration, JSON import/export (tests in `cwi_style_wallet_manager_tests.rs`) |
-| `ump_token.rs` | 800 | The reference's UMP token and snapshot layouts, the KDF, the key-file records (tests in `ump_token_tests.rs`) |
+| `ump_token.rs` | 656 | The reference's UMP token and snapshot layouts, the key-file records (tests in `ump_token_tests.rs`) |
+| `ump_kdf.rs` | 212 | The token's password KDF, a child module of `ump_token.rs`: `PasswordKdf`, `KdfAlgorithm`, pbkdf2-sha512 and argon2id (#593) |
 | `permissions_manager.rs` | 1978 | BRC-98/99 permission enforcement with DPACP/DBAP/DCAP/DSAP, in-memory cache (5-min TTL), permission request handler |
 | `settings_manager.rs` | 354 | Persistent wallet settings with mainnet/testnet defaults and string serialization |
 | `simple_wallet_manager.rs` | 336 | Two-factor authentication manager (primary key + privileged key) |
@@ -57,7 +58,7 @@ pub use auth_manager::WalletAuthenticationManager;
 ```
 
 - `SimpleWalletManager` - Two-factor authentication: primary key (32 bytes) + privileged key manager
-- `CWIStyleWalletManager` - Multi-profile wallet with PBKDF2 password-based key derivation
+- `CWIStyleWalletManager` - Multi-profile wallet with password-based key derivation (argon2id tokens, pbkdf2 read, v1 PBKDF2)
 - `WalletAuthenticationManager` - WAB integration wrapper over `CWIStyleWalletManager`
 - `Profile` - Profile data with name, ID, primary pad, privileged pad, and timestamps
 - `UmpToken` - the reference's User Management Protocol token, binary layout (#560)
@@ -213,11 +214,11 @@ Snapshot format: `[32-byte key][encrypted payload]` where payload is `[1-byte ve
 
 ## CWIStyleWalletManager Features
 
-### PBKDF2 Key Derivation
+### Password Key Derivation
 
-Uses `ring::pbkdf2` with SHA-512 (default 7777 rounds, the reference's `PBKDF2_NUM_ROUNDS`). Derived key material is wrapped in `zeroize::Zeroizing<Vec<u8>>` to ensure automatic zeroing on drop, preventing sensitive key material from lingering in memory:
+A token's KDF is read from its metadata (`ump_kdf.rs`): argon2id (RustCrypto `argon2` =0.5.3, version 0x13, the token's iterations, memoryKiB, parallelism, hashLength) or `ring::pbkdf2` with SHA-512 at the token's iterations (7777, the reference's `PBKDF2_NUM_ROUNDS`, for a token with no metadata). New tokens are argon2id at the reference's defaults, 7 / 131072 / 1 / 32 (#593); `config.password_rounds` is the v1 records' PBKDF2 alone. A KDF outside `isValidKdfConfig` is refused with the reference's text. Derived key material is wrapped in `zeroize::Zeroizing<Vec<u8>>` to ensure automatic zeroing on drop, preventing sensitive key material from lingering in memory:
 ```rust
-// v3 (#560): password_key = PBKDF2(password, token.password_salt, token.password_kdf.iterations)
+// v3 (#560, #593): password_key = KDF(password, token.password_salt, token.password_kdf), argon2id for new tokens
 // Salt = the token's passwordSalt (32 bytes from rng::os_fill), never the profile id
 // root_primary = open(token.password_presentation_primary, presentation_key XOR password_key)
 // profile key  = root_primary XOR primary_pad (the pad read from the token's profilesEncrypted)
@@ -271,7 +272,7 @@ PasswordKdf { algorithm: KdfAlgorithm, iterations, memory_kib, parallelism, hash
 WalletSnapshot { version, snapshot_key, active_profile_id (16 bytes), encrypted_payload }  // the reference's saveSnapshot layout
 ```
 
-The reference's `UMPToken` (ts-stack edf6e03 `CWIStyleWalletManager.ts:415-498`) field for field, in its binary layout; the design is `docs/design/ump-token-format.md`. Each profile of the key file is one reference token (the toolbox's profiles carry their own passwords); the presentation key is held in the file beside it, the recovery key is `recovery_key(id, password)`. `PasswordKdf::pbkdf2(n)` carries the reference's full params (`memoryKiB` 131072, `parallelism` 1, `hashLength` 32), so the params JSON is the reference's byte for byte. The host's privileged key manager still builds the wallet; the token's root privileged key wraps its factor copies. argon2id parses and is refused at derivation (stage two, a dependency).
+The reference's `UMPToken` (ts-stack edf6e03 `CWIStyleWalletManager.ts:415-498`) field for field, in its binary layout; the design is `docs/design/ump-token-format.md`. Each profile of the key file is one reference token (the toolbox's profiles carry their own passwords); the presentation key is held in the file beside it, the recovery key is `recovery_key(id, password)`. `PasswordKdf::pbkdf2(n)` carries the reference's full params (`memoryKiB` 131072, `parallelism` 1, `hashLength` 32), so the params JSON is the reference's byte for byte; `PasswordKdf::argon2id()` (crate-private) is the reference's default for new tokens, its params JSON likewise. The host's privileged key manager still builds the wallet; the token's root privileged key wraps its factor copies. argon2id derives at the token's parameters (#593); the vectors both ways are `test_vectors/keys/ump-token-*-argon2id*.json`.
 
 ### Key File
 
@@ -283,7 +284,7 @@ save_key_file() -> Result<()>        // sibling `<name>.tmp-<16 hex>`, sync, ren
 recovery_key(id, password) -> Result<Zeroizing<Vec<u8>>>  // the reference's getRecoveryKey (:2356)
 ```
 
-The migration (#594 (a), design doc 4.3): a v1 record opens with the profile-id salt; once its wallet is built a token joins it (a fresh root, the pad moved to `key XOR root`, a fresh salt) and the v1 record stays (`"v1"`), written with a key file open. A later unlock tries the token before v1: if it opens (its GCM tag the proof of the same password), `"v1"` leaves and the file is written; if it refuses, v1 opens and the token is re-sealed under the arriving password and written beside the unchanged v1 record (#594 (ii)). Only a token that opens drops v1, so the same wrong password at two consecutive unlocks drops it (the loss condition); a host's builder, which runs before the write, closes it by checking the derived key and returning an error. The commit refuses when the profile changed during the KDF. A failed unlock writes nothing. The file is one factor (the presentation key sits beside the token): an offline guess is one PBKDF2 of 7777 rounds against field 1's tag. Key material (factors, presentation key, v1 pad, `RefProfile` pads, the file's bytes) is `Zeroizing` or zeroed on drop. A token not on chain is written with `UNPUBLISHED_OUTPOINT` (the null txid, `.0`), which the reference's reader takes. An older toolbox cannot read a v3 file. Exports (`export_profile*`, `backup_all_profiles`) carry the `ump` record beside the profile's fields.
+The migration (#594 (a), design doc 4.3): a v1 record opens with the profile-id salt; once its wallet is built a token joins it (a fresh root, the pad moved to `key XOR root`, a fresh salt) and the v1 record stays (`"v1"`), written with a key file open. A later unlock tries the token before v1: if it opens (its GCM tag the proof of the same password), `"v1"` leaves and the file is written; if it refuses, v1 opens and the token is re-sealed under the arriving password and written beside the unchanged v1 record (#594 (ii)). Only a token that opens drops v1, so the same wrong password at two consecutive unlocks drops it (the loss condition); a host's builder, which runs before the write, closes it by checking the derived key and returning an error. The commit refuses when the profile changed during the KDF. A failed unlock writes nothing. The file is one factor (the presentation key sits beside the token): an offline guess is one derivation of the token's KDF against field 1's tag (argon2id at 128 MiB and 7 passes for a token written since #593). Key material (factors, presentation key, v1 pad, `RefProfile` pads, the file's bytes) is `Zeroizing` or zeroed on drop. A token not on chain is written with `UNPUBLISHED_OUTPOINT` (the null txid, `.0`), which the reference's reader takes. An older toolbox cannot read a v3 file. Exports (`export_profile*`, `backup_all_profiles`) carry the `ump` record beside the profile's fields.
 
 ## WalletAuthenticationManager
 
@@ -574,7 +575,7 @@ let allowed = manager.ensure_spending_permission(
 These managers match the TypeScript `@bsv/wallet-toolbox` implementations:
 - `WalletStorageManager` - Storage synchronization logic
 - `SimpleWalletManager` - Two-factor authentication pattern
-- `CWIStyleWalletManager` - CWI multi-profile pattern with PBKDF2
+- `CWIStyleWalletManager` - CWI multi-profile pattern, the reference's UMP token and KDFs
 - `WalletSettingsManager` - Settings persistence pattern
 - `WalletLogger` - Operation logging interface
 - `WalletAuthenticationManager` - WAB authentication integration
