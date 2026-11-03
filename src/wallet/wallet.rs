@@ -1849,6 +1849,21 @@ where
         if let Some(ref protocol_id) = args.protocol_id {
             key_permission!(self, originator, args, protocol_id, PublicKey).await?;
         }
+        // The identity key asks the level-1 protocol `identity key
+        // retrieval` for `self`, as the reference does (ts-stack@edf6e03
+        // `WalletPermissionsManager.ts:5174-5185`, #719).
+        if args.identity_key {
+            let protocol = Protocol::new(SecurityLevel::App, "identity key retrieval");
+            self.check_protocol_permission(
+                originator,
+                args.privileged == Some(true),
+                &protocol,
+                Some(&Counterparty::Self_),
+                args.privileged_reason.as_deref(),
+                crate::managers::PermissionUsageType::IdentityKey,
+            )
+            .await?;
+        }
         self.key_route(originator).get_public_key(args).await
     }
 
