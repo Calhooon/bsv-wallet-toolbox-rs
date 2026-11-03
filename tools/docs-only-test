@@ -129,7 +129,13 @@ finally:
 
 # The workflow's shape: in each of ci.yml's jobs the checkout, then the step,
 # then every step gated on it, so a step added later without the gate fails.
+# The steps that run on a docs-only run as well, by job and step id (#669):
+# the handoff page check reads docs/handoff/ and HANDOFF.md, which are docs,
+# so a docs-only PR that edits a row file or the marked section is checked on
+# its own run and in the queue; python alone, seconds. Any other ungated step
+# fails, and each named step must carry `if: ${{ !cancelled() }}` alone.
 COND = "steps.scope.outputs.docs_only != 'true'"
+RUNS_ON_DOCS = {"checks": ("handoff",)}
 workflow = (HERE.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 jobs, job, step = {}, None, None
 for line in workflow.split("jobs:\n", 1)[1].splitlines():
@@ -149,9 +155,15 @@ for job, steps in jobs.items():
     scope = steps[1] if len(steps) > 1 else []
     check(f"{job}: the docs-only step comes second",
           any("id: scope" in s for s in scope) and any("tools/docs-only" in s for s in scope), scope)
+    allowed = {f"id: {i}" for i in RUNS_ON_DOCS.get(job, ())}
     ungated = [s[0].strip() for s in steps[2:]
-               if not any(x.strip().startswith("if:") and COND in x for x in s)]
-    check(f"{job}: every later step is gated on it", not ungated, ungated)
+               if not any(x.strip().startswith("if:") and COND in x for x in s)
+               and not any(x.strip() in allowed for x in s)]
+    check(f"{job}: every later step is gated on it, but the steps that run on docs too", not ungated, ungated)
+    for i in RUNS_ON_DOCS.get(job, ()):
+        named = [s for s in steps[2:] if any(x.strip() == f"id: {i}" for x in s)]
+        check(f"{job}: the step {i} runs on a docs-only run too, on !cancelled() alone",
+              len(named) == 1 and any(x.strip() == "if: ${{ !cancelled() }}" for x in named[0]), named)
 
 print(f"{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
