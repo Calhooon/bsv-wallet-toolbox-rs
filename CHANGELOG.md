@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- #713: `fuzz/seed_corpus.py` takes a file's old digest out of a target's
+  held set when it overwrites that file (two providers in one fixture
+  writing one name), so a later seed with the replaced bytes under a new
+  name is written rather than skipped; the set counts the files holding
+  each digest. The committed corpus is unchanged. Found in PR #712's read.
 - #587: `tools/scoreboard-write` dates a cell from its record section's own
   `measured_at` where the section carries one (`mutation_score`,
   `fuzz_hours` in `tools/ratchet.json`), the top-level date otherwise, and
