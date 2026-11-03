@@ -319,6 +319,8 @@ What landing taught (the night of 2026-10-28 to 29):
 
 ## Next (2026-10-31, after the beta.5 release: the census legs, the A8 census and the triage lane)
 
+- Landing (2026-11-03 10:02Z, the row written at the PR's open under the round-two rule of 2026-11-03; the landing's sha is the PR's merge commit): #667 (the fleet's runner cap revised on the #638 occupancy read (the keeper's line of 10:0xZ): mutants.yml runs its sixteen shards four at a time beside the two doors shards, six at the peak, its dispatch slot 16:00Z, the census carrying the revised line (the slots 07:00Z, 16:00Z, 17:30Z; six until the next read shows the non-heavy p95 under ten; the read every 48 hours); one cold read, the verdict on the PR).
+
 - Landing (2026-11-03 08:27Z, the row written at the PR's open under the round-two rule of 2026-11-03; the landing's sha is the PR's merge commit): #663 (#644: the affected-tests map's docs rule takes tools/docs-only's walked set (a *.md under tests, fuzz, test_vectors, tools or .github reaches everything or the named walking targets, no longer no test), a shared source or a two-lists-agree case, one case per directory with #632's planted README among them; the record's sentence and the CHANGELOG; one cold read, the verdict on the PR).
 - Landing (2026-11-03 08:36Z, the row written at the PR's open under the round-two rule of 2026-11-03; the landing's sha is the PR's merge commit): #664 (#660: the a8_census example (and any other example or bench that needs a feature) declares required-features, so the remote-only build skips it instead of failing, and the lint job's remote-only clippy step runs --all-targets as the sqlite step does; the record sentence and the CHANGELOG; one cold read, the verdict on the PR).
 
