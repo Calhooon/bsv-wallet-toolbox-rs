@@ -294,5 +294,61 @@
   "poisoned_chain_tests": ["process_action.rs"],
   "retire_rejected_tests": ["process_action.rs"],
   "test_vectors": ["allocation.rs", "beef.rs", "change.rs", "fees.rs", "inputs.rs", "mod.rs", "must_spend.rs", "outputs.rs", "tracker.rs"]
+ },
+ "issue_574": {
+  "lane": "p5-574-must-spend-survivor",
+  "base": "fa8b280c",
+  "tree": "6cfb715f (git archive, in place in a scratch tree)",
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "tool_version": "cargo-mutants 27.1.0",
+  "command": "HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 CARGO_TARGET_DIR=$HOME/bsv/targets/p5-574-must-spend-survivor-mutants cargo mutants --no-config --file src/storage/sqlx/create_action/must_spend.rs --in-place --cap-lints true --features sqlite,remote,bench-support --cargo-arg=--lib --cargo-arg=--test=fixtures --cargo-arg=--test=caller_complete_funding_tests --cargo-arg=--test=immediate_broadcast_hint_tests --cargo-arg=--test=known_ancestor_tests --cargo-arg=--test=test_vectors --timeout 900 --build-timeout 900 --output <out>/run",
+  "baseline": "Unmutated baseline in 26s build + 18s test",
+  "started": "2026-11-03T22:03:59.646328Z",
+  "finished": "2026-11-03T22:19:22.670419Z",
+  "summary": "22 mutants tested in 15m: 19 caught, 3 unviable",
+  "file": {
+   "caught": 19,
+   "missed": 0,
+   "timeout": 0,
+   "unviable": 3,
+   "listed": 22,
+   "score": 100.0,
+   "survivors": []
+  },
+  "verdicts": {
+   "src/storage/sqlx/create_action/must_spend.rs:15:5: replace refusal -> Error with Default::default()": "Unviable",
+   "src/storage/sqlx/create_action/must_spend.rs:21:5: replace check_listed -> Result<()> with Ok(())": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:22:38: delete ! in check_listed": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:46:5: replace allocate_named_change_input -> Result<AllocatedChangeInput> with Ok(Default::default())": "Unviable",
+   "src/storage/sqlx/create_action/must_spend.rs:58:12: delete ! in allocate_named_change_input": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:73:35: replace == with != in allocate_named_change_input": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:95:9: replace NamedCoin::sql -> String with String::new()": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:95:9: replace NamedCoin::sql -> String with \"xyzzy\".into()": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:115:9: replace NamedCoin::read -> Result<AllocatedChangeInput> with Ok(Default::default())": "Unviable",
+   "src/storage/sqlx/create_action/must_spend.rs:121:71: replace == with != in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:127:12: delete ! in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:131:31: replace || with && in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:131:58: replace && with || in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:131:61: delete ! in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:137:58: replace && with || in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:137:33: replace && with || in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:137:20: replace == with != in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:137:43: replace != with == in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:137:61: delete ! in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:147:34: replace && with || in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:147:19: replace != with == in NamedCoin::read": "CaughtMutant",
+   "src/storage/sqlx/create_action/must_spend.rs:147:44: replace != with == in NamedCoin::read": "CaughtMutant"
+  },
+  "survivor": {
+   "mutant": "src/storage/sqlx/create_action/must_spend.rs:131:31: replace || with && in NamedCoin::read",
+   "verdict": "killed",
+   "targets": [
+    "fixtures"
+   ],
+   "tests": [
+    "fixtures::storage::must_spend::refusals::a_held_coin_is_refused_as_held_ahead_of_the_received_rule"
+   ]
+  },
+  "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-574-must-spend-survivor/run"
  }
 }
