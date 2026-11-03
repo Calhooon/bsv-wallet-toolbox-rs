@@ -727,6 +727,35 @@ impl WalletPermissionsManager {
         reason: Option<&str>,
         usage_type: PermissionUsageType,
     ) -> Result<bool> {
+        self.ensure_protocol_permission_seeking(
+            originator,
+            privileged,
+            true,
+            protocol,
+            counterparty,
+            reason,
+            usage_type,
+        )
+        .await
+    }
+
+    /// [`Self::ensure_protocol_permission`] under the request's
+    /// `seekPermission` (the reference's default `true`): with it false, no
+    /// grant is refused with the reference's text and no prompt
+    /// (ts-stack@edf6e03 `WalletPermissionsManager.ts:1487`, `:1533`; #720).
+    /// The port holds no expired grant (the cache drops it), so the
+    /// reference's expired-token text at `:1549` reads as this one.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn ensure_protocol_permission_seeking(
+        &self,
+        originator: &str,
+        privileged: bool,
+        seek_permission: bool,
+        protocol: &Protocol,
+        counterparty: Option<&str>,
+        reason: Option<&str>,
+        usage_type: PermissionUsageType,
+    ) -> Result<bool> {
         // 1) Admin originator can do anything
         if self.is_admin(originator) {
             return Ok(true);
@@ -808,6 +837,11 @@ impl WalletPermissionsManager {
         );
         if self.is_permission_cached(&cache_key).await {
             return Ok(true);
+        }
+        if !seek_permission {
+            return Err(Error::AccessDenied(
+                "No protocol permission token found (seekPermission=false).".to_string(),
+            ));
         }
 
         // 6) Request permission flow

@@ -1,7 +1,10 @@
 //! The permission witnesses of the seven key calls (#186, #576, #581): the
 //! grant under the request's `privileged`, the usage type each call passes
 //! and the counterparty and reason in the prompt, split from
-//! `privileged_keys_tests.rs` (#727); and the identity key's own ask (#719).
+//! `privileged_keys_tests.rs` (#727); the identity key's own ask (#719) and
+//! `get_public_key`'s `seek_permission` (#720). `args!` sends
+//! `seek_permission: Some(false)`, which `get_public_key` alone passes, so its
+//! prompting calls here ask with it on.
 
 use std::sync::Mutex as StdMutex;
 
@@ -151,15 +154,24 @@ async fn guarded_call(
         return Ok(format!("{verified:?}"));
     }
     if name == IDENTITY_KEY {
-        return Ok(format!(
-            "{:?}",
-            identity_key_call(wallet, privileged).await?
-        ));
+        let answer = identity_key_call(wallet, privileged, None).await?;
+        return Ok(format!("{answer:?}"));
     }
     if name != "get_public_key" {
         return call(wallet, name, privileged).await;
     }
-    let args = args!(
+    let answer = public_key_call(wallet, privileged, None).await?;
+    Ok(format!("{answer:?}"))
+}
+
+/// `get_public_key` naming the witness protocol under the request's
+/// `privileged` and `seek_permission`.
+async fn public_key_call(
+    wallet: &TestWallet,
+    privileged: Option<bool>,
+    seek_permission: Option<bool>,
+) -> bsv_rs::Result<GetPublicKeyResult> {
+    let mut args = args!(
         GetPublicKeyArgs {
             identity_key: false,
             protocol_id: Some(protocol()),
@@ -167,21 +179,22 @@ async fn guarded_call(
         },
         privileged
     );
-    Ok(format!(
-        "{:?}",
-        wallet.get_public_key(args, Some(ORIGINATOR)).await?
-    ))
+    args.seek_permission = seek_permission;
+    wallet.get_public_key(args, Some(ORIGINATOR)).await
 }
 
 /// `get_public_key` naming the identity key and no protocol: its own ask.
 const IDENTITY_KEY: &str = "get_public_key(identity_key)";
 
-/// `get_public_key` for the identity key under the request's `privileged`.
+/// `get_public_key` for the identity key under the request's `privileged`
+/// and `seek_permission`.
 async fn identity_key_call(
     wallet: &TestWallet,
     privileged: Option<bool>,
+    seek_permission: Option<bool>,
 ) -> bsv_rs::Result<GetPublicKeyResult> {
-    let args = args!(GetPublicKeyArgs { identity_key: true }, privileged);
+    let mut args = args!(GetPublicKeyArgs { identity_key: true }, privileged);
+    args.seek_permission = seek_permission;
     wallet.get_public_key(args, Some(ORIGINATOR)).await
 }
 
@@ -215,6 +228,8 @@ async fn a_privileged_grant_admits_a_privileged_key_call() {
         let expected: Vec<Asked> = match name {
             "decrypt" => vec![asked("encrypt"), asked("decrypt")],
             "verify_hmac" => vec![asked("create_hmac"), asked("verify_hmac")],
+            // `guarded_call` asks `get_public_key` seeking (#720).
+            "get_public_key" => vec![Asked::privileged(name, REASON, None)],
             _ => vec![asked(name)],
         };
         assert_eq!(made, expected, "{name}");
@@ -340,7 +355,7 @@ async fn prompted_call(
     }
     match name {
         "get_public_key" => {
-            let args = args!(
+            let mut args = args!(
                 GetPublicKeyArgs {
                     protocol_id: Some(protocol.clone()),
                     key_id: Some("1".to_string()),
@@ -348,6 +363,7 @@ async fn prompted_call(
                 },
                 None
             );
+            args.seek_permission = None;
             wallet.get_public_key(args, o).await.map(drop)
         }
         "encrypt" => ask!(encrypt(EncryptArgs)),
@@ -402,7 +418,7 @@ async fn the_identity_key_prompts_for_identity_key_retrieval() {
     let (_dir, wallet, double, _manager, prompts) = permitted_wallet(config).await;
     let retrieval = Protocol::new(SecurityLevel::App, "identity key retrieval");
     for privileged in [None, Some(true)] {
-        match identity_key_call(&wallet, privileged).await {
+        match identity_key_call(&wallet, privileged, None).await {
             Err(bsv_rs::Error::WalletRefusal { message, .. }) => {
                 assert_eq!(message, PERMISSION_REFUSAL, "{privileged:?}");
             }
@@ -416,4 +432,77 @@ async fn the_identity_key_prompts_for_identity_key_retrieval() {
     }
     assert!(prompts.requests.lock().unwrap().is_empty());
     assert_eq!(double.asked(), Vec::<Asked>::new());
+}
+
+// =========================================================================
+// `get_public_key`'s `seek_permission` (#720): each branch passes
+// `requestArgs.seekPermission` (ts-stack@edf6e03
+// `WalletPermissionsManager.ts:5169`, `:5182`), absent read as true
+// (`:1487`); false with no grant is refused with no prompt (`:1533`).
+// =========================================================================
+
+/// The refusal of a request that seeks no permission and holds no grant.
+const NO_SEEK_REFUSAL: &str =
+    "Access denied: No protocol permission token found (seekPermission=false).";
+
+/// The two branches of `get_public_key` under `seek_permission`.
+async fn public_key_branches(
+    wallet: &TestWallet,
+    seek_permission: Option<bool>,
+) -> [(&'static str, bsv_rs::Result<GetPublicKeyResult>); 2] {
+    [
+        (
+            "protocol",
+            public_key_call(wallet, None, seek_permission).await,
+        ),
+        (
+            IDENTITY_KEY,
+            identity_key_call(wallet, None, seek_permission).await,
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn get_public_key_seeking_no_permission_is_refused_without_a_prompt() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (_dir, wallet, _double, _manager, prompts) = permitted_wallet(config).await;
+    for (branch, answer) in public_key_branches(&wallet, Some(false)).await {
+        match answer {
+            Err(bsv_rs::Error::WalletRefusal { class, message }) => {
+                assert_eq!(class, bsv_rs::WalletRefusalClass::Unauthorized, "{branch}");
+                assert_eq!(message, NO_SEEK_REFUSAL, "{branch}");
+            }
+            other => panic!("{branch}: expected the no-seek refusal, got {other:?}"),
+        }
+    }
+    assert_eq!(prompts.seen(), Vec::<Option<bool>>::new());
+}
+
+#[tokio::test]
+async fn get_public_key_seeking_permission_prompts_and_a_grant_admits_it_unseeking() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (_dir, wallet, _double, _manager, prompts) = permitted_wallet(config).await;
+    // Seeking, refused by the user: one prompt per branch.
+    for seek in [None, Some(true)] {
+        for (branch, answer) in public_key_branches(&wallet, seek).await {
+            match answer {
+                Err(bsv_rs::Error::WalletRefusal { message, .. }) => {
+                    assert_eq!(message, PERMISSION_REFUSAL, "{branch} {seek:?}");
+                }
+                other => panic!("{branch} {seek:?}: expected the prompt, got {other:?}"),
+            }
+        }
+    }
+    assert_eq!(prompts.seen(), vec![Some(false); 4]);
+    // Seeking, granted by the user: the grant then admits the unseeking call.
+    *prompts.grants.lock().unwrap() = vec![false];
+    for (branch, answer) in public_key_branches(&wallet, None).await {
+        assert!(answer.is_ok(), "{branch}: {answer:?}");
+    }
+    assert_eq!(prompts.seen().len(), 6);
+    prompts.grants.lock().unwrap().clear();
+    for (branch, answer) in public_key_branches(&wallet, Some(false)).await {
+        assert!(answer.is_ok(), "{branch}: {answer:?}");
+    }
+    assert_eq!(prompts.seen().len(), 6);
 }
