@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- #230: `list_outputs` at `offset: Some(i32::MIN)` no longer overflows the
+  reverse-order paging arithmetic (a debug-build panic, "attempt to negate
+  with overflow"; a release build wrapped to the same empty page). A
+  negative offset now reads `unsigned_abs() - 1`; every other offset answers
+  as before. Found by the CLI's #198 review.
+
 ### Changed
 
 - #669 (tools and docs; no code): HANDOFF.md's landing rows are a file
