@@ -1,7 +1,9 @@
 //! The sync-chunk finders' bounds past `i32::MAX` (#703) and the chunk's
-//! sums at `u32::MAX` (#711).
+//! sums and the lengths into them at `u32::MAX` (#711, #735).
 
-use super::{entity_names, get_sync_chunk_internal, process_sync_chunk_internal, ChunkingState};
+use super::{
+    entity_names, get_sync_chunk_internal, len_u32, process_sync_chunk_internal, ChunkingState,
+};
 use crate::storage::{
     RequestSyncChunkArgs, StorageSqlx, SyncChunk, SyncOffset, WalletStorageWriter,
 };
@@ -167,4 +169,23 @@ fn chunking_sums_saturate_at_u32_max() {
     items.add_items(1, 1);
     assert_eq!(items.items_count, u32::MAX);
     assert!(!items.can_add());
+}
+
+// A length into the sums saturates (#735). `as u32` wrapped a length past
+// `u32::MAX` small (2^32 to 0), so a chunk that large read as having room.
+// The seam takes the `usize` directly; no multi-gigabyte value is built.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn chunk_lengths_saturate_at_u32_max() {
+    assert_eq!(len_u32(0), 0);
+    assert_eq!(len_u32(u32::MAX as usize), u32::MAX);
+    for len in [u32::MAX as usize + 1, usize::MAX] {
+        assert_eq!(len_u32(len), u32::MAX);
+        let mut state = ChunkingState::new(u32::MAX, u32::MAX);
+        state.add_items(1, len_u32(len));
+        assert!(!state.can_add());
+        let mut state = ChunkingState::new(u32::MAX, u32::MAX);
+        state.add_items(len_u32(len), 1);
+        assert!(!state.can_add());
+    }
 }
