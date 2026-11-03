@@ -3,9 +3,9 @@
 //! chooses the door's path, `A8_PATH`), fed the same bytes, and any
 //! difference in a value, an error or a refusal is a failure. The scenes:
 //! every input of the BEEF door corpus (`fuzz/corpus/beef_door`) and the
-//! census's 1 MB BEEF (`CENSUS_MEGABYTES`) at the verification seams
-//! (`a8_differential`), and the census's BEEFs and refusals through the
-//! internalize door, its answer and every stored row compared. The create
+//! census's 1, 4 and 10 MB BEEFs (`CENSUS_MEGABYTES`) at the verification
+//! seams (`a8_differential`), and the census's BEEFs and refusals through
+//! the internalize door, its answer and every stored row compared. The create
 //! side is `create_action/tests/beef_read_once.rs`; the stored fixtures'
 //! replay (`tests/fixtures`) is the third, run with the feature on and off.
 
@@ -26,15 +26,14 @@ use std::fmt::Write;
 
 const CENSUS_COIN: u64 = 1_000_000;
 
-/// The census BEEF sizes the differential reads, in MB. The census
-/// (`examples/a8_census.rs`) measures 1, 4 and 10; the differential needs
-/// one of them (#634): both paths read a body through bsv-rs's decoder in
-/// 16 KiB chunks (`beef_stream.rs`, `CHUNK`), so 1 MB crosses it 61 times,
-/// and no bound of the door's lies between 1 and 10 MB (the next is the
-/// spend verifier's 100 MB stack, `DOOR_STACK_MEMORY_BYTES`). One path's
-/// reading costs about 0.13 s a MB in a debug build on the box, and 1, 4
-/// and 10 cost the four census tests 71 s on the ubuntu runner.
-pub(crate) const CENSUS_MEGABYTES: [usize; 1] = [1];
+/// The census BEEF sizes the differential reads, in MB: the census's three
+/// (`examples/a8_census.rs`). #634 cut them to 1, as one path's reading cost
+/// about 0.13 s a MB in a debug build on the box and the three cost the four
+/// census tests 71 s on the ubuntu runner; the dev profile's `sha2` and
+/// `hex` at `opt-level = 3` (#652, `Cargo.toml`) brought the three back, the
+/// four census tests at 4.2 s on the box. Both paths read a body through
+/// bsv-rs's decoder in 16 KiB chunks (`beef_stream.rs`, `CHUNK`).
+pub(crate) const CENSUS_MEGABYTES: [usize; 3] = [1, 4, 10];
 
 /// Chooses the path of this thread's door calls until dropped.
 pub(crate) struct Path;
