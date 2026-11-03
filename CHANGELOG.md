@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+- #725 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
+  `WalletPermissionsManager::with_whitelisted_counterparties(map) -> Self`,
+  the reference's `whitelistedCounterparties` (ts-stack@edf6e03
+  `WalletPermissionsManager.ts:581-586`): a counterparty identity key's hex
+  to the protocol names it is whitelisted for, empty by default.
+  `ensure_protocol_permission` admits an everyday call whose counterparty
+  is whitelisted for the protocol's name with no prompt and no grant,
+  after the usage-type exemptions and the privileged flag's normalizing
+  and before the cache, as the reference's `:1516` does (the helper at
+  `:5731-5742`: the counterparty as passed or in either case, never
+  `self` or `anyone`; the name compared case-blind). A privileged call
+  under `differentiate_privileged_operations` and a level-1 call, whose
+  counterparty is dropped ahead of the check, still ask. Host note
+  (bsv-wallet-cli#386): a host that whitelists a counterparty for a
+  protocol sees no prompt for that pair at level 2 where it did; nothing
+  changes for a host that whitelists nothing.
+
 ### Fixed
 - fuzz corpus: the four `bhs` seeds under #148's old fixture names (`get_chain_tip_header` and
   `get_header_for_height`, `429_is_an_error_asked_again` and `429_without_retry_after`, answer
