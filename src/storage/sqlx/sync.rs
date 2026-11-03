@@ -69,9 +69,12 @@ impl ChunkingState {
         self.items_count < self.max_items && self.rough_size < self.max_rough_size
     }
 
+    // Saturating (#711): a sum at `u32::MAX` keeps `can_add` false, since
+    // neither bound passes `u32::MAX`, where a plain add panicked in a debug
+    // build and wrapped small in release.
     fn add_items(&mut self, count: u32, size: u32) {
-        self.items_count += count;
-        self.rough_size += size;
+        self.items_count = self.items_count.saturating_add(count);
+        self.rough_size = self.rough_size.saturating_add(size);
     }
 
     fn remaining_items(&self) -> u32 {
