@@ -33,6 +33,13 @@
   `docs/census/ci-speed-loop-3.md`). A dependent that used those sqlx
   features through this crate's unification must now enable them itself.
   The owner's word of 2026-11-03, through the keeper.
+- #651 (tests; no behaviour): the four services tests of #634's ten that
+  reach no crate feature (the 81-row status table, the rule-28 utxo table,
+  the ladder lock and the ladder replay) run in the `sqlite` Test Suite job
+  and are ignored with their reason in the remote-only job, the ladder cut
+  test's pattern; `tools/ignore-sites` (with `tools/ignore-sites-test`)
+  refuses a `cfg_attr(not(feature = "sqlite"), ignore` site the
+  `sqlite,remote` build does not run (`docs/census/ci-speed-2026-11-02.md`).
 - #659 (manifest and two `use` sites; no behaviour change): the direct
   dependency on `futures-util` is removed from `Cargo.toml`; its two uses in
   `src/services/providers/arcade.rs` (`StreamExt`, `stream::iter`) read the

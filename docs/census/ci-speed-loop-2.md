@@ -173,6 +173,45 @@ An earlier round with the writer's ceiling planted at 1 ms failed the busy door 
 | the nightly's length | none | no scheduled workflow |
 | a cold read's length, the landing latency | the read 27 minutes on the Studio (05:41Z to 06:08Z, a cold build inside it); the landing 34:26 from the lane's DONE (05:40Z) to the merge at 06:14:36Z (004f77b3) | the read lane's record; the PR |
 
+
+## Loop two, cut (3): the remote-only job's repeated services tests (#651)
+
+Base `90ac9c7d` (origin/beta). The `Test Suite (remote only)` job runs the lib tests again under `--no-default-features --features remote`; four of #634's ten ran there as in the sqlite job, the same code: `src/services/**` carries no `cfg(feature = "sqlite")` and no `cfg(feature = "remote")` on their paths [X] (`grep -rn 'feature *= *"' src/services`). The one `any(feature = "sqlite", feature = "remote")` there, `providers/http_client.rs:81`, is the `brc104_door_cases` test module, true in both jobs and off these paths. The `break-glass-script-history` cfgs sit on the script hash history scan (the `Services` field `get_script_hash_history_services`, its getter and wiring in `services.rs`, and the T13/T14 tests at `rule_28_tests.rs:141` and `:154`), off in both jobs; the `bench-support` cfgs sit on the test transport's `isolated` module in `providers/http_client.rs`, which `cfg(test)` turns on in both jobs alike. None changes what the four tests reach between the two jobs.
+
+Seconds from nextest's `PASS [` lines, the colour codes stripped (`gh api .../actions/jobs/<id>/logs`, read only) [X]:
+
+| test | remote-only, run 41578469987 | remote-only, run 41588171820 (after #634) | sqlite unit, 41578469987 | sqlite unit, 41588171820 |
+|---|---|---|---|---|
+| `services::services::tests::test_the_status_verdict_is_the_rule_over_all_81_rows_from_both_starts` | 130.4 | 0.7 | 164.5 | 0.5 |
+| `services::services::rule_28_tests::the_utxo_verdict_is_the_rule_from_every_start` | 49.5 | 2.4 | 50.2 | 2.2 |
+| `services::services::ladder_fixtures_tests::ladders::lock::ladder_fixtures_server_locks_and_disposals_stay_off_runtime_workers` | 29.2 | 12.7 | 28.8 | 12.4 |
+| `services::services::ladder_fixtures_tests::ladders::ladder_fixtures_replay` | 25.7 | 10.7 | 27.4 | 10.4 |
+| the four | 234.8 | 26.5 | 270.8 | 25.5 |
+
+The remote-only job's length: 4:15 in run 41578469987 (1100 tests run, 13 skipped, nextest's summary 200.3 s), 2:06 in run 41588171820 (1099 run, 14 skipped, 77.8 s).
+
+### The cut
+
+Each of the four carries `#[cfg_attr(not(feature = "sqlite"), ignore = "runs in the sqlite Test Suite job; the services module compiles the same under both feature sets (#651)")]`, the pattern #634 gave the ladder cut test. The attribute and not a `ci.yml` filter: a filter by module (`services::`) would also leave out of the remote-only job any later services test that does depend on the feature set, silently; the attribute is per test, opt in, with its reason at the test, and a new services test runs in both jobs until someone confines it. `cargo test --lib --no-default-features --features remote` on the box [X]: before (the base's four files) `851 passed; 0 failed; 3 ignored`, after `847 passed; 0 failed; 7 ignored`, the cut test of #634 among the three and the seven, each of the four `ignored, runs in the sqlite Test Suite job; ...`. The remote-only job loses 26.5 test-seconds of its after (two thirds of them the replay's and the lock test's scene waits); the job runs its tests in parallel, so the job's length falls by less. The remote-only job is not the wall clock (the sqlite Test Suite is): the cut reaches the account's slot-minutes and the group's second job, not the figures' wall clock.
+
+### The guard
+
+`tools/ignore-sites` reads every `cfg_attr(not(feature = "sqlite"), ignore` site under `src/` and `tests/` and matches its function against the `sqlite,remote` build's lists (`cargo test --lib --tests --features sqlite,remote -- --list`, and `-- --list --ignored`): a site the build does not list, or lists as ignored, is red, so no test confined to the sqlite builds is ignored in every job. Its cases are `tools/ignore-sites-test` (six, over scratch trees: green, one line under `tests/`, ignored under both, unlisted, a plain `#[ignore]` not a site, an empty list a usage fault), 6 passed [X]. On the tree: `ignore-sites: 5 sites, 0 red` [X]. The plant, a second `#[ignore = "plant (#651)"]` on `ladder_fixtures_replay`, rebuilt and listed: `FAIL tests/fixtures/ladders.rs:800 ladder_fixtures_replay: ignored in the sqlite build too: no job runs it`, `5 sites, 1 red`, exit 1; reverted, the file's diff empty [X]. The guard is not in a workflow: `ci.yml` is outside this lane's bounds, so the captain decides whether the Test Suite job runs it after its build (the two `--list` runs reuse that build).
+
+### After (the captain fills at the landing)
+
+The PR's own run and its group run fill the after (the captain): the remote-only job's length against 2:06, its skipped count against 14 (18 expected), and the four absent from its `PASS [` lines and present in the sqlite job's.
+
+### The five figures
+
+| figure | value | source |
+|---|---|---|
+| a PR's CI wall clock | unchanged by this cut (the sqlite Test Suite job is the wall clock; 4:02 in run 41588171820) | run 41588171820 |
+| the queue wait | unchanged by this cut | as above |
+| the nightly's length | none | no scheduled workflow |
+| a cold read's length | the captain's at the landing | |
+| the landing latency | the captain's at the landing | |
+
 ## Loop two, the hygiene row: the map's walked set (#644)
 
 The finding of cut (1) above: `tools/affected-tests` classed every `*.md` as `none` before it read the path's directory, so a PR changing only a `README.md` under `tests/fixtures/data/storage-wire/` ran no cargo test on its own run, and `every_rpc_method_has_a_witness` went red only on the queue's group run. A late red, not a bad landing. The figures are unchanged by it.
