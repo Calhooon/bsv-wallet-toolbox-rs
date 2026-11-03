@@ -253,6 +253,18 @@
   manager's `Unauthorized` refusal when the prompt is refused.
 ### Added
 
+- #683 (bench-support and tests only): a loopback transport for a host's
+  tests. Under `bench-support`, `benchmark_support::LoopbackTable` and
+  `LoopbackAnswer` answer every request of the clients built inside
+  `LoopbackTable::building(|| ...)` from the test's own rows (method, host,
+  path; status, headers, body), with no socket, TLS, DNS or timer; an
+  unmatched request reads the socket's send fault, `error sending request
+  for url (<url>)`. The texts a host sees through it are the socket
+  transport's for the same answer, byte for byte, and each difference is
+  named per fixture in `docs/census/ci-speed-loop-4.md`, the table the
+  CLI's #526 moves its gate-vector, served-BEEF and wire fixtures under;
+  the CLI is told the table at the landing. Production builds re-export
+  reqwest's types as before.
 - #631: `CWIStyleWalletManager::with_kdf_in_flight(self, permits: usize)
   -> Result<Self>` and `managers::DEFAULT_KDF_IN_FLIGHT = 4`, the
   password derivations the CWI manager runs at once (argon2id holds
