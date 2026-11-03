@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""The cases of tools/docs-only: the docs set path by path, the events, and
+the diff read from scratch commits in a throwaway repository, as CI reads it.
+
+  tools/docs-only-test
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SCRIPT = HERE / "docs-only"
+
+passed = 0
+failed = 0
+
+
+def check(name, ok, detail=""):
+    global passed, failed
+    if ok:
+        passed += 1
+        print(f"ok   {name}")
+    else:
+        failed += 1
+        print(f"FAIL {name} {detail}")
+
+
+def run(args, cwd=None, stdin=None):
+    """The script's docs_only output, run as CI runs it."""
+    out = subprocess.run([sys.executable, str(SCRIPT), *args], cwd=cwd, input=stdin,
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"docs-only exited {out.returncode}: {out.stderr}")
+    values = [line.split("=", 1)[1] for line in out.stdout.splitlines()
+              if line.startswith("docs_only=")]
+    return values[-1] if values else None
+
+
+def paths(ps, event="pull_request"):
+    return run(["--event", event, "--paths", "-"], stdin="\n".join(ps) + "\n")
+
+
+# The docs set, each path alone.
+for p in ("HANDOFF.md", "CHANGELOG.md", "README.md", "docs/lanes/README.md",
+          "docs/census/ci-speed-2026-11-02.md", "docs/census/a-census.json",
+          "docs/design/ump-token-format.md", "src/wallet/CLAUDE.md", "benches/README.md"):
+    check(f"{p} is a doc", paths([p]) == "true")
+
+# Not docs: the gate-read documents, a *.md under a read directory, any code.
+for p in ("docs/ARCHITECTURE.md", "docs/architecture/x.md", "docs/NORTH-STAR.md",
+          "tests/CLAUDE.md", "tests/fixtures/data/storage-wire/README.md",
+          "fuzz/corpus/beef_door/README.md", "test_vectors/README.md",
+          "tools/README.md", ".github/PULL_REQUEST_TEMPLATE.md",
+          ".github/workflows/ci.yml", "tools/docs-only", "Cargo.toml",
+          "src/lib.rs", "tests/services_tests.rs", "HANDOFF.txt"):
+    check(f"{p} runs the full set", paths([p]) == "false")
+
+# Mixed and empty diffs.
+check("a docs-only diff short-circuits",
+      paths(["HANDOFF.md", "CHANGELOG.md", "docs/lanes/README.md"]) == "true")
+check("a doc beside a source file runs the full set",
+      paths(["HANDOFF.md", "src/wallet/wallet.rs"]) == "false")
+check("a doc beside an .md under tests/ runs the full set",
+      paths(["HANDOFF.md", "tests/fixtures/README.md"]) == "false")
+check("ARCHITECTURE.md beside docs runs the full set",
+      paths(["HANDOFF.md", "docs/ARCHITECTURE.md"]) == "false")
+check("an empty diff runs the full set", paths([]) == "false")
+
+# The events: a push and a tag's call never short-circuit.
+for event in ("push", "workflow_call", "workflow_dispatch"):
+    check(f"event {event} runs the full set", paths(["HANDOFF.md"], event) == "false")
+check("a merge group's docs-only diff short-circuits",
+      paths(["HANDOFF.md"], "merge_group") == "true")
+
+# The diff itself, from scratch commits: a base, a docs commit, a mixed one.
+tmp = Path(tempfile.mkdtemp(prefix="docs-only-test-", dir=os.environ.get("TMPDIR")))
+try:
+    repo = tmp / "repo"
+    (repo / "tools").mkdir(parents=True)
+    shutil.copy(SCRIPT, repo / "tools" / "docs-only")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def g(*a):
+        subprocess.run(["git", *a], cwd=repo, env=env, check=True, capture_output=True)
+
+    def commit(files, msg):
+        for name, text in files.items():
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text(text)
+        g("add", "-A")
+        g("commit", "-q", "-m", msg)
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True,
+                              text=True, check=True).stdout.strip()
+
+    def local(args):
+        out = subprocess.run([sys.executable, str(repo / "tools" / "docs-only"), *args],
+                             cwd=repo, capture_output=True, text=True)
+        values = [line.split("=", 1)[1] for line in out.stdout.splitlines()
+                  if line.startswith("docs_only=")]
+        return values[-1] if values else None
+
+    g("init", "-q")
+    base = commit({"src/lib.rs": "\n", "HANDOFF.md": "a\n"}, "base")
+    commit({"HANDOFF.md": "b\n", "docs/lanes/README.md": "x\n"}, "docs")
+    check("scratch: a docs commit against HEAD^1 short-circuits",
+          local(["--event", "pull_request"]) == "true")
+    commit({"src/lib.rs": "// x\n"}, "source")
+    check("scratch: a source commit against HEAD^1 runs the full set",
+          local(["--event", "pull_request"]) == "false")
+    commit({"CHANGELOG.md": "c\n"}, "docs again")
+    check("scratch: a group's last commit alone is docs",
+          local(["--event", "pull_request"]) == "true")
+    check("scratch: the group against its parent reads every commit, the source one too",
+          local(["--event", "merge_group", "--base", base]) == "false")
+    check("scratch: a merge group without its parent runs the full set",
+          local(["--event", "merge_group"]) == "false")
+    check("scratch: an unreadable base runs the full set",
+          local(["--event", "merge_group", "--base", "0" * 40]) == "false")
+    commit({"docs/ARCHITECTURE.md": "| invariant | charter | test |\n"}, "architecture")
+    check("scratch: docs/ARCHITECTURE.md alone runs the full set",
+          local(["--event", "pull_request"]) == "false")
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+
+print(f"{passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

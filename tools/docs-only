@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Whether a change is docs only, so every required job exits green (#632).
+
+The step at the head of each of ci.yml's five jobs. On a pull request it
+reads the merge commit against its base parent (HEAD^1); on a merge-queue
+group, the group's head against its parent (--base, merge_group.base_sha,
+fetched when the checkout lacks it); on a push and a tag's call it never
+short-circuits. When every changed path is in the docs set, the job's
+remaining steps are skipped and the job reports success; any other path runs
+the job's full set. The docs set, exactly:
+
+  docs        every path under docs/, every *.md (HANDOFF.md, CHANGELOG.md,
+              README.md, a CLAUDE.md under src/, benches/README.md);
+              docs/census/*.json and docs/lanes/*.md among them
+  not docs    the documents a gate reads: docs/ARCHITECTURE.md and
+              docs/architecture/ (tools/arch-doc-tests.sh, which lists from
+              the test build), docs/NORTH-STAR.md (tools/scoreboard-write
+              --check); and a *.md under a directory a test or a tool reads
+              at run time or that decides what runs: tests/ (the fixture
+              readers walk their data directories, storage_wire parses
+              every file in its own as JSON), fuzz/ (the BEEF door corpus
+              test reads every file under fuzz/corpus/beef_door),
+              test_vectors/, tools/ (the gates themselves), .github/
+  empty       an empty diff, or one that cannot be read: not docs only
+
+Usage:
+  tools/docs-only --event pull_request             # diff HEAD^1 HEAD
+  tools/docs-only --event merge_group --base SHA   # diff SHA HEAD
+  tools/docs-only --event pull_request --paths F   # F: one path a line ('-' stdin)
+With GITHUB_OUTPUT set, `docs_only=true|false` is appended there.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# The events whose change may short-circuit; a push and a tag's call never do.
+EVENTS = ("pull_request", "merge_group")
+
+# Read by a gate: a change to one runs every job.
+GATE_DOCS = ("docs/ARCHITECTURE.md", "docs/NORTH-STAR.md")
+GATE_DOC_PREFIXES = ("docs/architecture/",)
+
+# A *.md under one of these is not a doc to the workflow.
+NOT_DOC_PREFIXES = ("tests/", "fuzz/", "test_vectors/", "tools/", ".github/")
+
+
+def is_doc(path):
+    if path in GATE_DOCS or path.startswith(GATE_DOC_PREFIXES):
+        return False
+    if path.startswith("docs/"):
+        return True
+    return path.endswith(".md") and not path.startswith(NOT_DOC_PREFIXES)
+
+
+def docs_only(paths):
+    """(bool, why): every path a doc, and at least one path."""
+    if not paths:
+        return False, ["an empty diff: the full set"]
+    why = [f"{p}: {'doc' if is_doc(p) else 'runs the full set'}" for p in paths]
+    return all(is_doc(p) for p in paths), why
+
+
+def git(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+
+
+def changed_paths(base):
+    """The change from base to HEAD, base fetched when the checkout lacks it."""
+    if git("cat-file", "-e", f"{base}^{{commit}}").returncode != 0:
+        git("fetch", "-q", "--no-tags", "--depth=1", "origin", base)
+    out = git("diff", "--no-renames", "--name-only", base, "HEAD")
+    if out.returncode != 0:
+        return None
+    return [line for line in out.stdout.splitlines() if line]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--event", required=True)
+    ap.add_argument("--base", help="the commit the change is read against (default HEAD^1)")
+    ap.add_argument("--paths", help="a file of changed paths, one a line ('-' for stdin)")
+    args = ap.parse_args()
+    if args.event not in EVENTS:
+        result, why = False, [f"event {args.event}: the full set"]
+    elif args.paths:
+        src = sys.stdin if args.paths == "-" else open(args.paths, encoding="utf-8")
+        result, why = docs_only([line.strip() for line in src if line.strip()])
+    elif args.event == "merge_group" and not args.base:
+        # HEAD^1 is the group's last commit alone when its PR has several.
+        print("::warning title=docs only::a merge group without its parent commit; the full set runs")
+        result, why = False, ["a merge group without --base: the full set"]
+    else:
+        base = args.base or "HEAD^1"
+        paths = changed_paths(base)
+        if paths is None:
+            print(f"::warning title=docs only::the diff against {base} could not be read; the full set runs")
+            result, why = False, [f"the diff against {base} could not be read: the full set"]
+        else:
+            result, why = docs_only(paths)
+    for line in why:
+        print(f"  {line}")
+    value = str(result).lower()
+    print(f"docs_only={value}")
+    gh = os.environ.get("GITHUB_OUTPUT")
+    if gh:
+        with open(gh, "a", encoding="utf-8") as f:
+            f.write(f"docs_only={value}\n")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary and result:
+        with open(summary, "a", encoding="utf-8") as f:
+            f.write("docs only: every changed path is a doc (tools/docs-only), "
+                    "so this job's remaining steps are skipped and it reports success\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
