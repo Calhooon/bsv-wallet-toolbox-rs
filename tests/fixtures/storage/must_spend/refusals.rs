@@ -2,14 +2,15 @@
 //! (#353, PR #399's review finding 3): a named coin whose transaction is
 //! neither `completed` nor `unproven`, a caller-complete transaction whose
 //! signatures forbid adding the named coins, a named coin whose BEEF cannot
-//! be built, and the trait's default door, which cannot enforce a list.
+//! be built, the trait's default door, which cannot enforce a list, and a
+//! coin another action holds, refused as held ahead of the received rule.
 
 use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::json;
 
-use super::{id, outpoint, payment, refusal, refused, seeded};
+use super::{id, ids, outpoint, payment, refusal, refused, seeded};
 
 /// A named coin whose transaction is `failed` is refused by name, never
 /// taken as the funding it would cover.
@@ -162,5 +163,53 @@ async fn the_default_door_refuses_a_list() -> Result<()> {
         Ok(done) => anyhow::bail!("taken: {}", done.created.reference),
     }
     nothing_sent.assert_async().await;
+    Ok(())
+}
+
+/// A coin another action holds (`spent_by` set) is refused as held, by
+/// `spent_by` alone as the pick's `o.spent_by IS NULL` reads it: a delayed
+/// action, which does not ask the coin's `spendable` flag, still gets the
+/// held refusal, never the received rule's word about a coin it cannot
+/// take (#574).
+#[tokio::test]
+async fn a_held_coin_is_refused_as_held_ahead_of_the_received_rule() -> Result<()> {
+    let replay = seeded().await?;
+    let (txid, _) = outpoint(&replay, "receipt.0");
+    let offer = ids(&replay, &["funding.1", "receipt.0"]).await?;
+    let must_spend = ids(&replay, &["receipt.0"]).await?;
+    // An earlier action under the rule holds the receipt.
+    let earlier = replay
+        .storage
+        .create_action_offering(
+            &replay.auth,
+            payment(1000, true, false),
+            &offer,
+            &must_spend,
+        )
+        .await?;
+    assert_eq!(earlier.inputs[0].source_txid, txid);
+    // A delayed action without the rule names it.
+    let mut args = serde_json::to_value(payment(1000, false, false))?;
+    args["options"]["acceptDelayedBroadcast"] = json!(true);
+    let error = refused(&replay, async {
+        match replay
+            .storage
+            .create_action_offering(
+                &replay.auth,
+                serde_json::from_value(args)?,
+                &offer,
+                &must_spend,
+            )
+            .await
+        {
+            Ok(created) => anyhow::bail!("taken: {}", created.reference),
+            Err(e) => Ok(e.to_string()),
+        }
+    })
+    .await?;
+    assert_eq!(
+        error,
+        format!("Validation error: mustSpend[0]: output {txid}.0 is spent or reserved")
+    );
     Ok(())
 }
