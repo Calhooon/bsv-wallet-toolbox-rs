@@ -21,6 +21,31 @@
   changes for a host that whitelists nothing.
 
 ### Fixed
+- #751 step 1 (the keeper's 2026-11-03 21:2xZ word): the permissions
+  manager looks up a stored token before the seek-false refusal and before
+  the prompt, as the reference's `findProtocolToken`, `findBasketToken` and
+  `findCertificateToken` do (ts-stack@edf6e03
+  `WalletPermissionsManager.ts:1522-1566`, `:1595-1615`, `:1669-1709`,
+  `:3080-3239`): `list_outputs` on the kind's admin basket
+  (`admin protocol-permission`, `admin basket-access`,
+  `admin certificate-access`) with the reference's tags, as the admin
+  originator; the PushDrop source checked against the wallet's token key and
+  its signature; each field decrypted under `[2, 'admin permission token
+  encryption']`; the match on the request and the expiry rule. A live token
+  admits with no prompt and is cached; an expired protocol token refuses a
+  seek-false call with the reference's `:1549` text and prompts otherwise;
+  an absent token leaves the path as it was. Read only: nothing is minted,
+  renewed or revoked, and the spending kind is not looked up. An underlying
+  wallet that cannot list outputs (a `ProtoWallet`) answers no token. Host
+  note (bsv-wallet-cli#386): a grant that already has a token in the
+  wallet's admin baskets, a TypeScript wallet's over a synced store, now
+  admits without a prompt where the port prompted or refused; the port's
+  own grants still live in the cache alone until step 2; every uncached
+  protocol, basket or certificate check now reads the baskets: two
+  `list_outputs` for an absent token (the originator's tag and the untagged
+  pass; three when the originator normalizes differently), one
+  `list_outputs`, one `get_public_key` (once per manager) and six
+  `decrypt` for a live protocol or certificate token, three for a basket.
 - #589 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)): the two
   key-linkage reveals ask the BRC-98/99 protocol permission ahead of the
   key route, as the reference's permissions manager does (ts-stack@edf6e03
