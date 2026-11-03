@@ -2,10 +2,12 @@
 //! grant under the request's `privileged`, the usage type each call passes
 //! and the counterparty and reason in the prompt, split from
 //! `privileged_keys_tests.rs` (#727); the identity key's own ask (#719) and
-//! `get_public_key`'s `seek_permission` (#720). `args!` sends
+//! `get_public_key`'s `seek_permission` (#720); the whitelisted
+//! counterparties (#725). `args!` sends
 //! `seek_permission: Some(false)`, which `get_public_key` alone passes, so its
 //! prompting calls here ask with it on.
 
+use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
 
 use super::busy_door_tests::wallet;
@@ -70,14 +72,25 @@ async fn guarded_wallet() -> Guarded {
 /// `config`, holding no grant; its handler refuses every prompt it is not
 /// told to grant.
 async fn permitted_wallet(config: crate::managers::WalletPermissionsManagerConfig) -> Guarded {
+    whitelisted_wallet(config, HashMap::new()).await
+}
+
+/// [`permitted_wallet`] with the manager's whitelisted counterparties (#725).
+async fn whitelisted_wallet(
+    config: crate::managers::WalletPermissionsManagerConfig,
+    whitelist: HashMap<String, Vec<String>>,
+) -> Guarded {
     let (dir, mut wallet) = wallet().await;
     let double = PrivilegedDouble::new();
     wallet.set_privileged_key_manager(double.clone());
-    let manager = Arc::new(crate::managers::WalletPermissionsManager::new(
-        Arc::new(wallet.proto_wallet.clone()),
-        "wallet.admin".to_string(),
-        config,
-    ));
+    let manager = Arc::new(
+        crate::managers::WalletPermissionsManager::new(
+            Arc::new(wallet.proto_wallet.clone()),
+            "wallet.admin".to_string(),
+            config,
+        )
+        .with_whitelisted_counterparties(whitelist),
+    );
     let prompts = Arc::new(Prompts::default());
     let handler_prompts = Arc::clone(&prompts);
     manager
@@ -505,4 +518,121 @@ async fn get_public_key_seeking_permission_prompts_and_a_grant_admits_it_unseeki
         assert!(answer.is_ok(), "{branch}: {answer:?}");
     }
     assert_eq!(prompts.seen().len(), 6);
+}
+
+// =========================================================================
+// The whitelisted counterparties (#725): an everyday call whose
+// counterparty is whitelisted for the protocol's name is admitted with no
+// prompt, after the usage-type exemptions and the privileged flag's
+// normalizing, before the cache (ts-stack@edf6e03
+// `WalletPermissionsManager.ts:1514-1518`, the helper at `:5731-5742`); a
+// level-1 call's counterparty is dropped ahead of it (`:1506`).
+// =========================================================================
+
+/// A level-2 witness protocol and a key whitelisted for it, by `name`.
+fn whitelisted(name: &str) -> (Protocol, PublicKey, HashMap<String, Vec<String>>) {
+    let level2 = Protocol::new(SecurityLevel::Counterparty, "privileged witness");
+    let key = PrivateKey::random().public_key();
+    let whitelist = HashMap::from([(key.to_hex(), vec![name.to_string()])]);
+    (level2, key, whitelist)
+}
+
+/// Each of the seven calls under `protocol` naming `key`, and the prompts
+/// it raised; an admitted call may still fail past the check.
+async fn prompts_per_call(
+    wallet: &TestWallet,
+    prompts: &Prompts,
+    protocol: &Protocol,
+    key: &PublicKey,
+) -> Vec<(&'static str, usize)> {
+    let mut seen = Vec::new();
+    for name in GUARDED {
+        let before = prompts.seen().len();
+        let counterparty = Some(Counterparty::Other(key.clone()));
+        let _ = prompted_call(wallet, name, protocol, counterparty).await;
+        seen.push((name, prompts.seen().len() - before));
+    }
+    seen
+}
+
+#[tokio::test]
+async fn a_whitelisted_counterparty_at_level_2_is_admitted_without_a_prompt() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (level2, key, whitelist) = whitelisted("PRIVILEGED Witness");
+    let (_dir, wallet, _double, _manager, prompts) = whitelisted_wallet(config, whitelist).await;
+    let seen = prompts_per_call(&wallet, &prompts, &level2, &key).await;
+    assert_eq!(seen, GUARDED.map(|name| (name, 0)).to_vec());
+}
+
+#[tokio::test]
+async fn a_counterparty_not_whitelisted_for_the_protocol_prompts() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (level2, key, whitelist) = whitelisted("another protocol");
+    let stranger = PrivateKey::random().public_key();
+    let (_dir, wallet, _double, _manager, prompts) = whitelisted_wallet(config, whitelist).await;
+    for counterparty in [&key, &stranger] {
+        let seen = prompts_per_call(&wallet, &prompts, &level2, counterparty).await;
+        assert_eq!(seen, GUARDED.map(|name| (name, 1)).to_vec());
+    }
+}
+
+#[tokio::test]
+async fn a_whitelisted_counterparty_on_a_privileged_request_still_prompts() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    assert!(config.differentiate_privileged_operations);
+    let (level2, key, whitelist) = whitelisted("privileged witness");
+    let (_dir, _wallet, _double, manager, prompts) = whitelisted_wallet(config, whitelist).await;
+    let hex = key.to_hex();
+    let ask = |privileged| {
+        manager.ensure_protocol_permission(
+            ORIGINATOR,
+            privileged,
+            &level2,
+            Some(&hex),
+            None,
+            crate::managers::PermissionUsageType::Generic,
+        )
+    };
+    assert!(ask(false).await.unwrap());
+    assert_eq!(prompts.seen(), Vec::<Option<bool>>::new());
+    let refused = ask(true).await.unwrap_err();
+    assert_eq!(refused.to_string(), PERMISSION_REFUSAL);
+    assert_eq!(prompts.seen(), vec![Some(true)]);
+}
+
+/// Without `differentiate_privileged_operations` a privileged request is an
+/// everyday one (`:1515`), so the whitelist admits it.
+#[tokio::test]
+async fn a_whitelisted_privileged_request_is_admitted_when_privilege_is_not_differentiated() {
+    let mut config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    config.differentiate_privileged_operations = false;
+    let (level2, key, whitelist) = whitelisted("privileged witness");
+    let (_dir, _wallet, _double, manager, prompts) = whitelisted_wallet(config, whitelist).await;
+    let admitted = manager
+        .ensure_protocol_permission(
+            ORIGINATOR,
+            true,
+            &level2,
+            Some(&key.to_hex()),
+            None,
+            crate::managers::PermissionUsageType::Generic,
+        )
+        .await;
+    assert!(admitted.unwrap());
+    assert_eq!(prompts.seen(), Vec::<Option<bool>>::new());
+}
+
+/// A level-1 call names no counterparty by the time the whitelist is read
+/// (`:1506` ahead of `:1516`), so a whitelisted key still prompts.
+#[tokio::test]
+async fn a_whitelisted_counterparty_at_level_1_still_prompts() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (_, key, whitelist) = whitelisted(&protocol().protocol_name);
+    let (_dir, wallet, _double, _manager, prompts) = whitelisted_wallet(config, whitelist).await;
+    let seen = prompts_per_call(&wallet, &prompts, &protocol(), &key).await;
+    assert_eq!(seen, GUARDED.map(|name| (name, 1)).to_vec());
+    let requests = prompts.requests.lock().unwrap();
+    assert!(requests
+        .iter()
+        .all(|request| request.counterparty.is_none()));
 }
