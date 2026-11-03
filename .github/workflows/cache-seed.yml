@@ -1,36 +1,55 @@
 name: Cache seed
 
 # Why this file exists (#642): beta lands through GitHub's merge queue, and a
-# merge_group run restores caches only from its own ref and the default branch.
-# The default branch is main, and nothing on main saves the Test Suite's caches,
-# so every queue run built cold. This workflow lives on main (the scope a queue
-# run reads), runs on a push to main and on dispatch, checks out beta and builds
-# the two Test Suite feature sets under rust-cache with beta's exact keys, so
-# the save lands under main's scope. A queue run restores it exactly while
-# beta's lock and the stable toolchain stand where the seed found them, and by
-# prefix (rust-cache's fallback: the key minus the lock hash, which the CLI's
-# queue runs showed as `full match: false` on a still mostly warm target/) once
-# the lock has moved; a stable release or a change to beta's keyed inputs leaves
-# the queue cold until the next dispatch. Beta's ci.yml saves no cache on
-# merge_group (its save-if names push alone), so the queue's own refs never
-# fill the store, and this seed is the only writer under main's scope for
-# these keys.
+# merge_group run restores caches only from its own ref and the default
+# branch. The default branch is main, and nothing on main saved beta's caches,
+# so every queue run built cold. This workflow lives on main (the scope a
+# queue run reads), runs on a push to main and on dispatch, checks out beta
+# and builds what beta's five required jobs build, under rust-cache with
+# beta's exact keys, so the save lands under main's scope (the Test Suite's
+# two keys since #642, lint's, checks' and semver's since #647). A queue run
+# restores it exactly while beta's lock and the toolchains stand where the
+# seed found them, and by prefix (rust-cache's fallback: the key minus the
+# lock hash, which the CLI's queue runs showed as `full match: false` on a
+# still mostly warm target/) once the lock has moved; a stable release or a
+# change to beta's keyed inputs leaves the queue cold until the next dispatch.
+# Beta's ci.yml saves no cache on merge_group (its save-if names push alone),
+# so the queue's own refs never fill the store, and this seed is the only
+# writer under main's scope for these keys.
 #
-# What it mirrors: beta's .github/workflows/ci.yml, jobs `test` (Test Suite)
-# and `test-remote` (Test Suite (remote only)). rust-cache's key is its prefix,
-# the shared key, the runner OS and arch, a hash of `rustc -vV` and of every
-# CARGO*, CC*, CFLAGS*, CXX*, CMAKE*, RUST* environment variable set when its
-# step runs, and a hash of the workspace manifests, Cargo.lock and any
-# .cargo/config.toml or rust-toolchain file. So a change on beta to any of these
-# must be mirrored here the same day, or the seed saves a key no queue run asks
-# for: the workflow `env:` block; the `runs-on`; the checkout and `Install
-# Rust` steps (the dtolnay/rust-toolchain sha and its `toolchain:`, since that
-# action exports CARGO_* variables); the `Resolve the dependency lock` step;
-# the `Cache the dependency build` step (the rust-cache sha and `shared-key`,
-# or any `key`, `env-vars`, `prefix-key`, `cache-targets` input added there);
-# and the build steps (`Build unit tests (sqlite)` and `Build integration
-# tests` in `test`, `Build unit and integration tests (remote only)` in
-# `test-remote`), which fill target/. No test runs here.
+# What it mirrors: beta's .github/workflows/ci.yml, jobs `test` (Test Suite),
+# `test-remote` (Test Suite (remote only)), `lint`, `checks` and `semver`.
+# rust-cache's key is its prefix, the shared key, the runner OS and arch, a
+# hash of `rustc -vV` of the default toolchain and of every installed one
+# (`rustup toolchain list`), of every CARGO*, CC*, CFLAGS*, CXX*, CMAKE*,
+# RUST* environment variable set when its step runs, and a hash of the
+# workspace manifests, Cargo.lock and any .cargo/config.toml or rust-toolchain
+# file. So a change on beta to any of these must be mirrored here the same
+# day, or the seed saves a key no queue run asks for: the workflow `env:`
+# block; the `runs-on`; the checkout and `Install Rust` steps (the
+# dtolnay/rust-toolchain sha and its `toolchain:`, since that action exports
+# CARGO_* variables); the `Resolve the dependency lock` step; the `Cache the
+# dependency build` step (the rust-cache sha and `shared-key`, or any `key`,
+# `env-vars`, `prefix-key`, `cache-targets` input added there); and the build
+# steps (`Build unit tests (sqlite)` and `Build integration tests` in `test`,
+# `Build unit and integration tests (remote only)` in `test-remote`), which
+# fill target/. In `lint`: both install steps, `Install Rust (the ratchet's
+# toolchain)` (1.98.1, clippy) and then `Install Rust` (stable, clippy and
+# rustfmt), in that order; `Resolve the dependency lock`; its cache step
+# (shared key `lint`); `Clippy`, `Clippy (remote only)` and the ratchet's
+# clippy command in tools/ratchet (its flags, its toolchain pin in the ratchet
+# step's RUSTUP_TOOLCHAIN, its RUSTFLAGS removal). The lint key's environment
+# hash differs from the other jobs' (`17f70ee2` against `e7cfd85a` in group
+# run 41578469987) because 1.98.1 is installed beside stable and its `rustc
+# -vV` joins the hash: a seed with stable alone saves a key no lint job asks
+# for, and a move of the ratchet's pin moves the lint key. In `checks`:
+# `Install Rust`; its own `Prepare dependency lock` form; its cache step
+# (`checks`); the cargo commands of its `vectors`, `word-table`, `fixtures`
+# and `docs` steps, built here with `--no-run` (the documentation with its
+# RUSTDOCFLAGS). In `semver`: `Install Rust`; `Resolve the dependency lock`;
+# its cache step (`semver`); the taiki-e/install-action sha and its `tool:`;
+# the `cargo semver-checks` call (here against beta's own tip). No test runs
+# here.
 #
 # Each job asks before the build whether main's scope already holds the exact key
 # (`lookup-only`); on a hit it skips the build, so a needless run costs seconds
