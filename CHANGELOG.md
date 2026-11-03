@@ -77,6 +77,15 @@
   sites; the guard matches a site by its full module path rather than its
   function name, so a dead test sharing a running test's name is red; its
   cases (thirteen) are a `checks` gate.
+- #693 (CI and tools; no behaviour): the two gaps the #691 read left in
+  `tools/ignore-sites`. Each Test Suite job's lists now carry cargo's
+  stderr, whose `Running` line names the binary, and a site matches a test
+  of its own binary (a dead `a::slow` under `tests/t/` beside a live
+  `a::slow` in the lib read ok and is now red); a site's `cfg_attr`
+  predicate is parsed (`feature` leaves under `any`, `all`, `not`; `ignore`
+  anywhere in the attribute's list) and read under each job's features, so
+  `cfg_attr(not(feature = "sqlite"), tokio::test, ignore)` and
+  `not(any(feature = "sqlite", ..))` are sites; the cases are twenty-six.
 - #659 (manifest and two `use` sites; no behaviour change): the direct
   dependency on `futures-util` is removed from `Cargo.toml`; its two uses in
   `src/services/providers/arcade.rs` (`StreamExt`, `stream::iter`) read the
