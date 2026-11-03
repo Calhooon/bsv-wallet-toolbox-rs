@@ -232,6 +232,31 @@ fn an_argon2id_hash_length_other_than_32_is_refused_as_the_reference_refuses_it(
     assert_eq!(text, "XOR length mismatch: 32 vs 64");
 }
 
+/// A reserve the host cannot grant is the KDF's error, not an abort (#625):
+/// the seam fails this thread's next reserve without allocating, at the
+/// largest memory the reference's bounds allow.
+#[test]
+fn an_argon2id_allocation_the_host_refuses_is_an_error_not_an_abort() {
+    let largest = small_argon(1, 262_144);
+    assert!(largest.is_valid(), "inside the reference's bounds");
+    super::kdf::fail_next_reserve();
+    let Err(Error::ValidationError(text)) = derive_password_key(&[0x55; 32], Some(&largest), "pw")
+    else {
+        panic!("a refused reserve derives");
+    };
+    assert!(
+        text.starts_with("UMP token: argon2id: cannot allocate 262144 KiB of memory: "),
+        "{text}"
+    );
+    let kdf = small_argon(2, 64);
+    let key = derive_password_key(&[0x55; 32], Some(&kdf), "pw").unwrap();
+    assert_eq!(
+        key.len(),
+        32,
+        "the seam fails once; the next derivation runs"
+    );
+}
+
 #[test]
 fn argon2id_parameters_the_library_refuses_are_an_error_not_a_panic() {
     let mut kdf = small_argon(1, 8);
