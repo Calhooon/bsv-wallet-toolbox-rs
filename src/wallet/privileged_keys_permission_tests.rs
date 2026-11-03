@@ -1,7 +1,7 @@
 //! The permission witnesses of the seven key calls (#186, #576, #581): the
 //! grant under the request's `privileged`, the usage type each call passes
 //! and the counterparty and reason in the prompt, split from
-//! `privileged_keys_tests.rs` (#727).
+//! `privileged_keys_tests.rs` (#727); and the identity key's own ask (#719).
 
 use std::sync::Mutex as StdMutex;
 
@@ -150,6 +150,12 @@ async fn guarded_call(
         assert!(verified.valid, "{privileged:?}: {verified:?}");
         return Ok(format!("{verified:?}"));
     }
+    if name == IDENTITY_KEY {
+        return Ok(format!(
+            "{:?}",
+            identity_key_call(wallet, privileged).await?
+        ));
+    }
     if name != "get_public_key" {
         return call(wallet, name, privileged).await;
     }
@@ -165,6 +171,18 @@ async fn guarded_call(
         "{:?}",
         wallet.get_public_key(args, Some(ORIGINATOR)).await?
     ))
+}
+
+/// `get_public_key` naming the identity key and no protocol: its own ask.
+const IDENTITY_KEY: &str = "get_public_key(identity_key)";
+
+/// `get_public_key` for the identity key under the request's `privileged`.
+async fn identity_key_call(
+    wallet: &TestWallet,
+    privileged: Option<bool>,
+) -> bsv_rs::Result<GetPublicKeyResult> {
+    let args = args!(GetPublicKeyArgs { identity_key: true }, privileged);
+    wallet.get_public_key(args, Some(ORIGINATOR)).await
 }
 
 #[tokio::test]
@@ -230,6 +248,7 @@ fn usage_type(name: &str) -> crate::managers::PermissionUsageType {
     use crate::managers::PermissionUsageType::*;
     match name {
         "get_public_key" => PublicKey,
+        IDENTITY_KEY => IdentityKey,
         "encrypt" | "decrypt" => Encrypting,
         "create_hmac" | "verify_hmac" => Hmac,
         "create_signature" | "verify_signature" => Signing,
@@ -249,13 +268,15 @@ async fn assert_usage_type(name: &str) {
         Encrypting => config.seek_protocol_permissions_for_encrypting = false,
         Hmac => config.seek_protocol_permissions_for_hmac = false,
         PublicKey => config.seek_permissions_for_public_key_revelation = false,
+        IdentityKey => config.seek_permissions_for_identity_key_revelation = false,
         other => unreachable!("{other:?}"),
     }
     let (_dir, wallet, double, _manager, prompts) = permitted_wallet(config).await;
     let answer = guarded_call(&wallet, &double, name, None).await;
     assert!(answer.is_ok(), "{name}: {answer:?}");
     assert_eq!(prompts.seen(), Vec::<Option<bool>>::new(), "{name}");
-    for sibling in GUARDED.into_iter().filter(|s| usage_type(s) != exempt) {
+    let calls = GUARDED.into_iter().chain([IDENTITY_KEY]);
+    for sibling in calls.filter(|s| usage_type(s) != exempt) {
         let before = prompts.seen().len();
         match guarded_call(&wallet, &double, sibling, None).await {
             Err(bsv_rs::Error::WalletRefusal { message, .. }) => {
@@ -269,7 +290,7 @@ async fn assert_usage_type(name: &str) {
 }
 
 macro_rules! usage_type_witnesses {
-    ($($test:ident: $name:literal;)*) => {$(
+    ($($test:ident: $name:expr;)*) => {$(
         #[tokio::test]
         async fn $test() {
             assert_usage_type($name).await;
@@ -285,6 +306,7 @@ usage_type_witnesses! {
     verify_hmac_passes_the_hmac_usage_type: "verify_hmac";
     create_signature_passes_the_signing_usage_type: "create_signature";
     verify_signature_passes_the_signing_usage_type: "verify_signature";
+    get_public_key_for_the_identity_key_passes_the_identity_key_usage_type: IDENTITY_KEY;
 }
 
 // =========================================================================
@@ -368,4 +390,30 @@ async fn each_key_call_prompts_with_the_requests_counterparty_and_reason() {
         }
     }
     assert!(prompts.requests.lock().unwrap().is_empty());
+}
+
+/// The identity key's prompt (#719): the level-1 protocol `identity key
+/// retrieval`, no counterparty (the reference's `self` dropped at level 1),
+/// the request's `privileged` and reason (ts-stack@edf6e03
+/// `WalletPermissionsManager.ts:5174-5185`, `:1506`).
+#[tokio::test]
+async fn the_identity_key_prompts_for_identity_key_retrieval() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (_dir, wallet, double, _manager, prompts) = permitted_wallet(config).await;
+    let retrieval = Protocol::new(SecurityLevel::App, "identity key retrieval");
+    for privileged in [None, Some(true)] {
+        match identity_key_call(&wallet, privileged).await {
+            Err(bsv_rs::Error::WalletRefusal { message, .. }) => {
+                assert_eq!(message, PERMISSION_REFUSAL, "{privileged:?}");
+            }
+            other => panic!("{privileged:?}: expected the permission refusal, got {other:?}"),
+        }
+        let request = prompts.requests.lock().unwrap().pop().unwrap();
+        assert_eq!(request.protocol_id.as_ref(), Some(&retrieval));
+        assert_eq!(request.counterparty, None, "{privileged:?}");
+        assert_eq!(request.reason.as_deref(), Some(REASON), "{privileged:?}");
+        assert_eq!(request.privileged, Some(privileged == Some(true)));
+    }
+    assert!(prompts.requests.lock().unwrap().is_empty());
+    assert_eq!(double.asked(), Vec::<Asked>::new());
 }
