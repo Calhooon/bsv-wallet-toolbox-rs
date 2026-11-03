@@ -8,9 +8,12 @@ from the tree, on every run, so no committed table can go stale:
 
   everything  .github/, Cargo.toml, a lock, tools/, build.rs, tests/common/,
               a data file under tests/ (vectors, fixtures' data), src/lib.rs,
-              and any path no rule below names (the conservative default)
-  none        docs/ and every *.md: no cargo test (the architecture doc
-              gate still lists, the lint and checks jobs still run)
+              a *.md under a directory a test walks or that decides what
+              runs (tools/docs-only's NOT_DOC_PREFIXES: tests/, fuzz/,
+              test_vectors/, tools/, .github/; #644), and any path no rule
+              below names (the conservative default)
+  none        docs/ and every other *.md: no cargo test (the architecture
+              doc gate still lists, the lint and checks jobs still run)
   a module    src/<m>.rs or src/<m>/: the unit tests under <m>:: and under
               every module whose source names crate::<m> or one of <m>'s
               root re-exports (the closure), and every integration target
@@ -32,6 +35,8 @@ that run; a filter is a nextest filterset (`-E`).
 """
 
 import argparse
+import importlib.machinery
+import importlib.util
 import os
 import re
 import subprocess
@@ -44,6 +49,13 @@ CRATE = "bsv_wallet_toolbox_rs"
 # Prefixes and names that reach every test.
 EVERYTHING_PREFIXES = (".github/", "tools/", "tests/common/")
 EVERYTHING_FILES = ("Cargo.toml", "Cargo.lock", "build.rs", "src/lib.rs")
+
+# A *.md under one of these is no doc (#644): the set is tools/docs-only's,
+# read from it so the two cannot differ.
+_loader = importlib.machinery.SourceFileLoader("docs_only", str(ROOT / "tools" / "docs-only"))
+_docs_only = importlib.util.module_from_spec(importlib.util.spec_from_loader("docs_only", _loader))
+_loader.exec_module(_docs_only)
+WALKED_PREFIXES = _docs_only.NOT_DOC_PREFIXES
 
 # A file lib.rs mounts with #[path] as a root module: its unit tests live
 # under the root module's name, its source under the directory's module.
@@ -170,6 +182,8 @@ def target_words(files):
 def classify(path, modules, tgts):
     """('all'|'none'|'module'|'target', name) for one changed path."""
     if path in EVERYTHING_FILES or path.startswith(EVERYTHING_PREFIXES):
+        return ("all", None)
+    if path.endswith(".md") and path.startswith(WALKED_PREFIXES):
         return ("all", None)
     if path.endswith(".md") or path.startswith("docs/"):
         return ("none", None)
