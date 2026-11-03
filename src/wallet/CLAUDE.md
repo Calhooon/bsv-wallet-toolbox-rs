@@ -948,7 +948,7 @@ the reference answers the array's or the element's (1637, 1691, 1192,
 No offset is refused: `listOutputs`' offset line (1648) carries no minimum,
 since BRC-100's reverse paging reads `-1` as the newest output
 (`wallet/0100.md:911`), and the other two offsets are `u32` in bsv-rs.
-Witnesses: `wallet::tests::list_limit_226`.
+Witnesses: `wallet::wallet::tests::list_limit_226`.
 
 ## Implementation Notes
 
