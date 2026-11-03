@@ -48,7 +48,6 @@ indexmap = { version = "2", features = ["serde"] }
 
 # Error handling
 thiserror = "1.0"
-anyhow = "1.0"
 
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
@@ -90,6 +89,8 @@ futures-util = "0.3"
 futures = "0.3"
 
 [dev-dependencies]
+# The storage fixtures' error type (tests/fixtures); the library names none.
+anyhow = "1.0"
 tempfile = "3"
 mockito = "1.4"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
