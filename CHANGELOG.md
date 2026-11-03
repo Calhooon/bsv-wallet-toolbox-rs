@@ -202,6 +202,18 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #573 (tests; no code): `own_word.rs`'s two survivors under the door
+  oracle of the oracle-widening lane (#535). `46:47: replace match guard
+  text == NO_HEADER_SERVICE with true in own_word_tip` is killed by a lib
+  door test, `own_word_holds_for_a_header_service_fault_other_than_not_configured`:
+  only the services' not-configured answer gives the own word the latest
+  era, and any other header-service fault holds the signAction route
+  before the writer. `92:44: replace || with && in judge_own_tx` is
+  declared equivalent (a source transaction is placed in exactly one of
+  the two sets, so the mutant only repeats a read). The file scores 85.71
+  percent (6 of 7) under `.cargo/mutants-doors.toml`, from 71.43; the
+  floor is raised from 71 to 80, the record in
+  `docs/census/mutants-oracle-2026-11-01` (`issue_573` in its json).
 - #574 (tests; no code): `must_spend.rs`'s survivor under the door oracle
   of the oracle-widening lane (#535), `131:31: replace || with && in
   NamedCoin::read`, is killed by a fixtures test,
