@@ -164,6 +164,14 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #574 (tests; no code): `must_spend.rs`'s survivor under the door oracle
+  of the oracle-widening lane (#535), `131:31: replace || with && in
+  NamedCoin::read`, is killed by a fixtures test,
+  `a_held_coin_is_refused_as_held_ahead_of_the_received_rule`: a coin
+  another action holds is refused as held for a delayed action, ahead of
+  the received rule. The file scores 100.00 percent (19 of 19) under
+  `.cargo/mutants-doors.toml`, from 94.74; the floor stays 80, the record
+  in `docs/census/mutants-oracle-2026-11-01` (`issue_574` in its json).
 - #743: `python3 fuzz/seed_corpus.py --report-stale` prints each committed
   named seed the run no longer writes as `stale: <path>` and exits 1;
   hash-named files (40 lowercase hex, libFuzzer's SHA-1 name) are not
