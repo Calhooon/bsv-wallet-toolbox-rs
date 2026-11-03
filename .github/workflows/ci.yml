@@ -234,6 +234,9 @@ jobs:
       # "sqlite"), ignore)` is ignored or compiled out here too, where it must
       # run (#651, #656; tools/ignore-sites, its cases in the checks job). The
       # lists come from the two builds above and compile nothing; seconds.
+      # Cargo's stderr goes in with them: its `Running` line names the binary
+      # whose tests follow, and the guard matches a site against its own
+      # binary's tests (#693).
       - name: ignore sites, every sqlite-confined test runs in this job
         if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: |
@@ -241,8 +244,8 @@ jobs:
             cargo test --lib --features sqlite,remote -- --list "$@"
             cargo test --test '*' --features sqlite,remote,bench-support -- --list "$@"
           }
-          list > "$RUNNER_TEMP/tests.txt"
-          list --ignored > "$RUNNER_TEMP/ignored.txt"
+          list > "$RUNNER_TEMP/tests.txt" 2>&1
+          list --ignored > "$RUNNER_TEMP/ignored.txt" 2>&1
           python3 tools/ignore-sites --job sqlite --all "$RUNNER_TEMP/tests.txt" --ignored "$RUNNER_TEMP/ignored.txt"
 
   # The unit tests and every suite under tests/ with `remote` alone: a test
@@ -315,13 +318,14 @@ jobs:
 
       # As the Test Suite's step, for the symmetric sites: a test confined to
       # this job by `cfg_attr(feature = "sqlite", ignore)` runs here (none yet;
-      # the step costs seconds and holds the next one to it).
+      # the step costs seconds and holds the next one to it; cargo's stderr
+      # names each binary, #693).
       - name: ignore sites, every remote-only-confined test runs in this job
         if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: |
           list() { cargo test --lib --tests --no-default-features --features remote -- --list "$@"; }
-          list > "$RUNNER_TEMP/tests.txt"
-          list --ignored > "$RUNNER_TEMP/ignored.txt"
+          list > "$RUNNER_TEMP/tests.txt" 2>&1
+          list --ignored > "$RUNNER_TEMP/ignored.txt" 2>&1
           python3 tools/ignore-sites --job remote --all "$RUNNER_TEMP/tests.txt" --ignored "$RUNNER_TEMP/ignored.txt"
 
   # The static gates in one job (#617), so a PR run holds one queue slot for
