@@ -1405,8 +1405,20 @@ impl TokenQuery<'_> {
     }
 
     /// The lookup's tags, `originator <o>` omitted for the untagged pass
-    /// (`protocolTokenTags` `:2941-2956`; `:3171-3175`; `:3209-3214`).
+    /// (`protocolTokenTags` `:2941-2956`; `:3171-3175`; `:3209-3214`), each
+    /// trimmed and lowercased as the reference's `listOutputs` and its mint's
+    /// `createAction` pass every tag through `validateTag` (sdk
+    /// `validationHelpers.ts:395`, `:411`, `:639`, `:1637`); the port's store
+    /// compares tags as given.
     fn tags(&self, origin: Option<&str>) -> Vec<String> {
+        self.request_tags(origin)
+            .iter()
+            .map(|tag| tag.trim().to_lowercase())
+            .collect()
+    }
+
+    /// The tags in the request's case, as `buildTagsForRequest` writes them.
+    fn request_tags(&self, origin: Option<&str>) -> Vec<String> {
         let mut tags: Vec<String> = origin
             .map(|o| format!("originator {o}"))
             .into_iter()

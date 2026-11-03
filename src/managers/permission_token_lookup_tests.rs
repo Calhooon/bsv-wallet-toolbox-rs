@@ -5,7 +5,8 @@
 //! `[2, 'admin permission token encryption']` keyID `"1"`, locked with
 //! `PushDrop.lock(fields, protocol, '1', 'self', true, true)`, one satoshi
 //! in the kind's admin basket under `buildTagsForRequest`'s tags
-//! `:3755-3787`). The wallet's own `encrypt`, `create_signature` and
+//! `:3755-3787`, each through `createAction`'s `validateTag`, trimmed and
+//! lowercased: sdk `validationHelpers.ts:411`, `:639`). The wallet's own `encrypt`, `create_signature` and
 //! `get_public_key` make the fields, the signature and the key as the
 //! admin originator; the transaction, its proof and the output, basket and
 //! tag rows are written to the store directly, so nothing is minted, funded
@@ -264,8 +265,23 @@ fn witness_protocol() -> Protocol {
     Protocol::new(SecurityLevel::Counterparty, "ticket stub")
 }
 
-/// A protocol token for `APP` on the witness protocol, everyday, `self`.
+/// The reference's stored tags for the witness protocol token: the request's
+/// `protocolName` and `protocolSecurityLevel` lowercased by `validateTag`.
+const PROTOCOL_TAGS: [&str; 5] = [
+    "originator app.example.com",
+    "privileged false",
+    "protocolname ticket stub",
+    "protocolsecuritylevel 2",
+    "counterparty self",
+];
+
+/// A protocol token for `APP` on the witness protocol, everyday, `self`,
+/// under the reference's stored tags.
 async fn seed_protocol(scene: &Scene, expiry: i64) {
+    seed_protocol_under(scene, expiry, &PROTOCOL_TAGS).await;
+}
+
+async fn seed_protocol_under(scene: &Scene, expiry: i64, tags: &[&str]) {
     let fields = strings(&[
         APP,
         &expiry.to_string(),
@@ -275,13 +291,7 @@ async fn seed_protocol(scene: &Scene, expiry: i64) {
         "self",
     ]);
     let script = token_script(&scene.counted.inner, &fields).await;
-    let tags = strings(&[
-        "originator app.example.com",
-        "privileged false",
-        "protocolName ticket stub",
-        "protocolSecurityLevel 2",
-        "counterparty self",
-    ]);
+    let tags = strings(tags);
     store_token(
         &scene.counted.inner,
         script,
@@ -298,7 +308,8 @@ async fn seed_basket(scene: &Scene, expiry: i64) {
     store_token(&scene.counted.inner, script, "admin basket-access", &tags).await;
 }
 
-/// A certificate token holding the fields `name` and `seat`.
+/// A certificate token holding the fields `name` and `seat`, its `type` tag
+/// the lowercased base64 the reference stores.
 async fn seed_certificate(scene: &Scene, expiry: i64) {
     let verifier = verifier();
     let fields = strings(&[
@@ -313,7 +324,7 @@ async fn seed_certificate(scene: &Scene, expiry: i64) {
     let tags = vec![
         "originator app.example.com".to_string(),
         "privileged false".to_string(),
-        format!("type {CERT_TYPE}"),
+        format!("type {}", CERT_TYPE.to_lowercase()),
         format!("verifier {verifier}"),
     ];
     store_token(
@@ -412,6 +423,26 @@ async fn a_live_protocol_token_admits_a_seek_false_call_with_no_prompt() {
     assert_eq!(scene.counted.reads(), (1, 6, 1));
 }
 
+/// The tags in the request's case, as a store that kept tags as given
+/// would hold them; the port's own mint (#751 step 2) stores them lowercased.
+#[tokio::test]
+async fn a_token_under_mixed_case_tags_is_not_found() {
+    let scene = scene().await;
+    let mixed = [
+        "originator app.example.com",
+        "privileged false",
+        "protocolName ticket stub",
+        "protocolSecurityLevel 2",
+        "counterparty self",
+    ];
+    seed_protocol_under(&scene, live(), &mixed).await;
+    assert_eq!(
+        refusal(protocol_call(&scene, false).await),
+        "No protocol permission token found (seekPermission=false)."
+    );
+    assert_eq!(scene.counted.reads(), (2, 0, 0));
+}
+
 #[tokio::test]
 async fn a_live_protocol_token_admits_a_seek_true_call_with_no_prompt() {
     let scene = scene().await;
@@ -507,7 +538,9 @@ async fn scene_with_basket(expiry: i64) -> Scene {
 }
 
 #[tokio::test]
-async fn a_live_certificate_token_holding_the_fields_admits_with_no_prompt() {
+async fn a_live_certificate_token_of_an_uppercase_base64_type_admits_with_no_prompt() {
+    // The request's type is mixed-case base64; the stored tag is lowercased.
+    assert_ne!(CERT_TYPE, CERT_TYPE.to_lowercase());
     let scene = scene().await;
     seed_certificate(&scene, live()).await;
     assert!(certificate_call(&scene).await.unwrap());
