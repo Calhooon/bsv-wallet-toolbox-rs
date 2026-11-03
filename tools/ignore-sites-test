@@ -8,7 +8,10 @@ mods, the remote-only job's sites, an attribute in a comment or a string,
 and a file no crate reaches; and each site against its own binary's list
 (#693): a dead site in a test binary whose path a live lib test has, a live
 and a dead site in one binary, cargo's coloured `Running` lines, and a list
-with no `Running` line.
+with no `Running` line; and the predicate parsed (#693): no spaces, `ignore`
+after `tokio::test` in the list, `not(any(..))`, a nested `cfg_attr`, the
+remote-only job's `all(..)`, the `cfg_attr`s that are not sites, and an
+alternate spelling with a second `#[ignore]`.
 
   tools/ignore-sites-test
 """
@@ -214,6 +217,53 @@ check("cargo's coloured Running lines name the binaries",
 code, out = run({"src/lib.rs": "mod a;\n", "src/a.rs": ONE_LINE.format(name="slow")}, None, {})
 check("a list with a test before any Running line is a usage fault",
       code == 2 and "before any Running line" in out, out)
+
+# #693: the predicate parsed, not matched by its leading tokens.
+SPELLED = {
+    "no_space": '#[cfg_attr(not(feature="sqlite"),ignore="x")]\n#[test]\nfn {name}() {{}}\n',
+    "in_list": ('#[cfg_attr(not(feature = "sqlite"), tokio::test, ignore)]\n'
+                "async fn {name}() {{}}\n"),
+    "not_any": ('#[cfg_attr(not(any(feature = "sqlite", feature = "mysql")), ignore = "x")]\n'
+                "#[test]\nfn {name}() {{}}\n"),
+    "nested": ('#[cfg_attr(test, cfg_attr(\n    not(feature = "sqlite"),\n    ignore,\n))]\n'
+               "#[test]\nfn {name}() {{}}\n"),
+}
+for key, text in SPELLED.items():
+    code, out = run({"src/lib.rs": "mod s;\n", "src/s.rs": text.format(name=key)},
+                    [f"s::{key}"], [])
+    check(f"the spelling {key} is a sqlite site", code == 0 and "1 sites, 0 red" in out
+          and f"ok   src/s.rs:1 s::{key} (src/lib.rs)" in out, out)
+
+code, out = run({"src/lib.rs": "mod s;\n", "src/s.rs": SPELLED["in_list"].format(name="gone")},
+                ["s::other"], [])
+check("a site spelled with tokio::test in its list that its build does not list is red",
+      code == 1 and "FAIL src/s.rs:1 gone: not in the sqlite build's list as s::gone" in out,
+      out)
+
+code, out = run({"src/lib.rs": "mod r;\n",
+                 "src/r.rs": ('#[cfg_attr(all(feature="sqlite",feature="remote"),ignore)]\n'
+                              "#[test]\nfn spelled() {}\n")},
+                ["r::spelled"], [], job="remote")
+check("the remote-only job's site spelled with all(..) is its own",
+      code == 0 and "remote job, 1 sites, 0 red" in out, out)
+
+NOT_SITES = ('#[cfg_attr(not(feature = "sqlite"), tokio::test)]\nasync fn a() {}\n'
+             '#[cfg_attr(feature = "mysql", ignore)]\n#[test]\nfn b() {}\n'
+             '#[cfg_attr(any(feature = "sqlite", not(feature = "sqlite")), ignore)]\n'
+             "#[test]\nfn c() {}\n"
+             '#[cfg_attr(all(unix, not(feature = "sqlite")), ignore)]\n#[test]\nfn d() {}\n'
+             '#[cfg_attr(not(feature = "sqlite"), derive(Debug), allow(ignore))]\nstruct E;\n')
+for job in ("sqlite", "remote"):
+    code, out = run({"src/lib.rs": "mod n;\n", "src/n.rs": NOT_SITES},
+                    ["n::a", "n::b", "n::c", "n::d"], [], job=job)
+    check(f"a cfg_attr with no ignore, or a predicate not confined to a job, is not a {job} site",
+          code == 0 and f"{job} job, 0 sites, 0 red" in out, out)
+
+code, out = run({"src/lib.rs": "mod s;\n",
+                 "src/s.rs": "#[ignore]\n" + SPELLED["not_any"].format(name="twice")},
+                ["s::twice"], ["s::twice"])
+check("an alternate spelling with a second #[ignore] is red",
+      code == 1 and "FAIL src/s.rs:2 twice: ignored in the sqlite build's list too" in out, out)
 
 print(f"ignore-sites-test: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
