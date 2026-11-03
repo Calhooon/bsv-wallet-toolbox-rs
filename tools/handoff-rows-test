@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""The cases of tools/handoff-rows on its fixture, each on a scratch copy.
+
+The fixture (tools/fixtures/handoff-rows/) is a HANDOFF.md whose section is
+generated from three row files: #99 in 2026-10/ (a "Landed" row), #101 and
+#102 in 2026-11/ (two "Landing" rows of one morning, #101 opened later, so it
+stands above #102), and one bullet below the markers written by hand.
+
+  tools/handoff-rows-test
+"""
+
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+TOOL = HERE / "handoff-rows"
+FIX = HERE / "fixtures" / "handoff-rows"
+
+LANDING = ("the row written at the PR's open under the round-two rule of 2026-11-03; "
+           "the landing's sha is the PR's merge commit")
+LANDED = ("each on an Opus cold read on another pool account; the high-stakes classes "
+          "under the owner's ensemble rule")
+ROW_101 = (f"- Landing (2026-11-03 08:36Z, {LANDING}): #101 (#94: opened after #102, "
+           "so it stands above it though its number is lower).")
+ROW_102 = (f"- Landing (2026-11-03 08:27Z, {LANDING}): #102 (#95: the earlier of two rows "
+           "of one morning, its words wrapped over two lines).")
+ROW_99 = f"- Landed (2026-10-31 23:10Z, {LANDED}): #99 (#90: the October row, written at its landing)."
+
+passed = failed = 0
+
+
+def check(name, ok, detail=""):
+    global passed, failed
+    if ok:
+        passed += 1
+        print(f"ok      {name}")
+    else:
+        failed += 1
+        print(f"FAILED  {name}: {detail}")
+
+
+def run(root, *args):
+    out = subprocess.run([sys.executable, str(TOOL), "--root", str(root), *args],
+                         capture_output=True, text=True)
+    return out.returncode, out.stdout + out.stderr
+
+
+def fresh(scratch, name):
+    root = Path(scratch) / name
+    shutil.copytree(FIX, root)
+    return root
+
+
+def edit(path, old, new):
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"{old!r} not in {path}"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+with tempfile.TemporaryDirectory() as scratch:
+    # The committed fixture: in sync, the rows newest at the top.
+    root = fresh(scratch, "sync")
+    code, out = run(root, "--check")
+    check("the committed fixture checks green", code == 0 and "3 on the page, 3 files, 0 waiting: ok" in out, out)
+    code, out = run(root, "--check", "--strict")
+    check("the committed fixture checks green under --strict", code == 0, out)
+    code, out = run(root, "--list")
+    check("--list prints the three rows, newest at the top (time, not number)",
+          code == 0 and out.splitlines() == [ROW_101, ROW_102, ROW_99], out)
+
+    # The generated section, line for line, and the hand bullet kept.
+    page = (root / "HANDOFF.md").read_text(encoding="utf-8").split("\n")
+    begin = next(i for i, line in enumerate(page) if line.startswith("<!-- handoff-rows: generated"))
+    want = [ROW_101, ROW_102, ROW_99, "<!-- handoff-rows: end -->", "",
+            "- Published: a bullet below the markers, written by hand, kept as it is."]
+    check("the generated section and the hand bullet below it", page[begin + 1:begin + 7] == want,
+          page[begin + 1:])
+
+    # --write from an empty section regenerates the committed page exactly.
+    root = fresh(scratch, "empty")
+    edit(root / "HANDOFF.md", "\n".join(["", ROW_101, ROW_102, ROW_99, ""]), "\n")
+    code, out = run(root, "--check", "--strict")
+    check("an emptied section is red under --strict, three files waiting",
+          code == 1 and out.count("waits for the fold") == 3, out)
+    run(root, "--write")
+    check("--write regenerates the committed page byte for byte",
+          (root / "HANDOFF.md").read_bytes() == (FIX / "HANDOFF.md").read_bytes())
+
+    # The stale page: a row file edited after the section was written.
+    root = fresh(scratch, "stale")
+    edit(root / "docs/handoff/2026-11/102.md", "the earlier of two rows", "the earlier of the two rows")
+    code, out = run(root, "--check")
+    check("an edited row file makes the page stale (red, with the diff)",
+          code == 1 and "stale" in out and "+- Landing (2026-11-03 08:27Z" in out
+          and "-- Landing (2026-11-03 08:27Z" in out, out)
+    run(root, "--write")
+    code, out = run(root, "--check", "--strict")
+    check("--write makes the stale page green again", code == 0, out)
+
+    # The stale page: a row edited on the page by hand.
+    root = fresh(scratch, "hand")
+    edit(root / "HANDOFF.md", "the October row", "the October row, edited on the page")
+    code, out = run(root, "--check")
+    check("a row edited on the page by hand is red", code == 1 and "stale" in out, out)
+
+    # The order: two rows swapped on the page.
+    root = fresh(scratch, "order")
+    edit(root / "HANDOFF.md", f"{ROW_101}\n{ROW_102}", f"{ROW_102}\n{ROW_101}")
+    code, out = run(root, "--check")
+    check("two rows out of order on the page are red", code == 1 and "stale" in out, out)
+
+    # A row on the page with no file.
+    root = fresh(scratch, "nofile")
+    (root / "docs/handoff/2026-10/99.md").unlink()
+    code, out = run(root, "--check")
+    check("a row on the page without its file is red",
+          code == 1 and "#99: on the page, no file" in out, out)
+
+    # A new PR's file, the page not yet regenerated: it waits for the fold.
+    root = fresh(scratch, "waiting")
+    (root / "docs/handoff/2026-11/103.md").write_text(
+        "Landing 2026-11-03 09:00Z #103\n\n(#96: a row opened after the fold).\n", encoding="utf-8")
+    code, out = run(root, "--check")
+    check("a file not yet on the page waits (green, named)",
+          code == 0 and "#103: its file waits for the fold" in out and "1 waiting: ok" in out, out)
+    code, out = run(root, "--check", "--strict")
+    check("a waiting file is red under --strict", code == 1, out)
+    run(root, "--write")
+    code, out = run(root, "--list")
+    check("--write puts the new row at the top", out.splitlines()[0].startswith(
+        "- Landing (2026-11-03 09:00Z, ") and "#103 (#96" in out.splitlines()[0], out)
+    code, out = run(root, "--check", "--strict")
+    check("after --write the page holds all four rows", code == 0 and "4 on the page" in out, out)
+
+    # The file format refusals.
+    def refused(name, rel, body, words):
+        root = fresh(scratch, name)
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        code, out = run(root, "--check")
+        check(f"refused: {name}", code == 1 and words in out, out)
+
+    refused("named-not-as-header", "docs/handoff/2026-11/104.md",
+            "Landing 2026-11-03 09:00Z #105\n\n(text).\n", "the file is named 104, its header says #105")
+    refused("wrong-month-folder", "docs/handoff/2026-10/106.md",
+            "Landing 2026-11-03 09:00Z #106\n\n(text).\n", "the folder is 2026-10")
+    refused("unknown-kind", "docs/handoff/2026-11/107.md",
+            "Merged 2026-11-03 09:00Z #107\n\n(text).\n", "the kind 'Merged'")
+    refused("no-header", "docs/handoff/2026-11/108.md",
+            "- Landing (2026-11-03 09:00Z): #108 (text).\n", "the header line is not")
+    refused("two-paragraphs", "docs/handoff/2026-11/109.md",
+            "Landing 2026-11-03 09:00Z #109\n\n(one).\n\n(two).\n", "one paragraph")
+    refused("no-blank-after-header", "docs/handoff/2026-11/110.md",
+            "Landing 2026-11-03 09:00Z #110\n(text).\n", "a blank line, then the paragraph")
+    refused("duplicate-pr", "docs/handoff/2026-10/101.md",
+            "Landing 2026-10-03 09:00Z #101\n\n(text).\n", "#101 has a row already")
+
+    root = fresh(scratch, "markers")
+    edit(root / "HANDOFF.md", "<!-- handoff-rows: end -->\n", "")
+    code, out = run(root, "--check")
+    check("refused: a page without its end marker", code == 1 and "the two marker lines" in out, out)
+
+print(f"handoff rows: {passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)
