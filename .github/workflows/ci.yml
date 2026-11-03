@@ -317,55 +317,13 @@ jobs:
             fi
           done <<< "$GATES"
 
-  # The vector-backed tests as one named check: the Arcade status vector
-  # (tests/vectors/arcade_status_verdicts.json) through its three surfaces and
-  # the push, the same vector's word table in the library, the six rows of the
-  # broadcast-body replay (tests/vectors/broadcast_body/) through the ARC
-  # provider, and the cross-SDK vectors of test_vectors/.
-  vectors:
-    name: vectors
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-
-      # Cargo.lock is not tracked (a library): resolve it before the cache, so
-      # the cache key hashes the lock this build uses, not the manifest alone.
-      - name: Resolve the dependency lock
-        run: test -f Cargo.lock || cargo generate-lockfile
-
-      # As the Test Suite's cache; vectors and fixtures build the same `sqlite`
-      # test set and share one.
-      - name: Cache the dependency build
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: test-sqlite
-          save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
-
-      - name: The vector files are present
-        run: |
-          test -s tests/vectors/arcade_status_verdicts.json
-          test -s test_vectors/keys/brc29.json
-          for r in example_atomic_payment example small_chain_atomic_true small_chain_true lone_atomic lone; do
-            test -s "tests/vectors/broadcast_body/$r.bin"
-          done
-
-      - name: Run the Arcade status vector, the broadcast-body rows and the cross-SDK vectors
-        run: cargo test --features sqlite --test arcade_status_vector_tests --test arc_broadcast_body_tests --test test_vectors --verbose
-
-      # A filter that matches nothing passes; the grep refuses a renamed test.
-      - name: Run the vector's word table in the library
-        run: |
-          set -o pipefail
-          cargo test --features sqlite --lib services::providers::arcade::tests::every_arcade_word_has_the_verdict_of_its_class -- --exact | tee word-table.log
-          grep -q 'test result: ok. 1 passed' word-table.log
-
-  fixtures:
-    name: fixtures
+  # The small checks in one job (#617), as the lint job does with the static
+  # gates: the north-star scoreboard, the vectors, the golden fixtures and the
+  # documentation build, each its own step run whether or not one before it
+  # failed, the last step naming every gate's outcome. The vectors and the
+  # fixtures build the same `sqlite` test set, so they compile it once.
+  checks:
+    name: checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -376,50 +334,97 @@ jobs:
           toolchain: stable
 
       # This library currently ignores Cargo.lock. Honor a committed lock
-      # when present; otherwise resolve once before the locked replay.
+      # when present; otherwise resolve once before the cache, so the cache key
+      # hashes the lock this build uses, and before the fixtures' locked replay.
       - name: Prepare dependency lock
         run: |
           if ! test -f Cargo.lock; then
             cargo generate-lockfile
           fi
 
-      # The vectors job's cache: the same `sqlite` test set.
+      # As the Test Suite's cache, keyed for this job's `sqlite` builds (the
+      # vectors' and fixtures' test builds and the documentation).
       - name: Cache the dependency build
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: test-sqlite
+          shared-key: checks
           save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
-      - name: Replay golden fixtures
+      # The north-star table (docs/NORTH-STAR.md) against its sources and its
+      # checksum: an edited table or a stale source value fails. Read-only; the
+      # producers (#54's bench job, #55's ratchet) run the write.
+      - name: scoreboard, the writer's own cases
+        id: scoreboard-cases
+        if: ${{ !cancelled() }}
+        run: bash tools/scoreboard-write-test
+
+      - name: scoreboard, the table matches its sources
+        id: scoreboard
+        if: ${{ !cancelled() }}
+        run: python3 tools/scoreboard-write --check
+
+      # The vector-backed tests: the Arcade status vector
+      # (tests/vectors/arcade_status_verdicts.json) through its three surfaces and
+      # the push, the same vector's word table in the library, the six rows of the
+      # broadcast-body replay (tests/vectors/broadcast_body/) through the ARC
+      # provider, and the cross-SDK vectors of test_vectors/.
+      - name: vectors, the vector files are present
+        id: vector-files
+        if: ${{ !cancelled() }}
+        run: |
+          test -s tests/vectors/arcade_status_verdicts.json
+          test -s test_vectors/keys/brc29.json
+          for r in example_atomic_payment example small_chain_atomic_true small_chain_true lone_atomic lone; do
+            test -s "tests/vectors/broadcast_body/$r.bin"
+          done
+
+      - name: vectors, the Arcade status vector, the broadcast-body rows and the cross-SDK vectors
+        id: vectors
+        if: ${{ !cancelled() }}
+        run: cargo test --features sqlite --test arcade_status_vector_tests --test arc_broadcast_body_tests --test test_vectors --verbose
+
+      # A filter that matches nothing passes; the grep refuses a renamed test.
+      - name: vectors, the vector's word table in the library
+        id: word-table
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          cargo test --features sqlite --lib services::providers::arcade::tests::every_arcade_word_has_the_verdict_of_its_class -- --exact | tee "$RUNNER_TEMP/word-table.log"
+          grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/word-table.log"
+
+      - name: fixtures, replay the golden fixtures
+        id: fixtures
+        if: ${{ !cancelled() }}
         run: cargo test --test fixtures --locked
 
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-
-      # Cargo.lock is not tracked (a library): resolve it before the cache, so
-      # the cache key hashes the lock this build uses, not the manifest alone.
-      - name: Resolve the dependency lock
-        run: test -f Cargo.lock || cargo generate-lockfile
-
-      # As the Test Suite's cache, keyed for this job's own build.
-      - name: Cache the dependency build
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: docs
-          save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
-
-      - name: Build docs
+      - name: Documentation
+        id: docs
+        if: ${{ !cancelled() }}
         run: cargo doc --no-deps --features sqlite
         env:
           RUSTDOCFLAGS: -Dwarnings
+
+      - name: The gates
+        if: ${{ !cancelled() }}
+        env:
+          GATES: |
+            ${{ steps.scoreboard-cases.outcome }} scoreboard: the writer's own cases
+            ${{ steps.scoreboard.outcome }} scoreboard: the table matches its sources
+            ${{ steps.vector-files.outcome }} vectors: the vector files are present
+            ${{ steps.vectors.outcome }} vectors: the vector tests
+            ${{ steps.word-table.outcome }} vectors: the word table
+            ${{ steps.fixtures.outcome }} fixtures
+            ${{ steps.docs.outcome }} Documentation
+        run: |
+          printf '| gate | outcome |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          while read -r outcome gate; do
+            [ -n "$gate" ] || continue
+            echo "${gate}: ${outcome}"
+            printf '| %s | %s |\n' "$gate" "$outcome" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$outcome" != "success" ]; then
+              echo "::error title=checks: ${gate}::the ${gate} gate is ${outcome}"
+            fi
+          done <<< "$GATES"
 
   # The public API against the last release tag before this commit. The release
   # type is the one the version names: a Cargo.toml minor (0.x) or major above
@@ -562,18 +567,3 @@ jobs:
             exit 0
           fi
           exit "$status"
-
-  # The north-star table (docs/NORTH-STAR.md) against its sources and its
-  # checksum: an edited table or a stale source value fails. Read-only; the
-  # producers (#54's bench job, #55's ratchet job) run the write. Not yet a
-  # required context.
-  scoreboard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: The writer's own cases
-        run: bash tools/scoreboard-write-test
-
-      - name: The scoreboard table matches its sources
-        run: python3 tools/scoreboard-write --check
