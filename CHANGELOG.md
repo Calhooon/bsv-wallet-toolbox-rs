@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- #674: `list_outputs`' `total_outputs` takes the reference's three branches
+  (ts-stack@edf6e03 listOutputsKnex.ts `inferShortPageTotal`, 27-32): a
+  full page and an empty page past the start answer the stored count,
+  every other page the normalized offset plus the page. Offset 100 over
+  three outputs answered 100 and now answers 3; `i32::MIN` answered
+  2147483647 and now answers 3. `list_actions`' `total_actions` takes
+  listActionsKnex.ts' own rule (233-238), which answers as before except at
+  limit 0, now the page (0) where it was the count. Found by the #230 lane;
+  the rule is the keeper's reading of 2026-11-03.
 - #230: `list_outputs` at `offset: Some(i32::MIN)` no longer overflows the
   reverse-order paging arithmetic (a debug-build panic, "attempt to negate
   with overflow"; a release build wrapped to the same empty page). A
