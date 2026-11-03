@@ -50,6 +50,14 @@
   test's pattern; `tools/ignore-sites` (with `tools/ignore-sites-test`)
   refuses a `cfg_attr(not(feature = "sqlite"), ignore` site the
   `sqlite,remote` build does not run (`docs/census/ci-speed-loop-2.md`, loop two's cut (3); the guard's CI wiring is #656).
+- #656 (CI and tools; no behaviour): each Test Suite job runs
+  `tools/ignore-sites` as its last step on the test lists of its own builds
+  (no new job or required context; about a second on the box), the sqlite
+  job for the `cfg_attr(not(feature = "sqlite"), ignore` sites and the
+  remote-only job for the symmetric `cfg_attr(feature = "sqlite", ignore`
+  sites; the guard matches a site by its full module path rather than its
+  function name, so a dead test sharing a running test's name is red; its
+  cases (thirteen) are a `checks` gate.
 - #659 (manifest and two `use` sites; no behaviour change): the direct
   dependency on `futures-util` is removed from `Cargo.toml`; its two uses in
   `src/services/providers/arcade.rs` (`StreamExt`, `stream::iter`) read the
