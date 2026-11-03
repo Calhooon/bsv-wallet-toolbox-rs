@@ -285,7 +285,7 @@ def outputs(r):
 
 
 def changed_paths():
-    """The PR's change: the merge commit against its first parent, the base."""
+    """The PR's change: the merge commit against HEAD^1, its base."""
     out = subprocess.run(
         ["git", "diff", "--no-renames", "--name-only", "HEAD^1", "HEAD"],
         cwd=ROOT, capture_output=True, text=True,
