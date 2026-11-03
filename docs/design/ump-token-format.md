@@ -462,6 +462,21 @@ as hash-wasm throws, never an abort (#625).
   over a zeroed copy of the password (#624), so `create_profile`,
   `switch_profile` and `recovery_key` leave the async worker free while
   it runs; the unlock's order stays derive, build, write.
+- The bound (#631): the blocking pool runs up to 512 threads, so N
+  derivations at once would hold N times the token's memory. A
+  `tokio::sync::Semaphore` with `CWIStyleWalletManagerConfig::kdf_in_flight`
+  permits bounds them: each derivation takes a permit before
+  `spawn_blocking`, the waiters served in the order they asked (tokio's
+  semaphore is fair), and holds it inside the blocking task until the
+  key is back, so a caller that drops its future frees the permit only
+  when the derivation ends. The memory held is at most the token's
+  memoryKiB times the permits: the default 4 holds 512 MiB at the
+  reference's 128 MiB, and 1 GiB at the bounds' 256 MiB, which a host
+  sizes to its own memory. A derivation past the host's memory is still
+  #625's error, never an abort. A config of 0 has no permits and each
+  derivation is refused with `kdf_in_flight is 0: no password derivation
+  can run`. The order (derive, build, write) and the migration's rules
+  (4.3) are unchanged.
 
 ## 6. What a host sees
 

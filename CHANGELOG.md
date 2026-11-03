@@ -102,6 +102,22 @@
   manager's `Unauthorized` refusal when the prompt is refused.
 ### Added
 
+- #631: `CWIStyleWalletManagerConfig::kdf_in_flight: usize`, the password
+  derivations the CWI manager runs at once (default 4: argon2id holds
+  128 MiB at the reference's defaults, so 512 MiB in all). Since #624
+  each derivation runs on tokio's blocking pool, up to 512 threads, so N
+  unlocks at once held N times 128 MiB; now `create_profile`,
+  `switch_profile` and `recovery_key` take a permit of a
+  `tokio::sync::Semaphore` before `spawn_blocking`, in the order asked,
+  held until the key is back. A config of 0 builds a manager whose every
+  derivation is `Error::InvalidArgument("kdf_in_flight is 0: no password
+  derivation can run")`. The unlock's order and every method's signature
+  are unchanged. Additive with a default, but the struct is not
+  `#[non_exhaustive]`: a host that builds the config by an exhaustive
+  struct literal no longer compiles until it names the field or ends
+  with `..Default::default()`; `CWIStyleWalletManagerConfig::default()`
+  and a `..Default::default()` literal are unaffected. `cargo
+  semver-checks` reads it as major (`constructible_struct_adds_field`).
 - #556 (the owner's word of 2026-11-01 14:1xZ, the keeper's reading 22.9
   (a)): the `a8-beef-bytes` cargo feature, off by default and not part of
   `full`. With it on, the internalize door reads the AtomicBEEF once for
