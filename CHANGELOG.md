@@ -12,6 +12,12 @@
   the Mutants figure of 2026-11-02 and the fuzz hours of 2026-11-01 read
   2026-11-03; the NORTH-STAR table is re-rendered with their own dates.
   Found in PR #586's cold read.
+- #582: `fuzz/seed_corpus.py` no longer writes a seed whose bytes the
+  target's corpus already holds under another name, so seeding a clean tree
+  leaves `git status` clean. The four `bhs` seeds it wrote for the header
+  ladders' renamed 429 scenes (#148) were the same bytes as ten committed
+  `bhs` seeds; the committed corpus is unchanged (bhs 897). Found by the A8
+  fix lane (p5-556-a8-beef-bytes-b).
 - #697: the list finders bind the offset as `i64` (as #226 made the
   limit), so an offset above `i32::MAX` no longer wraps negative.
   `list_certificates` and `list_actions` at an offset of 2^31 answered the
