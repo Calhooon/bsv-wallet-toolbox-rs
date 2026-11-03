@@ -4114,13 +4114,13 @@ mod tests {
     /// took this test's 164 s on the ubuntu runner).
     #[tokio::test]
     async fn test_the_status_verdict_is_the_rule_over_all_81_rows_from_both_starts() {
-        let _clients = crate::services::providers::http_client::share_clients_on_this_thread();
         #[derive(Clone, Copy, Debug, PartialEq)]
         enum Says {
             Known,
             Unknown,
             Fault,
         }
+        let _clients = crate::services::providers::http_client::share_clients_on_this_thread();
         let txid = "ab".repeat(32);
         let provider = |chain_index: bool, says: Says| match says {
             Says::Known => MockStatusProvider::new(chain_index, vec![detail(&txid, "known")]),
