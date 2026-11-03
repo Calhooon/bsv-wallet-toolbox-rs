@@ -89,6 +89,10 @@ mod discovery_rows_tests;
 mod privileged_keys_tests;
 
 #[cfg(all(test, feature = "sqlite"))]
+#[path = "privileged_keys_permission_tests.rs"]
+mod privileged_keys_permission_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
 #[path = "privileged_certificate_tests.rs"]
 mod privileged_certificate_tests;
 
