@@ -564,19 +564,25 @@ jobs:
 
       # The seeder's exit test (#737, docs/FUZZ.md, #582): the seeder on the
       # checked-out tree leaves the committed corpus as it is. A file it adds
-      # or rewrites under fuzz/corpus is printed and fails the step; python
-      # alone, seconds.
+      # or rewrites under fuzz/corpus is printed and fails the step, and so
+      # does a named seed it no longer writes (--report-stale prints it as
+      # stale, #743); python alone, seconds.
       - name: seeder, the committed corpus is its output
         id: seeder-exit
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: |
-          python3 fuzz/seed_corpus.py
+          stale=0
+          python3 fuzz/seed_corpus.py --report-stale || stale=1
+          if [ "$stale" -ne 0 ]; then
+            echo "::error title=checks: seeder::a committed named seed is no longer written; remove each stale path, or fix the seeder"
+          fi
           moved="$(git status --porcelain --untracked-files=all -- fuzz/corpus)"
           if [ -n "$moved" ]; then
             printf '%s\n' "$moved"
             echo "::error title=checks: seeder::the seeder moved the committed corpus; run python3 fuzz/seed_corpus.py and commit what it writes, or fix the seeder"
             exit 1
           fi
+          exit "$stale"
 
       # HANDOFF.md's landing rows (#669): a file per PR under docs/handoff/,
       # the Next section generated from them. A row on the page that differs
