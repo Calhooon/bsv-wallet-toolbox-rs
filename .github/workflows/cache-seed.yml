@@ -137,3 +137,163 @@ jobs:
       - name: Build unit and integration tests (remote only)
         if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
         run: cargo test --no-run --lib --tests --no-default-features --features remote
+
+  # Beta's `lint` job: the two stable Clippy runs and the ratchet's clippy run
+  # on 1.98.1. Both toolchains are installed in beta's order before the cache
+  # step: rust-cache hashes `rustc -vV` of every installed toolchain, so a
+  # stable-only seed saves a key no lint job asks for, and stable installed last
+  # stays the default toolchain the Clippy runs use.
+  seed-lint:
+    name: Seed lint cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: beta
+
+      - name: Install Rust (the ratchet's toolchain)
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: "1.98.1"
+          components: clippy
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Resolve the dependency lock
+        run: test -f Cargo.lock || cargo generate-lockfile
+
+      - name: Look up the seed
+        id: lookup
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: lint
+          lookup-only: true
+          save-if: false
+
+      - name: Cache the dependency build
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: lint
+
+      - name: Clippy
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        run: cargo clippy --all-targets --features sqlite,remote -- -D warnings
+
+      - name: Clippy (remote only)
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        run: cargo clippy --no-default-features --features remote -- -D warnings
+
+      # tools/ratchet has no build-only form (it measures, writes or checks), so
+      # this is its clippy command as the tool runs it (clippy_diagnostics and
+      # cargo_env): RUSTFLAGS and CARGO_ENCODED_RUSTFLAGS removed, colour off,
+      # on 1.98.1.
+      - name: The ratchet's clippy run
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        env:
+          RUSTUP_TOOLCHAIN: "1.98.1"
+          CARGO_TERM_COLOR: never
+        run: |
+          unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
+          cargo clippy --all-targets --message-format=json -- -W clippy::pedantic -A clippy::all -W clippy::cognitive_complexity -W missing_docs > /dev/null
+
+  # Beta's `checks` job: the `sqlite` test builds behind its vector, word-table
+  # and fixture gates, and the documentation build.
+  seed-checks:
+    name: Seed checks cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: beta
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Prepare dependency lock
+        run: |
+          if ! test -f Cargo.lock; then
+            cargo generate-lockfile
+          fi
+
+      - name: Look up the seed
+        id: lookup
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: checks
+          lookup-only: true
+          save-if: false
+
+      - name: Cache the dependency build
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: checks
+
+      - name: Build the vector tests
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        run: cargo test --features sqlite --test arcade_status_vector_tests --test arc_broadcast_body_tests --test test_vectors --no-run
+
+      - name: Build the unit tests (the word table)
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        run: cargo test --features sqlite --lib --no-run
+
+      - name: Build the fixtures
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        run: cargo test --test fixtures --locked --no-run
+
+      - name: Documentation
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        run: cargo doc --no-deps --features sqlite
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+
+  # Beta's `semver` job: cargo-semver-checks' rustdoc builds of the tree and a
+  # git baseline. The baseline here is beta's own tip by sha, the check against
+  # itself (no break to report), which builds both sides as beta's job does.
+  seed-semver:
+    name: Seed semver cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: beta
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Resolve the dependency lock
+        run: test -f Cargo.lock || cargo generate-lockfile
+
+      - name: Look up the seed
+        id: lookup
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: semver
+          lookup-only: true
+          save-if: false
+
+      - name: Cache the dependency build
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: semver
+
+      - name: Install cargo-semver-checks
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-semver-checks
+
+      - name: Build the tree and its baseline
+        if: ${{ steps.lookup.outputs.cache-hit != 'true' }}
+        run: cargo semver-checks --baseline-rev "$(git rev-parse HEAD)" --release-type minor --color never
