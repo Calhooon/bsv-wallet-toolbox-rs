@@ -193,51 +193,129 @@ jobs:
           # Two replays for a ladder scene a runner stall failed (#513); one locally.
           LADDER_FIXTURES_STALL_REPLAYS: "2"
 
-  # Clippy covers SQL storage with remote, plus remote without default features.
-  clippy:
-    name: Clippy
+  # The static gates in one job (#617), so a PR run holds one queue slot for
+  # them rather than five: Rustfmt, the one-bsv-rs-per-lock rule and the
+  # reusable call's grants (the old `locks` job), Clippy with its two feature
+  # sets, and the ratchet. Each gate is its own step and runs whether or not a
+  # gate before it failed (`!cancelled()`), so one red does not hide another;
+  # the last step writes every gate's outcome to the job summary and names each
+  # red one in an annotation. No step continues on error: any red gate fails
+  # the job. cargo-deny is not run here: deny.toml is the stack's seed and no
+  # workflow runs `cargo deny check` yet.
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The ratchet's instrument (below), installed before stable so stable
+      # stays the default toolchain for every other gate.
+      - name: Install Rust (the ratchet's toolchain)
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: "1.98.1"
+          components: clippy
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
-          components: clippy
+          components: clippy, rustfmt
 
       # Cargo.lock is not tracked (a library): resolve it before the cache, so
       # the cache key hashes the lock this build uses, not the manifest alone.
       - name: Resolve the dependency lock
         run: test -f Cargo.lock || cargo generate-lockfile
 
-      # As the Test Suite's cache, keyed for this job's own build.
+      # As the Test Suite's cache, keyed for this job's check builds: Clippy's
+      # two feature sets on stable and the ratchet's clippy run on 1.98.1.
       - name: Cache the dependency build
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: clippy
+          shared-key: lint
           save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
-      - name: Run Clippy
+      - name: Rustfmt
+        id: fmt
+        if: ${{ !cancelled() }}
+        run: cargo fmt --all -- --check
+
+      # One bsv-rs per lock (bsv-stack-lean #182): a committed Cargo.lock holding
+      # two bsv-rs entries fails, the gate a self-merging stack PR stands behind.
+      - name: locks, one bsv-rs per committed Cargo.lock
+        id: locks
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          status=0
+          found=0
+          while IFS= read -r -d '' lock; do
+            found=$((found + 1))
+            n=$(grep -c '^name = "bsv-rs"$' "$lock" || true)
+            echo "$lock: $n bsv-rs"
+            if [ "$n" -gt 1 ]; then
+              echo "::error file=$lock::$n bsv-rs entries; one bsv-rs per lock"
+              status=1
+            fi
+          done < <(git ls-files -z -- 'Cargo.lock' '*/Cargo.lock')
+          [ "$found" -gt 0 ] || echo "no committed Cargo.lock"
+          exit "$status"
+
+      - name: locks, the reusable CI call grants every job's permissions
+        id: grants
+        if: ${{ !cancelled() }}
+        run: |
+          bash tools/workflow-grants-check.sh
+          bash tools/workflow-grants-check-test.sh
+
+      # Clippy covers SQL storage with remote, plus remote without default features.
+      - name: Clippy
+        id: clippy
+        if: ${{ !cancelled() }}
         run: cargo clippy --all-targets --features sqlite,remote -- -D warnings
 
-      - name: Run Clippy (remote only)
+      - name: Clippy (remote only)
+        id: clippy-remote
+        if: ${{ !cancelled() }}
         run: cargo clippy --no-default-features --features remote -- -D warnings
 
-  fmt:
-    name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The numbers that may only fall (#55): tools/ratchet measures the tree and
+      # fails when one rises above tools/ratchet.json. The toolchain is pinned to
+      # the one the baseline was measured with (its `rustc` and `toolchain` keys):
+      # the numbers depend on the clippy version, so an unpinned toolchain makes
+      # the ratchet drift and go red on every stable release; the pin is the
+      # measurement's instrument, not a dependency pin. A mismatch fails with
+      # "re-record the baseline with toolchain X"; move the pin (the first
+      # install step above and RUSTUP_TOOLCHAIN here) and the baseline in one PR.
+      # The script drops RUSTFLAGS from cargo's environment: it counts warnings,
+      # and the workflow's -Dwarnings would stop the build at any one of them.
+      - name: ratchet, no number above the baseline
+        id: ratchet
+        if: ${{ !cancelled() }}
+        run: python3 tools/ratchet --check
+        env:
+          RUSTUP_TOOLCHAIN: "1.98.1"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: stable
-          components: rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: The gates
+        if: ${{ !cancelled() }}
+        env:
+          GATES: |
+            ${{ steps.fmt.outcome }} Rustfmt
+            ${{ steps.locks.outcome }} locks: one bsv-rs per committed Cargo.lock
+            ${{ steps.grants.outcome }} locks: the reusable CI call's grants
+            ${{ steps.clippy.outcome }} Clippy
+            ${{ steps.clippy-remote.outcome }} Clippy (remote only)
+            ${{ steps.ratchet.outcome }} ratchet
+        run: |
+          printf '| gate | outcome |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          while read -r outcome gate; do
+            [ -n "$gate" ] || continue
+            echo "${gate}: ${outcome}"
+            printf '| %s | %s |\n' "$gate" "$outcome" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$outcome" != "success" ]; then
+              echo "::error title=lint: ${gate}::the ${gate} gate is ${outcome}"
+            fi
+          done <<< "$GATES"
 
   # The vector-backed tests as one named check: the Arcade status vector
   # (tests/vectors/arcade_status_verdicts.json) through its three surfaces and
@@ -485,40 +563,6 @@ jobs:
           fi
           exit "$status"
 
-  # Every dependent in docs/DEPENDENTS.md whose ci column is `yes`, cloned at
-  # its branch named after the line under test (the CLI's beta on beta, #208;
-  # its default branch when it has none), built and tested against this tree as
-  # a path dependency. The clones are reads of public repositories; no token.
-  # One bsv-rs per lock (bsv-stack-lean #182): a committed Cargo.lock holding
-  # two bsv-rs entries fails, the gate a self-merging stack PR stands behind.
-  # The locks job checks that the reusable CI call grants every job's permissions.
-  locks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: One bsv-rs per committed Cargo.lock
-        run: |
-          set -euo pipefail
-          status=0
-          found=0
-          while IFS= read -r -d '' lock; do
-            found=$((found + 1))
-            n=$(grep -c '^name = "bsv-rs"$' "$lock" || true)
-            echo "$lock: $n bsv-rs"
-            if [ "$n" -gt 1 ]; then
-              echo "::error file=$lock::$n bsv-rs entries; one bsv-rs per lock"
-              status=1
-            fi
-          done < <(git ls-files -z -- 'Cargo.lock' '*/Cargo.lock')
-          [ "$found" -gt 0 ] || echo "no committed Cargo.lock"
-          exit "$status"
-
-      - name: The reusable CI call grants every job's permissions
-        run: |
-          bash tools/workflow-grants-check.sh
-          bash tools/workflow-grants-check-test.sh
-
   # The north-star table (docs/NORTH-STAR.md) against its sources and its
   # checksum: an edited table or a stale source value fails. Read-only; the
   # producers (#54's bench job, #55's ratchet job) run the write. Not yet a
@@ -533,39 +577,3 @@ jobs:
 
       - name: The scoreboard table matches its sources
         run: python3 tools/scoreboard-write --check
-
-  # The numbers that may only fall (#55): tools/ratchet measures the tree and
-  # fails when one rises above tools/ratchet.json. The toolchain is pinned to
-  # the one the baseline was measured with (its `rustc` and `toolchain` keys):
-  # the numbers depend on the clippy version, so an unpinned toolchain makes
-  # the ratchet drift and go red on every stable release; the pin is the
-  # measurement's instrument, not a dependency pin. A mismatch fails with
-  # "re-record the baseline with toolchain X"; move the pin and the baseline
-  # in one PR. Not a required context yet.
-  ratchet:
-    name: ratchet
-    runs-on: ubuntu-latest
-    # The script drops RUSTFLAGS from cargo's environment: it counts warnings,
-    # and the workflow's -Dwarnings would stop the build at any one of them.
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
-        with:
-          toolchain: "1.98.1"
-          components: clippy
-
-      - name: Cache cargo registry
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ubuntu-ratchet-${{ hashFiles('Cargo.toml') }}
-          restore-keys: |
-            ubuntu-ratchet-
-
-      - name: No number above the baseline
-        run: python3 tools/ratchet --check
