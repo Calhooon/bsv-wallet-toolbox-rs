@@ -29,16 +29,17 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false
-      # The fleet's runner cap (the keeper's line of 2026-11-03 06:2xZ, from
-      # bsv-rs's and the CLI's measurements): the account's twenty runners are one
-      # pool across four repositories, so a heavy dispatch holds at most fourteen
-      # of them and six stay for pull request and merge-queue runs. The sixteen
-      # shards here run twelve at a time, which beside the two doors shards below
-      # makes the fourteen at the peak. A dispatch takes the toolbox's stagger
-      # slot (06:00Z) and never overlaps another repository's heavy run. The cap's
-      # cost and gain go in the census record at the next run; #638 (the slot
-      # occupancy by hour) moves the number from the API's reading.
-      max-parallel: 12
+      # The fleet's runner cap, revised on the #638 occupancy read (the keeper's
+      # line of 2026-11-03 10:0xZ): the account's twenty runners are one pool
+      # across its repositories and sit at twenty in 22 of 24 hours, so a heavy
+      # run holds at most six of them until the next read shows the non-heavy
+      # p95 under ten. The sixteen shards here run four at a time, which beside
+      # the two doors shards below makes the six at the peak. A dispatch takes
+      # the toolbox's slot, 16:00Z (a measured light hour), and never overlaps
+      # another repository's heavy run (bsv-rs 07:00Z, the CLI 17:30Z). The
+      # cap's cost and gain go in the census record at the next run; the
+      # occupancy read repeats every 48 hours and re-sets the number.
+      max-parallel: 4
       matrix:
         # 2183 mutants at about 90 s each (build plus the whole lib suite) need 16
         # shards to stay under the job limit. The three doors that judge under the
