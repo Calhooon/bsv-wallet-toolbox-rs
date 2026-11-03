@@ -1847,6 +1847,24 @@ macro_rules! key_permission {
     };
 }
 
+// A key-linkage reveal's BRC-98/99 check: the level-2 protocol `name` the
+// reveal builds, the verifier as counterparty, the request's `privileged`
+// and `privileged_reason`, `LinkageRevelation` (#589). Beside
+// `key_permission!`, whose counterparty is the request's `counterparty`.
+macro_rules! linkage_permission {
+    ($wallet:expr, $originator:expr, $args:expr, $name:expr, $verifier:expr) => {
+        $wallet.check_protocol_permission(
+            $originator,
+            $args.privileged == Some(true),
+            &Protocol::new(SecurityLevel::Counterparty, $name),
+            Some(&Counterparty::Other($verifier.clone())),
+            $args.privileged_reason.as_deref(),
+            crate::managers::PermissionUsageType::LinkageRevelation,
+            true,
+        )
+    };
+}
+
 #[async_trait]
 impl<S, V> WalletInterface for Wallet<S, V>
 where
@@ -1959,6 +1977,14 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<RevealCounterpartyKeyLinkageResult> {
         validate_originator(originator)?;
+        // BRC-98/99: the level-2 `counterparty key linkage revelation <hex>`
+        // for the verifier, as the reference asks (ts-stack@edf6e03
+        // `WalletPermissionsManager.ts:5190-5203`, #589).
+        let name = format!(
+            "counterparty key linkage revelation {}",
+            args.counterparty.to_hex()
+        );
+        linkage_permission!(self, originator, args, name, args.verifier).await?;
         self.key_route(originator)
             .reveal_counterparty_key_linkage(args)
             .await
@@ -1970,6 +1996,18 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<RevealSpecificKeyLinkageResult> {
         validate_originator(originator)?;
+        // BRC-98/99: the level-2 `specific key linkage revelation <protocol>
+        // <key id or all>` for the verifier, as the reference asks
+        // (ts-stack@edf6e03 `WalletPermissionsManager.ts:5205-5221`, #589).
+        let key_id = match args.protocol_id.security_level {
+            SecurityLevel::Counterparty => args.key_id.as_str(),
+            _ => "all",
+        };
+        let name = format!(
+            "specific key linkage revelation {} {key_id}",
+            args.protocol_id.protocol_name
+        );
+        linkage_permission!(self, originator, args, name, args.verifier).await?;
         self.key_route(originator)
             .reveal_specific_key_linkage(args)
             .await
