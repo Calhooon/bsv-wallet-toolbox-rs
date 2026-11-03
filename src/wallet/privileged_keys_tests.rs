@@ -448,37 +448,50 @@ const GUARDED: [&str; 7] = CALLS;
 /// The handler's refusal as the wallet answers it.
 const PERMISSION_REFUSAL: &str = "Access denied: Protocol permission refused by the test";
 
-/// The prompts the handler saw (each request's `privileged`) and the flags it
-/// grants; every other prompt it refuses.
+/// The prompts the handler saw and the flags it grants; every other prompt
+/// it refuses.
 #[derive(Default)]
 struct Prompts {
-    seen: StdMutex<Vec<Option<bool>>>,
+    requests: StdMutex<Vec<crate::managers::PermissionRequest>>,
     grants: StdMutex<Vec<bool>>,
 }
 
 impl Prompts {
+    /// Each prompt's `privileged`.
     fn seen(&self) -> Vec<Option<bool>> {
-        self.seen.lock().unwrap().clone()
+        let requests = self.requests.lock().unwrap();
+        requests.iter().map(|request| request.privileged).collect()
     }
 }
 
 type Permissions = Arc<crate::managers::WalletPermissionsManager>;
 
-/// A wallet with the privileged double and a permissions manager that
-/// differentiates privileged operations and holds an everyday grant for the
-/// witness protocol; its handler refuses every later prompt.
-async fn guarded_wallet() -> (
+type Guarded = (
     tempfile::TempDir,
     TestWallet,
     Arc<PrivilegedDouble>,
     Permissions,
     Arc<Prompts>,
-) {
+);
+
+/// A wallet with the privileged double and a permissions manager that
+/// differentiates privileged operations and holds an everyday grant for the
+/// witness protocol; its handler refuses every later prompt.
+async fn guarded_wallet() -> Guarded {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    assert!(config.differentiate_privileged_operations);
+    let guarded = permitted_wallet(config).await;
+    grant(&guarded.3, &guarded.4, false).await;
+    guarded
+}
+
+/// A wallet with the privileged double and a permissions manager under
+/// `config`, holding no grant; its handler refuses every prompt it is not
+/// told to grant.
+async fn permitted_wallet(config: crate::managers::WalletPermissionsManagerConfig) -> Guarded {
     let (dir, mut wallet) = wallet().await;
     let double = PrivilegedDouble::new();
     wallet.set_privileged_key_manager(double.clone());
-    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
-    assert!(config.differentiate_privileged_operations);
     let manager = Arc::new(crate::managers::WalletPermissionsManager::new(
         Arc::new(wallet.proto_wallet.clone()),
         "wallet.admin".to_string(),
@@ -489,10 +502,10 @@ async fn guarded_wallet() -> (
     manager
         .set_permission_request_handler(Arc::new(move |request| {
             handler_prompts
-                .seen
+                .requests
                 .lock()
                 .unwrap()
-                .push(request.privileged);
+                .push(request.clone());
             let flag = request.privileged.unwrap_or(false);
             let granted = handler_prompts.grants.lock().unwrap().contains(&flag);
             Box::pin(async move {
@@ -515,7 +528,6 @@ async fn guarded_wallet() -> (
             })
         }))
         .await;
-    grant(&manager, &prompts, false).await;
     wallet.set_permissions_manager(manager.clone());
     (dir, wallet, double, manager, prompts)
 }
@@ -536,7 +548,7 @@ async fn grant(manager: &Permissions, prompts: &Prompts, privileged: bool) {
         .await
         .unwrap();
     prompts.grants.lock().unwrap().clear();
-    prompts.seen.lock().unwrap().clear();
+    prompts.requests.lock().unwrap().clear();
 }
 
 /// One of the seven guarded calls; `get_public_key` names the witness
@@ -625,4 +637,74 @@ async fn an_unprivileged_key_call_under_the_everyday_grant_is_unchanged() {
     }
     assert_eq!(prompts.seen(), Vec::<Option<bool>>::new());
     assert_eq!(double.asked(), Vec::<Asked>::new());
+}
+
+// =========================================================================
+// The usage type each key call passes (#581): with one type's
+// `seek_protocol_permissions_for_<type>` off, the calls of that type are
+// admitted with no prompt and every call of another type still prompts, as
+// the reference's `usageType` per call (ts-stack@edf6e03
+// `WalletPermissionsManager.ts:5165-5384`, `:1514`).
+// =========================================================================
+
+/// The usage type the reference passes for each of the seven calls.
+fn usage_type(name: &str) -> crate::managers::PermissionUsageType {
+    use crate::managers::PermissionUsageType::*;
+    match name {
+        "get_public_key" => PublicKey,
+        "encrypt" | "decrypt" => Encrypting,
+        "create_hmac" | "verify_hmac" => Hmac,
+        "create_signature" | "verify_signature" => Signing,
+        other => unreachable!("{other}"),
+    }
+}
+
+/// `name`'s usage type exempt from prompting, every other type prompting:
+/// each everyday call of `name`'s type is admitted with no prompt, and each
+/// of another type is refused after one prompt.
+async fn assert_usage_type(name: &str) {
+    use crate::managers::PermissionUsageType::*;
+    let mut config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let exempt = usage_type(name);
+    match exempt {
+        Signing => config.seek_protocol_permissions_for_signing = false,
+        Encrypting => config.seek_protocol_permissions_for_encrypting = false,
+        Hmac => config.seek_protocol_permissions_for_hmac = false,
+        PublicKey => config.seek_permissions_for_public_key_revelation = false,
+        other => unreachable!("{other:?}"),
+    }
+    let (_dir, wallet, double, _manager, prompts) = permitted_wallet(config).await;
+    let answer = guarded_call(&wallet, &double, name, None).await;
+    assert!(answer.is_ok(), "{name}: {answer:?}");
+    assert_eq!(prompts.seen(), Vec::<Option<bool>>::new(), "{name}");
+    for sibling in GUARDED.into_iter().filter(|s| usage_type(s) != exempt) {
+        let before = prompts.seen().len();
+        match guarded_call(&wallet, &double, sibling, None).await {
+            Err(bsv_rs::Error::WalletRefusal { message, .. }) => {
+                assert_eq!(message, PERMISSION_REFUSAL, "{name}: {sibling}");
+            }
+            other => panic!("{name}: {sibling} expected the permission refusal, got {other:?}"),
+        }
+        assert_eq!(prompts.seen().len(), before + 1, "{name}: {sibling}");
+    }
+    assert_eq!(double.asked(), Vec::<Asked>::new());
+}
+
+macro_rules! usage_type_witnesses {
+    ($($test:ident: $name:literal;)*) => {$(
+        #[tokio::test]
+        async fn $test() {
+            assert_usage_type($name).await;
+        }
+    )*};
+}
+
+usage_type_witnesses! {
+    get_public_key_passes_the_public_key_usage_type: "get_public_key";
+    encrypt_passes_the_encrypting_usage_type: "encrypt";
+    decrypt_passes_the_encrypting_usage_type: "decrypt";
+    create_hmac_passes_the_hmac_usage_type: "create_hmac";
+    verify_hmac_passes_the_hmac_usage_type: "verify_hmac";
+    create_signature_passes_the_signing_usage_type: "create_signature";
+    verify_signature_passes_the_signing_usage_type: "verify_signature";
 }
