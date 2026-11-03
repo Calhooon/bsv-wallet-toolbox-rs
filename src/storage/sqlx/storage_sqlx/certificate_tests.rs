@@ -313,5 +313,6 @@ mod tests {
         assert_eq!(total(&storage, &auth, (2, 10)).await, (1, 3), "short page");
         let past = total(&storage, &auth, (100, 10)).await;
         assert_eq!(past, (0, 3), "empty page past the end");
+        assert_eq!(total(&storage, &auth, (0, 0)).await, (0, 3), "limit 0 answers the count, as both pins do");
     }
 }
