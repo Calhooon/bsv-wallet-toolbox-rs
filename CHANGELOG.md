@@ -4,6 +4,13 @@
 
 ### Changed
 
+- #638 (tools; no code): `tools/slot-occupancy` reads the account's
+  Actions runs and jobs with `gh api` (reads only, `--days`, `--repos`,
+  `--from-cache`) and prints the runner-slot occupancy by hour of the day:
+  runner-minutes, the peak concurrent jobs (all, non-heavy, heavy), the
+  queue waits, and a one-line recommendation for the heavy runs' cap and
+  slots. Its cases are `tools/slot-occupancy-test` on a recorded fixture.
+  The week's reading is in `docs/census/ci-speed-2026-11-02.md`.
 - #644 (CI; no code): on a PR's own run, a `*.md` under `tests/`,
   `fuzz/`, `test_vectors/`, `tools/` or `.github/` reaches every test
   under `tools/affected-tests`, the set read from `tools/docs-only`, since
