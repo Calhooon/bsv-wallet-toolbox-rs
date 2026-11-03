@@ -51,6 +51,8 @@ METRICS = {
     "dependent_pin_max": (
         "Direct dependents, newest toolbox pin", "Current minor or dated plan; #59", 1),
 }
+# key: its record section in an envelope source, where the names differ.
+SECTIONS = {"mutation_score_pct": "mutation_score", "max_file_lines": "files_over_800"}
 LADDERS = {"ladder_p99_ms", "ladder_request_count"}
 PINS = {"dependent_pin_min", "dependent_pin_max"}
 COUNTS = {
@@ -77,6 +79,15 @@ def measurement_date(value):
     if day.isoformat() != value:
         raise ValueError("measured_at must use YYYY-MM-DD")
     return value
+
+
+def cell_date(payload, key):
+    """The section's own measured_at where it carries one, the top-level one otherwise."""
+    if "metrics" in payload:
+        section = payload.get(SECTIONS.get(key, key))
+        if isinstance(section, dict) and "measured_at" in section:
+            return measurement_date(section["measured_at"])
+    return measurement_date(payload.get("measured_at"))
 
 
 def number(base, value):
@@ -156,7 +167,7 @@ def update_values(root, values):
         for key, (label, target, source) in METRICS.items():
             if source != index or key not in metrics or metrics[key] is None:
                 continue
-            day = measurement_date(payload.get("measured_at"))
+            day = cell_date(payload, key)
             amount = metrics[key]
             if key in LADDERS:
                 if not isinstance(amount, dict):

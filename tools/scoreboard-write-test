@@ -137,5 +137,23 @@ same "two writes are byte-identical" "$one/docs/NORTH-STAR.md" "$two/docs/NORTH-
 expect ok "scoreboard unchanged (2 source files)" "a second write on one tree changes nothing" -- --root "$one"
 expect ok "scoreboard check passed (2 source files)" "the written tree passes --check" -- --check --root "$one"
 
+# A record section's own measured_at dates its cell; a section without one, or a
+# metric with no section, takes the top-level date (#587).
+dated='{"measured_at": "2026-10-24", "metrics": {"mutation_score_pct": 59.22, "fuzz_hours": 2.01, "files_over_800": 12, "max_file_lines": 900}, "mutation_score": {"measured_at": "2026-10-20"}, "fuzz_hours": {"measured_at": "2026-10-21"}, "files_over_800": {"count": 12}}'
+root="$(fresh)"
+printf '%s\n' "$dated" > "$root/$ratchet"
+expect ok "scoreboard updated (1 source files)" "a dated record source writes" -- --root "$root"
+holds "a section with its own date prints it" "$root/docs/NORTH-STAR.md" "| measured 2026-10-20: 59.22 |"
+holds "a second section with its own date prints it" "$root/docs/NORTH-STAR.md" "| measured 2026-10-21: 2.01 |"
+holds "a section without a date takes the top-level one" "$root/docs/NORTH-STAR.md" "| measured 2026-10-24: 12 |"
+holds "a metric read through its section takes the top-level one" "$root/docs/NORTH-STAR.md" "| measured 2026-10-24: 900 |"
+expect ok "scoreboard check passed (1 source files)" "the dated tree passes --check" -- --check --root "$root"
+printf '%s\n' "${dated/2026-10-20/2026-10-19}" > "$root/$ratchet"
+expect refused "table drift" "drift in a section's date fails --check" -- --check --root "$root"
+printf '%s\n' '{"measured_at": "2026-10-24", "metrics": {"mutation_score_pct": 59.22, "fuzz_hours": 2.01, "files_over_800": 12, "max_file_lines": 900}, "mutation_score": {"measured_at": "2026-10-20"}, "fuzz_hours": {}, "files_over_800": {"count": 12}}' > "$root/$ratchet"
+expect refused "table drift" "a section losing its date fails --check" -- --check --root "$root"
+refuse "a bad section date" "scoreboard error" $ratchet \
+  '{"measured_at": "2026-10-24", "metrics": {"fuzz_hours": 1}, "fuzz_hours": {"measured_at": "2026-10-21T00:00:00"}}'
+
 echo "${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
