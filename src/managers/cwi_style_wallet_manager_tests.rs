@@ -719,3 +719,39 @@ async fn a_reference_token_opens_through_switch_profile(vector: &str) {
         hex::decode(v["tokenV3Hex"].as_str().unwrap()).unwrap()
     );
 }
+
+/// Runs `task` beside a 20 ms sleep on the runtime's one worker: an inline
+/// argon2id holds that worker until the task ends, so the sleep wakes to a
+/// finished task; on the blocking pool the sleep wakes while it derives.
+async fn alongside_a_timer<T: Send + 'static>(
+    task: impl std::future::Future<Output = T> + Send + 'static,
+) -> T {
+    let task = tokio::spawn(task);
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(
+        !task.is_finished(),
+        "the KDF held the runtime's only worker (#624)"
+    );
+    task.await.unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_password_kdf_leaves_a_current_thread_runtime_free_for_other_tasks() {
+    let (m, seen) = manager();
+    m.provide_privileged_key_manager(PrivateKey::random()).await;
+    let m = Arc::new(m);
+    let (a, b, c) = (m.clone(), m.clone(), m.clone());
+    let profile = alongside_a_timer(async move { a.create_profile("Work", "pw").await })
+        .await
+        .unwrap();
+    let id = profile.id.clone();
+    alongside_a_timer(async move { b.switch_profile(&id, "pw").await })
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1, "derive, then build");
+    assert!(m.is_authenticated().await);
+    let key = alongside_a_timer(async move { c.recovery_key(&profile.id, "pw").await })
+        .await
+        .unwrap();
+    assert_eq!(key.len(), 32);
+}
