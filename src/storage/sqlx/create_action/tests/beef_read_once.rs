@@ -1,13 +1,13 @@
 //! The create side of the A8 cycle's differential target (#556): the
 //! caller's `inputBEEF` judge and the create door on the `a8-beef-bytes`
 //! path and the oracle path in one binary, every corpus input and the
-//! census's 1, 4 and 10 MB BEEFs, any difference a failure
+//! census's BEEFs (`CENSUS_MEGABYTES`), any difference a failure
 //! (`internalize_action/a8_beef_bytes_tests.rs` holds the scenes).
 
 use super::super::*;
 use super::*;
 use crate::storage::sqlx::internalize_action::a8_beef_bytes_tests::{
-    census_beef, census_beef_signed_by, census_store, corpus, stored_rows, Path,
+    census_beef, census_beef_signed_by, census_store, corpus, stored_rows, Path, CENSUS_MEGABYTES,
 };
 use crate::storage::sqlx::internalize_action::a8_differential::Headers;
 use crate::storage::traits::WalletStorageWriter;
@@ -34,7 +34,7 @@ async fn the_judge_reads_the_corpus_the_same_on_both_paths() {
     storage.make_available().await.unwrap();
     let mut conn = storage.pool().acquire().await.unwrap();
     let mut scenes = corpus();
-    for megabytes in [1, 4, 10] {
+    for megabytes in CENSUS_MEGABYTES {
         scenes.push((
             format!("census {megabytes} MB"),
             census_beef(megabytes * 1_000_000).0,
@@ -150,7 +150,7 @@ async fn create_on(
 
 #[tokio::test]
 async fn the_census_creates_the_same_rows_on_both_paths() {
-    for megabytes in [1, 4, 10] {
+    for megabytes in CENSUS_MEGABYTES {
         let (beef, child, parent) = census_beef(megabytes * 1_000_000);
         let oracle = create_on(false, &beef, &child, &parent).await;
         let read_once = create_on(true, &beef, &child, &parent).await;
