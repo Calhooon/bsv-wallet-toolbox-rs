@@ -413,10 +413,8 @@ mod tests {
         AuthId, ListOutputsArgs, StorageSqlx, WalletStorageReader, WalletStorageWriter,
     };
 
-    /// BRC-100's reverse-order paging at its ends (#230): -1 the newest,
-    /// -3 the oldest of three, i32::MIN past every output with no overflow.
-    #[tokio::test]
-    async fn test_list_outputs_negative_offset_down_to_i32_min() {
+    /// A store holding three outputs (vouts 0, 1, 2) for one user.
+    async fn three_outputs() -> (StorageSqlx, AuthId) {
         let storage = StorageSqlx::in_memory().await.unwrap();
         let identity = "b".repeat(66);
         storage.migrate("offset", &"1".repeat(64)).await.unwrap();
@@ -450,11 +448,19 @@ mod tests {
                 .await
                 .unwrap();
         }
+        (storage, auth)
+    }
 
-        let page = |offset: i32, limit: u32| -> ListOutputsArgs {
-            let args = serde_json::json!({ "basket": "", "limit": limit, "offset": offset });
-            serde_json::from_value(args).unwrap()
-        };
+    fn page(offset: i32, limit: u32) -> ListOutputsArgs {
+        let args = serde_json::json!({ "basket": "", "limit": limit, "offset": offset });
+        serde_json::from_value(args).unwrap()
+    }
+
+    /// BRC-100's reverse-order paging at its ends (#230): -1 the newest,
+    /// -3 the oldest of three, i32::MIN past every output with no overflow.
+    #[tokio::test]
+    async fn test_list_outputs_negative_offset_down_to_i32_min() {
+        let (storage, auth) = three_outputs().await;
         let vouts = |result: &bsv_rs::wallet::ListOutputsResult| -> Vec<u32> {
             result.outputs.iter().map(|o| o.outpoint.vout).collect()
         };
@@ -470,6 +476,41 @@ mod tests {
         let past = past.unwrap();
         assert!(past.outputs.is_empty());
         assert_eq!(past.total_outputs, 3);
+    }
+
+    /// The total's three branches (#674, `short_page_total`): a full page
+    /// counts; a short page that is not empty past the start is the offset
+    /// plus the page; an empty page past the start counts.
+    #[tokio::test]
+    async fn test_list_outputs_total_per_page_shape() {
+        async fn total(
+            storage: &StorageSqlx,
+            auth: &AuthId,
+            offset: i32,
+            limit: u32,
+        ) -> (usize, u32) {
+            let result = storage.list_outputs(auth, page(offset, limit)).await;
+            let result = result.unwrap();
+            (result.outputs.len(), result.total_outputs)
+        }
+        let (storage, auth) = three_outputs().await;
+        assert_eq!(total(&storage, &auth, 0, 2).await, (2, 3), "full page");
+        assert_eq!(total(&storage, &auth, 2, 10).await, (1, 3), "short page");
+        let past = total(&storage, &auth, 100, 10).await;
+        assert_eq!(past, (0, 3), "empty page past the end");
+        let past_reverse = total(&storage, &auth, -101, 10).await;
+        assert_eq!(past_reverse, (0, 3), "empty reverse page past the end");
+        // Limit 0 at offset 0 is the reference's last branch, skipped plus
+        // the page (its validator refuses limit 0; this port reaches it).
+        assert_eq!(total(&storage, &auth, 0, 0).await, (0, 0), "no limit");
+
+        let empty = StorageSqlx::in_memory().await.unwrap();
+        empty.migrate("empty", &"1".repeat(64)).await.unwrap();
+        empty.make_available().await.unwrap();
+        let identity = "c".repeat(66);
+        let user = empty.find_or_insert_user(&identity).await.unwrap().0;
+        let auth = AuthId::with_user_id(&identity, user.user_id);
+        assert_eq!(total(&empty, &auth, 0, 10).await, (0, 0), "empty store");
     }
 
     #[tokio::test]

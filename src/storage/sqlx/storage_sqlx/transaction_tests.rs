@@ -220,6 +220,52 @@ mod tests {
         assert!(result2.actions.is_empty());
     }
 
+    /// listActions' total by its own rule (#674, `list_actions_total`): a
+    /// full page counts, a short page is the offset plus the page, an empty
+    /// page past the end included (the reference's 100 over three), and no
+    /// limit is the page.
+    #[tokio::test]
+    async fn test_list_actions_total_per_page_shape() {
+        async fn total(
+            storage: &StorageSqlx,
+            auth: &AuthId,
+            offset: u32,
+            limit: u32,
+        ) -> (usize, u32) {
+            let args = serde_json::json!({ "labels": [], "limit": limit, "offset": offset });
+            let args: ListActionsArgs = serde_json::from_value(args).unwrap();
+            let result = storage.list_actions(auth, args).await.unwrap();
+            (result.actions.len(), result.total_actions)
+        }
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage
+            .migrate("totals", "0".repeat(64).as_str())
+            .await
+            .unwrap();
+        storage.make_available().await.unwrap();
+        let identity_key = "a".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+        assert_eq!(total(&storage, &auth, 0, 10).await, (0, 0), "empty store");
+
+        let insert = "INSERT INTO transactions (user_id, status, reference, is_outgoing, \
+             satoshis, description, txid, version, lock_time) \
+             VALUES (?, 'completed', ?, 1, 1000, 'total test tx', ?, 1, 0)";
+        for n in 0..3u8 {
+            let row = sqlx::query(insert).bind(user.user_id);
+            row.bind(format!("total-ref-{n}"))
+                .bind(format!("{n:02x}").repeat(32))
+                .execute(storage.writer())
+                .await
+                .unwrap();
+        }
+        assert_eq!(total(&storage, &auth, 0, 2).await, (2, 3), "full page");
+        assert_eq!(total(&storage, &auth, 2, 10).await, (1, 3), "short page");
+        let past = total(&storage, &auth, 100, 10).await;
+        assert_eq!(past, (0, 100), "empty page past the end");
+        assert_eq!(total(&storage, &auth, 0, 0).await, (0, 0), "no limit");
+    }
+
     #[tokio::test]
     async fn test_abort_abandoned_empty() {
         let storage = StorageSqlx::in_memory().await.unwrap();
