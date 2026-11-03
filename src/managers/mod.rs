@@ -62,7 +62,9 @@ pub use simple_wallet_manager::SimpleWalletManager;
 
 pub use storage_manager::{ManagedStorage, WalletStorageManager};
 
-pub use cwi_style_wallet_manager::{CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile};
+pub use cwi_style_wallet_manager::{
+    CWIStyleWalletManager, CWIStyleWalletManagerConfig, Profile, DEFAULT_KDF_IN_FLIGHT,
+};
 pub use ump_token::{KdfAlgorithm, PasswordKdf, UmpToken, WalletSnapshot};
 
 pub use permissions_manager::{
