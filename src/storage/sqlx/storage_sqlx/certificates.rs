@@ -202,7 +202,7 @@ impl StorageSqlx {
             query = query.bind(cert_type);
         }
 
-        query = query.bind(i64::from(limit)).bind(offset as i32);
+        query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
         let rows = query.fetch_all(&self.reader).await?;
 

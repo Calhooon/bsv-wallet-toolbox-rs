@@ -33,11 +33,8 @@ impl StorageSqlx {
         let order_by = if offset < 0 { "DESC" } else { "ASC" };
         // BRC-100's reverse-order paging: -1 is the newest output. `-offset`
         // overflows at i32::MIN (#230); `unsigned_abs` does not, so the
-        // largest value here is 2147483647, which the `as i32` bind below
-        // and the `u32` sum with the page length in `short_page_total` both
-        // hold (the limit is the door's bound, 1..=10000, since #226; a short
-        // page counts real rows, so the sum cannot pass 2^31 + the store's
-        // row count).
+        // largest value here is 2147483647. It is bound as `i64`, as the
+        // limit is (#226), and `short_page_total`'s sum is checked (#697).
         let actual_offset = if offset < 0 {
             offset.unsigned_abs() - 1
         } else {
@@ -216,7 +213,7 @@ impl StorageSqlx {
                 .bind(user_id)
                 .bind(required_count as i32)
                 .bind(i64::from(limit))
-                .bind(actual_offset as i32);
+                .bind(i64::from(actual_offset));
 
             let rows = query.fetch_all(&self.reader).await?;
 
@@ -398,6 +395,9 @@ impl StorageSqlx {
 /// the total is the skipped outputs plus the page (#674). `skipped` is the
 /// normalized offset (`normalizeKnexListOffset` at 20-25). `list_certificates`
 /// takes the same rule (except at limit 0, where it answers the count as both pins do) (#686).
+/// The sum is checked (#697): the reference's JavaScript number holds any
+/// sum, a `u32` does not, and a sum past `u32::MAX` answers `None`, the
+/// count, the reference's own fallback, where a clamp would invent a total.
 pub(super) fn short_page_total(outputs_length: u32, limit: u32, skipped: u32) -> Option<u32> {
     if limit > 0 && outputs_length >= limit {
         return None;
@@ -405,7 +405,7 @@ pub(super) fn short_page_total(outputs_length: u32, limit: u32, skipped: u32) ->
     if outputs_length == 0 && skipped > 0 {
         return None;
     }
-    Some(skipped + outputs_length)
+    skipped.checked_add(outputs_length)
 }
 
 #[cfg(test)]
