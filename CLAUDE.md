@@ -128,8 +128,10 @@ Key constants: `MaxPaginationLimit: 10000`, `DefaultLimit: 100`, `MaxSatoshis: 2
 GitHub Actions (`.github/workflows/ci.yml`), on a pull request, a push to `main`/`beta` and a tag (through `release.yml`); the OS and toolchain matrix is `matrix.yml`, dispatch-only:
 - **Test Suite (ubuntu-latest, stable):** `sqlite,remote` unit and `sqlite,remote,bench-support` integration tests, each built with `cargo test --no-run` and run with `cargo nextest run`, then `tools/arch-doc-tests.sh` and `cargo test --doc`
 - **Test Suite (remote only):** `--lib --tests --no-default-features --features remote`, the same build-then-nextest shape, beside the Test Suite (#429, #612)
-- **Clippy:** `-D warnings` (deny all warnings); **Rustfmt:** format check; **Docs:** build with `-Dwarnings`; plus `vectors`, `fixtures`, `semver`, `locks`, `scoreboard`, `ratchet`
-- The build: `Swatinem/rust-cache` keyed on the resolved lock, rustc and the `CARGO*`/`RUST*` env, one `shared-key` per feature set, saved by a push to a line; `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_INCREMENTAL=0` in the workflow env. semver reads the `api-break` label live, so the trigger has no `labeled` type (`docs/census/ci-speed-2026-11-02.md`)
+- **lint:** Rustfmt, `locks` (one `bsv-rs` per committed lock, the reusable call's grants), Clippy with `-D warnings` on `sqlite,remote` and `remote` alone, and `tools/ratchet --check` on 1.98.1, each its own step, the last step naming each gate's outcome (#617)
+- **checks:** `scoreboard`, `vectors`, `fixtures` (`--locked`) and Documentation (`-Dwarnings`), each its own step, the same gate table (#617)
+- **semver:** its own job, the one with `pull-requests: read`; never on a tag. Beta's five required contexts are these five job names
+- The build: `Swatinem/rust-cache` keyed on the resolved lock, rustc and the `CARGO*`/`RUST*` env, one `shared-key` per job, saved by a push to a line; `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_INCREMENTAL=0` in the workflow env. semver reads the `api-break` label live, so the trigger has no `labeled` type (`docs/census/ci-speed-2026-11-02.md`)
 
 ## Cross-SDK Parity
 

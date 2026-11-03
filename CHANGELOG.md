@@ -4,6 +4,12 @@
 
 ### Changed
 
+- #617 (CI; no code): a PR run holds five jobs, not eleven: `lint`
+  (Rustfmt, locks, Clippy, the ratchet) and `checks` (scoreboard,
+  vectors, fixtures, Documentation) run each gate as its own step and
+  name every red one in the job summary; semver stays its own job, its
+  cache and the ratchet's on rust-cache; beta's required contexts become
+  the five job names (`docs/census/ci-speed-2026-11-02.md`).
 - #612 (CI; no code): the Test Suite's dependency build is cached by
   rust-cache on the resolved lock, the toolchain and the feature set,
   built without debuginfo or incremental state and run through
