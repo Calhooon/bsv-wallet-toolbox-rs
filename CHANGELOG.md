@@ -12,6 +12,16 @@
 
 ### Changed
 
+- #584 (tests; no code): the #546 and #530 dump witnesses read no shared
+  temp folder. Found by the complete Mutants run (lane
+  p5-mutants-complete-box-c, 2026-11-02, base 42559923), where the #546
+  witness listed a temp folder holding 1.3 million files in 171 s, 274 of
+  the run's 288 timeouts. The #546 witness drops its scan:
+  the dump named its path in the refusal text, so the `names no dump`
+  assertion carries the claim. The #530 witness reads one path,
+  `beef-<txid8>.hex`, the old dump's fixed name. Under 1,000,000 unrelated
+  files in `TMPDIR` each ran in 0.00 s and 0.02 s, against 1.70 s and
+  1.65 s for the scans on the same host.
 - #659 (manifest and two `use` sites; no behaviour change): the direct
   dependency on `futures-util` is removed from `Cargo.toml`; its two uses in
   `src/services/providers/arcade.rs` (`StreamExt`, `stream::iter`) read the
