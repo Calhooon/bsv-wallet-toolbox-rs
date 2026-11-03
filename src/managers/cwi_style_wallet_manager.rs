@@ -434,9 +434,8 @@ impl CWIStyleWalletManager {
 
     /// Creates a new profile.
     ///
-    /// The profile gets a random ID and pads and its own UMP token around a
-    /// random root key; its wallet key is `root XOR primary_pad`, the
-    /// reference's derivation for a profile.
+    /// The profile gets a random ID and pads and its own UMP token around a random root key; its
+    /// wallet key is `root XOR primary_pad`, the reference's derivation for a profile.
     pub async fn create_profile(&self, name: &str, password: &str) -> Result<Profile> {
         let profile = Profile::new(name.to_string());
         let root = Zeroizing::new(generate_random_bytes(32));
@@ -686,9 +685,8 @@ impl CWIStyleWalletManager {
 
     /// Exports a single profile to JSON bytes (unencrypted).
     ///
-    /// The profile's fields with its UMP token beside them (`ump`), the
-    /// key file's record; a v1 record has no `ump`. Unlike `export_profile()`,
-    /// this does not encrypt the data.
+    /// The profile's fields with its UMP token beside them (`ump`), the key file's record; a v1
+    /// record has no `ump`. Unlike `export_profile()`, this does not encrypt the data.
     pub async fn export_profile_json(&self, profile_id: &[u8]) -> Result<Vec<u8>> {
         let entry = self.entry(profile_id).await?;
         serde_json::to_vec(&entry.to_record()).map_err(Error::JsonError)
