@@ -16,7 +16,7 @@ sqlite = ["sqlx/sqlite"]
 # `mysql` requires `sqlite` (#684): it enables sqlx's MySQL driver alone, and
 # `StorageSqlx` is SQLite-typed throughout (`Pool<Sqlite>`, `SqliteConnection`,
 # `BEGIN IMMEDIATE`); no MySQL store exists, so `mysql` without `sqlite` did
-# not compile (40 errors, every one a SQLite type or the SQLite error path).
+# not compile (40 errors: the SQLite types and error path, and the knock-on errors that follow from them).
 mysql = ["sqlite", "sqlx/mysql"]
 remote = []  # StorageClient for storage.babbage.systems
 full = ["sqlite", "mysql", "remote"]

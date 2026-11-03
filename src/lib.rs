@@ -27,7 +27,7 @@
 //! # Features
 //!
 //! - `sqlite` (default) - SQLite storage backend
-//! - `mysql` - MySQL storage backend
+//! - `mysql` - implies `sqlite` and enables sqlx's MySQL driver; no MySQL store exists yet (#684)
 //! - `remote` - Remote storage via StorageClient (storage.babbage.systems)
 //! - `full` - All features enabled
 //!
