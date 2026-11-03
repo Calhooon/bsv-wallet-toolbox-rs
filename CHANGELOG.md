@@ -4,6 +4,12 @@
 
 ### Changed
 
+- #635 (CI and dependencies; no code): the architecture doc gate
+  (`tools/arch-doc-tests.sh`) lists each test binary once, not once per
+  row (345 cargo calls to 14, 63 s to 11 s on the box, the same rows
+  judged); `anyhow` moves to dev-dependencies, so a dependent no longer
+  compiles it, and the unused `tokio-test` dev-dependency is dropped
+  (`docs/census/ci-speed-2026-11-02.md`).
 - #634 (tests; no behaviour): the ten slowest tests of run 41578469987
   (583 of its 1434 test-seconds) cut: the status and utxo verdict tables
   and the ladder replays build their `Services` over clients shared under
