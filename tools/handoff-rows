@@ -19,23 +19,35 @@ marker lines of HANDOFF.md's "## Next" section.
 Two PRs that each rewrite the section conflict where they insert (the
 `git merge-tree` evidence in the #669 PR), so a PR adds its file alone and the
 section is regenerated at the captain's fold. The default check therefore lets
-a file wait for the fold:
+a file wait for the fold, within a bound (the keeper's of 2026-11-03 11:1xZ):
+more than MAX_WAITING files waiting, or the oldest waiting file's header older
+than MAX_WAIT_HOURS against now (UTC), fails, so a day without a fold reads red
+at the next PR's checks run; the fold's --write at every landing keeps it under
+the bound:
 
   tools/handoff-rows --list            # print the rows, newest at the top
   tools/handoff-rows --write           # regenerate the section from every file
   tools/handoff-rows --check           # exit 1, with the diff, when a row on the
                                        # page differs from its file, has no file,
                                        # or stands out of order; a file not yet
-                                       # on the page is named and waits
+                                       # on the page is named and waits, within
+                                       # the bound
   tools/handoff-rows --check --strict  # exit 1 as well when a file waits (the fold)
   --root DIR                           # the tree holding HANDOFF.md (default: this one)
+  --now 'YYYY-MM-DD HH:MMZ'            # the clock the bound reads (default: now, UTC)
 """
 
 import argparse
 import difflib
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# The keeper's bound on waiting row files (2026-11-03 11:1xZ): --check fails past
+# either, --strict on any waiting file.
+MAX_WAITING = 3
+MAX_WAIT_HOURS = 6
 
 ROOT = Path(__file__).resolve().parent.parent
 PAGE = "HANDOFF.md"
@@ -59,6 +71,18 @@ BULLET = re.compile(r"^- (?P<kind>\w+) \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}Z, .*?\): 
 
 class RowError(Exception):
     pass
+
+
+def parse_clock(text):
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})Z$", text)
+    if not m:
+        raise RowError(f"--now {text!r} is not 'YYYY-MM-DD HH:MMZ'")
+    return datetime.strptime(f"{m[1]} {m[2]}", "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+
+
+def age_words(delta):
+    minutes = int(delta.total_seconds() // 60)
+    return f"{minutes // 60}h{minutes % 60:02d}m"
 
 
 def read_row(path, rel):
@@ -122,7 +146,24 @@ def page_prs(section):
     return prs
 
 
-def check(root, strict):
+def bound(waiting, now):
+    """The words of each crossed bound on the waiting files; none when within."""
+    if not waiting:
+        return []
+    oldest = min(waiting, key=lambda r: r["key"])
+    age = now - parse_clock(f"{oldest['key'][0]} {oldest['key'][1]}Z")
+    files = "1 file waits" if len(waiting) == 1 else f"{len(waiting)} files wait"
+    count = (f"{files}, the oldest #{oldest['pr']} "
+             f"{age_words(max(age, timedelta(0)))} old")
+    crossed = []
+    if len(waiting) > MAX_WAITING:
+        crossed.append(f"{count}: more than {MAX_WAITING} waiting")
+    if age > timedelta(hours=MAX_WAIT_HOURS):
+        crossed.append(f"{count}: older than {MAX_WAIT_HOURS}h")
+    return crossed
+
+
+def check(root, strict, now):
     rows = read_rows(root)
     head, section, tail = split_page((root / PAGE).read_text(encoding="utf-8"))
     on_page = page_prs(section)
@@ -130,7 +171,10 @@ def check(root, strict):
     missing = [pr for pr in on_page if pr not in by_pr]
     waiting = [r for r in rows if r["pr"] not in on_page]
     want = render(rows if strict else [r for r in rows if r["pr"] in on_page])
-    ok = not missing and section == want and not (strict and waiting)
+    crossed = bound(waiting, now)
+    ok = not missing and section == want and not (strict and waiting) and not crossed
+    verdict = ("ok" if ok else "stale" if missing or section != want or (strict and waiting)
+               else "past the bound")
     for pr in missing:
         print(f"#{pr}: on the page, no file under {ROWS}/")
     for r in waiting:
@@ -139,8 +183,10 @@ def check(root, strict):
         sys.stdout.writelines(difflib.unified_diff(
             [s + "\n" for s in section], [s + "\n" for s in want],
             f"{PAGE} (the page)", f"{PAGE} (from {ROWS}/)"))
+    for words in crossed:
+        print(f"past the bound: {words}; fold now (tools/handoff-rows --write)")
     print(f"handoff rows: {len(on_page)} on the page, {len(rows)} files, "
-          f"{len(waiting)} waiting: {'ok' if ok else 'stale'}")
+          f"{len(waiting)} waiting: {verdict}")
     return 0 if ok else 1
 
 
@@ -161,6 +207,7 @@ def main():
     mode.add_argument("--check", action="store_true")
     ap.add_argument("--strict", action="store_true", help="with --check: no file may wait")
     ap.add_argument("--root", type=Path, default=ROOT)
+    ap.add_argument("--now", help="with --check: the clock the bound reads, 'YYYY-MM-DD HH:MMZ'")
     args = ap.parse_args()
     try:
         if args.list:
@@ -169,7 +216,8 @@ def main():
             return 0
         if args.write:
             return write(args.root)
-        return check(args.root, args.strict)
+        now = parse_clock(args.now) if args.now else datetime.now(timezone.utc)
+        return check(args.root, args.strict, now)
     except RowError as err:
         print(f"handoff rows: {err}")
         return 1
