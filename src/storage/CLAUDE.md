@@ -17,7 +17,7 @@ This module provides the storage layer for the wallet toolbox, defining traits f
 | Submodule | Feature Flag | Purpose |
 |-----------|--------------|---------|
 | `entities/` | Always | Database entity structs for the wallet schema (16 table types) |
-| `sqlx/` | `sqlite` or `mysql` | Local database storage using SQLx |
+| `sqlx/` | `sqlite` (`mysql` implies it and adds sqlx's MySQL driver; no MySQL store exists, #684) | Local database storage using SQLx |
 | `client/` | `remote` | Remote storage via JSON-RPC to storage.babbage.systems |
 
 ## Trait Hierarchy

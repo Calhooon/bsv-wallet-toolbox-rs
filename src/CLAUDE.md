@@ -228,7 +228,7 @@ The library re-exports commonly used types from `bsv-sdk::wallet`:
 | Feature | Description |
 |---------|-------------|
 | `sqlite` (default) | SQLite storage backend via `StorageSqlx` |
-| `mysql` | MySQL storage backend via `StorageSqlx` |
+| `mysql` | sqlx's MySQL driver enabled (the feature implies `sqlite`; no MySQL store exists, #684) |
 | `remote` | Remote storage via `StorageClient` (connects to storage.babbage.systems) |
 | `full` | All features enabled |
 
