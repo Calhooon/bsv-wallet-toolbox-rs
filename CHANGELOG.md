@@ -9,6 +9,10 @@
   under `tools/affected-tests`, the set read from `tools/docs-only`, since
   tests walk those directories; `docs/` and a `*.md` elsewhere still run
   none (`docs/census/ci-speed-2026-11-02.md`).
+- #660 (CI and build metadata; no code): the `a8_census` example declares
+  `required-features = ["sqlite"]`, so a `--no-default-features --features
+  remote` build skips it instead of failing, and the lint job's remote-only
+  clippy runs `--all-targets` as the sqlite step does.
 - #635 (CI and dependencies; no code): the architecture doc gate
   (`tools/arch-doc-tests.sh`) lists each test binary once, not once per
   row (345 cargo calls to 14, 63 s to 11 s on the box, the same rows

@@ -50,7 +50,7 @@ Each `TaskConfig` exposes: `enabled`, `interval` (Duration), `start_immediately`
 
 ## Cargo.toml Registration
 
-`basic_wallet` and `monitor_demo` are declared as `[[example]]` entries in the root `Cargo.toml`; `a8_census.rs` is found by Cargo's example discovery (no entry, so `Cargo.toml` is unchanged).
+All three are declared as `[[example]]` entries in the root `Cargo.toml`; `a8_census` carries `required-features = ["sqlite"]`, so a remote-only build (`--no-default-features --features remote`) skips it (#660).
 
 ## Notes
 
