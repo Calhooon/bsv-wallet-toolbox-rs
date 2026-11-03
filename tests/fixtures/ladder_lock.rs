@@ -210,6 +210,10 @@ async fn late_fault_msecs(company: Vec<pool::Scene>, workers: usize) -> u64 {
 /// timings remain diagnostics: a loaded runner can delay either reading
 /// without a lock wait (2587 against 2001 ms in run 40671013907, #410).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(feature = "sqlite"),
+    ignore = "runs in the sqlite Test Suite job; the services module compiles the same under both feature sets (#651)"
+)]
 async fn ladder_fixtures_server_locks_and_disposals_stay_off_runtime_workers() {
     let company: Vec<pool::Scene> = fixture_files().into_iter().map(pool::load).collect();
     let pooled = late_fault_msecs(company, WORKERS).await;

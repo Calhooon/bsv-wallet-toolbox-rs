@@ -4113,6 +4113,10 @@ mod tests {
     /// (`share_clients_on_this_thread`, #634: the builds, not the asks,
     /// took this test's 164 s on the ubuntu runner).
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "sqlite"),
+        ignore = "runs in the sqlite Test Suite job; the services module compiles the same under both feature sets (#651)"
+    )]
     async fn test_the_status_verdict_is_the_rule_over_all_81_rows_from_both_starts() {
         #[derive(Clone, Copy, Debug, PartialEq)]
         enum Says {

@@ -797,6 +797,10 @@ fn fixture_text(fixture: &Fixture) -> String {
 /// Every ladder fixture replayed: each call's result and each provider's
 /// requests by route are the fixture's `expected`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(feature = "sqlite"),
+    ignore = "runs in the sqlite Test Suite job; the services module compiles the same under both feature sets (#651)"
+)]
 async fn ladder_fixtures_replay() {
     let bless = std::env::var_os("LADDER_FIXTURES_BLESS").is_some_and(|v| v == "1");
     let files = fixture_files();

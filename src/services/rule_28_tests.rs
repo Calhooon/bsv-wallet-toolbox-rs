@@ -520,6 +520,10 @@ async fn rule_row(
 /// not look, 2P unspent. Each of the 192 asks builds its own `Services`
 /// over clients shared on this thread (`share_clients_on_this_thread`,
 /// #634: the builds took this test's 50 s on the ubuntu runner).
+#[cfg_attr(
+    not(feature = "sqlite"),
+    ignore = "runs in the sqlite Test Suite job; the services module compiles the same under both feature sets (#651)"
+)]
 #[tokio::test]
 async fn the_utxo_verdict_is_the_rule_from_every_start() {
     let _clients = crate::services::providers::http_client::share_clients_on_this_thread();
