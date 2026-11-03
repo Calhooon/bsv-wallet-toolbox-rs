@@ -282,17 +282,12 @@ mod tests {
     /// counts; an empty store is 0.
     #[tokio::test]
     async fn test_list_certificates_total_per_page_shape() {
-        async fn total(
-            storage: &StorageSqlx,
-            auth: &AuthId,
-            offset: u32,
-            limit: u32,
-        ) -> (usize, u32) {
+        async fn total(storage: &StorageSqlx, auth: &AuthId, page: (u32, u32)) -> (usize, u32) {
             let args = ListCertificatesArgs {
                 certifiers: vec![],
                 types: vec![],
-                limit: Some(limit),
-                offset: Some(offset),
+                limit: Some(page.1),
+                offset: Some(page.0),
                 privileged: None,
                 privileged_reason: None,
             };
@@ -305,7 +300,7 @@ mod tests {
         let identity_key = "c".repeat(66);
         let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
         let auth = AuthId::with_user_id(&identity_key, user.user_id);
-        assert_eq!(total(&storage, &auth, 0, 10).await, (0, 0), "empty store");
+        assert_eq!(total(&storage, &auth, (0, 10)).await, (0, 0), "empty store");
 
         let insert = "INSERT INTO certificates (user_id, type, serial_number, certifier, \
              subject, revocation_outpoint, signature, is_deleted) \
@@ -314,9 +309,9 @@ mod tests {
             let row = sqlx::query(insert).bind(user.user_id).bind(serial);
             row.execute(storage.writer()).await.unwrap();
         }
-        assert_eq!(total(&storage, &auth, 0, 2).await, (2, 3), "full page");
-        assert_eq!(total(&storage, &auth, 2, 10).await, (1, 3), "short page");
-        let past = total(&storage, &auth, 100, 10).await;
+        assert_eq!(total(&storage, &auth, (0, 2)).await, (2, 3), "full page");
+        assert_eq!(total(&storage, &auth, (2, 10)).await, (1, 3), "short page");
+        let past = total(&storage, &auth, (100, 10)).await;
         assert_eq!(past, (0, 3), "empty page past the end");
     }
 }
