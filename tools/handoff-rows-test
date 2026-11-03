@@ -5,11 +5,14 @@ The fixture (tools/fixtures/handoff-rows/) is a HANDOFF.md whose section is
 generated from three row files: #99 in 2026-10/ (a "Landed" row), #101 and
 #102 in 2026-11/ (two "Landing" rows of one morning, #101 opened later, so it
 stands above #102), and one bullet below the markers written by hand. The
-cases that read the waiting bound set the clock with --now.
+cases that read the waiting bound set the clock with --now; the --base cases
+commit the fixture as the base of a temporary git repository and add the
+change's own row file on top, as tools/docs-only-test builds its own.
 
   tools/handoff-rows-test
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -61,6 +64,22 @@ def wait(root, pr, time):
     (root / f"docs/handoff/2026-11/{pr}.md").write_text(
         f"Landing 2026-11-03 {time}Z #{pr}\n\n(#{pr - 7}: a row opened after the fold).\n",
         encoding="utf-8")
+
+
+GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+
+def commit(root, msg):
+    """Every file in root committed (the repository made at the base), its sha."""
+    def g(*a):
+        return subprocess.run(["git", *a], cwd=root, env=GIT_ENV, check=True,
+                              capture_output=True, text=True).stdout.strip()
+    if not (root / ".git").exists():
+        g("init", "-q")
+    g("add", "-A")
+    g("commit", "-q", "-m", msg)
+    return g("rev-parse", "HEAD")
 
 
 def edit(path, old, new):
@@ -174,6 +193,50 @@ with tempfile.TemporaryDirectory() as scratch:
     check("bound: a day without a fold is red", code == 1 and "24h00m old: older than 6h" in out, out)
     code, out = run(root, "--check", "--now", "2026-11-03 15")
     check("refused: a --now not in the header's shape", code == 1 and "is not 'YYYY-MM-DD HH:MMZ'" in out, out)
+
+    # The bound reads the change's base (--base): the change's own row file,
+    # not yet on the base, is named waiting and stands outside the bound.
+    root = fresh(scratch, "own-file")
+    base = commit(root, "base")
+    wait(root, 103, "09:00")
+    commit(root, "the change's row file")
+    code, out = run(root, "--check", "--base", base, "--now", "2026-11-03 16:00Z")
+    check("base: the change's own file older than six hours is green with --base, named outside the bound",
+          code == 0 and "#103: its file waits for the fold (tools/handoff-rows --write) "
+          "(this change's, outside the bound)" in out and "1 waiting: ok" in out, out)
+    code, out = run(root, "--check", "--now", "2026-11-03 16:00Z")
+    check("base: the change's own file older than six hours is red without --base",
+          code == 1 and "#103 7h00m old: older than 6h" in out, out)
+    code, out = run(root, "--check", "--base", "HEAD", "--now", "2026-11-03 16:00Z")
+    check("base: the same file on the base (a landing not yet folded) is red",
+          code == 1 and "this change's" not in out and "older than 6h" in out, out)
+
+    root = fresh(scratch, "three-landed")
+    for pr, time in ((103, "09:00"), (104, "09:10"), (105, "09:20")):
+        wait(root, pr, time)
+    base = commit(root, "base: three landed rows waiting for the fold")
+    wait(root, 106, "09:30")
+    commit(root, "the change's row file")
+    code, out = run(root, "--check", "--base", base, "--now", NOW)
+    check("base: three landed waiting files and the change's own are green with --base",
+          code == 0 and "#106: its file waits for the fold (tools/handoff-rows --write) "
+          "(this change's" in out and out.count("outside the bound") == 1
+          and "4 waiting: ok" in out, out)
+    code, out = run(root, "--check", "--base", "HEAD", "--now", NOW)
+    check("base: four landed waiting files on the base are red",
+          code == 1 and "4 files wait, the oldest #103 3h00m old: more than 3 waiting" in out, out)
+    code, out = run(root, "--check", "--base", "0" * 40, "--now", NOW)
+    check("refused: a --base that does not exist",
+          code == 1 and f"--base '{'0' * 40}' cannot be read" in out, out)
+
+    # The clock is the header time (the open time): a landed file on the base
+    # older than six hours is red with --base until the fold.
+    root = fresh(scratch, "landed-old")
+    wait(root, 103, "09:00")
+    base = commit(root, "base: a row landed after six hours open")
+    code, out = run(root, "--check", "--base", base, "--now", "2026-11-03 15:01Z")
+    check("base: a landed file on the base older than six hours is red with --base",
+          code == 1 and "1 file waits, the oldest #103 6h01m old: older than 6h" in out, out)
 
     # The file format refusals.
     def refused(name, rel, body, words):
