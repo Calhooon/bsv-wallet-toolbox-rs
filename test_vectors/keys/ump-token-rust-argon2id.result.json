@@ -1,0 +1,62 @@
+{
+  "reference": "ts-stack edf6e03",
+  "node": "v26.9.0",
+  "checks": {
+    "authenticationFlow": {
+      "got": "existing-user",
+      "want": "existing-user",
+      "ok": true
+    },
+    "rootPrimaryKey": {
+      "got": "2a2559cddcf4027c8e3b25cf9587dc86cce7fb6d765ac5b499f7c39748196aca",
+      "want": "2a2559cddcf4027c8e3b25cf9587dc86cce7fb6d765ac5b499f7c39748196aca",
+      "ok": true
+    },
+    "profileName": {
+      "got": "Rust",
+      "want": "Rust",
+      "ok": true
+    },
+    "profilePrimaryKey": {
+      "got": "0e9af5e5b0cd2aaeb8e5b38c6bc0aed3562684d8925059d1c827e6a3085024cf",
+      "want": "0e9af5e5b0cd2aaeb8e5b38c6bc0aed3562684d8925059d1c827e6a3085024cf",
+      "ok": true
+    },
+    "recoveryKey (getRecoveryKey)": {
+      "got": "328d4ef4333778f2f4da749b76ba3795225967859e137f335ecc137753524c1c",
+      "want": "328d4ef4333778f2f4da749b76ba3795225967859e137f335ecc137753524c1c",
+      "ok": true
+    },
+    "rootPrivilegedKey (password)": {
+      "got": "f5d71abe97aca9522c553e7f5f74f28821b10108eb62ac1e312bdc06adc4792e",
+      "want": "f5d71abe97aca9522c553e7f5f74f28821b10108eb62ac1e312bdc06adc4792e",
+      "ok": true
+    },
+    "passwordKdf": {
+      "got": "[\"argon2id\",7,131072,1,32]",
+      "want": "[\"argon2id\",7,131072,1,32]",
+      "ok": true
+    },
+    "currentOutpoint (no locator set)": {
+      "got": "0000000000000000000000000000000000000000000000000000000000000000.0",
+      "want": "0000000000000000000000000000000000000000000000000000000000000000.0",
+      "ok": true
+    },
+    "umpVersion": {
+      "got": 3,
+      "want": 3,
+      "ok": true
+    },
+    "rootPrimaryKey (recovery)": {
+      "got": "2a2559cddcf4027c8e3b25cf9587dc86cce7fb6d765ac5b499f7c39748196aca",
+      "want": "2a2559cddcf4027c8e3b25cf9587dc86cce7fb6d765ac5b499f7c39748196aca",
+      "ok": true
+    },
+    "wrong password refused": {
+      "got": true,
+      "want": true,
+      "ok": true
+    }
+  },
+  "allOk": true
+}
