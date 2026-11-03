@@ -79,6 +79,10 @@ unicode-normalization = "0.1"
 # Cryptography for PBKDF2 (CWI manager)
 ring = "0.17"
 
+# Argon2id (version 0x13), the reference's password KDF for UMP tokens (#593);
+# no default features: the caller's memory, zeroed by the caller
+argon2 = { version = "=0.5.3", default-features = false, features = ["zeroize"] }
+
 # Zeroization of sensitive key material on drop
 zeroize = "1.8"
 
@@ -90,6 +94,14 @@ tokio-test = "0.4"
 tempfile = "3"
 mockito = "1.4"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+# A UMP token's argon2id at the reference's default (128 MiB, 7 passes) takes
+# tens of seconds unoptimised; the tests derive it.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [[bench]]
 name = "door"
