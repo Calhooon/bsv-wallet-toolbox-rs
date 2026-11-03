@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Prove every test named in the invariants tables of docs/ARCHITECTURE.md
-# (and docs/architecture/*.md when present) exists: `cargo test ... <name>
-# -- --list` shows one test whose path ends in the name (a lib test is
-# listed with its module path, so `--exact` would miss it). A row whose
+# (and docs/architecture/*.md when present) exists: the binary's
+# `cargo test ... -- --list` shows one test whose path ends in the name (a lib
+# test is listed with its module path, so `--exact` would miss it). Each
+# binary is listed once and every row naming it is matched against that list
+# (#635: one cargo call per row took 63s for 345 rows, 14 binaries). A row whose
 # test column is `(no test)` is counted and skipped. Exit 1 when a named
 # test is missing or more than one test ends in the name.
 #
@@ -29,6 +31,8 @@ docs="docs/ARCHITECTURE.md"
 [ -d docs/architecture ] && docs="$docs $(ls docs/architecture/*.md 2>/dev/null)"
 
 rows=0; tested=0; untested=0; failed=0
+lists=$(mktemp -d)
+trap 'rm -rf "$lists"' EXIT
 while IFS= read -r line; do
   rows=$((rows + 1))
   cell="${line##*|}"                 # the text after the last pipe is empty
@@ -42,13 +46,14 @@ while IFS= read -r line; do
     echo "NO NAME: $line"; failed=$((failed + 1)); continue
   fi
   tested=$((tested + 1))
-  if [ -n "$file" ]; then cmd="cargo test --test $file$test_features $name -- --list"
-  else cmd="cargo test --lib$lib_features $name -- --list"; fi
-  if [ "$dry" = 1 ]; then echo "$cmd"; continue; fi
-  out=$($cmd 2>/dev/null | grep -E "(^|::)$name: test\$")
+  if [ -n "$file" ]; then cmd="cargo test --test $file$test_features -- --list"; list="$lists/test-$file"
+  else cmd="cargo test --lib$lib_features -- --list"; list="$lists/lib"; fi
+  if [ "$dry" = 1 ]; then echo "$cmd $name"; continue; fi
+  [ -f "$list" ] || { $cmd 2>/dev/null > "$list"; }   # a failed build lists nothing: its rows fail
+  out=$(grep -E "(^|::)$name: test\$" "$list")
   n=$(printf '%s\n' "$out" | grep -c ': test$')
-  if [ "$n" = 1 ]; then echo "ok   $cmd -> $out"
-  else echo "FAIL $cmd -> $n matches"; failed=$((failed + 1)); fi
+  if [ "$n" = 1 ]; then echo "ok   $cmd $name -> $out"
+  else echo "FAIL $cmd $name -> $n matches"; failed=$((failed + 1)); fi
 done < <(awk '
   /^\| invariant \| charter \| test \|/ { table = 1; next }
   table && /^\|---/ { next }
