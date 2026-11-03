@@ -555,6 +555,13 @@ jobs:
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: python3 tools/ignore-sites-test
 
+      # The fuzz seeder's held set (#723): the three-write case and the set read
+      # from disk, on a scratch corpus; python alone, seconds.
+      - name: seeder, the held set's own cases
+        id: seeder-cases
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
+        run: python3 -m unittest fuzz/seed_corpus_test.py
+
       # HANDOFF.md's landing rows (#669): a file per PR under docs/handoff/,
       # the Next section generated from them. A row on the page that differs
       # from its file, has none, or stands out of order fails; a file not yet
@@ -637,6 +644,7 @@ jobs:
             ${{ steps.affected-cases.outcome }} affected tests: the map's own cases
             ${{ steps.docs-only-cases.outcome }} docs only: the set's own cases
             ${{ steps.ignore-sites-cases.outcome }} ignore sites: the guard's own cases
+            ${{ steps.seeder-cases.outcome }} seeder: the held set's own cases
             ${{ steps.handoff-cases.outcome }} handoff rows: the tool's own cases
             ${{ steps.handoff.outcome }} handoff rows: the page matches its files
             ${{ steps.vector-files.outcome }} vectors: the vector files are present
