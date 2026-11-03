@@ -4,6 +4,13 @@
 
 ### Changed
 
+- #632 (CI; no code): a PR or a merge-queue group whose every changed
+  path is a doc (`docs/` and every `*.md`, less the documents a gate
+  reads and a `*.md` under `tests/`, `fuzz/`, `test_vectors/`, `tools/`
+  or `.github/`) skips every step after each job's docs-only step
+  (`tools/docs-only`, its cases a `checks` gate), so the five required
+  jobs report green in seconds; a push and a tag's call run everything
+  (`docs/census/ci-speed-2026-11-02.md`).
 - #614 and #618 (CI; no code): the workflow runs on beta's merge
   queue (`merge_group`), every required context reporting there, semver
   judging a group against its parent with its PR's `api-break` label;
