@@ -14,6 +14,7 @@ BHS rung answers the same header in all of them) would otherwise add a file on
 every fresh seeding and leave the committed corpus behind the script (#582).
 """
 
+import collections
 import glob
 import hashlib
 import json
@@ -42,17 +43,20 @@ MEMORY_WORD = {
     "REJECTED": "rejected",
     "DOUBLE_SPEND_ATTEMPTED": "rejected",
 }
-# The digests of each target's corpus, read once per target.
+# The digests of each target's corpus, read once per target, with the number of
+# files holding each: an overwrite takes the old file's digest out (#713).
 HELD = {}
+
+
+def digest_of(path):
+    return hashlib.sha1(open(path, "rb").read()).digest()
 
 
 def held(target):
     if target not in HELD:
         directory = os.path.join(CORPUS, target)
         os.makedirs(directory, exist_ok=True)
-        HELD[target] = {
-            hashlib.sha1(open(os.path.join(directory, n), "rb").read()).digest() for n in os.listdir(directory)
-        }
+        HELD[target] = collections.Counter(digest_of(os.path.join(directory, n)) for n in os.listdir(directory))
     return HELD[target]
 
 
@@ -61,11 +65,16 @@ def write(target, name, data):
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
     path = os.path.join(CORPUS, target, safe)
     digest = hashlib.sha1(data).digest()
-    if digest in digests and not os.path.exists(path):
+    if os.path.exists(path):
+        old = digest_of(path)
+        digests[old] -= 1
+        if not digests[old]:
+            del digests[old]
+    elif digest in digests:
         return
     with open(path, "wb") as f:
         f.write(data)
-    digests.add(digest)
+    digests[digest] += 1
 
 
 def rel(path):
