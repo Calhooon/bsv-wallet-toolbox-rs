@@ -132,6 +132,7 @@ GitHub Actions (`.github/workflows/ci.yml`), on a pull request, a push to `main`
 - **checks:** `scoreboard`, the affected-tests map's cases (`tools/affected-tests-test`, #618), `vectors`, `fixtures` (`--locked`) and Documentation (`-Dwarnings`), each its own step, the same gate table (#617)
 - **semver:** its own job, the one with `pull-requests: read`; never on a tag; on `merge_group` it reads the PR number from the group's head ref (`gh-readonly-queue/beta/pr-<n>-<sha>`), that PR's label live, and checks against the group's parent (#614). Beta's five required contexts are these five job names
 - The build: `Swatinem/rust-cache` keyed on the resolved lock, rustc and the `CARGO*`/`RUST*` env, one `shared-key` per job, saved by a push to a line; `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_INCREMENTAL=0` in the workflow env. semver reads the `api-break` label live, so the trigger has no `labeled` type (`docs/census/ci-speed-2026-11-02.md`)
+- **A docs-only PR** (`docs/` and any `*.md`, except `docs/ARCHITECTURE.md`, `docs/architecture/`, `docs/NORTH-STAR.md` and a `*.md` under `tests/`, `fuzz/`, `test_vectors/`, `tools/` or `.github/`, which gates read or tests walk) exits every required job green in seconds: a `scope` step (`tools/docs-only`, its cases in `tools/docs-only-test`, #632) at the head of each of the five jobs, every later step conditioned on it; a pull request is judged against `HEAD^1`, a merge group against `merge_group.base_sha`; a push or a tag's call never short-circuits
 
 ## Cross-SDK Parity
 
