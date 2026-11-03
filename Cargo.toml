@@ -90,7 +90,6 @@ futures-util = "0.3"
 futures = "0.3"
 
 [dev-dependencies]
-tokio-test = "0.4"
 tempfile = "3"
 mockito = "1.4"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
