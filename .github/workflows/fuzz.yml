@@ -26,6 +26,12 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
+      # The fleet's runner cap (the keeper's revised line of 2026-11-03 10:0xZ on
+      # the #638 occupancy read): a heavy run holds at most six of the account's
+      # twenty runners, and a dispatch of thirteen targets is a heavy run by its
+      # job count whatever its length. Six at a time; a dispatch takes the
+      # toolbox's 16:00Z slot and never overlaps another repository's heavy run.
+      max-parallel: 6
       matrix:
         target:
           - beef_door

@@ -33,7 +33,7 @@ jobs:
       # line of 2026-11-03 10:0xZ): the account's twenty runners are one pool
       # across its repositories and sit at twenty in 22 of 24 hours, so a heavy
       # run holds at most six of them until the next read shows the non-heavy
-      # p95 under ten. The sixteen shards here run four at a time, which beside
+      # p95 under ten concurrent jobs. The sixteen shards run four at a time, beside
       # the two doors shards below makes the six at the peak. A dispatch takes
       # the toolbox's slot, 16:00Z (a measured light hour), and never overlaps
       # another repository's heavy run (bsv-rs 07:00Z, the CLI 17:30Z). The
