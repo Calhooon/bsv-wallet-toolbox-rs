@@ -286,7 +286,7 @@ jobs:
       # the numbers depend on the clippy version, so an unpinned toolchain makes
       # the ratchet drift and go red on every stable release; the pin is the
       # measurement's instrument, not a dependency pin. A mismatch fails with
-      # "re-record the baseline with toolchain X"; move the pin (the first
+      # "re-record the baseline with toolchain X"; move the pin (the earlier
       # install step above and RUSTUP_TOOLCHAIN here) and the baseline in one PR.
       # The script drops RUSTFLAGS from cargo's environment: it counts warnings,
       # and the workflow's -Dwarnings would stop the build at any one of them.
