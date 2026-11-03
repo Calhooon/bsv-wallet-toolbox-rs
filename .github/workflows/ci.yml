@@ -230,6 +230,21 @@ jobs:
         if: ${{ steps.affected.outputs.doc_run == 'true' && steps.scope.outputs.docs_only != 'true' }}
         run: cargo test --doc --features sqlite,remote,bench-support
 
+      # No test confined to the sqlite builds by `cfg_attr(not(feature =
+      # "sqlite"), ignore)` is ignored or compiled out here too, where it must
+      # run (#651, #656; tools/ignore-sites, its cases in the checks job). The
+      # lists come from the two builds above and compile nothing; seconds.
+      - name: ignore sites, every sqlite-confined test runs in this job
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
+        run: |
+          list() {
+            cargo test --lib --features sqlite,remote -- --list "$@"
+            cargo test --test '*' --features sqlite,remote,bench-support -- --list "$@"
+          }
+          list > "$RUNNER_TEMP/tests.txt"
+          list --ignored > "$RUNNER_TEMP/ignored.txt"
+          python3 tools/ignore-sites --job sqlite --all "$RUNNER_TEMP/tests.txt" --ignored "$RUNNER_TEMP/ignored.txt"
+
   # The unit tests and every suite under tests/ with `remote` alone: a test
   # needing a SQL store carries its feature gate (#429). The run takes well
   # under a minute past its build, so it runs rather than only builds. Its own
@@ -297,6 +312,17 @@ jobs:
           FILTER: ${{ steps.affected.outputs.remote_filter }}
           # Two replays for a ladder scene a runner stall failed (#513); one locally.
           LADDER_FIXTURES_STALL_REPLAYS: "2"
+
+      # As the Test Suite's step, for the symmetric sites: a test confined to
+      # this job by `cfg_attr(feature = "sqlite", ignore)` runs here (none yet;
+      # the step costs seconds and holds the next one to it).
+      - name: ignore sites, every remote-only-confined test runs in this job
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
+        run: |
+          list() { cargo test --lib --tests --no-default-features --features remote -- --list "$@"; }
+          list > "$RUNNER_TEMP/tests.txt"
+          list --ignored > "$RUNNER_TEMP/ignored.txt"
+          python3 tools/ignore-sites --job remote --all "$RUNNER_TEMP/tests.txt" --ignored "$RUNNER_TEMP/ignored.txt"
 
   # The static gates in one job (#617), so a PR run holds one queue slot for
   # them rather than five: Rustfmt, the one-bsv-rs-per-lock rule and the
@@ -516,6 +542,15 @@ jobs:
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: python3 tools/docs-only-test
 
+      # The ignore-sites guard's cases (#656): each job's sites by their full
+      # module path through #[path] and inline mods, a dead site sharing a
+      # running test's name. The two Test Suite jobs run the guard; this gate
+      # checks it.
+      - name: ignore sites, the guard's own cases
+        id: ignore-sites-cases
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
+        run: python3 tools/ignore-sites-test
+
       # HANDOFF.md's landing rows (#669): a file per PR under docs/handoff/,
       # the Next section generated from them. A row on the page that differs
       # from its file, has none, or stands out of order fails; a file not yet
@@ -589,6 +624,7 @@ jobs:
             ${{ steps.scoreboard.outcome }} scoreboard: the table matches its sources
             ${{ steps.affected-cases.outcome }} affected tests: the map's own cases
             ${{ steps.docs-only-cases.outcome }} docs only: the set's own cases
+            ${{ steps.ignore-sites-cases.outcome }} ignore sites: the guard's own cases
             ${{ steps.handoff-cases.outcome }} handoff rows: the tool's own cases
             ${{ steps.handoff.outcome }} handoff rows: the page matches its files
             ${{ steps.vector-files.outcome }} vectors: the vector files are present
