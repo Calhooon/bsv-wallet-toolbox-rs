@@ -10,6 +10,15 @@
   name every red one in the job summary; semver stays its own job, its
   cache and the ratchet's on rust-cache; beta's required contexts become
   the five job names (`docs/census/ci-speed-2026-11-02.md`).
+- #624: the CWI manager's password KDF runs on
+  `tokio::task::spawn_blocking`. Since #593 an argon2id derivation at the
+  reference's defaults (128 MiB, 7 passes, about 330 ms optimised) ran
+  inline in `create_profile`, `switch_profile` and `recovery_key`,
+  holding a tokio worker for its length and stalling a `current_thread`
+  runtime whole; each now derives on the blocking pool over a zeroed
+  copy of the password, the key back zeroed on drop, and a failed task
+  is `Error::Internal`. The unlock's order (derive, build, write) and
+  every method's signature are unchanged.
 - #612 (CI; no code): the Test Suite's dependency build is cached by
   rust-cache on the resolved lock, the toolchain and the feature set,
   built without debuginfo or incremental state and run through
