@@ -175,7 +175,7 @@ An earlier round with the writer's ceiling planted at 1 ms failed the busy door 
 
 ### The census inputs back: sha2 and hex at opt-level 3 (#652)
 
-The owner's word of 2026-11-03 through the keeper ("yes to both"): `[profile.dev.package.sha2]` and `[profile.dev.package.hex]` at `opt-level = 3`, the shape of #593's `argon2` and `blake2`, and `CENSUS_MEGABYTES` back to `[1, 4, 10]`, its value before #634. Base `f2d64eb7`.
+The owner's word of 2026-11-03 through the keeper ("yes to both"): `[profile.dev.package.sha2]` and `[profile.dev.package.hex]` at `opt-level = 3`, the shape of #593's `argon2` and `blake2`, and `CENSUS_MEGABYTES` back to `[1, 4, 10]`, its value before #634. Base `42b7a222` (the measurements taken at f2d64eb7, one handoff-row commit below it).
 
 The crates by evidence: macOS `sample` of a census test in a debug build at the 1, 4 and 10 MB input, the busy samples (idle waits dropped) by the crate each frame was compiled in [X]. Before the override, `sha2` held 90.2% of the census BEEFs read and 70.3% of the census creates (`bsv_rs` 7.4%, `hex` 4.1%, the toolbox 2.6 to 4.1%): the read hashes every transaction it carries. With `sha2` optimised, the census internalizes held `bsv_rs` 39.1%, `hex` 25.5%, `core` 14.6% and `sha2` 2.1%; the `hex` frames are `hex::encode` called from the tests' `stored_rows` (the stored-row comparison hexes each raw row), its `String` instance compiled in `bsv_rs`'s code under a debug build's shared generics. `hex` at opt-level 3 cut the internalizes from 3.28 s to 2.24 s and the creates from 1.39 s to 1.09 s; `bsv-rs` at opt-level 3 on top moved no figure (2.27 s and 1.18 s), so it stays at the dev level, as does the toolbox's own code: no `[profile.dev]` or `[profile.test]` change.
 
