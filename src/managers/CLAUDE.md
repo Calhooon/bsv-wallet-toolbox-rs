@@ -369,10 +369,14 @@ Full BRC-98/99 permission enforcement with four categories, in-memory caching, a
 Each `ensure_*` method follows the same pattern:
 1. **Admin bypass** - Admin originator always allowed
 2. **Level/reserved check** - Security level 0 bypasses protocol checks; admin-reserved names blocked; a level-1 protocol's counterparty is dropped (the reference's `WalletPermissionsManager.ts:1505`), so its grant and prompt name none (#581)
-3. **Config flag bypass** - Per-usage-type config flags can disable specific checks
+3. **Config flag bypass** - Per-usage-type config flags can disable specific checks; for a protocol, an everyday call (privileged reads as everyday without `differentiate_privileged_operations`) whose counterparty is whitelisted for the protocol's name is admitted with no prompt (the reference's `WalletPermissionsManager.ts:1516`, #725; level 1 names no counterparty, so it never matches)
 4. **Cache check** - In-memory cache with 5-minute TTL (`CACHE_TTL_SECS`)
 5. **Permission request flow** - Invokes `PermissionRequestHandler` callback for user consent
 6. **Cache result** - Granted permissions are cached for subsequent calls
+
+### Whitelisted Counterparties
+
+`WalletPermissionsManager::new(...).with_whitelisted_counterparties(map)` takes a `HashMap<String, Vec<String>>`, a counterparty identity key's hex to protocol names, the reference's `whitelistedCounterparties` (`WalletPermissionsManager.ts:581-586`, #725). It is a builder method returning `Self`, not a field on `WalletPermissionsManagerConfig`: the config is a constructible public struct, and a field added to it is a MAJOR change to `cargo semver-checks` (#631's `with_kdf_in_flight` shape). The key matches as passed, lowercased or uppercased; `self`, `anyone` and none never match; the protocol name compares case-blind (`:5731-5742`). Empty by default.
 
 ### Permission Request Handler
 
