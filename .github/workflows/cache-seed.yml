@@ -3,10 +3,18 @@ name: Cache seed
 # Why this file exists (#642): beta lands through GitHub's merge queue, and a
 # merge_group run restores caches only from its own ref and the default branch.
 # The default branch is main, and nothing on main saves the Test Suite's caches,
-# so every queue run built cold. This workflow runs on main (a schedule runs
-# from the default branch's workflow file alone), checks out beta and builds the
-# two Test Suite feature sets under rust-cache with beta's exact keys, so the
-# save lands under main's scope and every queue run restores it warm.
+# so every queue run built cold. This workflow lives on main (the scope a queue
+# run reads), runs on a push to main and on dispatch, checks out beta and builds
+# the two Test Suite feature sets under rust-cache with beta's exact keys, so
+# the save lands under main's scope. A queue run restores it exactly while
+# beta's lock and the stable toolchain stand where the seed found them, and by
+# prefix (rust-cache's fallback: the key minus the lock hash, which the CLI's
+# queue runs showed as `full match: false` on a still mostly warm target/) once
+# the lock has moved; a stable release or a change to beta's keyed inputs leaves
+# the queue cold until the next dispatch. Beta's ci.yml saves no cache on
+# merge_group (its save-if names push alone), so the queue's own refs never
+# fill the store, and this seed is the only writer under main's scope for
+# these keys.
 #
 # What it mirrors: beta's .github/workflows/ci.yml, jobs `test` (Test Suite)
 # and `test-remote` (Test Suite (remote only)). rust-cache's key is its prefix,
@@ -25,15 +33,17 @@ name: Cache seed
 # `test-remote`), which fill target/. No test runs here.
 #
 # Each job asks before the build whether main's scope already holds the exact key
-# (`lookup-only`); on a hit it skips the build, so a quiet day costs seconds and
-# a lock or toolchain change costs one build. Two jobs in parallel, one per
+# (`lookup-only`); on a hit it skips the build, so a needless run costs seconds
+# and a lock or toolchain change costs one build. Two jobs in parallel, one per
 # feature set, as beta's: two slots at most, each with its own target/, so
 # neither save carries the other feature set's artifacts.
 on:
-  # The toolbox's slot in the fleet's stagger: bsv-rs 00:00Z, the CLI 03:00Z,
-  # the toolbox 06:00Z.
-  schedule:
-    - cron: "0 6 * * *"
+  # A push to main renews the seed when main moves; a dispatch by hand renews
+  # it after a stable release or a change to beta's keyed inputs (the lookup
+  # makes a needless dispatch cost seconds). No schedule: the owner's word on
+  # idle jobs, and the CLI's #486 shape, the keeper's reading of 2026-11-03.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
