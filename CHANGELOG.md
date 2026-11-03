@@ -4,6 +4,17 @@
 
 ### Changed
 
+- #659 (manifest and two `use` sites; no behaviour change): the direct
+  dependency on `futures-util` is removed from `Cargo.toml`; its two uses in
+  `src/services/providers/arcade.rs` (`StreamExt`, `stream::iter`) read the
+  same items through `futures`, already a dependency. The resolved set is
+  unchanged: `cargo tree -e normal` before and after is identical (226
+  packages; `futures-util` stays through `futures`, `reqwest`, `sqlx` and
+  `tower`), the feature view loses only the `default` umbrella the removed
+  edge requested while each feature it expands to stays enabled by the
+  other dependents, and the direct edges go from 23 to 22 (the keeper's
+  reading of 2026-11-03 12:0xZ: a removal that leaves the resolved set
+  unchanged is the captain's hand).
 - #669 (tools and docs; no code): HANDOFF.md's landing rows are a file
   per PR, `docs/handoff/<yyyy-mm>/<pr>.md` (the 25 rows of 2026-11-01 to
   2026-11-03 moved verbatim; the #538 "Landed" bullet, which has no kind
