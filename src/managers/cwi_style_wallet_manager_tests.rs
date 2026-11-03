@@ -607,6 +607,41 @@ async fn a_hard_link_sibling_is_unlinked_and_its_target_untouched() {
     assert!(!link.exists(), "the sibling's name is gone");
 }
 
+type SiblingHook = Box<dyn FnOnce(&Path)>;
+
+// Per thread, so a witness links its own sibling while other tests open key files.
+thread_local! {
+    static AFTER_OPEN: std::cell::Cell<Option<SiblingHook>> = const { std::cell::Cell::new(None) };
+}
+
+/// The cleanup's seam (#616): this thread's hook, once, between a sibling's open and fstat.
+pub(super) fn after_sibling_open(sibling: &Path) {
+    AFTER_OPEN.with(|hook| hook.take().map(|hook| hook(sibling)));
+}
+
+/// A sibling of one link at the scan's read, hard-linked to an outside file
+/// after the open and before the fstat, is unlinked unzeroed: the outside
+/// file is byte-identical (#616; the second link-count check of #609).
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_made_after_the_sibling_open_is_unlinked_unzeroed() {
+    let (_, _, v1, _) = v1_parts();
+    let (scratch, outside) = (scratch_file("o.keys", &v1), scratch_file("outside", b""));
+    std::fs::remove_file(&outside.0).unwrap();
+    let stale = scratch.0.with_file_name("o.keys.tmp-0123456789abcdef");
+    std::fs::write(&stale, b"not the manager's to zero").unwrap();
+    let target = outside.0.clone();
+    let link: SiblingHook = Box::new(move |s| std::fs::hard_link(s, &target).unwrap());
+    AFTER_OPEN.with(|hook| hook.set(Some(link)));
+    let (m, _) = manager();
+    m.open_key_file(&scratch.0).await.unwrap();
+    assert_eq!(
+        std::fs::read(&outside.0).unwrap(),
+        b"not the manager's to zero"
+    );
+    assert!(!stale.exists(), "the sibling's name is gone");
+}
+
 /// A planted sibling of the write's shape the process cannot open for write
 /// (mode 0400, as another uid's leftover would be) is unlinked unzeroed and
 /// the open proceeds (#609).

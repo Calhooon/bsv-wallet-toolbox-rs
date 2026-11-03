@@ -195,6 +195,8 @@ async fn remove_stale_siblings(path: &Path) -> Result<()> {
         let mut open = tokio::fs::OpenOptions::new();
         if meta.is_file() && sole(&meta) {
             if let Ok(mut file) = open.write(true).open(item.path()).await {
+                #[cfg(test)]
+                tests::after_sibling_open(&item.path());
                 let opened = file.metadata().await?;
                 if !same_file(&meta, &opened) {
                     continue;
