@@ -216,7 +216,7 @@
       "serviceCalls": []
     },
     {
-      "result": {"ok":{"outputs":[],"totalOutputs":99}},
+      "result": {"ok":{"outputs":[],"totalOutputs":3}},
       "rows": {
         "broadcast_prefs": [],
         "broadcast_seen": [],
