@@ -94,6 +94,9 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #723: `fuzz/seed_corpus_test.py`, the seeder's check file: the
+  three-write case of #713's held set (PR #722) on a scratch corpus, run in
+  CI's checks job. The committed corpus is unchanged.
 
 - #684: the `mysql` feature now implies `sqlite` (`mysql = ["sqlite",
   "sqlx/mysql"]`). `StorageSqlx` is SQLite-typed throughout and no MySQL
