@@ -172,7 +172,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !baskets.is_empty() {
                 let size = estimate_size(&baskets);
-                state.add_items(baskets.len() as u32, size);
+                state.add_items(len_u32(baskets.len()), size);
                 chunk.output_baskets = Some(baskets);
             }
         }
@@ -191,7 +191,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !proven_txs.is_empty() {
                 let size = estimate_size(&proven_txs);
-                state.add_items(proven_txs.len() as u32, size);
+                state.add_items(len_u32(proven_txs.len()), size);
                 chunk.proven_txs = Some(proven_txs);
             }
         }
@@ -210,7 +210,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !reqs.is_empty() {
                 let size = estimate_size(&reqs);
-                state.add_items(reqs.len() as u32, size);
+                state.add_items(len_u32(reqs.len()), size);
                 chunk.proven_tx_reqs = Some(reqs);
             }
         }
@@ -229,7 +229,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !labels.is_empty() {
                 let size = estimate_size(&labels);
-                state.add_items(labels.len() as u32, size);
+                state.add_items(len_u32(labels.len()), size);
                 chunk.tx_labels = Some(labels);
             }
         }
@@ -248,7 +248,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !tags.is_empty() {
                 let size = estimate_size(&tags);
-                state.add_items(tags.len() as u32, size);
+                state.add_items(len_u32(tags.len()), size);
                 chunk.output_tags = Some(tags);
             }
         }
@@ -267,7 +267,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !txs.is_empty() {
                 let size = estimate_size(&txs);
-                state.add_items(txs.len() as u32, size);
+                state.add_items(len_u32(txs.len()), size);
                 chunk.transactions = Some(txs);
             }
         }
@@ -286,7 +286,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !outputs.is_empty() {
                 let size = estimate_size(&outputs);
-                state.add_items(outputs.len() as u32, size);
+                state.add_items(len_u32(outputs.len()), size);
                 chunk.outputs = Some(outputs);
             }
         }
@@ -305,7 +305,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !maps.is_empty() {
                 let size = estimate_size(&maps);
-                state.add_items(maps.len() as u32, size);
+                state.add_items(len_u32(maps.len()), size);
                 chunk.tx_label_maps = Some(maps);
             }
         }
@@ -324,7 +324,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !maps.is_empty() {
                 let size = estimate_size(&maps);
-                state.add_items(maps.len() as u32, size);
+                state.add_items(len_u32(maps.len()), size);
                 chunk.output_tag_maps = Some(maps);
             }
         }
@@ -343,7 +343,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !certs.is_empty() {
                 let size = estimate_size(&certs);
-                state.add_items(certs.len() as u32, size);
+                state.add_items(len_u32(certs.len()), size);
                 chunk.certificates = Some(certs);
             }
         }
@@ -362,7 +362,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !fields.is_empty() {
                 let size = estimate_size(&fields);
-                state.add_items(fields.len() as u32, size);
+                state.add_items(len_u32(fields.len()), size);
                 chunk.certificate_fields = Some(fields);
             }
         }
@@ -381,7 +381,7 @@ pub async fn get_sync_chunk_internal(
             .await?;
             if !commissions.is_empty() {
                 let size = estimate_size(&commissions);
-                state.add_items(commissions.len() as u32, size);
+                state.add_items(len_u32(commissions.len()), size);
                 chunk.commissions = Some(commissions);
             }
         }
@@ -723,8 +723,15 @@ pub async fn process_sync_chunk_internal(
 
 fn estimate_size<T: Serialize>(items: &[T]) -> u32 {
     serde_json::to_string(items)
-        .map(|s| s.len() as u32)
+        .map(|s| len_u32(s.len()))
         .unwrap_or(0)
+}
+
+// A length into the chunk's `u32` sums saturates (#735): past `u32::MAX` an
+// `as u32` wrapped small, so a chunk that large read as having room; held at
+// the bound it keeps `can_add` false, as `add_items` does for the sums (#711).
+fn len_u32(len: usize) -> u32 {
+    u32::try_from(len).unwrap_or(u32::MAX)
 }
 
 fn update_max_updated_at(max: &mut Option<DateTime<Utc>>, updated_at: DateTime<Utc>) {
