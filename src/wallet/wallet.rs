@@ -654,7 +654,9 @@ where
     /// (ts-stack@edf6e03 `WalletPermissionsManager.ts:5165-5384`), so a
     /// privileged key call needs a privileged grant when the manager
     /// differentiates them; the counterparty is `self`, `anyone` or the key's
-    /// hex (#581).
+    /// hex (#581). `seek_permission` is the request's where the reference
+    /// passes it (`get_public_key` alone, #720), else `true`.
+    #[allow(clippy::too_many_arguments)]
     async fn check_protocol_permission(
         &self,
         originator: Option<&str>,
@@ -663,6 +665,7 @@ where
         counterparty: Option<&Counterparty>,
         reason: Option<&str>,
         usage_type: crate::managers::PermissionUsageType,
+        seek_permission: bool,
     ) -> Result<()> {
         let originator = originator.unwrap_or_default();
         let counterparty = match counterparty {
@@ -671,9 +674,10 @@ where
             Some(Counterparty::Other(key)) => key.to_hex(),
         };
         if let Some(ref pm) = self.permissions_manager {
-            pm.ensure_protocol_permission(
+            pm.ensure_protocol_permission_seeking(
                 originator,
                 privileged,
+                seek_permission,
                 protocol,
                 Some(&counterparty),
                 reason,
@@ -1814,9 +1818,23 @@ where
 
 // The BRC-98/99 protocol check a key call asks: the request's `privileged`,
 // counterparty and `privileged_reason`, as the reference's
-// `ensureProtocolPermission` takes them (#581).
+// `ensureProtocolPermission` takes them (#581); `seek` passes the request's
+// `seek_permission` where the reference does (`getPublicKey` alone, #720).
 macro_rules! key_permission {
     ($wallet:expr, $originator:expr, $args:expr, $protocol:expr, $usage:ident) => {
+        key_permission!($wallet, $originator, $args, $protocol, $usage, true)
+    };
+    ($wallet:expr, $originator:expr, $args:expr, $protocol:expr, $usage:ident, seek) => {
+        key_permission!(
+            $wallet,
+            $originator,
+            $args,
+            $protocol,
+            $usage,
+            $args.seek_permission != Some(false)
+        )
+    };
+    ($wallet:expr, $originator:expr, $args:expr, $protocol:expr, $usage:ident, $seek:expr) => {
         $wallet.check_protocol_permission(
             $originator,
             $args.privileged == Some(true),
@@ -1824,6 +1842,7 @@ macro_rules! key_permission {
             $args.counterparty.as_ref(),
             $args.privileged_reason.as_deref(),
             crate::managers::PermissionUsageType::$usage,
+            $seek,
         )
     };
 }
@@ -1847,7 +1866,7 @@ where
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for public key revelation
         if let Some(ref protocol_id) = args.protocol_id {
-            key_permission!(self, originator, args, protocol_id, PublicKey).await?;
+            key_permission!(self, originator, args, protocol_id, PublicKey, seek).await?;
         }
         // The identity key asks the level-1 protocol `identity key
         // retrieval` for `self`, as the reference does (ts-stack@edf6e03
@@ -1861,6 +1880,7 @@ where
                 Some(&Counterparty::Self_),
                 args.privileged_reason.as_deref(),
                 crate::managers::PermissionUsageType::IdentityKey,
+                args.seek_permission != Some(false),
             )
             .await?;
         }
