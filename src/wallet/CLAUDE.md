@@ -57,6 +57,7 @@ from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
 |---|---|---|---|
 | `ValidationError(detail)` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Validation error: {detail}` |
 | Direct acquire proof (`ValidationError`, #374) | `InvalidParameter` | `WERR_INVALID_PARAMETER` (`Wallet.ts:716-728`) | `Validation error: The args parameter must be valid encrypted and signed certificate and keyring from revealer. WERR_UNKNOWN: <message>` |
+| List limit (`ValidationError`, #226) | `InvalidParameter` | `WERR_INVALID_PARAMETER` (`validationHelpers.ts:306-324`) | `Validation error: The limit parameter must be at least 1 length.` or `Validation error: The limit parameter must be no more than 10000 length.` |
 | `InvalidArgument(detail)` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Invalid argument: {detail}` |
 | `InvalidBeef { offset, kind }` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `Invalid BEEF at byte {offset}: {kind:?}` |
 | `SpendRefused { offset, txid, input, why }` | `InvalidParameter` | `WERR_INVALID_PARAMETER` | `spend refused at offset {offset}, input {input or none} of {txid}: {why}` |
@@ -921,6 +922,32 @@ Malformed hostnames and ports use
 The storage client's BRC-31 peer passes a fixed internal originator,
 `Some("bsv-wallet-toolbox")`.
 
+## List limit validation (#226)
+
+`list_actions`, `list_outputs` and `list_certificates` check `limit` as
+`validateInteger(args.limit, 'limit', 10, 1, 10000)` does
+(`ts-stack@edf6e03` `validationHelpers.ts:306-324`, called at 1708, 1647
+and 1199), after the originator and before the storage call
+(`validate_list_limit`): `Some(0)` is refused with
+`The limit parameter must be at least 1 length.` and a value past 10000
+with `The limit parameter must be no more than 10000 length.`, each inside
+`Validation error: `, class `InvalidParameter`. `None` passes and storage
+reads it as 10. `list_outputs` checks after its basket permission, as the
+reference's permissions manager asks before the wallet validates
+(`WalletPermissionsManager.ts:5101-5105`). Before #226 the storage clamped a
+larger limit to 10000 and ran `LIMIT 0` for 0, answering an empty page; the
+storage now passes the limit through, as the reference's does
+(`listActionsKnex.ts:102`, `listOutputsKnex.ts:254`, `listCertificates.ts:14`).
+The door's check runs ahead of the storage's array bounds (#309), so a
+request with both an out-of-range limit and an array past its bound is
+answered the limit's text, where the reference answers the array's (1637,
+1691, 1195 run before 1647, 1708, 1199).
+
+No offset is refused: `listOutputs`' offset line (1648) carries no minimum,
+since BRC-100's reverse paging reads `-1` as the newest output
+(`wallet/0100.md:911`), and the other two offsets are `u32` in bsv-rs.
+Witnesses: `wallet::tests::list_limit_226`.
+
 ## Implementation Notes
 
 ### Discovery trust
@@ -1020,6 +1047,7 @@ Internal helper functions in `wallet.rs`:
 | Function | Purpose |
 |----------|---------|
 | `validate_originator(originator: Option<&str>)` | `None` passes; a supplied string follows the pinned reference's hostname-and-port rules |
+| `validate_list_limit(limit: Option<u32>)` | The list doors' `limit` in 1..=10000, the reference's texts (#226) |
 | `compute_txid(raw_tx: &[u8])` | Computes txid (double SHA256, reversed) from raw transaction |
 | `build_unsigned_transaction(result, key_deriver)` | Builds unsigned transaction bytes from storage result; optionally derives P2PKH locking scripts for change outputs via BRC-29 |
 | `direct_acquire::validate_acquire_direct_args(args)` | The direct acquire's argument checks (`validationHelpers.ts:1405-1439`) and the normalized certificate, verifier and keyring (#311) |

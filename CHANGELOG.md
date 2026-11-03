@@ -164,6 +164,21 @@
 
 ### Fixed
 
+- #226, bsv-wallet-cli#198 (the keeper's reading of 2026-11-03 12:0xZ):
+  the three list doors clamped a limit where the reference refuses it.
+  Old: `list_actions`, `list_outputs` and `list_certificates` answered a
+  `limit` past 10000 with a page of 10000, and a `limit` of 0 with an
+  empty page and the true total. New: both are refused before the
+  storage call as `validateInteger` refuses them (`ts-stack@edf6e03`
+  `validationHelpers.ts:306-324`, at 1708, 1647 and 1199), class
+  `InvalidParameter`, `Validation error: The limit parameter must be at
+  least 1 length.` and `Validation error: The limit parameter must be no
+  more than 10000 length.`; 1 to 10000 and an absent limit answer as
+  before. The storage finders no longer clamp, as the reference's storage
+  does not, and bind the limit as a 64-bit integer. No offset moves; no
+  public type moves. Host note: a host that relied on the clamp sends
+  10000 or less; the CLI refuses these values at its own door since its
+  #198.
 - #576, bsv-wallet-cli#386 (the keeper's reading of 2026-11-01 21:5xZ,
   23.2): `verify_signature` asked no protocol permission. Old: under a
   `WalletPermissionsManager` it was the one key call of seven with no
