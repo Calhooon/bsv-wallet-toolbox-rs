@@ -127,26 +127,124 @@ fn the_reference_bounds_refuse_what_its_reader_refuses() {
     assert!(!refuse(&good));
 }
 
-#[test]
-fn argon2id_parses_and_is_refused_at_derivation_until_stage_two() {
-    let argon = PasswordKdf {
+/// An argon2id KDF small enough to derive in a test.
+fn small_argon(iterations: u32, memory_kib: u32) -> PasswordKdf {
+    PasswordKdf {
         algorithm: KdfAlgorithm::Argon2id,
-        iterations: 7,
-        memory_kib: Some(131_072),
+        iterations,
+        memory_kib: Some(memory_kib),
         parallelism: Some(1),
         hash_length: Some(32),
-    };
-    assert!(argon.is_valid());
-    let mut t = token(PasswordKdf::pbkdf2(7777));
-    t.password_kdf = Some(argon.clone());
-    assert_eq!(
-        UmpToken::from_bytes(&t.to_bytes()).unwrap().password_kdf,
-        Some(argon)
-    );
+    }
+}
+
+#[test]
+fn an_argon2id_token_opens_at_its_own_parameters() {
+    let kdf = small_argon(2, 64);
+    let t = token(kdf.clone());
+    let back = UmpToken::from_bytes(&t.to_bytes()).unwrap();
+    assert_eq!(back.password_kdf, Some(kdf.clone()));
+    let opened = open_token(&back, &[0x11; 32], "pw").unwrap();
+    assert_eq!(*opened.root_primary, vec![0x33; 32]);
     assert!(matches!(
-        open_token(&t, &[0x11; 32], "pw"),
-        Err(Error::InvalidOperation(_))
+        open_token(&back, &[0x11; 32], "other"),
+        Err(Error::AccessDenied(_))
     ));
+    let salt = [0x55; 32];
+    let key = derive_password_key(&salt, Some(&kdf), "pw").unwrap();
+    for other in [small_argon(3, 64), small_argon(2, 128)] {
+        let at = derive_password_key(&salt, Some(&other), "pw").unwrap();
+        assert_ne!(at, key, "{other:?} derives another key");
+    }
+    let mut lanes = kdf.clone();
+    lanes.parallelism = Some(2);
+    assert_ne!(derive_password_key(&salt, Some(&lanes), "pw").unwrap(), key);
+    assert_ne!(*key, *pbkdf2_sha512("pw", &salt, 2).unwrap());
+}
+
+#[test]
+fn argon2id_outside_the_reference_bounds_is_refused_with_its_text() {
+    let set = |f: fn(&mut PasswordKdf)| {
+        let mut kdf = small_argon(2, 64);
+        f(&mut kdf);
+        kdf
+    };
+    let bad = [
+        set(|k| k.iterations = 0),
+        set(|k| k.iterations = 21),
+        set(|k| k.memory_kib = None),
+        set(|k| k.memory_kib = Some(0)),
+        set(|k| k.memory_kib = Some(262_145)),
+        set(|k| k.parallelism = None),
+        set(|k| k.parallelism = Some(0)),
+        set(|k| k.parallelism = Some(17)),
+        set(|k| k.hash_length = None),
+        set(|k| k.hash_length = Some(0)),
+        set(|k| k.hash_length = Some(65)),
+    ];
+    for kdf in bad {
+        assert!(!kdf.is_valid(), "{kdf:?}");
+        let Err(Error::ValidationError(text)) = derive_password_key(&[0x55; 32], Some(&kdf), "pw")
+        else {
+            panic!("{kdf:?} derives");
+        };
+        assert_eq!(
+            text, "UMP token contains unsupported or unsafe KDF parameters.",
+            "derivePasswordKey's text (:316)"
+        );
+        let mut t = token(small_argon(2, 64));
+        t.password_kdf = Some(kdf.clone());
+        let Err(Error::ValidationError(text)) = UmpToken::from_bytes(&t.to_bytes()) else {
+            panic!("{kdf:?} reads");
+        };
+        assert_eq!(
+            text, "Serialized UMP token contains unsupported or unsafe KDF parameters.",
+            "deserializeUMPToken's text (:2781)"
+        );
+    }
+    let edges = [
+        set(|k| k.iterations = 20),
+        set(|k| k.memory_kib = Some(262_144)),
+        set(|k| k.parallelism = Some(16)),
+        set(|k| k.hash_length = Some(64)),
+    ];
+    assert!(
+        edges.iter().all(PasswordKdf::is_valid),
+        "the bounds are inclusive"
+    );
+}
+
+#[test]
+fn an_argon2id_hash_length_other_than_32_is_refused_as_the_reference_refuses_it() {
+    let mut kdf = small_argon(2, 64);
+    kdf.hash_length = Some(64);
+    assert_eq!(
+        derive_password_key(&[0x55; 32], Some(&kdf), "pw")
+            .unwrap()
+            .len(),
+        64
+    );
+    let mut t = token(small_argon(2, 64));
+    t.password_kdf = Some(kdf);
+    let Err(Error::ValidationError(text)) = open_token(&t, &[0x11; 32], "pw") else {
+        panic!("a 64-byte password key opens");
+    };
+    assert_eq!(text, "XOR length mismatch: 32 vs 64");
+}
+
+#[test]
+fn argon2id_parameters_the_library_refuses_are_an_error_not_a_panic() {
+    let mut kdf = small_argon(1, 8);
+    kdf.parallelism = Some(2);
+    assert!(kdf.is_valid(), "inside the reference's bounds");
+    let Err(Error::ValidationError(text)) = derive_password_key(&[0x55; 32], Some(&kdf), "pw")
+    else {
+        panic!("8 KiB over 2 lanes derives");
+    };
+    assert!(text.starts_with("UMP token: argon2id:"), "{text}");
+    let mut short = small_argon(1, 64);
+    short.hash_length = Some(3);
+    assert!(derive_password_key(&[0x55; 32], Some(&short), "pw").is_err());
 }
 
 #[test]

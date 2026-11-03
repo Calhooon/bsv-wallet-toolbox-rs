@@ -13,12 +13,21 @@ use crate::error::{Error, Result};
 /// PBKDF2 rounds of a token with no KDF metadata (`PBKDF2_NUM_ROUNDS`, :83).
 pub const PBKDF2_NUM_ROUNDS: u32 = 7777;
 
+/// The reference's argon2id defaults (`ARGON2ID_DEFAULT_*`, :89-91).
+const ARGON2ID_MEMORY_KIB: u32 = 131_072;
+const ARGON2ID_PARALLELISM: u32 = 1;
+const ARGON2ID_HASH_LENGTH: u32 = 32;
+
+/// `derivePasswordKey`'s refusal of a KDF outside `isValidKdfConfig` (:316).
+const UNSAFE_KDF: &str = "UMP token contains unsupported or unsafe KDF parameters.";
+
 /// A password KDF the reference names (`passwordKdf.algorithm`, :487).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KdfAlgorithm {
     /// `pbkdf2-sha512`: PBKDF2 HMAC-SHA512 at `iterations`, 32 bytes out.
     Pbkdf2Sha512,
-    /// `argon2id`: parsed and carried; deriving with it is stage two (#560).
+    /// `argon2id` (version 0x13) at `iterations`, `memoryKiB`, `parallelism`,
+    /// `hashLength` bytes out (#593).
     Argon2id,
 }
 
@@ -74,9 +83,9 @@ impl PasswordKdf {
         Self {
             algorithm: KdfAlgorithm::Pbkdf2Sha512,
             iterations,
-            memory_kib: Some(131_072),
-            parallelism: Some(1),
-            hash_length: Some(32),
+            memory_kib: Some(ARGON2ID_MEMORY_KIB),
+            parallelism: Some(ARGON2ID_PARALLELISM),
+            hash_length: Some(ARGON2ID_HASH_LENGTH),
         }
     }
 
@@ -124,7 +133,9 @@ impl PasswordKdf {
         if kdf.is_valid() {
             Ok(kdf)
         } else {
-            Err(token_error("unsupported or unsafe KDF parameters"))
+            Err(Error::ValidationError(
+                "Serialized UMP token contains unsupported or unsafe KDF parameters.".into(),
+            ))
         }
     }
 }
@@ -148,8 +159,29 @@ pub(crate) fn pbkdf2_sha512(
     Ok(derived)
 }
 
+/// Argon2id version 0x13 with no secret and no associated data, as hash-wasm's
+/// `argon2id` (:332-346), `hashLength` bytes out. The memory blocks are the
+/// caller's here so they are zeroed on drop.
+fn argon2id(password: &str, salt: &[u8], kdf: &PasswordKdf) -> Result<Zeroizing<Vec<u8>>> {
+    let hash_length = kdf.hash_length.unwrap_or(ARGON2ID_HASH_LENGTH) as usize;
+    let params = argon2::Params::new(
+        kdf.memory_kib.unwrap_or(ARGON2ID_MEMORY_KIB),
+        kdf.iterations,
+        kdf.parallelism.unwrap_or(ARGON2ID_PARALLELISM),
+        Some(hash_length),
+    )
+    .map_err(|e| token_error(&format!("argon2id: {e}")))?;
+    let mut memory = Zeroizing::new(vec![argon2::Block::new(); params.block_count()]);
+    let mut derived = Zeroizing::new(vec![0u8; hash_length]);
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        .hash_password_into_with_memory(password.as_bytes(), salt, &mut derived, &mut *memory)
+        .map_err(|e| token_error(&format!("argon2id: {e}")))?;
+    Ok(derived)
+}
+
 /// The reference's `derivePasswordKey` (:303-358) over a salt and a KDF: none
-/// is the legacy 7777 rounds; argon2id is stage two and refused here.
+/// is the legacy 7777 rounds; a KDF outside `isValidKdfConfig` is refused
+/// with the reference's text.
 pub(crate) fn derive_password_key(
     salt: &[u8],
     kdf: Option<&PasswordKdf>,
@@ -157,13 +189,10 @@ pub(crate) fn derive_password_key(
 ) -> Result<Zeroizing<Vec<u8>>> {
     match kdf {
         None => pbkdf2_sha512(password, salt, PBKDF2_NUM_ROUNDS),
-        Some(kdf) if !kdf.is_valid() => Err(token_error("unsupported or unsafe KDF parameters")),
+        Some(kdf) if !kdf.is_valid() => Err(Error::ValidationError(UNSAFE_KDF.into())),
         Some(kdf) if kdf.algorithm == KdfAlgorithm::Pbkdf2Sha512 => {
             pbkdf2_sha512(password, salt, kdf.iterations)
         }
-        Some(_) => Err(Error::InvalidOperation(
-            "UMP token asks argon2id; this toolbox derives pbkdf2-sha512 only (#560 stage two)"
-                .into(),
-        )),
+        Some(kdf) => argon2id(password, salt, kdf),
     }
 }
