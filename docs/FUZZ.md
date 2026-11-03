@@ -86,8 +86,11 @@ not written: the target reads the bytes alone, so the copy adds nothing. A
 fixture renamed with its answers unchanged (the header ladders' 429 scenes of
 #148) leaves the corpus as committed, and `python3 fuzz/seed_corpus.py` on a
 clean tree leaves `git status` clean (#582). Into an empty corpus the script
-writes at most one new name per distinct body (a fixture whose providers write one name twice keeps the later bytes under it) (one for `bhs`, whose header scenes all
-answer the same header).
+writes at most one new name per distinct body, except where one fixture
+writes a name twice: that name keeps the later bytes even when another name
+already holds them (`tsc_proof`'s three `get_merkle_path` names hold one body
+this way; one name for `bhs`, whose header scenes all answer the same header;
+#724).
 
 The hash-named files beside the seeds are what the targets found in their
 runs, minimized with `cargo fuzz cmin`. To keep a later run's growth, run
