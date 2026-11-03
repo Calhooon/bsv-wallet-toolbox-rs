@@ -454,7 +454,11 @@ blocks (memoryKiB KiB, 128 MiB at the default) are the derivation's own
 - The cost: each unlock of an argon2id token at the default allocates
   128 MiB; one derivation took under 0.4 s in the test profile on the
   lane's machine. The dev profile builds `argon2` and `blake2` at
-  opt-level 3 so the tests derive at the default.
+  opt-level 3 so the tests derive at the default. The derivation, and
+  what its key opens or seals, runs on `tokio::task::spawn_blocking`
+  over a zeroed copy of the password (#624), so `create_profile`,
+  `switch_profile` and `recovery_key` leave the async worker free while
+  it runs; the unlock's order stays derive, build, write.
 
 ## 6. What a host sees
 
