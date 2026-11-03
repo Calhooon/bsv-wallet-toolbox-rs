@@ -373,6 +373,18 @@
   `docs/MUTANTS.md` states the rule and the oracle note. Measurement
   only: no host behaviour moves.
 
+### Documentation
+- #751 (the keeper's 2026-11-03 21:0xZ reading, before any lane on it):
+  `docs/design/permission-token-store.md`, a design note for the owner.
+  The reference's permission token lifecycle at ts-stack@edf6e03 (the four
+  admin baskets, the PushDrop fields and tags, the mint on grant, the
+  lookup that admits a seek-false call, renewal, listing, revocation), the
+  port's five-minute cache beside it, and two shapes: parity (tokens
+  through the create door) and a persisted grant table (a stated
+  divergence, the CLI's `origin_grants` at its layer). The recommendation
+  is parity in two steps, the read-only token lookup ahead of the mint.
+  Nothing is decided; no behaviour moves.
+
 ### Fixed
 
 - #226, bsv-wallet-cli#198 (the keeper's reading of 2026-11-03 12:0xZ):
