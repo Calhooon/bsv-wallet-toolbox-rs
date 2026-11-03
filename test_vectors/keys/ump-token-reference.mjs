@@ -1,4 +1,4 @@
-// The reference's UMP token both ways (#560), run on the reference's own code
+// The reference's UMP token both ways (#560, #593), run on the reference's own code
 // (ts-stack edf6e03, packages/wallet/wallet-toolbox/src/CWIStyleWalletManager.ts)
 // under Node, with no network: the UMPTokenInteractor is a local stand-in that
 // answers the lookup with the token under test and records buildAndSend at a
@@ -7,6 +7,11 @@
 //   REF_ROOT=<export> node ump-token-reference.mjs record   writes ump-token-reference.json
 //   REF_ROOT=<export> node ump-token-reference.mjs verify   reads ump-token-rust.json,
 //                                                            writes ump-token-rust.result.json
+//
+// With `argon2id` after the command (#593) the manager is built with kdfConfig
+// omitted, the reference's default (argon2id at 7, 131072, 1, 32): record
+// writes ump-token-reference-argon2id.json; verify reads ump-token-rust-argon2id.json
+// and writes ump-token-rust-argon2id.result.json.
 //
 // REF_ROOT: `git archive edf6e03 packages/sdk/src packages/sdk/mod.ts
 // packages/wallet/wallet-toolbox/src | tar -x -C $REF_ROOT`, then
@@ -28,6 +33,10 @@ const hex = a => Utils.toHex(a)
 const unhex = s => Utils.toArray(s, 'hex')
 const OUTPOINT = `${'ab'.repeat(32)}.0`
 const PIN = 'edf6e03'
+// pbkdf2-sha512 at PBKDF2_NUM_ROUNDS (#560), or the reference's default (#593).
+const DEFAULT_KDF = process.argv[3] === 'argon2id'
+const KDF_CONFIG = DEFAULT_KDF ? undefined : { algorithm: 'pbkdf2-sha512', iterations: PBKDF2_NUM_ROUNDS }
+const SUFFIX = DEFAULT_KDF ? '-argon2id' : ''
 
 /** A manager on the reference's code with a local interactor and recorders. */
 function manager({ token, password, mode }) {
@@ -57,14 +66,14 @@ function manager({ token, password, mode }) {
     },
     undefined,
     undefined,
-    { algorithm: 'pbkdf2-sha512', iterations: PBKDF2_NUM_ROUNDS }
+    KDF_CONFIG
   )
   if (mode) m.authenticationMode = mode
   return { m, seen }
 }
 
 async function record() {
-  const password = 'reference vector password #560'
+  const password = DEFAULT_KDF ? 'reference vector password #593' : 'reference vector password #560'
   const presentationKey = Random(32)
   const { m, seen } = manager({ password })
   await m.providePresentationKey(presentationKey)
@@ -81,17 +90,27 @@ async function record() {
   const legacyToken = { ...token, umpVersion: undefined, passwordKdf: undefined }
   const legacy = m.serializeUMPToken(legacyToken)
 
-  // The reference opens its own legacy serialization, at PBKDF2_NUM_ROUNDS.
-  const back = m.deserializeUMPToken(legacy)
-  if (back.passwordKdf !== undefined) throw new Error('legacy token kept KDF metadata')
-  const { m: l, seen: ls } = manager({ token: back, password })
-  await l.providePresentationKey(presentationKey)
-  await l.providePassword(password)
-  if (hex(ls.keys[0].primaryKey) !== hex(rootPrimaryKey)) throw new Error('legacy open mismatch')
+  // The reference opens its own legacy serialization, at PBKDF2_NUM_ROUNDS
+  // (a pbkdf2 token's password key is that derivation; an argon2id one's is not).
+  if (!DEFAULT_KDF) {
+    const back = m.deserializeUMPToken(legacy)
+    if (back.passwordKdf !== undefined) throw new Error('legacy token kept KDF metadata')
+    const { m: l, seen: ls } = manager({ token: back, password })
+    await l.providePresentationKey(presentationKey)
+    await l.providePassword(password)
+    if (hex(ls.keys[0].primaryKey) !== hex(rootPrimaryKey)) throw new Error('legacy open mismatch')
+  }
+  // The reference opens its own v3 serialization at the token's KDF.
+  const { m: o, seen: os } = manager({ token: m.deserializeUMPToken(v3), password })
+  await o.providePresentationKey(presentationKey)
+  await o.providePassword(password)
+  if (hex(os.keys[0].primaryKey) !== hex(rootPrimaryKey)) throw new Error('v3 open mismatch')
 
+  const description = DEFAULT_KDF
+    ? 'A UMP token written by the reference (ts-stack edf6e03 CWIStyleWalletManager.ts) under Node: createNewUser (providePresentationKey + providePassword) with kdfConfig omitted, the reference\'s default (argon2id through hash-wasm at iterations 7, memoryKiB 131072, parallelism 1, hashLength 32), then addProfile("Work"); serialized by its serializeUMPToken (version byte 3), and opened again by the reference before it was recorded. The outpoint is the local interactor\'s fixed locator.'
+    : 'A UMP token written by the reference (ts-stack edf6e03 CWIStyleWalletManager.ts) under Node: createNewUser (providePresentationKey + providePassword) with kdfConfig pbkdf2-sha512 at PBKDF2_NUM_ROUNDS, then addProfile("Work"); serialized by its serializeUMPToken. tokenV3Hex has KDF metadata (version byte 3); tokenLegacyHex is the same token with umpVersion and passwordKdf removed (version byte 2), which the reference opens at 7777 rounds. The outpoint is the local interactor\'s fixed locator.'
   const vector = {
-    description:
-      'A UMP token written by the reference (ts-stack edf6e03 CWIStyleWalletManager.ts) under Node: createNewUser (providePresentationKey + providePassword) with kdfConfig pbkdf2-sha512 at PBKDF2_NUM_ROUNDS, then addProfile("Work"); serialized by its serializeUMPToken. tokenV3Hex has KDF metadata (version byte 3); tokenLegacyHex is the same token with umpVersion and passwordKdf removed (version byte 2), which the reference opens at 7777 rounds. The outpoint is the local interactor\'s fixed locator.',
+    description,
     reference: `ts-stack ${PIN}`,
     node: process.version,
     inputs: { password, presentationKeyHex: hex(presentationKey) },
@@ -107,14 +126,14 @@ async function record() {
       currentOutpoint: OUTPOINT
     },
     tokenV3Hex: hex(v3),
-    tokenLegacyHex: hex(legacy)
+    ...(DEFAULT_KDF ? {} : { tokenLegacyHex: hex(legacy) })
   }
-  writeFileSync(join(here, 'ump-token-reference.json'), JSON.stringify(vector, null, 2) + '\n')
+  writeFileSync(join(here, `ump-token-reference${SUFFIX}.json`), JSON.stringify(vector, null, 2) + '\n')
   console.log('recorded', { v3Bytes: v3.length, legacyBytes: legacy.length, salt: hex(token.passwordSalt) })
 }
 
 async function verify() {
-  const v = JSON.parse(readFileSync(join(here, 'ump-token-rust.json'), 'utf8'))
+  const v = JSON.parse(readFileSync(join(here, `ump-token-rust${SUFFIX}.json`), 'utf8'))
   const password = v.inputs.password
   const presentationKey = unhex(v.inputs.presentationKeyHex)
   const probe = manager({ password }).m
@@ -161,7 +180,7 @@ async function verify() {
   check('wrong password refused', refused, true)
 
   result.allOk = Object.values(result.checks).every(c => c.ok)
-  writeFileSync(join(here, 'ump-token-rust.result.json'), JSON.stringify(result, null, 2) + '\n')
+  writeFileSync(join(here, `ump-token-rust${SUFFIX}.result.json`), JSON.stringify(result, null, 2) + '\n')
   console.log(JSON.stringify(result.checks, null, 1))
   console.log('allOk', result.allOk)
   if (!result.allOk) process.exitCode = 1

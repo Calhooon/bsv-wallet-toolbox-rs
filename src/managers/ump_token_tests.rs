@@ -261,6 +261,10 @@ fn the_snapshot_reads_and_writes_the_reference_layout() {
 fn vector(name: &str) -> serde_json::Value {
     let text = match name {
         "reference" => include_str!("../../test_vectors/keys/ump-token-reference.json"),
+        "reference-argon2id" => {
+            include_str!("../../test_vectors/keys/ump-token-reference-argon2id.json")
+        }
+        "rust-argon2id" => include_str!("../../test_vectors/keys/ump-token-rust-argon2id.json"),
         _ => include_str!("../../test_vectors/keys/ump-token-rust.json"),
     };
     serde_json::from_str(text).unwrap()
@@ -329,6 +333,46 @@ fn the_reference_written_v3_token_opens_to_its_recorded_root_keys() {
     );
 }
 
+/// The reference's default KDF for new tokens (:88-91, :1677).
+fn reference_default_argon() -> PasswordKdf {
+    PasswordKdf {
+        algorithm: KdfAlgorithm::Argon2id,
+        iterations: 7,
+        memory_kib: Some(131_072),
+        parallelism: Some(1),
+        hash_length: Some(32),
+    }
+}
+
+#[test]
+fn the_reference_token_at_its_default_kdf_opens_to_its_recorded_root_keys() {
+    let v = vector("reference-argon2id");
+    let bytes = hex_at(&v, &["tokenV3Hex"]);
+    let token = UmpToken::from_bytes(&bytes).unwrap();
+    assert_eq!(token.to_bytes(), bytes, "re-serialized byte for byte");
+    assert_eq!(token.password_kdf, Some(reference_default_argon()));
+    let params = br#"{"iterations":7,"memoryKiB":131072,"parallelism":1,"hashLength":32}"#;
+    assert_eq!(reference_default_argon().params_json(), params);
+    assert!(bytes.windows(params.len()).any(|w| w == params));
+    assert_eq!(
+        token.password_salt,
+        hex_at(&v, &["expected", "passwordSaltHex"])
+    );
+    opens_to_the_recorded_keys(
+        &v,
+        &token,
+        &hex_at(&v, &["drawnByReference", "recoveryKeyHex"]),
+    );
+}
+
+#[test]
+fn the_rust_written_argon2id_vector_still_opens_in_rust() {
+    let v = vector("rust-argon2id");
+    let token = UmpToken::from_bytes(&hex_at(&v, &["tokenHex"])).unwrap();
+    assert_eq!(token.password_kdf, Some(reference_default_argon()));
+    opens_to_the_recorded_keys(&v, &token, &hex_at(&v, &["expected", "recoveryKeyHex"]));
+}
+
 #[test]
 fn the_reference_legacy_token_opens_at_7777_rounds() {
     let v = vector("reference");
@@ -362,20 +406,15 @@ fn the_rust_written_vector_still_opens_in_rust() {
     opens_to_the_recorded_keys(&v, &token, &hex_at(&v, &["expected", "recoveryKeyHex"]));
 }
 
-/// Writes `test_vectors/keys/ump-token-rust.json`'s body to stdout: a token
-/// the Rust code builds from drawn factors, with no outpoint (written as
-/// `UNPUBLISHED_OUTPOINT`). Run with `--ignored --nocapture`.
-#[test]
-#[ignore = "records the Rust-written vector"]
-fn record_a_rust_written_token_for_the_reference() {
+/// A vector body: a token the Rust code builds from drawn factors at `kdf`,
+/// with no outpoint (written as `UNPUBLISHED_OUTPOINT`).
+fn rust_written_vector(kdf: PasswordKdf, password: &str, issue: &str) -> serde_json::Value {
     let draw = || {
         let mut bytes = Zeroizing::new(vec![0u8; 32]);
         crate::rng::os_fill(&mut bytes);
         bytes
     };
-    let password = "rust vector password #560";
     let salt = draw().to_vec();
-    let kdf = PasswordKdf::pbkdf2(PBKDF2_NUM_ROUNDS);
     let mut k = factors(password, &salt, Some(&kdf));
     (k.presentation_key, k.recovery_key, k.root_primary) = (draw(), draw(), draw());
     k.root_privileged = std::iter::repeat_with(draw)
@@ -388,10 +427,14 @@ fn record_a_rust_written_token_for_the_reference() {
         privileged_pad: draw().to_vec(),
         created_at: 1_762_000_000,
     };
+    let kdf_json: serde_json::Value = serde_json::from_slice(&kdf.params_json()).unwrap();
+    let mut kdf_json = kdf_json.as_object().unwrap().clone();
+    kdf_json.insert("algorithm".into(), kdf.algorithm.as_str().into());
     let token = build_token(salt, kdf, &k, std::slice::from_ref(&p)).unwrap();
     assert_eq!(token.current_outpoint, None);
-    let out = serde_json::json!({
-        "description": "A UMP token written by bsv-wallet-toolbox-rs (#560, src/managers/ump_token.rs build_token and to_bytes) from OS-drawn factors, one profile, with no outpoint: to_bytes writes UNPUBLISHED_OUTPOINT, the null txid at index 0. ump-token-reference.mjs verify opens it on the reference's code (its deserializeUMPToken, no locator set) and writes ump-token-rust.result.json.",
+    let suffix = if issue == "#560" { "" } else { "-argon2id" };
+    serde_json::json!({
+        "description": format!("A UMP token written by bsv-wallet-toolbox-rs ({issue}, src/managers/ump_token.rs build_token and to_bytes) from OS-drawn factors, one profile, with no outpoint: to_bytes writes UNPUBLISHED_OUTPOINT, the null txid at index 0. ump-token-reference.mjs verify opens it on the reference's code (its deserializeUMPToken, no locator set) and writes ump-token-rust{suffix}.result.json."),
         "inputs": { "password": password, "presentationKeyHex": hex::encode(&*k.presentation_key) },
         "expected": {
             "rootPrimaryKeyHex": hex::encode(&*k.root_primary),
@@ -400,10 +443,33 @@ fn record_a_rust_written_token_for_the_reference() {
             "profileIdHex": hex::encode(&p.id),
             "profileName": p.name,
             "profilePrimaryKeyHex": hex::encode(&*xor(&k.root_primary, &p.primary_pad)),
-            "passwordKdf": { "algorithm": "pbkdf2-sha512", "iterations": PBKDF2_NUM_ROUNDS, "memoryKiB": 131_072, "parallelism": 1, "hashLength": 32 },
+            "passwordKdf": kdf_json,
         },
         "tokenHex": hex::encode(token.to_bytes()),
-    });
+    })
+}
+
+/// Writes `test_vectors/keys/ump-token-rust.json`'s body to stdout. Run with
+/// `--ignored --nocapture`.
+#[test]
+#[ignore = "records the Rust-written vector"]
+fn record_a_rust_written_token_for_the_reference() {
+    let kdf = PasswordKdf::pbkdf2(PBKDF2_NUM_ROUNDS);
+    let out = rust_written_vector(kdf, "rust vector password #560", "#560");
+    println!(
+        "RUST-VECTOR {}",
+        serde_json::to_string_pretty(&out).unwrap()
+    );
+}
+
+/// Writes `test_vectors/keys/ump-token-rust-argon2id.json`'s body to stdout:
+/// the token at the reference's default KDF (#593). Run with
+/// `--ignored --nocapture`.
+#[test]
+#[ignore = "records the Rust-written argon2id vector"]
+fn record_a_rust_written_argon2id_token_for_the_reference() {
+    let kdf = reference_default_argon();
+    let out = rust_written_vector(kdf, "rust vector password #593", "#593");
     println!(
         "RUST-VECTOR {}",
         serde_json::to_string_pretty(&out).unwrap()
