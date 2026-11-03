@@ -1777,6 +1777,10 @@ impl WalletPermissionsManager {
 // Tests
 // =============================================================================
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "permission_token_lookup_tests.rs"]
+mod permission_token_lookup_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
