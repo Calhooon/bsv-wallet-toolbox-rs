@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- #711: the sync chunk's item count and rough size (`ChunkingState::add_items`
+  in `src/storage/sqlx/sync.rs`) saturate at `u32::MAX` rather than adding
+  plainly, so a sum past the edge holds at the bound and the chunk reads as
+  full; a plain add panicked in a debug build and wrapped small in release.
+  Below the edge nothing changes. Found by the #703 lane, beside #697's and
+  #703's checked sums.
 - #713: `fuzz/seed_corpus.py` takes a file's old digest out of a target's
   held set when it overwrites that file (two providers in one fixture
   writing one name), so a later seed with the replaced bytes under a new
