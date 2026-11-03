@@ -574,6 +574,14 @@ jobs:
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: cargo test --test fixtures --locked
 
+      # The mysql feature alone (#684): it implies sqlite, since StorageSqlx is
+      # SQLite-typed; this check fails if the table drops that. The cached
+      # dependencies leave the crate's own check and sqlx's MySQL driver.
+      - name: mysql alone, the feature builds
+        id: mysql-alone
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
+        run: cargo check --no-default-features --features mysql
+
       - name: Documentation
         id: docs
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
@@ -595,6 +603,7 @@ jobs:
             ${{ steps.vectors.outcome }} vectors: the vector tests
             ${{ steps.word-table.outcome }} vectors: the word table
             ${{ steps.fixtures.outcome }} fixtures
+            ${{ steps.mysql-alone.outcome }} mysql alone: the feature builds
             ${{ steps.docs.outcome }} Documentation
         run: |
           printf '| gate | outcome |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
