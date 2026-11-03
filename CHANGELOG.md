@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- #697: the list finders bind the offset as `i64` (as #226 made the
+  limit), so an offset above `i32::MAX` no longer wraps negative.
+  `list_certificates` and `list_actions` at an offset of 2^31 answered the
+  head of the store (SQLite reads a negative OFFSET as 0) with a total of
+  the offset plus that page, and at `u32::MAX` panicked in a debug build on
+  the total's sum. They now answer an empty page: `list_certificates`
+  counting the store (#686), `list_actions` the offset by its own rule
+  (#674). The totals' sums are checked; one past `u32::MAX` answers the
+  count. `list_outputs`' `i32` offset never wrapped (#230); its bind and sum
+  take the same shape. Found by the #686 lane.
 - #686: `list_certificates`' `total_certificates` takes `list_outputs`'
   three branches (`short_page_total`, #674): a full page and an empty page
   past the start answer the stored count, every other page the offset plus
