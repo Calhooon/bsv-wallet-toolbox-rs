@@ -501,7 +501,7 @@ mod tests {
         let past_reverse = total(&storage, &auth, -101, 10).await;
         assert_eq!(past_reverse, (0, 3), "empty reverse page past the end");
         // Limit 0 at offset 0 is the reference's last branch, skipped plus
-        // the page (its validator refuses limit 0; this port reaches it).
+        // the page (the doors refuse limit 0, #226; the finder reaches it).
         assert_eq!(total(&storage, &auth, 0, 0).await, (0, 0), "no limit");
 
         let empty = StorageSqlx::in_memory().await.unwrap();
