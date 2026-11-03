@@ -644,23 +644,38 @@ where
 
     /// Checks protocol permission if a permissions manager is set.
     /// Returns Ok(()) if no manager is set or if permission is granted.
-    /// `privileged` is the request's, as the reference passes
-    /// `requestArgs.privileged` (ts-stack@edf6e03
-    /// `WalletPermissionsManager.ts:5165-5350`), so a privileged key call
-    /// needs a privileged grant when the manager differentiates them. No
-    /// counterparty is passed (the reference passes the request's, `self`
-    /// when absent).
+    /// `privileged`, the counterparty and the reason are the request's, as
+    /// the reference passes `requestArgs.privileged`,
+    /// `requestArgs.counterparty || 'self'` and `requestArgs.privilegedReason`
+    /// (ts-stack@edf6e03 `WalletPermissionsManager.ts:5165-5384`), so a
+    /// privileged key call needs a privileged grant when the manager
+    /// differentiates them; the counterparty is `self`, `anyone` or the key's
+    /// hex (#581).
     async fn check_protocol_permission(
         &self,
         originator: Option<&str>,
         privileged: bool,
         protocol: &Protocol,
+        counterparty: Option<&Counterparty>,
+        reason: Option<&str>,
         usage_type: crate::managers::PermissionUsageType,
     ) -> Result<()> {
         let originator = originator.unwrap_or_default();
+        let counterparty = match counterparty {
+            None | Some(Counterparty::Self_) => "self".to_string(),
+            Some(Counterparty::Anyone) => "anyone".to_string(),
+            Some(Counterparty::Other(key)) => key.to_hex(),
+        };
         if let Some(ref pm) = self.permissions_manager {
-            pm.ensure_protocol_permission(originator, privileged, protocol, None, None, usage_type)
-                .await?;
+            pm.ensure_protocol_permission(
+                originator,
+                privileged,
+                protocol,
+                Some(&counterparty),
+                reason,
+                usage_type,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1816,6 +1831,8 @@ where
                 originator,
                 args.privileged == Some(true),
                 protocol_id,
+                args.counterparty.as_ref(),
+                args.privileged_reason.as_deref(),
                 crate::managers::PermissionUsageType::PublicKey,
             )
             .await?;
@@ -1834,6 +1851,8 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
+            args.counterparty.as_ref(),
+            args.privileged_reason.as_deref(),
             crate::managers::PermissionUsageType::Encrypting,
         )
         .await?;
@@ -1851,6 +1870,8 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
+            args.counterparty.as_ref(),
+            args.privileged_reason.as_deref(),
             crate::managers::PermissionUsageType::Encrypting,
         )
         .await?;
@@ -1868,6 +1889,8 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
+            args.counterparty.as_ref(),
+            args.privileged_reason.as_deref(),
             crate::managers::PermissionUsageType::Hmac,
         )
         .await?;
@@ -1885,6 +1908,8 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
+            args.counterparty.as_ref(),
+            args.privileged_reason.as_deref(),
             crate::managers::PermissionUsageType::Hmac,
         )
         .await?;
@@ -1902,6 +1927,8 @@ where
             originator,
             args.privileged == Some(true),
             &args.protocol_id,
+            args.counterparty.as_ref(),
+            args.privileged_reason.as_deref(),
             crate::managers::PermissionUsageType::Signing,
         )
         .await?;
@@ -1920,6 +1947,8 @@ where
             originator,
             privileged,
             &args.protocol_id,
+            args.counterparty.as_ref(),
+            args.privileged_reason.as_deref(),
             crate::managers::PermissionUsageType::Signing,
         )
         .await?;
