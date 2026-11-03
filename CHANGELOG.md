@@ -6,11 +6,15 @@
 
 - #669 (tools and docs; no code): HANDOFF.md's landing rows are a file
   per PR, `docs/handoff/<yyyy-mm>/<pr>.md` (the 25 rows of 2026-11-01 to
-  2026-11-03 moved verbatim); `tools/handoff-rows` regenerates the Next
-  section between two marker lines (`--write`), lists the rows (`--list`)
-  and checks the page against the files (`--check`, `--strict` at the
-  fold), its cases in `tools/handoff-rows-test`; the `checks` job runs
-  both. Two open PRs' rows no longer conflict in the merge queue.
+  2026-11-03 moved verbatim; the #538 "Landed" bullet, which has no kind
+  words, stays below the markers by hand); `tools/handoff-rows`
+  regenerates the Next section between two marker lines (`--write`), lists
+  the rows (`--list`) and checks the page against the files (`--check`,
+  `--strict` at the fold), its cases in `tools/handoff-rows-test`; the
+  `checks` job runs both, `--check` on a docs-only run too. `--check`
+  fails past the keeper's bound on waiting files: more than three, or the
+  oldest older than six hours. Two open PRs' rows no longer conflict in the
+  merge queue.
 - #670 (docs; no code): the CI speed record
   `docs/census/ci-speed-2026-11-02.md` keeps loop one and the fleet's
   runner cap, under the 800-line bound; loops two, three and four move
