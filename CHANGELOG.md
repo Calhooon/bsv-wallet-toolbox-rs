@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- #735: the sync chunk's lengths (`estimate_size`'s serialized length and
+  the twelve row counts into `ChunkingState::add_items` in
+  `src/storage/sqlx/sync.rs`) convert to `u32` saturating at `u32::MAX`
+  rather than with `as u32`, which wrapped a length past the type small, so
+  a chunk that large read as having room; held at the bound it reads as
+  full, as #711's sums do. Below the edge nothing changes. Found in #711's
+  read.
 - #711: the sync chunk's item count and rough size (`ChunkingState::add_items`
   in `src/storage/sqlx/sync.rs`) saturate at `u32::MAX` rather than adding
   plainly, so a sum past the edge holds at the bound and the chunk reads as
