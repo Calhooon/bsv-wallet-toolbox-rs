@@ -243,9 +243,9 @@ mod tests {
             .await
             .unwrap();
         storage.make_available().await.unwrap();
-        let identity_key = "a".repeat(66);
-        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
-        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+        let identity = "d".repeat(66);
+        let user = storage.find_or_insert_user(&identity).await.unwrap().0;
+        let auth = AuthId::with_user_id(&identity, user.user_id);
         assert_eq!(total(&storage, &auth, 0, 10).await, (0, 0), "empty store");
 
         let insert = "INSERT INTO transactions (user_id, status, reference, is_outgoing, \
