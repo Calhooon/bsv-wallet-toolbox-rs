@@ -6,9 +6,16 @@ Each seed is named by its source (file stem, then the case). The bytes come
 from the repo's fixtures and vectors (the arcade and broadcast_memory seeds
 fill a few placeholders such as the txid and the clock): a provider seed is its fuzzed-status byte (the index
 of the status in fuzz/src/lib.rs STATUSES) and then the recorded body.
+
+A seed whose bytes the target's corpus already holds under another name is not
+written: the target reads the bytes alone, so a copy adds nothing, and a fixture
+renamed with its answers unchanged (the header ladders' 429 scenes of #148: the
+BHS rung answers the same header in all of them) would otherwise add a file on
+every fresh seeding and leave the committed corpus behind the script (#582).
 """
 
 import glob
+import hashlib
 import json
 import os
 import struct
@@ -35,13 +42,30 @@ MEMORY_WORD = {
     "REJECTED": "rejected",
     "DOUBLE_SPEND_ATTEMPTED": "rejected",
 }
+# The digests of each target's corpus, read once per target.
+HELD = {}
+
+
+def held(target):
+    if target not in HELD:
+        directory = os.path.join(CORPUS, target)
+        os.makedirs(directory, exist_ok=True)
+        HELD[target] = {
+            hashlib.sha1(open(os.path.join(directory, n), "rb").read()).digest() for n in os.listdir(directory)
+        }
+    return HELD[target]
 
 
 def write(target, name, data):
-    os.makedirs(os.path.join(CORPUS, target), exist_ok=True)
+    digests = held(target)
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
-    with open(os.path.join(CORPUS, target, safe), "wb") as f:
+    path = os.path.join(CORPUS, target, safe)
+    digest = hashlib.sha1(data).digest()
+    if digest in digests and not os.path.exists(path):
+        return
+    with open(path, "wb") as f:
         f.write(data)
+    digests.add(digest)
 
 
 def rel(path):
