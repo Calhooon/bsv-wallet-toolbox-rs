@@ -2,7 +2,7 @@
 //! migration witnesses (#560).
 
 use super::*;
-use crate::managers::ump_token::{KeyFile, UmpToken};
+use crate::managers::ump_token::{KdfAlgorithm, KeyFile, UmpToken};
 use bsv_rs::wallet::ProtoWallet;
 
 #[test]
@@ -174,7 +174,13 @@ async fn a_new_profile_carries_a_random_32_byte_salt_and_ump_version_3() {
     assert_eq!(token.password_salt.len(), 32);
     assert_ne!(token.password_salt[..16], profile.id[..]);
     assert_eq!(token.ump_version, Some(3));
-    assert_eq!(token.password_kdf, Some(PasswordKdf::pbkdf2(7777)));
+    let kdf = token.password_kdf.clone().unwrap();
+    assert_eq!(
+        kdf,
+        PasswordKdf::argon2id(),
+        "the reference's default (#593)"
+    );
+    assert_eq!(kdf.algorithm, KdfAlgorithm::Argon2id);
     let other = m.create_profile("Home", "pw").await.unwrap();
     let both: KeyFile = serde_json::from_slice(&m.save_snapshot().await.unwrap()).unwrap();
     let salts: Vec<Vec<u8>> = both
@@ -457,7 +463,13 @@ async fn a_migrated_file_derives_at_its_new_salt_alone() {
         key,
         "nor does the clear pad"
     );
-    let at_salt = ump_token::pbkdf2_sha512(&password, &token.password_salt, 7777).unwrap();
+    let kdf = token.password_kdf.as_ref();
+    assert_eq!(
+        kdf,
+        Some(&PasswordKdf::argon2id()),
+        "the migration writes argon2id"
+    );
+    let at_salt = ump_token::derive_password_key(&token.password_salt, kdf, &password).unwrap();
     let pres_pass = ump_token::xor(&record.presentation_key, &at_salt);
     assert!(
         opens(&pres_pass, &token.password_presentation_primary),
@@ -643,11 +655,19 @@ async fn exports_carry_the_token_and_a_v1_export_reads_as_v1() {
 
 #[tokio::test]
 async fn a_reference_written_token_opens_through_switch_profile() {
+    let pbkdf2 = include_str!("../../test_vectors/keys/ump-token-reference.json");
+    a_reference_token_opens_through_switch_profile(pbkdf2).await;
+}
+
+#[tokio::test]
+async fn a_reference_token_at_its_default_kdf_opens_through_switch_profile() {
+    let argon2id = include_str!("../../test_vectors/keys/ump-token-reference-argon2id.json");
+    a_reference_token_opens_through_switch_profile(argon2id).await;
+}
+
+async fn a_reference_token_opens_through_switch_profile(vector: &str) {
     use base64::Engine;
-    let v: serde_json::Value = serde_json::from_str(include_str!(
-        "../../test_vectors/keys/ump-token-reference.json"
-    ))
-    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(vector).unwrap();
     let b64 = |key: &str, path: &[&str]| {
         let s = path.iter().fold(&v, |v, k| &v[*k])[key].as_str().unwrap();
         base64::engine::general_purpose::STANDARD.encode(hex::decode(s).unwrap())

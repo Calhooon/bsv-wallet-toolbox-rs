@@ -60,7 +60,7 @@ const PRIVILEGED_PAD_LENGTH: usize = 32;
 /// Configuration for the CWI-style wallet manager.
 #[derive(Debug, Clone)]
 pub struct CWIStyleWalletManagerConfig {
-    /// Number of PBKDF2 rounds for password derivation.
+    /// PBKDF2 rounds of a v1 record's derivation; new tokens are argon2id (#593).
     pub password_rounds: u32,
     /// Whether to use PBKDF2 for key derivation.
     pub use_pbkdf2: bool,
@@ -394,8 +394,8 @@ impl CWIStyleWalletManager {
     }
 
     /// Builds a profile's token around `root_primary` with a fresh salt, fresh
-    /// presentation, recovery and root privileged keys, and PBKDF2-SHA512 at
-    /// the configured rounds (`createNewUser`, :1832-1876).
+    /// presentation, recovery and root privileged keys, and argon2id at the
+    /// reference's defaults, its KDF for new tokens (`createNewUser`, :1832-1876).
     fn seal(
         &self,
         profile: &mut Profile,
@@ -403,7 +403,7 @@ impl CWIStyleWalletManager {
         password: &str,
     ) -> Result<UmpEntry> {
         let salt = generate_random_bytes(32);
-        let kdf = PasswordKdf::pbkdf2(self.config.password_rounds);
+        let kdf = PasswordKdf::argon2id();
         let factors = Factors {
             password_key: ump_token::derive_password_key(&salt, Some(&kdf), password)?,
             presentation_key: Zeroizing::new(generate_random_bytes(32)),
