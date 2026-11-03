@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Seed fuzz/corpus/<target>/ from the fixtures and vectors already in the repo.
 
-Run from the repository root: python3 fuzz/seed_corpus.py
+Run from the repository root: python3 fuzz/seed_corpus.py [--report-stale]
 Each seed is named by its source (file stem, then the case). The bytes come
 from the repo's fixtures and vectors (the arcade and broadcast_memory seeds
 fill a few placeholders such as the txid and the clock): a provider seed is its fuzzed-status byte (the index
@@ -12,6 +12,13 @@ written: the target reads the bytes alone, so a copy adds nothing, and a fixture
 renamed with its answers unchanged (the header ladders' 429 scenes of #148: the
 BHS rung answers the same header in all of them) would otherwise add a file on
 every fresh seeding and leave the committed corpus behind the script (#582).
+
+Under --report-stale the script also prints each named seed on disk it did not
+name in this run as `stale: <path>` and exits 1 when any (#743): a fixture or a
+vector removed leaves its seed behind, and nothing here deletes one. A name is
+the seeder's unless it is 40 lowercase hex digits, the SHA-1 of the bytes that
+libFuzzer and `cargo fuzz cmin` name a file by; every seed name holds a `_`
+(the source's path joined by `_`), so the two never meet.
 """
 
 import collections
@@ -19,7 +26,9 @@ import glob
 import hashlib
 import json
 import os
+import re
 import struct
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "fuzz", "corpus")
@@ -46,6 +55,10 @@ MEMORY_WORD = {
 # The digests of each target's corpus, read once per target, with the number of
 # files holding each: an overwrite takes the old file's digest out (#713).
 HELD = {}
+# The names each target's seeds take in this run, written or skipped as copies
+# (a skipped name is not on disk, so it is never reported either way; #743).
+NAMED = collections.defaultdict(set)
+HASH_NAME = re.compile(r"[0-9a-f]{40}")
 
 
 def digest_of(path):
@@ -63,6 +76,7 @@ def held(target):
 def write(target, name, data):
     digests = held(target)
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+    NAMED[target].add(safe)
     path = os.path.join(CORPUS, target, safe)
     digest = hashlib.sha1(data).digest()
     if os.path.exists(path):
@@ -174,6 +188,16 @@ def arcade(bump):
         write("broadcast_memory", f"{stem(path)}_{case['name']}", rows.encode())
 
 
+def stale():
+    """The named seeds on disk this run did not name, hash-named files aside."""
+    found = []
+    for target in sorted(os.listdir(CORPUS)):
+        for name in sorted(os.listdir(os.path.join(CORPUS, target))):
+            if not HASH_NAME.fullmatch(name) and name not in NAMED[target]:
+                found.append(os.path.join(CORPUS, target, name))
+    return found
+
+
 def main():
     ladders()
     tsc_vectors()
@@ -182,6 +206,12 @@ def main():
     arcade(found[0] if found else b"")
     for target in sorted(os.listdir(CORPUS)):
         print(target, len(os.listdir(os.path.join(CORPUS, target))))
+    if "--report-stale" in sys.argv[1:]:
+        found = stale()
+        for path in found:
+            print(f"stale: {rel(path)}")
+        if found:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
