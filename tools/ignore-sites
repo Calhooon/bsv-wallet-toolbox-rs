@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""No test confined to the sqlite builds is ignored in every job (#651).
+
+A test that carries `#[cfg_attr(not(feature = "sqlite"), ignore = ...)]`
+(the ladder cut test of #634, the four services tests of #651) leaves the
+remote-only job and runs in the sqlite Test Suite job. This guard reads the
+sites from the sources and the sqlite build's test lists, and refuses a site
+that the sqlite build does not list or lists as ignored, so a site whose
+test is ignored there too (a second `ignore`, a predicate true under both)
+is red rather than a test no job runs.
+
+  cargo test --lib --tests --features sqlite,remote -- --list > all.txt
+  cargo test --lib --tests --features sqlite,remote -- --list --ignored > ignored.txt
+  tools/ignore-sites --all all.txt --ignored ignored.txt [--root DIR]
+
+The lists are libtest's `--list` lines (`path::name: test`). A site matches
+a listed test by its function name, the last path segment. Exit 0 when
+every site is listed and none is ignored; 1 otherwise; 2 on a usage fault.
+"""
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+# The attribute, across lines: `cfg_attr(not(feature = "sqlite"), ignore`.
+SITE = re.compile(
+    r'#\[cfg_attr\(\s*not\(\s*feature\s*=\s*"sqlite"\s*\)\s*,\s*ignore\b', re.S)
+FN = re.compile(r'\bfn\s+([A-Za-z_][A-Za-z0-9_]*)')
+
+
+def sites(root):
+    """Each site's (path, line, function name), in path order."""
+    found = []
+    for top in ("src", "tests"):
+        for path in sorted((root / top).rglob("*.rs")):
+            text = path.read_text()
+            for m in SITE.finditer(text):
+                fn = FN.search(text, m.end())
+                line = text.count("\n", 0, m.start()) + 1
+                name = fn.group(1) if fn else None
+                found.append((path.relative_to(root), line, name))
+    return found
+
+
+def listed(path):
+    """The function names of a libtest `--list` file's tests."""
+    names = set()
+    for line in Path(path).read_text().splitlines():
+        if line.endswith(": test"):
+            names.add(line[: -len(": test")].rsplit("::", 1)[-1])
+    return names
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--all", required=True, help="the sqlite build's --list")
+    ap.add_argument("--ignored", required=True, help="its --list --ignored")
+    ap.add_argument("--root", default=Path(__file__).resolve().parent.parent,
+                    type=Path)
+    args = ap.parse_args()
+
+    every, ignored = listed(args.all), listed(args.ignored)
+    if not every:
+        print(f"ignore-sites: {args.all} lists no test", file=sys.stderr)
+        return 2
+    red = 0
+    found = sites(args.root)
+    for path, line, name in found:
+        where = f"{path}:{line}"
+        if name is None:
+            verdict = "no fn after the attribute"
+        elif name not in every:
+            verdict = "not in the sqlite build's list"
+        elif name in ignored:
+            verdict = "ignored in the sqlite build too: no job runs it"
+        else:
+            print(f"ok   {where} {name}")
+            continue
+        red += 1
+        print(f"FAIL {where} {name or '?'}: {verdict}")
+    print(f"ignore-sites: {len(found)} sites, {red} red")
+    return 1 if red else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
