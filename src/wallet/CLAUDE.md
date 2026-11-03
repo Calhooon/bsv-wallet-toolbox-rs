@@ -126,6 +126,15 @@ The service-factory lookup in the internalize door still wraps errors from a
 custom `WalletServices::get_chain_tracker`; built-in Services only reports
 missing configuration there. That custom-provider erasure remains under #185.
 
+Per tracker cause at the internalize door (#769): a typed transport fault is
+the SDK's `TransportFault` (bsv-wallet-cli's Service, 502); a proof at a
+height the header service does not have holds as `ServiceError`, family
+`Service` (Service, 502, retryable), where the reference refuses it as an
+invalid root, a kept divergence pending the owner's word
+(`docs/DIVERGENCES.md` D1); a wrong root at a known height is `InvalidBeef`,
+`InvalidParameter` (Validation, 400). Witnesses in
+`src/storage/sqlx/internalize_no_header_tests.rs`.
+
 Three of the four reference/status guards in `validate_transaction_for_abort`
 use `Error::into_invalid_parameter`: it wraps the variant's unchanged Display
 in `SdkError(WalletRefusal { class: InvalidParameter, message })`. This is a
