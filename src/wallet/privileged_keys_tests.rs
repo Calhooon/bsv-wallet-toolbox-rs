@@ -708,3 +708,86 @@ usage_type_witnesses! {
     create_signature_passes_the_signing_usage_type: "create_signature";
     verify_signature_passes_the_signing_usage_type: "verify_signature";
 }
+
+// =========================================================================
+// The counterparty and the reason in the prompt (#581): each call passes
+// `requestArgs.counterparty || 'self'` and `requestArgs.privilegedReason`
+// (ts-stack@edf6e03 `WalletPermissionsManager.ts:5165-5384`); a level-1
+// grant names no counterparty (`:1505`).
+// =========================================================================
+
+/// One of the seven everyday calls under `protocol` and `counterparty`; the
+/// handler refuses it, so its other arguments are never read.
+async fn prompted_call(
+    wallet: &TestWallet,
+    name: &str,
+    protocol: &Protocol,
+    counterparty: Option<Counterparty>,
+) -> bsv_rs::Result<()> {
+    let o = Some(ORIGINATOR);
+    macro_rules! ask {
+        ($method:ident($kind:ident)) => {{
+            let args = args!(
+                $kind {
+                    protocol_id: protocol.clone(),
+                    key_id: "1".to_string(),
+                    counterparty: counterparty.clone()
+                },
+                None
+            );
+            wallet.$method(args, o).await.map(drop)
+        }};
+    }
+    match name {
+        "get_public_key" => {
+            let args = args!(
+                GetPublicKeyArgs {
+                    protocol_id: Some(protocol.clone()),
+                    key_id: Some("1".to_string()),
+                    counterparty: counterparty.clone()
+                },
+                None
+            );
+            wallet.get_public_key(args, o).await.map(drop)
+        }
+        "encrypt" => ask!(encrypt(EncryptArgs)),
+        "decrypt" => ask!(decrypt(DecryptArgs)),
+        "create_hmac" => ask!(create_hmac(CreateHmacArgs)),
+        "verify_hmac" => ask!(verify_hmac(VerifyHmacArgs)),
+        "create_signature" => ask!(create_signature(CreateSignatureArgs)),
+        "verify_signature" => ask!(verify_signature(VerifySignatureArgs)),
+        other => unreachable!("{other}"),
+    }
+}
+
+#[tokio::test]
+async fn each_key_call_prompts_with_the_requests_counterparty_and_reason() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (_dir, wallet, _double, _manager, prompts) = permitted_wallet(config).await;
+    let key = PrivateKey::random().public_key();
+    let level2 = Protocol::new(SecurityLevel::Counterparty, "privileged witness");
+    let (other, hex) = (Some(Counterparty::Other(key.clone())), key.to_hex());
+    let scenes = [
+        (&level2, other.clone(), Some(hex.as_str())),
+        (&level2, Some(Counterparty::Anyone), Some("anyone")),
+        (&level2, Some(Counterparty::Self_), Some("self")),
+        (&level2, None, Some("self")),
+        (&protocol(), other, None),
+    ];
+    for (protocol, counterparty, expected) in scenes {
+        for name in GUARDED {
+            let scene = format!("{name} {counterparty:?} at {:?}", protocol.security_level);
+            match prompted_call(&wallet, name, protocol, counterparty.clone()).await {
+                Err(bsv_rs::Error::WalletRefusal { message, .. }) => {
+                    assert_eq!(message, PERMISSION_REFUSAL, "{scene}");
+                }
+                other => panic!("{scene}: expected the permission refusal, got {other:?}"),
+            }
+            let request = prompts.requests.lock().unwrap().pop().unwrap();
+            assert_eq!(request.counterparty.as_deref(), expected, "{scene}");
+            assert_eq!(request.reason.as_deref(), Some(REASON), "{scene}");
+            assert_eq!(request.protocol_id.as_ref(), Some(protocol), "{scene}");
+        }
+    }
+    assert!(prompts.requests.lock().unwrap().is_empty());
+}

@@ -736,6 +736,14 @@ impl WalletPermissionsManager {
         if protocol.security_level == SecurityLevel::Silent {
             return Ok(true);
         }
+        // A level-1 grant names no counterparty: the reference's
+        // `if (level === 1) counterparty = ''` (ts-stack@edf6e03
+        // `WalletPermissionsManager.ts:1505`), absent here (#581).
+        let counterparty = if protocol.security_level == SecurityLevel::App {
+            None
+        } else {
+            counterparty
+        };
 
         // 3) Admin-reserved protocol blocking
         if Self::is_admin_protocol(protocol) {
