@@ -94,6 +94,12 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #743: `python3 fuzz/seed_corpus.py --report-stale` prints each committed
+  named seed the run no longer writes as `stale: <path>` and exits 1;
+  hash-named files (40 lowercase hex, libFuzzer's SHA-1 name) are not
+  reported. CI's seeder exit-test step runs it, so a seed left behind by a
+  removed or renamed fixture fails the step; nothing is deleted. Found by
+  the #737 lane.
 - #737: CI's checks job runs the fuzz seeder's exit test (`python3
   fuzz/seed_corpus.py`, then `git status --porcelain` over `fuzz/corpus`
   must be empty), which `docs/FUZZ.md` named (#582) and no workflow ran; a
