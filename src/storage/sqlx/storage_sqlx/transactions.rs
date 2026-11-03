@@ -150,7 +150,7 @@ impl StorageSqlx {
             for status in &valid_statuses {
                 query = query.bind(*status);
             }
-            query = query.bind(i64::from(limit)).bind(offset as i32);
+            query = query.bind(i64::from(limit)).bind(i64::from(offset));
 
             let rows = query.fetch_all(&self.reader).await?;
 
@@ -212,7 +212,7 @@ impl StorageSqlx {
                 .bind(user_id)
                 .bind(required_count as i32)
                 .bind(i64::from(limit))
-                .bind(offset as i32);
+                .bind(i64::from(offset));
 
             let rows = query.fetch_all(&self.reader).await?;
 
@@ -538,12 +538,17 @@ impl StorageSqlx {
 /// own rule and not listOutputs' `inferShortPageTotal`: no limit is the page
 /// itself, a short page is the offset plus the page (an empty page past the
 /// end included, so offset 100 over three actions answers 100 as the
-/// reference does), and a full page is the COUNT query (#674).
-fn list_actions_total(actions_length: u32, limit: u32, offset: u32, count: u32) -> u32 {
+/// reference does), and a full page is the COUNT query (#674). The sum is
+/// checked (#697): the reference's JavaScript number holds any sum, a `u32`
+/// does not, and a sum past `u32::MAX` answers the count, the reference's
+/// other answer, where a clamp would invent one. With the offset bound as
+/// `i64` a non-empty page at offset k means the store holds k plus the page,
+/// so only an empty page reaches a large offset and its sum is the offset.
+pub(super) fn list_actions_total(actions_length: u32, limit: u32, offset: u32, count: u32) -> u32 {
     if limit == 0 {
         actions_length
     } else if actions_length < limit {
-        offset + actions_length
+        offset.checked_add(actions_length).unwrap_or(count)
     } else {
         count
     }
