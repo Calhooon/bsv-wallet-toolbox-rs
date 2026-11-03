@@ -14,6 +14,12 @@
   and the cap formula's inputs on one line. Its cases are
   `tools/slot-occupancy-test` on a recorded fixture.
   The week's reading is in `docs/census/ci-speed-2026-11-02.md`.
+- #637 (tools; no code): `tools/landing-latency` stages every landing
+  into beta from the lane's DONE to the merge (the open, the read, the fix
+  rounds, the PR's own run, the queue, the fold) from the PRs' timelines
+  and the cca run records, reads only, with its cases on a recorded
+  fixture; the night's figures and the cuts they support are in
+  `docs/census/ci-speed-2026-11-02.md`.
 - #644 (CI; no code): on a PR's own run, a `*.md` under `tests/`,
   `fuzz/`, `test_vectors/`, `tools/` or `.github/` reaches every test
   under `tools/affected-tests`, the set read from `tools/docs-only`, since
