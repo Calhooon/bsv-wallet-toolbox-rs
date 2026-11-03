@@ -13,7 +13,7 @@
     "fuzz_hours": 2.01
   },
   "clippy_pedantic": {
-    "total": 3231,
+    "total": 3227,
     "by_lint": {
       "clippy::assigning_clones": 4,
       "clippy::bool_to_int_with_if": 6,
@@ -318,7 +318,7 @@
   },
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
-    "count": 6642,
+    "count": 6637,
     "windows": 100737,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
