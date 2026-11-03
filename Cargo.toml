@@ -13,7 +13,11 @@ categories = ["cryptography::cryptocurrencies"]
 [features]
 default = ["sqlite"]
 sqlite = ["sqlx/sqlite"]
-mysql = ["sqlx/mysql"]
+# `mysql` requires `sqlite` (#684): it enables sqlx's MySQL driver alone, and
+# `StorageSqlx` is SQLite-typed throughout (`Pool<Sqlite>`, `SqliteConnection`,
+# `BEGIN IMMEDIATE`); no MySQL store exists, so `mysql` without `sqlite` did
+# not compile (40 errors, every one a SQLite type or the SQLite error path).
+mysql = ["sqlite", "sqlx/mysql"]
 remote = []  # StorageClient for storage.babbage.systems
 full = ["sqlite", "mysql", "remote"]
 # Break-glass, off by default and not part of `full`: the script hash history

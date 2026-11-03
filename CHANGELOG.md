@@ -22,6 +22,13 @@
 
 ### Changed
 
+- #684: the `mysql` feature now implies `sqlite` (`mysql = ["sqlite",
+  "sqlx/mysql"]`). `StorageSqlx` is SQLite-typed throughout and no MySQL
+  store exists, so `--no-default-features --features mysql` failed with 40
+  errors (unresolved `sqlx::sqlite` imports, `Sqlite` and `SqliteConnection`
+  types, the SQLite busy-code error path); it now builds the SQLite store with
+  the MySQL driver beside it. Found by the #658 lane; `full` and
+  `--features mysql` with the default on build as before.
 - #584 (tests; no code): the #546 and #530 dump witnesses read no shared
   temp folder. Found by the complete Mutants run (lane
   p5-mutants-complete-box-c, 2026-11-02, base 42559923), where the #546
