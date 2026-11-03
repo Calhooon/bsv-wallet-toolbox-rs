@@ -9,18 +9,15 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_permit_runs_two_unlocks_one_after_the_other_and_both_succeed() {
-    let config = CWIStyleWalletManagerConfig {
-        kdf_in_flight: 1,
-        ..Default::default()
-    };
     let slot: Arc<std::sync::OnceLock<Arc<Semaphore>>> = Arc::default();
     let (probe, mut order) = tokio::sync::mpsc::unbounded_channel();
     let read = slot.clone();
     // At each build, the permits left: the other unlock derives on the one permit
     // the build's own derivation gave back, or it has finished and none derive.
-    let (m, seen) = manager_with(config, move || {
+    let (m, seen) = manager_with(CWIStyleWalletManagerConfig::default(), move || {
         probe.send(read.get().unwrap().available_permits()).unwrap();
     });
+    let m = m.with_kdf_in_flight(1).unwrap();
     m.provide_privileged_key_manager(PrivateKey::random()).await;
     let a = m.create_profile("A", "pw a").await.unwrap();
     let b = m.create_profile("B", "pw b").await.unwrap();
@@ -50,7 +47,14 @@ async fn one_permit_runs_two_unlocks_one_after_the_other_and_both_succeed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn four_derivations_run_at_once_by_default_and_a_fifth_waits_for_a_permit() {
+    assert_eq!(
+        DEFAULT_KDF_IN_FLIGHT, 4,
+        "512 MiB of argon2id at the default"
+    );
     let (m, _) = manager();
+    let held = m.kdf_permits.clone().unwrap().available_permits();
+    assert_eq!(held, DEFAULT_KDF_IN_FLIGHT, "new starts at the default");
+    let m = m.with_kdf_in_flight(DEFAULT_KDF_IN_FLIGHT).unwrap();
     let permits = m.kdf_permits.clone().unwrap();
     let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
     let (mut releases, mut tasks) = (Vec::new(), Vec::new());
@@ -89,17 +93,30 @@ async fn four_derivations_run_at_once_by_default_and_a_fifth_waits_for_a_permit(
 }
 
 #[tokio::test]
-async fn a_kdf_in_flight_of_zero_refuses_each_derivation_by_name() {
-    let config = CWIStyleWalletManagerConfig {
-        kdf_in_flight: 0,
-        ..Default::default()
-    };
-    let (m, _) = manager_with(config, || {});
-    assert!(m.kdf_permits.is_none());
-    let refused = m.create_profile("Work", "pw").await;
+async fn with_kdf_in_flight_refuses_zero_by_name_before_any_derivation() {
+    let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = builds.clone();
+    let (m, seen) = manager_with(CWIStyleWalletManagerConfig::default(), move || {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let refused = m.with_kdf_in_flight(0).map(|_| ());
+    let named = format!(
+        "with_kdf_in_flight(0): kdf_in_flight must be in 1..={}",
+        Semaphore::MAX_PERMITS
+    );
     assert!(
-        matches!(&refused, Err(Error::InvalidArgument(e)) if e == "kdf_in_flight is 0: no password derivation can run"),
+        matches!(&refused, Err(Error::InvalidArgument(e)) if *e == named),
         "{refused:?}"
     );
-    assert!(m.get_profiles().await.is_empty(), "nothing created");
+    let past = manager().0.with_kdf_in_flight(usize::MAX).map(|_| ());
+    assert!(
+        matches!(past, Err(Error::InvalidArgument(_))),
+        "no panic past the max"
+    );
+    assert_eq!(
+        builds.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no derivation ran"
+    );
+    assert!(seen.lock().unwrap().is_empty());
 }
