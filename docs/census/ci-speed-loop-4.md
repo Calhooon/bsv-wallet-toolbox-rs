@@ -41,6 +41,7 @@ reqwest 0.12's Display is the kind and the URL, never its source, so a refused c
 | a delayed answer, a client timeout | the client's timer | no timer; a timeout's text is `SendFault` | the ladder stall reading stays on mockito |
 | a charset other than UTF-8 | reqwest decodes by `Content-Type` | UTF-8 with replacement, a leading BOM dropped | none |
 | the per-test seconds | the socket's | below | |
+| a non-canonical status through chaintracks' `error_for_status` (`chaintracks_client.rs:328`, `:370`) | reqwest 0.12.28's Display prints the server's reason phrase when hyper keeps one (`error.rs:247-262`; hyper 1.12 keeps it only when it differs from the canonical one, `role.rs:1074`, and a hyper server writes `<none>` for a code it does not know, `role.rs:459`): a socket 599 or 465 reads `(599 <none>)`, a stub with a custom phrase `(500 Oops)` | the `StatusCode` Display (`599 <unknown status code>`, http `status.rs:225`); the 503 row stays identical, 503 being canonical | none named: the CLI's stubs answer 500, a canonical code (the texts read's finding, PR #699) |
 
 Per fixture class the CLI names (the CLI's tree read at `origin/beta` 9e99a33, not built here):
 
