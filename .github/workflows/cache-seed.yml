@@ -53,9 +53,13 @@ name: Cache seed
 #
 # Each job asks before the build whether main's scope already holds the exact key
 # (`lookup-only`); on a hit it skips the build, so a needless run costs seconds
-# and a lock or toolchain change costs one build. Two jobs in parallel, one per
-# feature set, as beta's: two slots at most, each with its own target/, so
-# neither save carries the other feature set's artifacts.
+# and a lock or toolchain change costs one build. Five jobs in parallel, one
+# per beta job: five of the account's twenty runner slots at most while a seed
+# builds, each with its own target/, so no save carries another job's
+# artifacts. The one `cache-seed` concurrency group below keeps a second seed
+# from taking five more. No job is sharded: cold, beta's lint ran 4:16 to
+# 4:25, checks 2:08 to 3:29 and semver 1:54 to 2:41 (runs 41574586600 and
+# 41578469987), under eight minutes each.
 on:
   # A push to main renews the seed when main moves; a dispatch by hand renews
   # it after a stable release or a change to beta's keyed inputs (the lookup
