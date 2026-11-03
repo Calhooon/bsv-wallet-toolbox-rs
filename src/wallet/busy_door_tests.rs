@@ -1182,11 +1182,15 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
 /// `StorageSqlx` over the one file, two writer pools meeting in SQLite.
 /// Built over two handles of one store (a clone), they hold one writer:
 /// the writer taken through the monitor's handle is the wallet's too. Then
-/// 300 rounds of the monitor's pass beside the wallet's `createAction`:
-/// never `WalletBusy`, every action done.
+/// 60 rounds of the monitor's pass beside the wallet's `createAction`:
+/// never `WalletBusy`, every action done. Each round joins the two, so
+/// each round meets the one writer; the pass reads every `nosend` action
+/// the rounds before it left, so the rounds cost grows as their square
+/// (300 took 55 s on the ubuntu runner, #634), and a writer that cannot
+/// wait for the other refuses in the opening rounds.
 #[tokio::test]
 async fn a_wallet_and_a_monitor_over_one_store_share_the_writer() {
-    const ROUNDS: u32 = 300;
+    const ROUNDS: u32 = 60;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shared.db").to_string_lossy().to_string();
     let store = StorageSqlx::open(&path).await.unwrap();
