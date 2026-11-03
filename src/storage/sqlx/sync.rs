@@ -19,6 +19,10 @@ use super::StorageSqlx;
 #[path = "sync_output_tests.rs"]
 mod output_tests;
 
+#[cfg(test)]
+#[path = "sync_bounds_tests.rs"]
+mod bounds_tests;
+
 // =============================================================================
 // Entity Names (for offsets)
 // =============================================================================
