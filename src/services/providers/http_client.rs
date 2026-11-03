@@ -4,7 +4,7 @@
 #[cfg(test)]
 pub(crate) use isolated::check_url;
 #[cfg(test)]
-pub(crate) use isolated::shared::share_clients_on_this_thread;
+pub(crate) use isolated::shared::{share_clients_on_this_thread, SharedClients};
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) use isolated::{Client, RequestBuilder, RequestError};
 #[cfg(not(any(test, feature = "bench-support")))]
@@ -294,6 +294,17 @@ mod isolated {
         /// One client per setting, for the builds made under it.
         #[derive(Clone, Default)]
         pub(crate) struct SharedClients(Arc<Mutex<HashMap<Key, Client>>>);
+
+        impl SharedClients {
+            /// `build` (no await inside, so on one thread) with every client
+            /// it makes taken from this set: a multi-thread test's builds
+            /// share one set from whichever worker they run on.
+            pub(crate) fn building<R>(&self, build: impl FnOnce() -> R) -> R {
+                let before = CLIENTS.with(|clients| clients.replace(Some(self.clone())));
+                let _restore = ShareClients(before);
+                build()
+            }
+        }
 
         /// While held, every client this thread builds with one setting is
         /// the same client. Dropped, the thread builds as it did before.

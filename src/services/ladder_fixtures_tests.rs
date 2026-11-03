@@ -10,7 +10,15 @@
 use super::*;
 
 use crate as toolbox;
+use crate::services::providers::http_client::SharedClients;
 use crate::services::providers::pace::Clock;
+
+/// The clients every replay's `Services` is built over in this process, one
+/// per timeout (#634): a scene's build was four or five TLS contexts on the
+/// ubuntu runner, and the replays build one `Services` a scene. Each scene
+/// keeps its own `Services`, gates and clock.
+static CLIENTS: std::sync::LazyLock<SharedClients> =
+    std::sync::LazyLock::new(SharedClients::default);
 
 /// `Services` with WhatsOnChain, Bitails and (when given) BananaBlocks at
 /// local fixture bases, each with a gate of its own and a client that
@@ -28,40 +36,42 @@ fn services_at(
     timeout_secs: u64,
 ) -> (Services, Clock) {
     let clock = Clock::held();
-    let services = Services::with_explorers(
-        Chain::Main,
-        options,
-        StdArc::new(
-            WhatsOnChain::with_base_url_and_config(
-                Chain::Main,
-                woc,
-                WhatsOnChainConfig {
-                    api_key: None,
-                    timeout_secs: Some(timeout_secs),
-                },
-            )
-            .with_clock(clock.clone()),
-        ),
-        StdArc::new(
-            Bitails::with_base_url_and_config(
-                Chain::Main,
-                bitails,
-                BitailsConfig {
-                    api_key: None,
-                    timeout_secs: Some(timeout_secs),
-                },
-            )
-            .with_clock(clock.clone()),
-        ),
-        bananablocks.map(|base| {
+    let services = CLIENTS.building(|| {
+        Services::with_explorers(
+            Chain::Main,
+            options,
             StdArc::new(
-                BananaBlocks::with_base_unshared_timeout(base, Some(timeout_secs))
-                    .with_clock(clock.clone()),
-            )
-        }),
-    )
-    .unwrap()
-    .with_header_clock(&clock);
+                WhatsOnChain::with_base_url_and_config(
+                    Chain::Main,
+                    woc,
+                    WhatsOnChainConfig {
+                        api_key: None,
+                        timeout_secs: Some(timeout_secs),
+                    },
+                )
+                .with_clock(clock.clone()),
+            ),
+            StdArc::new(
+                Bitails::with_base_url_and_config(
+                    Chain::Main,
+                    bitails,
+                    BitailsConfig {
+                        api_key: None,
+                        timeout_secs: Some(timeout_secs),
+                    },
+                )
+                .with_clock(clock.clone()),
+            ),
+            bananablocks.map(|base| {
+                StdArc::new(
+                    BananaBlocks::with_base_unshared_timeout(base, Some(timeout_secs))
+                        .with_clock(clock.clone()),
+                )
+            }),
+        )
+        .unwrap()
+        .with_header_clock(&clock)
+    });
     (services, clock)
 }
 
