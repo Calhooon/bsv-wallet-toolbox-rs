@@ -519,7 +519,11 @@ jobs:
       # HANDOFF.md's landing rows (#669): a file per PR under docs/handoff/,
       # the Next section generated from them. A row on the page that differs
       # from its file, has none, or stands out of order fails; a file not yet
-      # on the page waits for the captain's fold.
+      # on the page waits for the captain's fold, within the bound (more than
+      # three waiting, or the oldest older than six hours, fails). The --check
+      # step runs on a docs-only run too (python3, seconds), since a row file
+      # and HANDOFF.md are docs: a hand edit is checked on its own PR's run and
+      # in the queue.
       - name: handoff rows, the tool's own cases
         id: handoff-cases
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
@@ -527,7 +531,7 @@ jobs:
 
       - name: handoff rows, the page matches its files
         id: handoff
-        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() }}
         run: python3 tools/handoff-rows --check
 
       # The vector-backed tests: the Arcade status vector
