@@ -34,8 +34,17 @@ pub(super) fn cut_short(w: &mut dyn std::io::Write, body: &[u8]) -> std::io::Res
 
 /// Every cut reaches the client as a head and then a body fault, never as
 /// a request with no answer. Counted, not timed: a thousand cuts in a row,
-/// each one's head and fault asserted.
+/// each one's head and fault asserted. The count stays: the race it guards
+/// is 1 to 10 in 10,000 bare cuts, and with the padding taken out a
+/// thousand cuts passed three runs of three on an idle box (#634). It
+/// reaches mockito, hyper and reqwest and no feature of the crate, so it
+/// runs where `sqlite` is on (the Test Suite job) and not again in the
+/// remote-only job, which ran it for 15 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(feature = "sqlite"),
+    ignore = "no crate feature reaches it; the sqlite builds run it (#634)"
+)]
 async fn ladder_fixtures_a_cut_answer_always_reaches_the_client_as_a_body_cut_short() {
     let mut server = mockito::Server::new_async().await;
     let body = br#"{"index": 0, "txOrId": "aaaaaa"#.to_vec();
