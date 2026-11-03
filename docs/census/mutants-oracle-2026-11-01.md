@@ -48,6 +48,7 @@ Before: the Mutants workflow's oracle before this lane: `cargo test --lib`, defa
 |---|---|---:|---:|---:|---:|---:|
 | `src/storage/sqlx/create_action/must_spend.rs` | before | 0 | 19 | 0 | 3 | 0.00% |
 | `src/storage/sqlx/create_action/must_spend.rs` | after | 18 | 1 | 0 | 3 | 94.74% |
+| `src/storage/sqlx/create_action/must_spend.rs` | after #574 | 19 | 0 | 0 | 3 | 100.00% |
 | `src/storage/sqlx/create_action/own_word.rs` | before | 5 | 2 | 0 | 2 | 71.43% |
 | `src/storage/sqlx/create_action/own_word.rs` | after | 5 | 2 | 0 | 2 | 71.43% |
 | `src/storage/sqlx/create_action/review_beef.rs` | before | 13 | 0 | 0 | 1 | 100.00% |
@@ -72,7 +73,7 @@ No fix here: each survivor is the next lane's, per file, killed by a test writte
 
 The rule: a coin is offered, and so spent, only under the spend guard: no action of ours holds it, and its creator's word allows it under the host's rule for our own change or the action's received rule (wallet charter section 2, `wallet.md:32`, rows `:93-95`); a coin the caller names is the door's to refuse by name when it is not ours to name (row `:96`); the must-spend list is the offer's own (#353, bsv-wallet-cli #313): a wallet-managed change coin inside the offer, the user's and unspent, under the pick's filters, else refused by name. The node's word behind it: the coin exists unspent on the active chain (`wallet.md:143`).
 
-- `src/storage/sqlx/create_action/must_spend.rs:131:31: replace || with && in NamedCoin::read` (MissedMutant)
+- `src/storage/sqlx/create_action/must_spend.rs:131:31: replace || with && in NamedCoin::read` (MissedMutant here; killed by #574, the section below)
 
 **`src/storage/sqlx/create_action/own_word.rs`** (2 survivors; before the widening 2)
 
@@ -109,3 +110,38 @@ Killed by the widening (survivors before, caught after), with the targets that c
 - `src/storage/sqlx/create_action/must_spend.rs:147:19: replace != with == in NamedCoin::read`: `fixtures`
 - `src/storage/sqlx/create_action/must_spend.rs:147:34: replace && with || in NamedCoin::read`: `fixtures`
 - `src/storage/sqlx/create_action/must_spend.rs:147:44: replace != with == in NamedCoin::read`: `fixtures`
+
+## The survivor at 131:31, killed (#574)
+
+The lane p5-574-must-spend-survivor, on beta `fa8b280c`, the tree at `6cfb715f`; the record's json under `issue_574`, the outputs under `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-574-must-spend-survivor/run`.
+
+The mutant: `spent_by.is_some() || (self.require_spendable && !spendable)` read as `spent_by.is_some() && (...)`, so a coin another action holds passes the read whenever the action does not ask the `spendable` flag (`acceptDelayedBroadcast`, `require_spendable` false) or the flag reads 1. Not equivalent, but quiet alone: under the write lock the allocation's `UPDATE ... WHERE spent_by IS NULL` marks no row and refuses with the same text, `is spent or reserved`. It shows only where a held coin also fails a later rule of the read, since the mutant moves the refusal from the held rule to that one. The rule (the spend guard, `wallet.md:32`, rows `:93-96`): no action of ours holds it, judged by `spent_by` alone as the pick's own `o.spent_by IS NULL` judges it; a coin held is refused as held, whatever else is said of it.
+
+The witness, `fixtures::storage::must_spend::refusals::a_held_coin_is_refused_as_held_ahead_of_the_received_rule`: an earlier action under `underReceivedRule` holds the unproven receipt; a delayed action without the rule names it. At the tip: `mustSpend[0]: output <txid>.0 is spent or reserved`. Under the mutant (planted by hand, then by cargo-mutants): `... is a received coin whose transaction is unproven, not completed; the action does not name underReceivedRule`. The only failure under the mutant, in `fixtures`.
+
+The file under the door oracle (`.cargo/mutants-doors.toml`'s targets and features, given with `--no-config`: the config's `examine_globs` override `--file`; `--in-place`, serial, which refuses `--jobs`), timeouts 900 s, with the unmutated baseline (26 s build, 18 s test): `22 mutants tested in 15m: 19 caught, 3 unviable`. Score 100.00% (19/19); the floor stays 80.
+
+| Mutant | Verdict |
+|---|---|
+| `src/storage/sqlx/create_action/must_spend.rs:15:5: replace refusal -> Error with Default::default()` | Unviable |
+| `src/storage/sqlx/create_action/must_spend.rs:21:5: replace check_listed -> Result<()> with Ok(())` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:22:38: delete ! in check_listed` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:46:5: replace allocate_named_change_input -> Result<AllocatedChangeInput> with Ok(Default::default())` | Unviable |
+| `src/storage/sqlx/create_action/must_spend.rs:58:12: delete ! in allocate_named_change_input` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:73:35: replace == with != in allocate_named_change_input` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:95:9: replace NamedCoin::sql -> String with String::new()` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:95:9: replace NamedCoin::sql -> String with "xyzzy".into()` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:115:9: replace NamedCoin::read -> Result<AllocatedChangeInput> with Ok(Default::default())` | Unviable |
+| `src/storage/sqlx/create_action/must_spend.rs:121:71: replace == with != in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:127:12: delete ! in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:131:31: replace || with && in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:131:58: replace && with || in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:131:61: delete ! in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:137:58: replace && with || in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:137:33: replace && with || in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:137:20: replace == with != in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:137:43: replace != with == in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:137:61: delete ! in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:147:34: replace && with || in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:147:19: replace != with == in NamedCoin::read` | CaughtMutant |
+| `src/storage/sqlx/create_action/must_spend.rs:147:44: replace != with == in NamedCoin::read` | CaughtMutant |

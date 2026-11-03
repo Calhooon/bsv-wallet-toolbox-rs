@@ -155,7 +155,7 @@
     },
     "src/storage/sqlx/create_action/must_spend.rs": {
       "floor": 80,
-      "_comment": "Measured 94.74% (18/19) under the door oracle, 0.00% (0/19) under --lib (docs/census/mutants-oracle-2026-11-01.md); the survivor 131:31 is the triage lane's (#535)."
+      "_comment": "Measured 100.00% (19/19) under the door oracle since #574 (94.74%, 18/19, at #535), 0.00% (0/19) under --lib (docs/census/mutants-oracle-2026-11-01.md); the survivor 131:31 killed by a fixtures test (#574)."
     },
     "src/storage/sqlx/create_action/outputs.rs": {
       "floor": 75,
