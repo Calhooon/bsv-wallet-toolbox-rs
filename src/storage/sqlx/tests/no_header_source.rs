@@ -390,3 +390,41 @@ async fn create_holds_a_caller_root_with_the_header_services_fault() {
     assert_eq!(asks, 1);
     assert_eq!(action_rows(&storage).await, 0);
 }
+
+/// The signAction route (`process_action_internal` for a new signed
+/// transaction, every judged input valid) with no tracker on the storage
+/// and `services` alone for the own word's tip, queued with `delayed`.
+async fn sign_under(
+    services: Arc<dyn crate::services::WalletServices>,
+    delayed: bool,
+) -> (StorageSqlx, crate::Result<String>) {
+    let (storage, user_id) = store().await;
+    let (_, mut beef, _, child) = posted(Bad::None);
+    storage.set_services(services);
+    let processed = sign_on(&storage, user_id, &mut beef, &child, delayed).await;
+    (storage, processed)
+}
+
+/// `own_word_tip`'s rule (#506): only the services' not-configured answer
+/// (`NO_HEADER_SERVICE`) gives the own word the latest era; any other
+/// `get_chain_tracker` error holds with `header_fault`'s text, before the
+/// writer, the action still `unsigned`. Control: services built with no
+/// `chaintracks_url` judge at the latest era and the valid spend is sent.
+#[tokio::test]
+async fn own_word_holds_for_a_header_service_fault_other_than_not_configured() {
+    for delayed in [false, true] {
+        let services = Arc::new(UnreachableHeaders::default());
+        let (storage, processed) = sign_under(services.clone(), delayed).await;
+        eprintln!("unreachable delayed={delayed}: {processed:?}");
+        let error = processed.unwrap_err();
+        assert!(matches!(error, Error::ServiceError(_)), "{error:?}");
+        assert_eq!(error.to_string(), UNREACHABLE_HOLD);
+        assert_eq!(services.asks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(signed_rows(&storage).await, ("unsigned".into(), 0));
+    }
+    let off = Arc::new(crate::services::Services::mainnet().unwrap());
+    let (storage, processed) = sign_under(off, true).await;
+    eprintln!("not configured, delayed: {processed:?}");
+    assert_eq!(processed.unwrap(), "sending");
+    assert_ne!(signed_rows(&storage).await.0, "unsigned");
+}
