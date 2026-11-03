@@ -34,7 +34,9 @@ impl StorageSqlx {
         // BRC-100's reverse-order paging: -1 is the newest output. `-offset`
         // overflows at i32::MIN (#230); `unsigned_abs` does not, so the
         // largest value here is 2147483647, which the `as i32` bind below
-        // and the `u32` sum with the page length (at most 10000) both hold.
+        // and the `u32` sum with the page length both hold (the limit is
+        // the door's bound, 1..=10000, since #226; a short page counts real
+        // rows, so the sum cannot pass 2^31 + the store's row count).
         let actual_offset = if offset < 0 {
             offset.unsigned_abs() - 1
         } else {

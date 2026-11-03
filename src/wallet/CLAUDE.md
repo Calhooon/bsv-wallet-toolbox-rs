@@ -938,10 +938,12 @@ reference's permissions manager asks before the wallet validates
 larger limit to 10000 and ran `LIMIT 0` for 0, answering an empty page; the
 storage now passes the limit through, as the reference's does
 (`listActionsKnex.ts:102`, `listOutputsKnex.ts:254`, `listCertificates.ts:14`).
-The door's check runs ahead of the storage's array bounds (#309), so a
-request with both an out-of-range limit and an array past its bound is
-answered the limit's text, where the reference answers the array's (1637,
-1691, 1195 run before 1647, 1708, 1199).
+The door's check runs ahead of what the storage validates (#309's array
+bounds, the labels and tags, the certifiers and types, the privilege),
+so a request with both an out-of-range limit and an array past its bound
+or an element the storage validates is answered the limit's text, where
+the reference answers the array's or the element's (1637, 1691, 1192,
+1195, 1198 run before 1647, 1708, 1199).
 
 No offset is refused: `listOutputs`' offset line (1648) carries no minimum,
 since BRC-100's reverse paging reads `-1` as the newest output
