@@ -144,8 +144,8 @@ for line in workflow.split("jobs:\n", 1)[1].splitlines():
 check("ci.yml has the five jobs", sorted(jobs) == ["checks", "lint", "semver", "test", "test-remote"],
       sorted(jobs))
 for job, steps in jobs.items():
-    first = steps[0][0] if steps else ""
-    check(f"{job}: the checkout comes first", "actions/checkout@" in first, first)
+    head_step = steps[0][0] if steps else ""
+    check(f"{job}: the checkout opens the job", "actions/checkout@" in head_step, head_step)
     scope = steps[1] if len(steps) > 1 else []
     check(f"{job}: the docs-only step comes second",
           any("id: scope" in s for s in scope) and any("tools/docs-only" in s for s in scope), scope)

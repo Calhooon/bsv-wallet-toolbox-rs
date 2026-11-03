@@ -39,7 +39,7 @@ name: CI
 # `merge_group`: a job an `if:` skips there yields no check-run, and the queue
 # holds the group pending until its timeout.
 #
-# The docs-only short-circuit (#632): every job's first step after its
+# The docs-only short-circuit (#632): every job's opening step after its
 # checkout runs tools/docs-only, and every step after it carries
 # `steps.scope.outputs.docs_only != 'true'` in its `if:`. On a pull request or
 # a queue group whose every changed path is a doc (docs/ and every *.md, less
@@ -507,7 +507,7 @@ jobs:
         run: python3 tools/affected-tests-test
 
       # The docs-only set's cases (#632): the path classes, the events, and the
-      # diff on scratch commits. Every job's first step runs the script; this
+      # diff on scratch commits. Every job's opening step runs the script; this
       # gate checks it.
       - name: docs only, the set's own cases
         id: docs-only-cases
