@@ -3,7 +3,8 @@
 A decision brief for the owner, no code. The keeper's 2026-11-03 21:0xZ reading asks for it
 before any lane on #751. Labels: `[X]` read at the pin named; `[D]` told (the issue, the brief).
 Nothing here was run: every claim is a reading, with its lines, and every figure in section 4
-is arithmetic, not a measurement.
+is arithmetic, not a measurement. Revised once on PR #756's lens read (findings 1 to 4:
+spending out of step 1, what step 1 closes, `raw_originator`, the counts and the fee sums).
 
 Pins: ts-stack `edf6e03` (`~/bsv/ts-stack`, read with `git show edf6e03:<path>`; the working
 tree sits at `4d0ea63c8` and was not read); the file is
@@ -89,7 +90,10 @@ bsv-wallet-cli at `origin/beta` `c2b20f9` (`~/bsv/bsv-wallet-cli`, present on th
   (`findBasketToken` `:3163`), `ensureCertificateAccess` `:1669-1709` (`findCertificateToken`
   `:3196`), `ensureSpendingAuthorization` `:1746-1778` (`findSpendingToken` `:3241`; the month's
   spend from `listActions` on the labels `admin originator <o>` and `admin month <m>`,
-  `querySpentSince` `:3306-3330`; an exceeded ceiling prompts a renewal, `:1754-1766`).
+  `querySpentSince` `:3306-3330`, admitted only while the month's spend plus this one stays
+  within the authorized amount, `:1746-1750`; an exceeded ceiling prompts a renewal,
+  `:1754-1766`). The labels come from the manager's own `createAction` wrapper, which appends
+  `admin originator <o>` and `admin month <m>` to every non-admin action (`:4331-4334`) `[X]`.
 
 ### 1.4 Renewal
 
@@ -101,7 +105,8 @@ bsv-wallet-cli at `origin/beta` `c2b20f9` (`~/bsv/bsv-wallet-cli`, present on th
   signer for the token (`:3566-3576`, `permissionTokenInputSigners`).
 - The renewal prompt is the ordinary prompt with `renewal: true` and `previousToken`
   (`:336-337`, `:1559-1560`); the host's display originator falls back to the old token's
-  `rawOriginator` (`:2583`).
+  `rawOriginator` (`:2583`) `[X]`, and the renewal's search for the old tokens builds its
+  originator lookup values from it (`:3660`) `[X]`, as the month's tally does (`:3307`).
 
 ### 1.5 Listing and revocation
 
@@ -133,9 +138,16 @@ bsv-wallet-cli at `origin/beta` `c2b20f9` (`~/bsv/bsv-wallet-cli`, present on th
   `:1008`, `:1083`) read the cache alone in the same way `[X]` (read for the cache step only).
 - `pm.rs:1274-1300` `[X]` `cache_token` stores the expiry alone; `get_cached_token` always
   returns `None`; `purge_expired_tokens` prunes the cache. `PermissionToken` (`pm.rs:257-300`)
-  is the reference's shape, but no function builds one from a stored output.
+  carries the reference's outpoint, expiry and per-kind fields but not its `rawOriginator`
+  (`:380`; `grep -n raw_originator pm.rs` finds nothing) `[X]`, and no function builds one
+  from a stored output.
+- `ensure_spending_permission` (`pm.rs:1083-1131`) `[X]` reads the cache and prompts: no
+  token, no tally. No spend is labelled: `grep -rn "admin month\|admin originator" src` finds
+  no label, only the admin originator's doc comments and refusal text `[X]`.
 - No listing, `has*` probe, revocation or renewal function exists in `pm.rs` (`grep -n
-  "list_\|revoke\|renewal" pm.rs` finds only the `allow_list_*` flags) `[X]`.
+  "list_\|revoke\|renewal" pm.rs` finds the `allow_list_*` flags and the test mocks'
+  `list_actions`, `list_outputs` and `list_certificates` at `pm.rs:1339`, `:1353`, `:1437`,
+  nothing else) `[X]`.
 
 What a restart, or five minutes, loses: every grant. What a host written to the reference
 expects and does not get:
@@ -170,7 +182,8 @@ CLI answers its served doors from these rows; it spends no coin per grant and wr
 
 What it is: on a grant the manager mints one PushDrop output per grant through the wallet's
 own `create_action`, as the admin originator, in the reference's four admin baskets with its
-tags and its six encrypted fields; the lookups read them through `list_outputs` ahead of the
+tags and its encrypted fields (six for a protocol or certificate token, three for a basket,
+two for spending, `:3708-3749`); the lookups read them through `list_outputs` ahead of the
 seek-false refusal and ahead of the prompt; renewal and revocation spend them; the listing and
 revocation calls exist.
 
@@ -184,28 +197,54 @@ What it needs:
   flag needing a new field or a new answer type). New public methods: the four `list_*`, the
   four `has_*`, `revoke_permission`, `revoke_permissions`, `revoke_all_for_originator`;
   `PermissionRequest` gains `renewal` and `previous_token` (a constructible public struct: a
-  MAJOR change to `cargo semver-checks`, as `src/managers/CLAUDE.md` records for the config).
+  MAJOR change to `cargo semver-checks`, as `src/managers/CLAUDE.md` records for the config);
+  `PermissionToken` gains `raw_originator` (`:380`; the renewal prompt's display originator,
+  `:2583`, and the lookup values of the renewal and the tally, `:3660`, `:3307`), another
+  constructible public struct, so another MAJOR change.
 - **Schema: none.** The tokens are outputs, baskets, tags and actions the store already holds.
   The basket names are the reference's (`:418-423`), so no naming decision; but the four names
   begin with `admin`, and `is_admin_basket` (`pm.rs:592-594`) refuses them to every non-admin
-  originator, which is the intent. Whether the port's create door admits an `admin`-prefixed
-  basket from the admin originator is not read here: the lane's opening probe.
+  originator, which is the intent. Whether the port's doors admit the admin originator's own
+  calls on an `admin`-prefixed basket and the `[2, 'admin permission token encryption']`
+  protocol is not read here: the lane's opening probe covers `list_outputs` on the four
+  baskets and `decrypt` under that protocol (both step 1 needs) beside `create_action` and
+  `encrypt` (step 2).
 - **Doors touched:** create (mint, renew, coalesce, revoke), sign (the manager signs the
   token input itself, `:3566-3576`; the port has no `completeBoundAction` or token input
   signer, so a signing path for a PushDrop input under the admin protocol key is new code),
-  list outputs (every lookup), list actions (the spending month, `:3306-3330`), encrypt and
+  list outputs (every lookup), list actions (the spending month, `:3306-3330`), the labelling
+  of every non-admin action with `admin originator <o>` and `admin month <m>` in the
+  manager's create wrapper (`:4331-4334`; the port labels nothing, section 2), encrypt and
   decrypt (every field, every lookup), and broadcast (each grant is a transaction; with
   `acceptDelayedBroadcast` it rides the monitor's send path).
-- **Cost per grant (arithmetic, not a run).** The output is 1 satoshi (`:3379`). The script
-  carries six ciphertexts (each the plaintext plus the SDK's 32-byte IV and 16-byte tag, so
-  about 50 to 90 bytes), the 33-byte key, `OP_CHECKSIG` and the signature field that the
-  trailing `true` asks for (about 71 bytes): about 500 to 650 bytes. With one P2PKH funding
-  input (about 148 bytes), one change output (34) and the frame (10), a grant is about 700 to
-  850 bytes; at the port's default 101 sat/kB (`src/storage/sqlx/create_action/fees.rs:4`)
-  about 70 to 90 satoshis of fee and 1 locked. A renewal spends the token (about 115 bytes
-  in) and mints its successor: the same order. A revocation spends the token with no output:
-  the 1 satoshi does not cover its fee, so the wallet funds it, about 30 satoshis. A wallet
-  with no spendable coin cannot record a grant at all (the reference's own limit).
+- **Cost per grant (arithmetic, not a run).** The output is 1 satoshi (`:3379`). The fields
+  per kind (`:3708-3749`): six for a protocol or certificate token, three for a basket, two
+  for spending. Each ciphertext is the plaintext plus the SDK's 32-byte IV and 16-byte tag,
+  pushed with a 1-byte prefix (2 bytes at 76 or more). The script around them: the 33-byte
+  key's push (34), `OP_CHECKSIG` (1), the signature field the trailing `true` asks for (about
+  72 with its push) and the drops (4 for seven items, 2 for four or three). The transaction
+  around the output: the frame (version, counts, locktime: 10), one P2PKH funding input (148),
+  one change output (34), so 192, plus the token output (8 value, a 1 or 3 byte length, the
+  script). Assumed plaintexts: domain 11 bytes, expiry 10, protocol name 15, counterparty
+  `self` or a 66-character key, certificate type 44 (base64), its fields' JSON 20 to 60,
+  verifier 66, basket name 10, amount 5. At the port's default 101 sat/kB
+  (`src/storage/sqlx/create_action/fees.rs:4`), rounded up:
+
+  | kind | fields pushed | script | transaction | fee |
+  |---|---|---|---|---|
+  | protocol | 60+59+54+50+64+53 = 340 (403 with a key) | 451 (514) | 192+462 = 654 (717) | 67 (73) |
+  | certificate | 60+59+54+94+69..110+116 = 452..493 | 563..604 | 766..807 | 78..82 |
+  | basket | 60+59+59 = 178 | 287 | 192+298 = 490 | 50 |
+  | spending | 60+54 = 114 | 223 | 192+232 = 424 | 43 |
+
+  So about 67 to 82 satoshis of fee for the six-field kinds under these lengths (the lens read
+  on PR #756, with longer strings, sums 71 to 86), about 50 for a basket and 43 for spending,
+  and 1 satoshi locked in each. A renewal spends the token (36 outpoint, 1, the reference's
+  73-byte unlocking script, 4: 114 bytes, `:3682`) beside the funding input and mints its
+  successor: the grant's figure plus about 12. A revocation spends the token with no token
+  output: the 1 satoshi does not cover its fee, so the wallet funds it, 10 + 114 + 148 + 34 =
+  306 bytes, about 31 satoshis (`:4278`). A wallet with no spendable coin cannot record a
+  grant at all (the reference's own limit).
 - **Tests:** the mint, lookup, renewal and revocation against the in-memory SQLite store with
   `MockWalletServices`; a restart witness (a second manager over the same store admits the
   seek-false call); a cross-SDK vector of one token's script and tags if the owner wants a
@@ -271,15 +310,26 @@ SDK's wallet, the `PermissionToken` outpoint fields filled, and cross-device gra
 
 **(P) as the parity target, reached in two steps; (C) not taken.**
 
-1. A read-only lookup, ahead of the rest: `find_protocol_token` and its three siblings over the reference's
-   admin baskets (list, decrypt, decode, source check), ahead of the seek-false refusal and the
-   prompt, as `:1522-1566` does. It closes #751's finding for every grant a token exists for
-   (a migrated TypeScript user's, and any host that mints), touches no transaction door, needs
-   no schema, and its witnesses are a seeded token output in the in-memory store. Its only
-   public question is none: the lookup is private.
+1. A read-only lookup, ahead of the rest: `find_protocol_token`, `find_basket_token` and
+   `find_certificate_token` over the reference's admin baskets (list, decrypt, decode, source
+   check), ahead of the seek-false refusal and the prompt, as `:1522-1566` does. It touches no
+   transaction door, needs no schema, and its witnesses are a seeded token output in the
+   in-memory store. Its only public question is none: the lookup is private. **Spending stays
+   out of step 1**: the reference admits a spend under a DSAP token only after summing the
+   month's actions by the labels `admin originator <o>` and `admin month <m>` (`:1746-1750`,
+   `:3306-3330`), the port writes neither label (section 2), and a spending lookup with no
+   tally would admit every spend up to the token's ceiling, on each call, all month. The
+   labelling is a change to every non-admin `create_action` the manager forwards (`:4331-4334`),
+   not a read, so it goes with the spending lookup and the tally into step 2;
+   `ensure_spending_permission` keeps today's cache and prompt until then.
+   **What step 1 does not close**: it admits only grants that already have a token (a
+   TypeScript wallet's, over a synced store); every grant the port makes still lives in the
+   cache alone, so #751's own case (a grant older than five minutes or from before a restart)
+   stays refused until step 2 mints, and the issue's witness cannot pass before step 2.
 2. The mint, renewal, revocation and listing after it, on the owner's word for the answer
-   shape (`grant_permission` beside the handler, ephemeral, `renewal`/`previous_token`), with
-   the signing path for the token input as its own lane.
+   shape (`grant_permission` beside the handler, ephemeral, `renewal`/`previous_token`,
+   `raw_originator`), with the signing path for the token input as its own lane, and the
+   spending token's lookup with the spend labelling and the monthly tally beside it.
 
 Reasons: the reference keeps grants as tokens so that they live with the wallet's outputs; a
 table is a second store the reference does not have, and its divergence row would stay open
@@ -287,7 +337,7 @@ forever or be replaced by (P) later, paying twice. (C2)'s precedent is real, but
 CLI's own layer answering its own doors under the owner's W1 (a); the toolbox's manager is the
 reference's port, and the host already has (C) where it wants one. Step 1 is cheap and
 parity-safe on its own, so the decision on the public shape (step 2) can wait without leaving
-#751's refusal open for migrated grants. If the owner prefers no coin per grant, (C2) is the
+#751's refusal open for migrated grants; the port's own grants wait for step 2. If the owner prefers no coin per grant, (C2) is the
 cheaper of the two (C) forms, as a builder method, with step 1's read of the admin baskets
 beside it so that tokens are still honoured.
 
