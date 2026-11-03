@@ -93,6 +93,9 @@ this way; one name for `bhs`, whose header scenes all answer the same header;
 #724).
 `fuzz/seed_corpus_test.py` holds the held set's cases on a scratch corpus
 (`python3 -m unittest fuzz/seed_corpus_test.py`, in CI's checks job, #723).
+CI's checks job runs the exit test as its own step (`seeder, the committed
+corpus is its output`, #737): the seeder, then `git status --porcelain` over
+`fuzz/corpus` must print nothing.
 
 The hash-named files beside the seeds are what the targets found in their
 runs, minimized with `cargo fuzz cmin`. To keep a later run's growth, run

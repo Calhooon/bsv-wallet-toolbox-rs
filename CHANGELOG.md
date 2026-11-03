@@ -94,6 +94,11 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #737: CI's checks job runs the fuzz seeder's exit test (`python3
+  fuzz/seed_corpus.py`, then `git status --porcelain` over `fuzz/corpus`
+  must be empty), which `docs/FUZZ.md` named (#582) and no workflow ran; a
+  fixture rename or a seeder change that rewrites the committed corpus now
+  fails the step. Found by the #723 lane.
 - #723: `fuzz/seed_corpus_test.py`, the seeder's check file: the
   three-write case of #713's held set (PR #722) on a scratch corpus, run in
   CI's checks job. The committed corpus is unchanged.
