@@ -556,7 +556,8 @@ protocol check runs ahead of it with the request's flag
 `differentiate_privileged_operations` on, a privileged key call needs a
 privileged grant and an everyday grant does not admit it (before #568's
 fix round it judged every request as unprivileged). All seven ask it:
-`get_public_key` (PublicKey, when it names a protocol), `encrypt` and
+`get_public_key` (PublicKey, when it names a protocol; IdentityKey under
+`[1, 'identity key retrieval']` for the identity key, #719), `encrypt` and
 `decrypt` (Encrypting), `create_hmac` and `verify_hmac` (Hmac),
 `create_signature` and `verify_signature` (Signing; `verify_signature`
 since #576, as the reference's `:5359-5384`).
@@ -739,7 +740,7 @@ The `Wallet` implements all 28 methods from `WalletInterface`:
 ### Permission Check Helpers (internal)
 
 When `permissions_manager` is set, operations automatically check permissions:
-- `check_protocol_permission(originator, privileged, protocol, counterparty, reason, usage_type)` - DPACP enforcement, `privileged`, the counterparty (`self` when absent) and the `privileged_reason` the request's, as the reference passes them (#581)
+- `check_protocol_permission(originator, privileged, protocol, counterparty, reason, usage_type, seek_permission)` - DPACP enforcement, `privileged`, the counterparty (`self` when absent) and the `privileged_reason` the request's, as the reference passes them (#581); `seek_permission` the request's in `get_public_key` alone, else `true`, as the reference passes it (#720). `get_public_key` with `identity_key: true` asks `[1, 'identity key retrieval']`, usage `IdentityKey`, counterparty `self` (#719)
 - `check_basket_permission(originator, basket, usage_type)` - DBAP enforcement
 - `check_spending_permission(originator, satoshis)` - DSAP enforcement
 - `check_certificate_permission(originator, privileged, verifier, cert_type, fields, usage_type)` - DCAP enforcement

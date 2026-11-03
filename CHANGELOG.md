@@ -9,6 +9,26 @@
   target loses nothing. The seeder's stale report (#743) named them; a corpus removal is its own
   commit by the captain's hand.
 
+- #719, #720 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
+  `get_public_key` with `identity_key: true` asks the permissions manager
+  the level-1 protocol `identity key retrieval` with usage `IdentityKey`,
+  counterparty `self` (dropped at level 1) and the request's `privileged`
+  and `privileged_reason`, as the reference's `getPublicKey` does
+  (ts-stack@edf6e03 `WalletPermissionsManager.ts:5174-5185`); before, it
+  asked nothing. Both branches of `get_public_key` pass the request's
+  `seek_permission` (absent read as true, `:5169`, `:5182`, `:1487`), and
+  with it false and no grant the call is refused with `Access denied: No
+  protocol permission token found (seekPermission=false).`, class
+  `Unauthorized`, and no prompt (`:1533`); before, the flag was ignored.
+  The other six key calls keep seeking, as the reference passes no flag
+  there. `ensure_protocol_permission`'s signature and answer are
+  unchanged. Host note (bsv-wallet-cli#386): a host's
+  `PermissionRequestHandler` now sees a prompt for an identity-key request
+  where none came, unless its config turns
+  `seek_permissions_for_identity_key_revelation` off; and a
+  `get_public_key` request with `seekPermission` false is answered without
+  a prompt, as the reference answers it: admitted under a grant, else
+  refused.
 - #735: the sync chunk's lengths (`estimate_size`'s serialized length and
   the twelve row counts into `ChunkingState::add_items` in
   `src/storage/sqlx/sync.rs`) convert to `u32` saturating at `u32::MAX`
