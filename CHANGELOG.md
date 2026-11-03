@@ -333,6 +333,13 @@
   outside file in that window: the outside file stays byte-identical and
   the sibling is unlinked unzeroed. With the check replaced by `true` the
   outside file is zeroed and the witness fails. No behaviour change.
+- #715 (tests only): the sync-chunk wrap-edge witness (#703) seeds a row
+  in each of the twelve synced tables through the sync chunk door before
+  the chunk is asked, and reads each table's head row at offset 0 and no
+  row at 2^31 and `u32::MAX`. It held the default basket alone, so the
+  #710 read's plant of the old `as i32` offset bind on the commissions
+  finder stayed green; that plant, and the same plant on each of the other
+  eleven finders, now fails it. No behaviour change.
 - #683 (bench-support and tests only): a loopback transport for a host's
   tests. Under `bench-support`, `benchmark_support::LoopbackTable` and
   `LoopbackAnswer` answer every request of the clients built inside
