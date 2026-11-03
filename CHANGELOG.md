@@ -544,6 +544,17 @@
   a holder of the file can test a password guess offline at one PBKDF2 of
   7777 rounds (design 4.3).
 
+### Documentation
+- #726 (the keeper's 2026-11-03 19:0xZ reading, before any lane):
+  `docs/design/permission-modules.md`, the reference's permission-module
+  interface and its delegation on the seven key calls (ts-stack@edf6e03
+  `WalletPermissionsManager.ts:179-230`, `:843-885`, `:5142-5385`), the
+  port's public `PermissionsModule` trait and `permission_modules` field
+  that nothing reads, what a port needs (no new public item for the
+  transform pair; one public type and a defaulted trait method for the
+  reference's `handleRequest`, the owner's word) and a recommendation.
+  Nothing is decided by the note; no behaviour moves.
+
 ## [0.14.0-beta.6] - 2026-11-01
 ### Added
 
