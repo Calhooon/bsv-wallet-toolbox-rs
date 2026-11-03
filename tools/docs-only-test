@@ -127,5 +127,31 @@ try:
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
+# The workflow's shape: in each of ci.yml's jobs the checkout, then the step,
+# then every step gated on it, so a step added later without the gate fails.
+COND = "steps.scope.outputs.docs_only != 'true'"
+workflow = (HERE.parent / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+jobs, job, step = {}, None, None
+for line in workflow.split("jobs:\n", 1)[1].splitlines():
+    if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+        job = line.strip()[:-1]
+        jobs[job] = []
+    elif job and line.startswith("      - "):
+        step = [line]
+        jobs[job].append(step)
+    elif job and step is not None and line.startswith("        "):
+        step.append(line)
+check("ci.yml has the five jobs", sorted(jobs) == ["checks", "lint", "semver", "test", "test-remote"],
+      sorted(jobs))
+for job, steps in jobs.items():
+    first = steps[0][0] if steps else ""
+    check(f"{job}: the checkout comes first", "actions/checkout@" in first, first)
+    scope = steps[1] if len(steps) > 1 else []
+    check(f"{job}: the docs-only step comes second",
+          any("id: scope" in s for s in scope) and any("tools/docs-only" in s for s in scope), scope)
+    ungated = [s[0].strip() for s in steps[2:]
+               if not any(x.strip().startswith("if:") and COND in x for x in s)]
+    check(f"{job}: every later step is gated on it", not ungated, ungated)
+
 print(f"{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

@@ -38,6 +38,18 @@ name: CI
 # and waits on the same five contexts for it. Every job runs and reports on
 # `merge_group`: a job an `if:` skips there yields no check-run, and the queue
 # holds the group pending until its timeout.
+#
+# The docs-only short-circuit (#632): every job's first step after its
+# checkout runs tools/docs-only, and every step after it carries
+# `steps.scope.outputs.docs_only != 'true'` in its `if:`. On a pull request or
+# a queue group whose every changed path is a doc (docs/ and every *.md, less
+# docs/ARCHITECTURE.md, docs/architecture/ and docs/NORTH-STAR.md, which gates
+# read, and a *.md under tests/, fuzz/, test_vectors/, tools/ or .github/), the
+# job's remaining steps are skipped and the job concludes success, so its
+# required context reports green in seconds. Skipped steps, never a skipped
+# job: a job an `if:` skips concludes `skipped`, not `success`, and the merge
+# queue paragraph above is why no required job relies on it. A push and a
+# tag's call never short-circuit.
 on:
   pull_request:
     branches: [main, beta]
@@ -93,10 +105,23 @@ jobs:
         rust: [stable]
     steps:
       # Two commits deep: on a pull request HEAD is GitHub's merge commit and
-      # HEAD^1 its base, the diff the affected-tests step reads.
+      # HEAD^1 its base, the diff the docs-only and affected-tests steps read.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 2
+
+      # The docs-only short-circuit (#632): tools/docs-only reads the change
+      # (a pull request's merge commit against HEAD^1, a queue group against
+      # its parent; never a push or a tag's call) and, when every path is in
+      # its docs set, every step below is skipped and the job reports success,
+      # so the required context still reports. Any other path runs the job's
+      # full set. The set and why each exclusion: the script's docstring.
+      - name: Docs only
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: python3 tools/docs-only --event "$EVENT" ${BASE:+--base "$BASE"}
 
       # The tests the PR's changed paths reach (#618; tools/affected-tests
       # holds the map and tools/affected-tests-test its cases): on a pull
@@ -105,12 +130,14 @@ jobs:
       # tests run on every event either way: a compile error anywhere stays
       # red on the PR, and the queue's run is the whole suite once.
       - name: The affected tests
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         id: affected
         env:
           EVENT: ${{ github.event_name }}
         run: python3 tools/affected-tests --event "$EVENT"
 
       - name: Install Rust
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ matrix.rust }}
@@ -118,6 +145,7 @@ jobs:
       # Cargo.lock is not tracked (a library): resolve it before the cache, so
       # the cache key hashes the lock this build uses, not the manifest alone.
       - name: Resolve the dependency lock
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: test -f Cargo.lock || cargo generate-lockfile
 
       # The dependencies' build, keyed by the action on the lock, the rustc
@@ -127,12 +155,14 @@ jobs:
       # alone (a PR's cache is its own ref's, seen by no other PR; a line's is
       # seen by every PR into it), restored everywhere.
       - name: Cache the dependency build
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test-sqlite-remote
           save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Install cargo-nextest
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-nextest@0.9.146
@@ -141,16 +171,19 @@ jobs:
       # compile time apart from its test time; nextest's run lists from these
       # builds and compiles nothing.
       - name: Build unit tests (sqlite)
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: cargo test --no-run --lib --features sqlite,remote
 
       # Every target under tests/, not services_tests alone: the witnesses of
       # the 0.4.x fixes live in the other files.
       # `bench-support` also runs the four network-isolation witnesses of #182.
       - name: Build integration tests
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: cargo test --no-run --test '*' --features sqlite,remote,bench-support
 
       # A mark lld or mold leaves in the binary's .comment section.
       - name: The linker the build used
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: |
           for f in target/debug/deps/bsv_wallet_toolbox_rs-*; do
             if [ -f "$f" ] && [ -x "$f" ]; then
@@ -164,7 +197,7 @@ jobs:
       # no test of a feature set (a target whose tests all need `sqlite`, in
       # the remote-only job), which nextest refuses by default: warn instead.
       - name: Run unit tests (sqlite)
-        if: ${{ steps.affected.outputs.unit_run == 'true' }}
+        if: ${{ steps.affected.outputs.unit_run == 'true' && steps.scope.outputs.docs_only != 'true' }}
         run: |
           filter=(); [ -z "$FILTER" ] || filter=(-E "$FILTER" --no-tests=warn)
           cargo nextest run --lib --features sqlite,remote --no-fail-fast "${filter[@]}"
@@ -174,7 +207,7 @@ jobs:
           LADDER_FIXTURES_STALL_REPLAYS: "2"
 
       - name: Run integration tests
-        if: ${{ steps.affected.outputs.tests_run == 'true' }}
+        if: ${{ steps.affected.outputs.tests_run == 'true' && steps.scope.outputs.docs_only != 'true' }}
         run: |
           filter=(); [ -z "$FILTER" ] || filter=(-E "$FILTER" --no-tests=warn)
           cargo nextest run --test '*' --features sqlite,remote,bench-support --no-fail-fast "${filter[@]}"
@@ -187,13 +220,14 @@ jobs:
       # integration step's, so cargo lists from the builds above and compiles
       # nothing new (the lane for #312 found CI did not run this script).
       - name: Architecture doc tests
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: ARCH_DOC_LIB_FEATURES=sqlite,remote ARCH_DOC_TEST_FEATURES=sqlite,remote,bench-support bash tools/arch-doc-tests.sh
 
       # The integration step's feature set, so the library it built is reused
       # here and the job compiles it once less (#253). Doc tests stay on cargo
       # test: nextest does not run them.
       - name: Run doc tests
-        if: ${{ steps.affected.outputs.doc_run == 'true' }}
+        if: ${{ steps.affected.outputs.doc_run == 'true' && steps.scope.outputs.docs_only != 'true' }}
         run: cargo test --doc --features sqlite,remote,bench-support
 
   # The unit tests and every suite under tests/ with `remote` alone: a test
@@ -208,14 +242,24 @@ jobs:
         with:
           fetch-depth: 2
 
+      # As the Test Suite's step: the docs-only short-circuit (#632).
+      - name: Docs only
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: python3 tools/docs-only --event "$EVENT" ${BASE:+--base "$BASE"}
+
       # As the Test Suite's step: the affected tests on a pull request.
       - name: The affected tests
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         id: affected
         env:
           EVENT: ${{ github.event_name }}
         run: python3 tools/affected-tests --event "$EVENT"
 
       - name: Install Rust
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
@@ -223,25 +267,29 @@ jobs:
       # Cargo.lock is not tracked (a library): resolve it before the cache, so
       # the cache key hashes the lock this build uses, not the manifest alone.
       - name: Resolve the dependency lock
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: test -f Cargo.lock || cargo generate-lockfile
 
       # As the Test Suite's cache, keyed for the remote-only feature set.
       - name: Cache the dependency build
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: test-remote
           save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Install cargo-nextest
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-nextest@0.9.146
 
       - name: Build unit and integration tests (remote only)
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: cargo test --no-run --lib --tests --no-default-features --features remote
 
       - name: Run unit and integration tests (remote only)
-        if: ${{ steps.affected.outputs.remote_run == 'true' }}
+        if: ${{ steps.affected.outputs.remote_run == 'true' && steps.scope.outputs.docs_only != 'true' }}
         run: |
           filter=(); [ -z "$FILTER" ] || filter=(-E "$FILTER" --no-tests=warn)
           cargo nextest run --lib --tests --no-default-features --features remote --no-fail-fast "${filter[@]}"
@@ -263,17 +311,30 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
+      # Two commits deep, as the Test Suite's checkout: the docs-only step's diff.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+
+      # As the Test Suite's step: the docs-only short-circuit (#632).
+      - name: Docs only
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: python3 tools/docs-only --event "$EVENT" ${BASE:+--base "$BASE"}
 
       # The ratchet's instrument (below), installed before stable so stable
       # stays the default toolchain for every other gate.
       - name: Install Rust (the ratchet's toolchain)
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: "1.98.1"
           components: clippy
 
       - name: Install Rust
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
@@ -282,11 +343,13 @@ jobs:
       # Cargo.lock is not tracked (a library): resolve it before the cache, so
       # the cache key hashes the lock this build uses, not the manifest alone.
       - name: Resolve the dependency lock
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: test -f Cargo.lock || cargo generate-lockfile
 
       # As the Test Suite's cache, keyed for this job's check builds: Clippy's
       # two feature sets on stable and the ratchet's clippy run on 1.98.1.
       - name: Cache the dependency build
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: lint
@@ -294,14 +357,14 @@ jobs:
 
       - name: Rustfmt
         id: fmt
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: cargo fmt --all -- --check
 
       # One bsv-rs per lock (bsv-stack-lean #182): a committed Cargo.lock holding
       # two bsv-rs entries fails, the gate a self-merging stack PR stands behind.
       - name: locks, one bsv-rs per committed Cargo.lock
         id: locks
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: |
           set -euo pipefail
           status=0
@@ -320,7 +383,7 @@ jobs:
 
       - name: locks, the reusable CI call grants every job's permissions
         id: grants
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: |
           bash tools/workflow-grants-check.sh
           bash tools/workflow-grants-check-test.sh
@@ -328,12 +391,12 @@ jobs:
       # Clippy covers SQL storage with remote, plus remote without default features.
       - name: Clippy
         id: clippy
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: cargo clippy --all-targets --features sqlite,remote -- -D warnings
 
       - name: Clippy (remote only)
         id: clippy-remote
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: cargo clippy --no-default-features --features remote -- -D warnings
 
       # The numbers that may only fall (#55): tools/ratchet measures the tree and
@@ -348,13 +411,13 @@ jobs:
       # and the workflow's -Dwarnings would stop the build at any one of them.
       - name: ratchet, no number above the baseline
         id: ratchet
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: python3 tools/ratchet --check
         env:
           RUSTUP_TOOLCHAIN: "1.98.1"
 
       - name: The gates
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         env:
           GATES: |
             ${{ steps.fmt.outcome }} Rustfmt
@@ -376,6 +439,7 @@ jobs:
 
   # The small checks in one job (#617), as the lint job does with the static
   # gates: the north-star scoreboard, the affected-tests map's cases (#618),
+  # the docs-only set's cases (#632),
   # the vectors, the golden fixtures and the documentation build, each its own step run whether or not one before it
   # failed, the last step naming every gate's outcome. The vectors and the
   # fixtures build the same `sqlite` test set, so they compile it once.
@@ -383,9 +447,21 @@ jobs:
     name: checks
     runs-on: ubuntu-latest
     steps:
+      # Two commits deep, as the Test Suite's checkout: the docs-only step's diff.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+
+      # As the Test Suite's step: the docs-only short-circuit (#632).
+      - name: Docs only
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: python3 tools/docs-only --event "$EVENT" ${BASE:+--base "$BASE"}
 
       - name: Install Rust
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
@@ -394,6 +470,7 @@ jobs:
       # when present; otherwise resolve once before the cache, so the cache key
       # hashes the lock this build uses, and before the fixtures' locked replay.
       - name: Prepare dependency lock
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: |
           if ! test -f Cargo.lock; then
             cargo generate-lockfile
@@ -402,6 +479,7 @@ jobs:
       # As the Test Suite's cache, keyed for this job's `sqlite` builds (the
       # vectors' and fixtures' test builds and the documentation).
       - name: Cache the dependency build
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: checks
@@ -412,12 +490,12 @@ jobs:
       # producers (#54's bench job, #55's ratchet) run the write.
       - name: scoreboard, the writer's own cases
         id: scoreboard-cases
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: bash tools/scoreboard-write-test
 
       - name: scoreboard, the table matches its sources
         id: scoreboard
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: python3 tools/scoreboard-write --check
 
       # The affected-tests map's cases (#618): the classes, the #[path] and
@@ -425,8 +503,16 @@ jobs:
       # file. The Test Suite jobs run the map; this gate checks it.
       - name: affected tests, the map's own cases
         id: affected-cases
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: python3 tools/affected-tests-test
+
+      # The docs-only set's cases (#632): the path classes, the events, and the
+      # diff on scratch commits. Every job's first step runs the script; this
+      # gate checks it.
+      - name: docs only, the set's own cases
+        id: docs-only-cases
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
+        run: python3 tools/docs-only-test
 
       # The vector-backed tests: the Arcade status vector
       # (tests/vectors/arcade_status_verdicts.json) through its three surfaces and
@@ -435,7 +521,7 @@ jobs:
       # provider, and the cross-SDK vectors of test_vectors/.
       - name: vectors, the vector files are present
         id: vector-files
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: |
           test -s tests/vectors/arcade_status_verdicts.json
           test -s test_vectors/keys/brc29.json
@@ -445,13 +531,13 @@ jobs:
 
       - name: vectors, the Arcade status vector, the broadcast-body rows and the cross-SDK vectors
         id: vectors
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: cargo test --features sqlite --test arcade_status_vector_tests --test arc_broadcast_body_tests --test test_vectors --verbose
 
       # A filter that matches nothing passes; the grep refuses a renamed test.
       - name: vectors, the vector's word table in the library
         id: word-table
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: |
           set -o pipefail
           cargo test --features sqlite --lib services::providers::arcade::tests::every_arcade_word_has_the_verdict_of_its_class -- --exact | tee "$RUNNER_TEMP/word-table.log"
@@ -459,23 +545,24 @@ jobs:
 
       - name: fixtures, replay the golden fixtures
         id: fixtures
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: cargo test --test fixtures --locked
 
       - name: Documentation
         id: docs
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: cargo doc --no-deps --features sqlite
         env:
           RUSTDOCFLAGS: -Dwarnings
 
       - name: The gates
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         env:
           GATES: |
             ${{ steps.scoreboard-cases.outcome }} scoreboard: the writer's own cases
             ${{ steps.scoreboard.outcome }} scoreboard: the table matches its sources
             ${{ steps.affected-cases.outcome }} affected tests: the map's own cases
+            ${{ steps.docs-only-cases.outcome }} docs only: the set's own cases
             ${{ steps.vector-files.outcome }} vectors: the vector files are present
             ${{ steps.vectors.outcome }} vectors: the vector tests
             ${{ steps.word-table.outcome }} vectors: the word table
@@ -514,7 +601,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      # As the Test Suite's step: the docs-only short-circuit (#632).
+      - name: Docs only
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: python3 tools/docs-only --event "$EVENT" ${BASE:+--base "$BASE"}
+
       - name: Install Rust
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
@@ -522,17 +618,20 @@ jobs:
       # Cargo.lock is not tracked (a library): resolve it before the cache, so
       # the cache key hashes the lock this build uses, not the manifest alone.
       - name: Resolve the dependency lock
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         run: test -f Cargo.lock || cargo generate-lockfile
 
       # As the Test Suite's cache, keyed for this job's rustdoc JSON builds of
       # the tree and its baseline (#617, off actions/cache).
       - name: Cache the dependency build
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: semver
           save-if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
 
       - name: Install cargo-semver-checks
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-semver-checks
@@ -556,6 +655,7 @@ jobs:
       # (the pin PR #391 landed with the label and the push run read none; the
       # next PR rebased onto it went red on the pin's breaks).
       - name: Check the public API against its baseline (a PR or a queue group against its base, a push against the last release)
+        if: ${{ steps.scope.outputs.docs_only != 'true' }}
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GROUP_HEAD: ${{ github.event.merge_group.head_ref }}
