@@ -26,7 +26,9 @@ impl StorageSqlx {
             MAXIMUM_WALLET_COLLECTION_ITEMS,
         )?;
 
-        let limit = args.limit.unwrap_or(10).min(10000);
+        // The wallet's door refuses a limit outside 1..=10000; the reference's
+        // storage passes the validated limit through (listOutputsKnex.ts:254), no clamp (#226).
+        let limit = args.limit.unwrap_or(10);
         let offset = args.offset.unwrap_or(0);
         let order_by = if offset < 0 { "DESC" } else { "ASC" };
         // BRC-100's reverse-order paging: -1 is the newest output. `-offset`
@@ -210,7 +212,7 @@ impl StorageSqlx {
             let query = sqlx::query(&sql)
                 .bind(user_id)
                 .bind(required_count as i32)
-                .bind(limit as i32)
+                .bind(i64::from(limit))
                 .bind(actual_offset as i32);
 
             let rows = query.fetch_all(&self.reader).await?;

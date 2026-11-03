@@ -163,7 +163,9 @@ impl StorageSqlx {
         )?;
         validate_array_bound(args.types.len(), "types", MAXIMUM_WALLET_COLLECTION_ITEMS)?;
 
-        let limit = args.limit.unwrap_or(10).min(10000);
+        // The wallet's door refuses a limit outside 1..=10000; the reference's
+        // storage passes the validated limit through (listCertificates.ts:14), no clamp (#226).
+        let limit = args.limit.unwrap_or(10);
         let offset = args.offset.unwrap_or(0);
 
         // Build query with filters
@@ -199,7 +201,7 @@ impl StorageSqlx {
             query = query.bind(cert_type);
         }
 
-        query = query.bind(limit as i32).bind(offset as i32);
+        query = query.bind(i64::from(limit)).bind(offset as i32);
 
         let rows = query.fetch_all(&self.reader).await?;
 
