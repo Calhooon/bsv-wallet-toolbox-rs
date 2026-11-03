@@ -42,7 +42,7 @@
 
 use crate::services::providers::http_client::Client;
 use bsv_rs::transaction::MerklePath;
-use futures_util::StreamExt;
+use futures::StreamExt;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -888,7 +888,7 @@ impl Arcade {
         }
 
         let answers: HashMap<String, std::result::Result<Option<ArcadeTxInfo>, String>> =
-            futures_util::stream::iter(txids.iter().cloned().map(|txid| async move {
+            futures::stream::iter(txids.iter().cloned().map(|txid| async move {
                 let answer = self.get_tx_status(&txid).await.map_err(|e| e.to_string());
                 (txid, answer)
             }))

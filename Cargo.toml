@@ -85,7 +85,6 @@ argon2 = { version = "=0.5.3", default-features = false, features = ["zeroize"] 
 # Zeroization of sensitive key material on drop
 zeroize = "1.8"
 
-futures-util = "0.3"
 futures = "0.3"
 
 [dev-dependencies]
