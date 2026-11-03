@@ -10,6 +10,11 @@
   name every red one in the job summary; semver stays its own job, its
   cache and the ratchet's on rust-cache; beta's required contexts become
   the five job names (`docs/census/ci-speed-2026-11-02.md`).
+- #625: the argon2id memory of a UMP token's password KDF (up to 256 MiB
+  inside the reference's bounds) is reserved with `try_reserve_exact`;
+  an allocation the host refuses is `Error::ValidationError` naming
+  argon2id and the KiB asked, where it aborted the process. No public
+  shape moves; the derivation and the vectors are unchanged.
 - #624: the CWI manager's password KDF runs on
   `tokio::task::spawn_blocking`. Since #593 an argon2id derivation at the
   reference's defaults (128 MiB, 7 passes, about 330 ms optimised) ran
