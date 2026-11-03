@@ -34,9 +34,10 @@ impl StorageSqlx {
         // BRC-100's reverse-order paging: -1 is the newest output. `-offset`
         // overflows at i32::MIN (#230); `unsigned_abs` does not, so the
         // largest value here is 2147483647, which the `as i32` bind below
-        // and the `u32` sum with the page length both hold (the limit is
-        // the door's bound, 1..=10000, since #226; a short page counts real
-        // rows, so the sum cannot pass 2^31 + the store's row count).
+        // and the `u32` sum with the page length in `short_page_total` both
+        // hold (the limit is the door's bound, 1..=10000, since #226; a short
+        // page counts real rows, so the sum cannot pass 2^31 + the store's
+        // row count).
         let actual_offset = if offset < 0 {
             offset.unsigned_abs() - 1
         } else {
@@ -378,12 +379,8 @@ impl StorageSqlx {
             None
         };
 
-        // Calculate total based on whether we hit the limit
-        let total_outputs = if (outputs.len() as u32) < limit {
-            actual_offset + outputs.len() as u32
-        } else {
-            total_count
-        };
+        let total_outputs =
+            short_page_total(outputs.len() as u32, limit, actual_offset).unwrap_or(total_count);
 
         Ok(ListOutputsResult {
             total_outputs,
@@ -391,6 +388,23 @@ impl StorageSqlx {
             outputs,
         })
     }
+}
+
+/// listOutputs' total (ts-stack@edf6e03 listOutputsKnex.ts
+/// `inferShortPageTotal` at 27-32, its fallback to the COUNT query in
+/// `resolveKnexListTotal` at 34-41, called at 321-322): `None`, the count,
+/// for a full page and for an empty page past the start, which proves only
+/// that the offset is at or past the end; otherwise the end was reached and
+/// the total is the skipped outputs plus the page (#674). `skipped` is the
+/// normalized offset (`normalizeKnexListOffset` at 20-25).
+fn short_page_total(outputs_length: u32, limit: u32, skipped: u32) -> Option<u32> {
+    if limit > 0 && outputs_length >= limit {
+        return None;
+    }
+    if outputs_length == 0 && skipped > 0 {
+        return None;
+    }
+    Some(skipped + outputs_length)
 }
 
 #[cfg(test)]
@@ -450,12 +464,12 @@ mod tests {
         let oldest = storage.list_outputs(&auth, page(-3, 10)).await.unwrap();
         assert_eq!((vouts(&oldest), oldest.total_outputs), (vec![0], 3));
 
-        // A short page's total is offset plus the page (`total_outputs`
-        // above), so past every output it is the offset itself.
+        // An empty page past the start answers the stored count
+        // (`short_page_total` above, #674), not the offset.
         let past = storage.list_outputs(&auth, page(i32::MIN, 10)).await;
         let past = past.unwrap();
         assert!(past.outputs.is_empty());
-        assert_eq!(past.total_outputs, i32::MAX as u32);
+        assert_eq!(past.total_outputs, 3);
     }
 
     #[tokio::test]
