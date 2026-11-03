@@ -3,7 +3,7 @@
 //! chooses the door's path, `A8_PATH`), fed the same bytes, and any
 //! difference in a value, an error or a refusal is a failure. The scenes:
 //! every input of the BEEF door corpus (`fuzz/corpus/beef_door`) and the
-//! census's 1, 4 and 10 MB BEEFs at the verification seams
+//! census's 1 MB BEEF (`CENSUS_MEGABYTES`) at the verification seams
 //! (`a8_differential`), and the census's BEEFs and refusals through the
 //! internalize door, its answer and every stored row compared. The create
 //! side is `create_action/tests/beef_read_once.rs`; the stored fixtures'
@@ -25,6 +25,16 @@ use std::collections::HashSet;
 use std::fmt::Write;
 
 const CENSUS_COIN: u64 = 1_000_000;
+
+/// The census BEEF sizes the differential reads, in MB. The census
+/// (`examples/a8_census.rs`) measures 1, 4 and 10; the differential needs
+/// one of them (#634): both paths read a body through bsv-rs's decoder in
+/// 16 KiB chunks (`beef_stream.rs`, `CHUNK`), so 1 MB crosses it 61 times,
+/// and no bound of the door's lies between 1 and 10 MB (the next is the
+/// spend verifier's 100 MB stack, `DOOR_STACK_MEMORY_BYTES`). One path's
+/// reading costs about 0.13 s a MB in a debug build on the box, and 1, 4
+/// and 10 cost the four census tests 71 s on the ubuntu runner.
+pub(crate) const CENSUS_MEGABYTES: [usize; 1] = [1];
 
 /// Chooses the path of this thread's door calls until dropped.
 pub(crate) struct Path;
@@ -133,7 +143,7 @@ async fn the_corpus_reads_the_same_on_both_paths() {
 
 #[tokio::test]
 async fn the_census_beefs_read_the_same_on_both_paths() {
-    for megabytes in [1, 4, 10] {
+    for megabytes in CENSUS_MEGABYTES {
         let (bytes, ..) = census_beef(megabytes * 1_000_000);
         let name = format!("census {megabytes} MB");
         let accepted = differential(&name, &bytes).await.unwrap();
@@ -247,7 +257,7 @@ async fn internalize_on(read_once: bool, beef: &[u8], parent: &str) -> (String, 
 
 #[tokio::test]
 async fn the_census_internalizes_the_same_rows_on_both_paths() {
-    for megabytes in [1, 4, 10] {
+    for megabytes in CENSUS_MEGABYTES {
         let (beef, child, parent) = census_beef(megabytes * 1_000_000);
         let oracle = internalize_on(false, &beef, &parent).await;
         let read_once = internalize_on(true, &beef, &parent).await;
