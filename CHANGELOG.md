@@ -22,6 +22,17 @@
   `beef-<txid8>.hex`, the old dump's fixed name. Under 1,000,000 unrelated
   files in `TMPDIR` each ran in 0.00 s and 0.02 s, against 1.70 s and
   1.65 s for the scans on the same host.
+- #658 (manifest; no behaviour change): `sqlx` is built with
+  `default-features = false` and `runtime-tokio`, `chrono` and `uuid`
+  named. sqlx's default features `any`, `macros`, `migrate` and `json` are
+  dropped (the crate uses no `query!` macro, `FromRow` derive, migrator,
+  `Any` pool or `Json`), and with them `sqlx-macros`, `sqlx-macros-core`,
+  `heck` and `dotenvy`; the crate's `sqlite` and `mysql` features map to
+  sqlx's as before. A cold unit build at four jobs no longer builds 36
+  units twice (359 units to 319; figures in
+  `docs/census/ci-speed-loop-3.md`). A dependent that used those sqlx
+  features through this crate's unification must now enable them itself.
+  The owner's word of 2026-11-03, through the keeper.
 - #659 (manifest and two `use` sites; no behaviour change): the direct
   dependency on `futures-util` is removed from `Cargo.toml`; its two uses in
   `src/services/providers/arcade.rs` (`StreamExt`, `stream::iter`) read the
