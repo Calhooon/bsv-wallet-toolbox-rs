@@ -32,6 +32,12 @@ name: CI
 # likewise), never on the push run. A newer push cancels the previous run; a
 # cancelled run is never a red. release.yml calls this file on a tag, so a tag
 # runs the required set too; the captain dispatches the measurements before it.
+#
+# The merge queue (#614): beta lands through GitHub's merge queue, which builds
+# a temporary commit per queued PR (refs/heads/gh-readonly-queue/beta/pr-<n>-<sha>)
+# and waits on the same five contexts for it. Every job runs and reports on
+# `merge_group`: a job an `if:` skips there yields no check-run, and the queue
+# holds the group pending until its timeout.
 on:
   pull_request:
     branches: [main, beta]
@@ -43,6 +49,9 @@ on:
     types: [opened, synchronize, reopened]
   push:
     branches: [main, beta]
+  # The merge queue's group commit, one per queued PR (#614).
+  merge_group:
+    types: [checks_requested]
   # release.yml runs the same jobs on a tag before it publishes.
   workflow_call:
 
@@ -50,8 +59,12 @@ permissions:
   contents: read
 
 # A newer push to the same ref supersedes the run; a tag's run is never cancelled.
+# The key names the event and then the queue group's head ref (unique per group,
+# so one group never cancels another), the PR's number (one head branch may open
+# a PR into each line) or the pushed ref: a PR's push never cancels a queue run
+# and a queue run never cancels a PR's.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.merge_group.head_ref || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 # The CI build carries no debuginfo and no incremental state (#612): a test
