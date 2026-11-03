@@ -4,7 +4,8 @@
 The fixture (tools/fixtures/handoff-rows/) is a HANDOFF.md whose section is
 generated from three row files: #99 in 2026-10/ (a "Landed" row), #101 and
 #102 in 2026-11/ (two "Landing" rows of one morning, #101 opened later, so it
-stands above #102), and one bullet below the markers written by hand.
+stands above #102), and one bullet below the markers written by hand. The
+cases that read the waiting bound set the clock with --now.
 
   tools/handoff-rows-test
 """
@@ -27,6 +28,8 @@ ROW_101 = (f"- Landing (2026-11-03 08:36Z, {LANDING}): #101 (#94: opened after #
            "so it stands above it though its number is lower).")
 ROW_102 = (f"- Landing (2026-11-03 08:27Z, {LANDING}): #102 (#95: the earlier of two rows "
            "of one morning, its words wrapped over two lines).")
+# The clock of the waiting cases: three hours after the fixture's rows of 09:00Z.
+NOW = "2026-11-03 12:00Z"
 ROW_99 = f"- Landed (2026-10-31 23:10Z, {LANDED}): #99 (#90: the October row, written at its landing)."
 
 passed = failed = 0
@@ -52,6 +55,12 @@ def fresh(scratch, name):
     root = Path(scratch) / name
     shutil.copytree(FIX, root)
     return root
+
+
+def wait(root, pr, time):
+    (root / f"docs/handoff/2026-11/{pr}.md").write_text(
+        f"Landing 2026-11-03 {time}Z #{pr}\n\n(#{pr - 7}: a row opened after the fold).\n",
+        encoding="utf-8")
 
 
 def edit(path, old, new):
@@ -121,19 +130,50 @@ with tempfile.TemporaryDirectory() as scratch:
 
     # A new PR's file, the page not yet regenerated: it waits for the fold.
     root = fresh(scratch, "waiting")
-    (root / "docs/handoff/2026-11/103.md").write_text(
-        "Landing 2026-11-03 09:00Z #103\n\n(#96: a row opened after the fold).\n", encoding="utf-8")
-    code, out = run(root, "--check")
+    wait(root, 103, "09:00")
+    code, out = run(root, "--check", "--now", NOW)
     check("a file not yet on the page waits (green, named)",
           code == 0 and "#103: its file waits for the fold" in out and "1 waiting: ok" in out, out)
-    code, out = run(root, "--check", "--strict")
-    check("a waiting file is red under --strict", code == 1, out)
+    code, out = run(root, "--check", "--strict", "--now", NOW)
+    check("a waiting file is red under --strict", code == 1 and "1 waiting: stale" in out, out)
     run(root, "--write")
     code, out = run(root, "--list")
     check("--write puts the new row at the top", out.splitlines()[0].startswith(
         "- Landing (2026-11-03 09:00Z, ") and "#103 (#96" in out.splitlines()[0], out)
     code, out = run(root, "--check", "--strict")
     check("after --write the page holds all four rows", code == 0 and "4 on the page" in out, out)
+
+    # The keeper's bound (2026-11-03 11:1xZ): at most three files wait.
+    root = fresh(scratch, "three-waiting")
+    for pr, time in ((103, "09:00"), (104, "09:10"), (105, "09:20")):
+        wait(root, pr, time)
+    code, out = run(root, "--check", "--now", NOW)
+    check("bound: three waiting files are green", code == 0 and "3 waiting: ok" in out, out)
+    code, out = run(root, "--check", "--strict", "--now", NOW)
+    check("bound: three waiting files are red under --strict", code == 1 and "3 waiting: stale" in out, out)
+    wait(root, 106, "09:30")
+    code, out = run(root, "--check", "--now", NOW)
+    check("bound: four waiting files are red, the count and the oldest's age named",
+          code == 1 and "4 files wait, the oldest #103 3h00m old: more than 3 waiting" in out
+          and "4 waiting: past the bound" in out and "older than" not in out, out)
+    run(root, "--write")
+    code, out = run(root, "--check", "--now", NOW)
+    check("bound: the fold's --write brings four waiting files back under it",
+          code == 0 and "7 on the page, 7 files, 0 waiting: ok" in out, out)
+
+    # The keeper's bound: the oldest waiting file at most six hours old.
+    root = fresh(scratch, "young")
+    wait(root, 103, "09:00")
+    code, out = run(root, "--check", "--now", "2026-11-03 15:00Z")
+    check("bound: one waiting file six hours old is green", code == 0 and "1 waiting: ok" in out, out)
+    code, out = run(root, "--check", "--now", "2026-11-03T15:01Z")
+    check("bound: one waiting file older than six hours is red, its age named",
+          code == 1 and "1 file waits, the oldest #103 6h01m old: older than 6h" in out
+          and "more than" not in out, out)
+    code, out = run(root, "--check", "--now", "2026-11-04 09:00Z")
+    check("bound: a day without a fold is red", code == 1 and "24h00m old: older than 6h" in out, out)
+    code, out = run(root, "--check", "--now", "2026-11-03 15")
+    check("refused: a --now not in the header's shape", code == 1 and "is not 'YYYY-MM-DD HH:MMZ'" in out, out)
 
     # The file format refusals.
     def refused(name, rel, body, words):
