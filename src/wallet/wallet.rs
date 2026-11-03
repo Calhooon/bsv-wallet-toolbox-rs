@@ -2378,6 +2378,8 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<ListActionsResult> {
         validate_originator(originator)?;
+        // validateListActionsArgs, validationHelpers.ts:1708 (#226).
+        validate_list_limit(args.limit)?;
 
         let auth = self.auth();
 
@@ -2497,6 +2499,9 @@ where
             crate::managers::BasketUsageType::Listing,
         )
         .await?;
+        // validateListOutputsArgs, validationHelpers.ts:1647 (#226); its
+        // offset at 1648 carries no minimum (BRC-100's reverse paging).
+        validate_list_limit(args.limit)?;
 
         let auth = self.auth();
 
@@ -2643,6 +2648,8 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<ListCertificatesResult> {
         validate_originator(originator)?;
+        // validateListCertificatesArgs, validationHelpers.ts:1199 (#226).
+        validate_list_limit(args.limit)?;
 
         let auth = self.auth();
 
@@ -2991,6 +2998,26 @@ fn validate_originator(originator: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The largest `limit` a list call accepts (BRC-100's
+/// `PositiveIntegerDefault10Max10000`).
+const MAXIMUM_LIST_LIMIT: u32 = 10_000;
+
+/// Validates a list call's `limit` as `validateInteger(args.limit, 'limit',
+/// 10, 1, 10000)` does (`ts-stack@edf6e03`, `validationHelpers.ts:306-324`),
+/// never clamping (#226). `None` passes; storage reads it as 10.
+fn validate_list_limit(limit: Option<u32>) -> Result<()> {
+    let rule = match limit {
+        Some(0) => "at least 1 length.".to_string(),
+        Some(limit) if limit > MAXIMUM_LIST_LIMIT => {
+            format!("no more than {MAXIMUM_LIST_LIMIT} length.")
+        }
+        _ => return Ok(()),
+    };
+    Err(Error::ValidationError(format!(
+        "The limit parameter must be {rule}"
+    )))
 }
 
 /// Computes the txid (double SHA256, reversed) from raw transaction bytes.
@@ -4190,6 +4217,82 @@ mod tests {
                     "Validation error: The originator parameter must be a canonical DNS hostname with an optional port",
                     "{originator:?}"
                 );
+            }
+        }
+    }
+
+    // #226: each list door refuses a limit of 0 and above 10000 as
+    // `validateInteger(args.limit, 'limit', 10, 1, 10000)` does
+    // (ts-stack@edf6e03 validationHelpers.ts:306-324, at 1199, 1647, 1708).
+    #[cfg(feature = "sqlite")]
+    mod list_limit_226 {
+        use super::super::busy_door_tests::wallet;
+        use super::*;
+
+        const ZERO: &str = "Validation error: The limit parameter must be at least 1 length.";
+        const ABOVE: &str =
+            "Validation error: The limit parameter must be no more than 10000 length.";
+
+        async fn actions(limit: Option<u32>) -> bsv_rs::Result<ListActionsResult> {
+            let (_dir, wallet) = wallet().await;
+            let mut args: ListActionsArgs =
+                serde_json::from_value(serde_json::json!({"labels": []})).unwrap();
+            args.limit = limit;
+            wallet.list_actions(args, None).await
+        }
+
+        async fn outputs(limit: Option<u32>) -> bsv_rs::Result<ListOutputsResult> {
+            let (_dir, wallet) = wallet().await;
+            let mut args: ListOutputsArgs =
+                serde_json::from_value(serde_json::json!({"basket": "default"})).unwrap();
+            args.limit = limit;
+            wallet.list_outputs(args, None).await
+        }
+
+        async fn certificates(limit: Option<u32>) -> bsv_rs::Result<ListCertificatesResult> {
+            let (_dir, wallet) = wallet().await;
+            let args = ListCertificatesArgs {
+                certifiers: Vec::new(),
+                types: Vec::new(),
+                limit,
+                offset: None,
+                privileged: None,
+                privileged_reason: None,
+            };
+            wallet.list_certificates(args, None).await
+        }
+
+        #[tokio::test]
+        async fn list_actions_refuses_limit_out_of_range() {
+            assert_argument_refusal("actions 0", actions(Some(0)).await, ZERO);
+            assert_argument_refusal("actions 10001", actions(Some(10_001)).await, ABOVE);
+            for limit in [None, Some(1), Some(10_000)] {
+                let result = actions(limit).await;
+                assert!(result.is_ok(), "actions {limit:?}: {result:?}");
+            }
+        }
+
+        #[tokio::test]
+        async fn list_outputs_refuses_limit_out_of_range() {
+            assert_argument_refusal("outputs 0", outputs(Some(0)).await, ZERO);
+            assert_argument_refusal("outputs 10001", outputs(Some(10_001)).await, ABOVE);
+            for limit in [None, Some(1), Some(10_000)] {
+                let result = outputs(limit).await;
+                assert!(result.is_ok(), "outputs {limit:?}: {result:?}");
+            }
+        }
+
+        #[tokio::test]
+        async fn list_certificates_refuses_limit_out_of_range() {
+            assert_argument_refusal("certificates 0", certificates(Some(0)).await, ZERO);
+            assert_argument_refusal(
+                "certificates 10001",
+                certificates(Some(10_001)).await,
+                ABOVE,
+            );
+            for limit in [None, Some(1), Some(10_000)] {
+                let result = certificates(limit).await;
+                assert!(result.is_ok(), "certificates {limit:?}: {result:?}");
             }
         }
     }
