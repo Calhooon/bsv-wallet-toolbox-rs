@@ -161,7 +161,7 @@ An earlier round with the writer's ceiling planted at 1 ms failed the busy door 
 ### Findings (outside this lane's bounds)
 
 - The remote-only job also runs the 81-row and rule-28 tables, the replay and the lock test; the services code they reach has no feature `cfg`, so a `ci.yml` filter could leave `services::` lib tests to the Test Suite job alone (24.5 s on the box for the four now, 22.2 of it the replay's and the lock test's scene waits). Not made: the reason is the services code's today, not a property of the tests.
-- The BEEF tests' cost is reading in a debug build; a dependency `opt-level` in the test profile is `Cargo.toml`, the owner's word, and unmeasured here.
+- The BEEF tests' cost is reading in a debug build; a dependency `opt-level` in the test profile is `Cargo.toml`, the owner's word, and unmeasured here. Made in #652 (below).
 
 ### The five figures
 
@@ -172,6 +172,38 @@ An earlier round with the writer's ceiling planted at 1 ms failed the busy door 
 | the ten's box seconds | 65.7 before, 26.9 after | above [X] |
 | the nightly's length | none | no scheduled workflow |
 | a cold read's length, the landing latency | the read 27 minutes on the Studio (05:41Z to 06:08Z, a cold build inside it); the landing 34:26 from the lane's DONE (05:40Z) to the merge at 06:14:36Z (004f77b3) | the read lane's record; the PR |
+
+### The census inputs back: sha2 and hex at opt-level 3 (#652)
+
+The owner's word of 2026-11-03 through the keeper ("yes to both"): `[profile.dev.package.sha2]` and `[profile.dev.package.hex]` at `opt-level = 3`, the shape of #593's `argon2` and `blake2`, and `CENSUS_MEGABYTES` back to `[1, 4, 10]`, its value before #634. Base `f2d64eb7`.
+
+The crates by evidence: macOS `sample` of a census test in a debug build at the 1, 4 and 10 MB input, the busy samples (idle waits dropped) by the crate each frame was compiled in [X]. Before the override, `sha2` held 90.2% of the census BEEFs read and 70.3% of the census creates (`bsv_rs` 7.4%, `hex` 4.1%, the toolbox 2.6 to 4.1%): the read hashes every transaction it carries. With `sha2` optimised, the census internalizes held `bsv_rs` 39.1%, `hex` 25.5%, `core` 14.6% and `sha2` 2.1%; the `hex` frames are `hex::encode` called from the tests' `stored_rows` (the stored-row comparison hexes each raw row), its `String` instance compiled in `bsv_rs`'s code under a debug build's shared generics. `hex` at opt-level 3 cut the internalizes from 3.28 s to 2.24 s and the creates from 1.39 s to 1.09 s; `bsv-rs` at opt-level 3 on top moved no figure (2.27 s and 1.18 s), so it stays at the dev level, as does the toolbox's own code: no `[profile.dev]` or `[profile.test]` change.
+
+Each test alone in a debug build on the box (`cargo test --lib <name> -- --exact`, the median of three, the test binary's own seconds) [X]; the before is the base's manifest with the input set as in the row, the after the lane's override. The runner's figures are #634's record of run 41578469987 (ubuntu, 1, 4 and 10 MB, no override), the runner's and not this host's:
+
+| test | input | before | after | runner (1, 4 and 10 MB, before) |
+|---|---|---|---|---|
+| judge reads the corpus | 1 MB | 0.49 | 0.31 | |
+| | 4 MB | 1.21 | 0.37 | |
+| | 10 MB | 2.55 | 0.56 | |
+| | 1, 4 and 10 MB | 3.53 | 0.59 | 21.4 |
+| census creates the same rows | 1 MB | 0.27 | 0.12 | |
+| | 4 MB | 1.06 | 0.32 | |
+| | 10 MB | 2.62 | 0.75 | |
+| | 1, 4 and 10 MB | 3.80 | 1.09 | 19.9 |
+| census BEEFs read the same | 1 MB | 0.17 | 0.03 | |
+| | 4 MB | 0.68 | 0.09 | |
+| | 10 MB | 1.71 | 0.21 | |
+| | 1, 4 and 10 MB | 2.46 | 0.38 | 15.3 |
+| census internalizes the same rows | 1 MB | 0.29 | 0.17 | |
+| | 4 MB | 1.12 | 0.60 | |
+| | 10 MB | 2.78 | 1.43 | |
+| | 1, 4 and 10 MB | 4.07 | 2.14 | 14.8 |
+| the four | 1, 4 and 10 MB | 13.86 | 4.20 | 71.4 |
+
+The four at the restored input cost 4.2 s on the box against 1.22 s at 1 MB without the override (#634's input), so the three sizes are back. The plants #634 kept still bite on the tip [X]: `raw_unproven` inverted turns the judge and the census creates red (`beef_read_once.rs:73` and `:176`); the subject dropped (`subject: None` in `ReadOnce`) turns the census BEEFs read and the census internalizes red (`census 1 MB (tip, every root): the oracle Ok(...)`), each at the census 1 MB scene, the opening one, as on #634's base; reverted.
+
+The lockfile note: the toolbox commits no root `Cargo.lock` (ignored), and the override moves no dependency, so no committed lock changes; `Swatinem/rust-cache` hashes the manifest into its key, so this change moves each job's key once, and the PR's own run and the next push to beta carry one cold-ish dependency build (`sha2`, `hex` and everything above them rebuilt at the new level) before the cache is warm again.
 
 
 ## Loop two, cut (3): the remote-only job's repeated services tests (#651)

@@ -99,6 +99,14 @@
   judged); `anyhow` moves to dev-dependencies, so a dependent no longer
   compiles it, and the unused `tokio-test` dev-dependency is dropped
   (`docs/census/ci-speed-loop-3.md`).
+- #652 (dev profile and tests; no behaviour): `sha2` and `hex` at
+  `opt-level = 3` in the dev profile (`[profile.dev.package.*]`, the shape
+  of #593's `argon2` and `blake2`), the owner's word of 2026-11-03 through
+  the keeper: a census test's busy samples sat 70 to 90% in `sha2` and then
+  in `hex`. The four A8 census tests read the 1, 4 and 10 MB census BEEFs
+  again (`CENSUS_MEGABYTES`, cut to 1 MB by #634), 4.2 s on the box against
+  13.9 s without the override; the planted faults still red
+  (`docs/census/ci-speed-loop-2.md`).
 - #634 (tests; no behaviour): the ten slowest tests of run 41578469987
   (583 of its 1434 test-seconds) cut: the status and utxo verdict tables
   and the ladder replays build their `Services` over clients shared under
