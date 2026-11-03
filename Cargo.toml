@@ -115,3 +115,8 @@ path = "examples/basic_wallet.rs"
 [[example]]
 name = "monitor_demo"
 path = "examples/monitor_demo.rs"
+
+[[example]]
+name = "a8_census"
+path = "examples/a8_census.rs"
+required-features = ["sqlite"]
