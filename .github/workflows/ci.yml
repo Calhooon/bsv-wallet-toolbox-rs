@@ -562,6 +562,22 @@ jobs:
         if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
         run: python3 -m unittest fuzz/seed_corpus_test.py
 
+      # The seeder's exit test (#737, docs/FUZZ.md, #582): the seeder on the
+      # checked-out tree leaves the committed corpus as it is. A file it adds
+      # or rewrites under fuzz/corpus is printed and fails the step; python
+      # alone, seconds.
+      - name: seeder, the committed corpus is its output
+        id: seeder-exit
+        if: ${{ !cancelled() && steps.scope.outputs.docs_only != 'true' }}
+        run: |
+          python3 fuzz/seed_corpus.py
+          moved="$(git status --porcelain --untracked-files=all -- fuzz/corpus)"
+          if [ -n "$moved" ]; then
+            printf '%s\n' "$moved"
+            echo "::error title=checks: seeder::the seeder moved the committed corpus; run python3 fuzz/seed_corpus.py and commit what it writes, or fix the seeder"
+            exit 1
+          fi
+
       # HANDOFF.md's landing rows (#669): a file per PR under docs/handoff/,
       # the Next section generated from them. A row on the page that differs
       # from its file, has none, or stands out of order fails; a file not yet
@@ -645,6 +661,7 @@ jobs:
             ${{ steps.docs-only-cases.outcome }} docs only: the set's own cases
             ${{ steps.ignore-sites-cases.outcome }} ignore sites: the guard's own cases
             ${{ steps.seeder-cases.outcome }} seeder: the held set's own cases
+            ${{ steps.seeder-exit.outcome }} seeder: the committed corpus is its output
             ${{ steps.handoff-cases.outcome }} handoff rows: the tool's own cases
             ${{ steps.handoff.outcome }} handoff rows: the page matches its files
             ${{ steps.vector-files.outcome }} vectors: the vector files are present
