@@ -3,7 +3,7 @@
 //! and the counterparty and reason in the prompt, split from
 //! `privileged_keys_tests.rs` (#727); the identity key's own ask (#719) and
 //! `get_public_key`'s `seek_permission` (#720); the whitelisted
-//! counterparties (#725). `args!` sends
+//! counterparties (#725); the key-linkage reveals' ask (#589). `args!` sends
 //! `seek_permission: Some(false)`, which `get_public_key` alone passes, so its
 //! prompting calls here ask with it on.
 
@@ -635,4 +635,160 @@ async fn a_whitelisted_counterparty_at_level_1_still_prompts() {
     assert!(requests
         .iter()
         .all(|request| request.counterparty.is_none()));
+}
+
+// =========================================================================
+// The two key-linkage reveals (#589): each asks the level-2 protocol it
+// builds for the verifier, with the request's `privileged` and reason,
+// under `linkageRevelation` (ts-stack@edf6e03
+// `WalletPermissionsManager.ts:5190-5221`); the config flag off admits it
+// with no prompt (`:1851`).
+// =========================================================================
+
+/// One reveal under `protocol` (the specific reveal's), between fixed keys,
+/// and the level-2 protocol name the reference builds for it.
+async fn linkage_call(
+    wallet: &TestWallet,
+    name: &str,
+    protocol: &Protocol,
+    privileged: Option<bool>,
+) -> (bsv_rs::Result<()>, String) {
+    let counterparty = PrivateKey::from_bytes(&[7; 32]).unwrap().public_key();
+    let verifier = PrivateKey::from_bytes(&[9; 32]).unwrap().public_key();
+    let reason = Some(REASON.to_string());
+    let o = Some(ORIGINATOR);
+    if name == "reveal_counterparty_key_linkage" {
+        let expected = format!(
+            "counterparty key linkage revelation {}",
+            counterparty.to_hex()
+        );
+        let args = InterfaceRevealCounterpartyArgs {
+            counterparty,
+            verifier,
+            privileged,
+            privileged_reason: reason,
+        };
+        let answer = wallet.reveal_counterparty_key_linkage(args, o).await;
+        return (answer.map(drop), expected);
+    }
+    let level2 = protocol.security_level == SecurityLevel::Counterparty;
+    let key_id = if level2 { "7" } else { "all" };
+    let expected = format!(
+        "specific key linkage revelation {} {key_id}",
+        protocol.protocol_name
+    );
+    let args = InterfaceRevealSpecificArgs {
+        counterparty: Counterparty::Other(counterparty),
+        verifier,
+        protocol_id: protocol.clone(),
+        key_id: "7".to_string(),
+        privileged,
+        privileged_reason: reason,
+    };
+    let answer = wallet.reveal_specific_key_linkage(args, o).await;
+    (answer.map(drop), expected)
+}
+
+const REVEALS: [&str; 2] = [
+    "reveal_counterparty_key_linkage",
+    "reveal_specific_key_linkage",
+];
+
+/// The reveal scenes: each reveal, the specific one at each level.
+fn reveal_scenes() -> Vec<(&'static str, Protocol)> {
+    let mut scenes = vec![(REVEALS[0], protocol())];
+    for level in [
+        SecurityLevel::Silent,
+        SecurityLevel::App,
+        SecurityLevel::Counterparty,
+    ] {
+        scenes.push((REVEALS[1], Protocol::new(level, "linkage witness")));
+    }
+    scenes
+}
+
+#[tokio::test]
+async fn each_reveal_prompts_for_its_linkage_protocol_and_the_verifier() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (_dir, wallet, double, _manager, prompts) = permitted_wallet(config).await;
+    let verifier = PrivateKey::from_bytes(&[9; 32]).unwrap().public_key();
+    for (name, protocol) in reveal_scenes() {
+        for privileged in [None, Some(true)] {
+            let scene = format!("{name} {protocol:?} {privileged:?}");
+            let (answer, expected) = linkage_call(&wallet, name, &protocol, privileged).await;
+            match answer {
+                Err(bsv_rs::Error::WalletRefusal { class, message }) => {
+                    assert_eq!(class, bsv_rs::WalletRefusalClass::Unauthorized, "{scene}");
+                    assert_eq!(message, PERMISSION_REFUSAL, "{scene}");
+                }
+                other => panic!("{scene}: expected the permission refusal, got {other:?}"),
+            }
+            let request = prompts.requests.lock().unwrap().pop().unwrap();
+            let linkage = Protocol::new(SecurityLevel::Counterparty, expected);
+            assert_eq!(request.protocol_id.as_ref(), Some(&linkage), "{scene}");
+            assert_eq!(request.counterparty, Some(verifier.to_hex()), "{scene}");
+            assert_eq!(request.reason.as_deref(), Some(REASON), "{scene}");
+            assert_eq!(
+                request.privileged,
+                Some(privileged == Some(true)),
+                "{scene}"
+            );
+        }
+    }
+    assert!(prompts.requests.lock().unwrap().is_empty());
+    assert_eq!(double.asked(), Vec::<Asked>::new());
+}
+
+#[tokio::test]
+async fn a_granted_reveal_is_admitted_and_a_privileged_one_reaches_the_manager() {
+    let config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    let (_dir, wallet, double, _manager, prompts) = permitted_wallet(config).await;
+    let scenes = [(REVEALS[0], protocol()), (REVEALS[1], protocol())];
+    for privileged in [None, Some(true)] {
+        let flag = privileged == Some(true);
+        for (name, protocol) in &scenes {
+            let scene = format!("{name} {privileged:?}");
+            // Granted at the prompt, then admitted from the grant unprompted.
+            *prompts.grants.lock().unwrap() = vec![flag];
+            let (answer, _) = linkage_call(&wallet, name, protocol, privileged).await;
+            assert!(answer.is_ok(), "{scene}: {answer:?}");
+            prompts.grants.lock().unwrap().clear();
+            let before = prompts.seen();
+            assert_eq!(before.last(), Some(&Some(flag)), "{scene}");
+            let (answer, _) = linkage_call(&wallet, name, protocol, privileged).await;
+            assert!(answer.is_ok(), "{scene}: {answer:?}");
+            assert_eq!(prompts.seen(), before, "{scene}");
+        }
+    }
+    assert_eq!(
+        prompts.seen(),
+        vec![Some(false), Some(false), Some(true), Some(true)]
+    );
+    let asked = |name| vec![Asked::privileged(name, REASON, None); 2];
+    assert_eq!(double.asked(), REVEALS.map(asked).concat());
+}
+
+#[tokio::test]
+async fn the_reveals_pass_the_linkage_revelation_usage_type() {
+    let mut config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    config.seek_permissions_for_key_linkage_revelation = false;
+    let (_dir, wallet, _double, _manager, prompts) = permitted_wallet(config).await;
+    for (name, protocol) in reveal_scenes() {
+        let (answer, _) = linkage_call(&wallet, name, &protocol, None).await;
+        assert!(answer.is_ok(), "{name} {protocol:?}: {answer:?}");
+    }
+    assert_eq!(prompts.seen(), Vec::<Option<bool>>::new());
+    // Every other usage type exempt, the reveals still prompt.
+    let mut config = crate::managers::WalletPermissionsManagerConfig::all_enabled();
+    config.seek_protocol_permissions_for_signing = false;
+    config.seek_protocol_permissions_for_encrypting = false;
+    config.seek_protocol_permissions_for_hmac = false;
+    config.seek_permissions_for_public_key_revelation = false;
+    config.seek_permissions_for_identity_key_revelation = false;
+    let (_dir, wallet, _double, _manager, prompts) = permitted_wallet(config).await;
+    for name in REVEALS {
+        let (answer, _) = linkage_call(&wallet, name, &protocol(), None).await;
+        assert!(answer.is_err(), "{name}: {answer:?}");
+    }
+    assert_eq!(prompts.seen(), vec![Some(false); 2]);
 }
