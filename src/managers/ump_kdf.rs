@@ -178,14 +178,34 @@ pub(crate) fn pbkdf2_sha512(
 /// host cannot make is an error, as hash-wasm throws, never an abort (#625).
 fn argon2id_memory(block_count: usize) -> Result<Zeroizing<Vec<argon2::Block>>> {
     let mut memory = Zeroizing::new(Vec::new());
+    let reserve = block_count;
+    #[cfg(test)]
+    let reserve = if FAIL_NEXT_RESERVE.with(|fail| fail.replace(false)) {
+        usize::MAX
+    } else {
+        reserve
+    };
     // An argon2 block is 1 KiB.
-    memory.try_reserve_exact(block_count).map_err(|e| {
+    memory.try_reserve_exact(reserve).map_err(|e| {
         token_error(&format!(
             "argon2id: cannot allocate {block_count} KiB of memory: {e}"
         ))
     })?;
     memory.resize(block_count, argon2::Block::new());
     Ok(memory)
+}
+
+// Per thread, so a witness fails its own reserve while other tests derive.
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_RESERVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes this thread's next argon2id reserve ask for `usize::MAX` blocks, a
+/// request no allocator grants, for a witness of the error path (#625).
+#[cfg(test)]
+pub(super) fn fail_next_reserve() {
+    FAIL_NEXT_RESERVE.with(|fail| fail.set(true));
 }
 
 /// Argon2id version 0x13 with no secret and no associated data, as hash-wasm's
