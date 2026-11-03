@@ -453,12 +453,7 @@ impl StorageSqlx {
             actions.push(action);
         }
 
-        // Calculate total based on whether we hit the limit
-        let total_actions = if (actions.len() as u32) < limit {
-            offset + actions.len() as u32
-        } else {
-            total_count
-        };
+        let total_actions = list_actions_total(actions.len() as u32, limit, offset, total_count);
 
         Ok(ListActionsResult {
             total_actions,
@@ -536,5 +531,20 @@ impl StorageSqlx {
         }
 
         Ok(())
+    }
+}
+
+/// listActions' total (ts-stack@edf6e03 listActionsKnex.ts 233-238), its
+/// own rule and not listOutputs' `inferShortPageTotal`: no limit is the page
+/// itself, a short page is the offset plus the page (an empty page past the
+/// end included, so offset 100 over three actions answers 100 as the
+/// reference does), and a full page is the COUNT query (#674).
+fn list_actions_total(actions_length: u32, limit: u32, offset: u32, count: u32) -> u32 {
+    if limit == 0 {
+        actions_length
+    } else if actions_length < limit {
+        offset + actions_length
+    } else {
+        count
     }
 }
