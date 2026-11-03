@@ -167,8 +167,14 @@ async fn a_new_profile_carries_a_random_32_byte_salt_and_ump_version_3() {
     m.provide_privileged_key_manager(PrivateKey::random()).await;
     let before = crate::rng::os_draws();
     let profile = m.create_profile("Work", "pw").await.unwrap();
-    // id and two pads, the root, the salt, presentation, recovery, privileged.
-    assert_eq!(crate::rng::os_draws() - before, 8);
+    // id and two pads and the root here; the salt, presentation, recovery
+    // and privileged keys with the KDF on the blocking pool (#624), counted
+    // through `seal` on this thread.
+    assert_eq!(crate::rng::os_draws() - before, 4);
+    let (sealed, root) = (Profile::new("Seal".into()), Zeroizing::new(vec![7; 32]));
+    let before = crate::rng::os_draws();
+    CWIStyleWalletManager::seal(sealed, root, "pw").unwrap();
+    assert_eq!(crate::rng::os_draws() - before, 4);
     let (file, token) = only_token(&m.save_snapshot().await.unwrap());
     assert_eq!(file.profiles[0].profile.id, profile.id);
     assert_eq!(token.password_salt.len(), 32);
@@ -516,7 +522,7 @@ async fn a_profile_replaced_or_deleted_during_its_unlock_refuses_the_commit() {
     let path = scratch.0.as_path();
     let (m, _) = opened(path).await;
     let read = m.entry(&id).await.unwrap();
-    let (_, next) = m.unlock_entry(&read, &password).unwrap();
+    let (_, next) = CWIStyleWalletManager::unlock_entry(&m.config, &read, &password).unwrap();
     let next = next.unwrap();
     m.delete_profile(&id).await.unwrap();
     let refused = m.commit_entry(&read, next.clone()).await;

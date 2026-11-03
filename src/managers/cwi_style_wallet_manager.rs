@@ -7,10 +7,8 @@
 //! authenticated and delegates all wallet operations to an underlying wallet instance.
 //!
 //! The key file (`save_snapshot`, `save_key_file`) holds one reference UMP
-//! token per profile, salted with its own random 32-byte `passwordSalt`
-//! (#560, `docs/design/ump-token-format.md`); a v1 record, salted with the
-//! profile id, gains a token at its next unlock and leaves the file once a
-//! later unlock opens that token.
+//! token per profile, each with its own random salt (#560,
+//! `docs/design/ump-token-format.md`); a v1 record migrates at its unlock.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -263,9 +261,19 @@ async fn write_key_file(path: &Path, bytes: Zeroizing<Vec<u8>>) -> Result<()> {
     Ok(joined.map_err(std::io::Error::other)??)
 }
 
-/// A profile's key and the record that follows its unlock, which the file
-/// takes (`unlock_entry`).
 type Unlocked = (Zeroizing<Vec<u8>>, Option<Entry>);
+
+/// A password KDF and what it opens or seals, on the blocking pool over a zeroed
+/// copy of the password: argon2id's 128 MiB and ~330 ms stay off the worker (#624).
+async fn off_worker<T: Send + 'static>(
+    password: &str,
+    kdf: impl FnOnce(&str) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let password = Zeroizing::new(password.to_owned());
+    tokio::task::spawn_blocking(move || kdf(&password))
+        .await
+        .map_err(|_| Error::Internal("the password KDF task panicked or was cancelled".into()))?
+}
 
 /// Type alias for the wallet builder function.
 pub type CWIWalletBuilder = Arc<
@@ -279,13 +287,6 @@ pub type CWIWalletBuilder = Arc<
 >;
 
 /// CWI-style wallet manager with multi-profile support.
-///
-/// # Features
-///
-/// - Multiple profiles, each with its password and the reference's UMP
-///   token (PBKDF2-SHA512 over a random 32-byte salt, #560)
-/// - v1 records (salted with the profile id) read and migrated (design 4.3)
-/// - Profile import/export with encryption
 ///
 /// # Example
 ///
@@ -382,9 +383,13 @@ impl CWIStyleWalletManager {
     }
 
     /// The v1 derivation: PBKDF2 salted with the profile id, zeroed on drop.
-    fn derive_key_from_password(&self, password: &str, salt: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-        if self.config.use_pbkdf2 {
-            return ump_token::pbkdf2_sha512(password, salt, self.config.password_rounds);
+    fn derive_key_from_password(
+        config: &CWIStyleWalletManagerConfig,
+        password: &str,
+        salt: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        if config.use_pbkdf2 {
+            return ump_token::pbkdf2_sha512(password, salt, config.password_rounds);
         }
         // Simple fallback: just hash the password (not secure, for testing only)
         use ring::digest::{digest, SHA256};
@@ -397,11 +402,10 @@ impl CWIStyleWalletManager {
     /// presentation, recovery and root privileged keys, and argon2id at the
     /// reference's defaults, its KDF for new tokens (`createNewUser`, :1832-1876).
     fn seal(
-        &self,
-        profile: &mut Profile,
+        mut profile: Profile,
         root_primary: Zeroizing<Vec<u8>>,
         password: &str,
-    ) -> Result<UmpEntry> {
+    ) -> Result<(Profile, UmpEntry)> {
         let salt = generate_random_bytes(32);
         let kdf = PasswordKdf::argon2id();
         let factors = Factors {
@@ -422,10 +426,11 @@ impl CWIStyleWalletManager {
             created_at: profile.created_at.timestamp(),
         };
         let token = ump_token::build_token(salt, kdf, &factors, &[reference])?;
-        Ok(UmpEntry {
+        let ump = UmpEntry {
             presentation_key: factors.presentation_key,
             token,
-        })
+        };
+        Ok((profile, ump))
     }
 
     /// Creates a new profile.
@@ -434,9 +439,9 @@ impl CWIStyleWalletManager {
     /// random root key; its wallet key is `root XOR primary_pad`, the
     /// reference's derivation for a profile.
     pub async fn create_profile(&self, name: &str, password: &str) -> Result<Profile> {
-        let mut profile = Profile::new(name.to_string());
+        let profile = Profile::new(name.to_string());
         let root = Zeroizing::new(generate_random_bytes(32));
-        let ump = self.seal(&mut profile, root, password)?;
+        let (profile, ump) = off_worker(password, |pw| Self::seal(profile, root, pw)).await?;
         let mut entries = self.entries.write().await;
         let entry = Entry {
             profile: profile.clone(),
@@ -462,20 +467,15 @@ impl CWIStyleWalletManager {
             })
     }
 
-    /// The profile's wallet key, and the record that follows the unlock,
-    /// which the file takes (design 4.3):
-    ///
-    /// - a token alone: it opens or the unlock fails; nothing follows;
-    /// - a v1 record alone: v1 opens; a token joins it, written, the v1 record kept;
-    /// - both, the token opens: its GCM tag proves the password the token was
-    ///   sealed with, so the v1 record leaves, written;
-    /// - both, the token refuses: v1 opens and the token is re-sealed around
-    ///   that key under this password, written beside the unchanged v1
-    ///   record (v1 cannot tell this password from the token's; only a
-    ///   token that opens drops v1).
-    fn unlock_entry(&self, entry: &Entry, password: &str) -> Result<Unlocked> {
+    /// The profile's wallet key, and the record that follows the unlock, which
+    /// the file takes: the four cases of `switch_profile` (design 4.3).
+    fn unlock_entry(
+        config: &CWIStyleWalletManagerConfig,
+        entry: &Entry,
+        password: &str,
+    ) -> Result<Unlocked> {
         if let Some(ump) = &entry.ump {
-            match self.open_ump(entry, ump, password) {
+            match Self::open_ump(entry, ump, password) {
                 Ok(key) if entry.v1_pad.is_some() => {
                     let mut next = entry.clone();
                     next.v1_pad = None;
@@ -490,14 +490,14 @@ impl CWIStyleWalletManager {
             .v1_pad
             .as_ref()
             .ok_or_else(|| Error::ValidationError("Profile has neither record".into()))?;
-        let derived = self.derive_key_from_password(password, &entry.profile.id)?;
+        let derived = Self::derive_key_from_password(config, password, &entry.profile.id)?;
         let key = ump_token::xor(v1_pad, &derived);
         // A fresh root: the token and its blobs depend on the new salt alone,
         // and the pad moves so that root XOR pad is still the v1 key.
         let root = Zeroizing::new(generate_random_bytes(32));
         let mut profile = entry.profile.clone();
         profile.primary_pad = ump_token::xor(&key, &root).to_vec();
-        let ump = self.seal(&mut profile, root, password)?;
+        let (profile, ump) = Self::seal(profile, root, password)?;
         let next = Entry {
             profile,
             ump: Some(ump),
@@ -507,12 +507,7 @@ impl CWIStyleWalletManager {
     }
 
     /// The profile's key from its token: root primary XOR the token's pad.
-    fn open_ump(
-        &self,
-        entry: &Entry,
-        ump: &UmpEntry,
-        password: &str,
-    ) -> Result<Zeroizing<Vec<u8>>> {
+    fn open_ump(entry: &Entry, ump: &UmpEntry, password: &str) -> Result<Zeroizing<Vec<u8>>> {
         let opened = ump_token::open_token(&ump.token, &ump.presentation_key, password)?;
         let pad = opened
             .profiles
@@ -565,7 +560,9 @@ impl CWIStyleWalletManager {
     /// (`Error::InvalidOperation`) and the caller retries.
     pub async fn switch_profile(&self, profile_id: &[u8], password: &str) -> Result<()> {
         let entry = self.entry(profile_id).await?;
-        let (primary_key, next) = self.unlock_entry(&entry, password)?;
+        let (config, read) = (self.config.clone(), entry.clone());
+        let (primary_key, next) =
+            off_worker(password, move |pw| Self::unlock_entry(&config, &read, pw)).await?;
         let pkm = self
             .privileged_key_manager
             .read()
@@ -599,9 +596,12 @@ impl CWIStyleWalletManager {
         let ump = entry
             .ump
             .ok_or_else(|| Error::InvalidOperation("v1 profile: unlock it to migrate".into()))?;
-        let opened = ump_token::open_token(&ump.token, &ump.presentation_key, password)?;
-        let root_privileged = ump_token::open_root_privileged(&ump.token, &opened)?;
-        ump_token::unwrap_factor(&root_privileged, &ump.token.recovery_key_encrypted)
+        off_worker(password, move |pw| {
+            let opened = ump_token::open_token(&ump.token, &ump.presentation_key, pw)?;
+            let root_privileged = ump_token::open_root_privileged(&ump.token, &opened)?;
+            ump_token::unwrap_factor(&root_privileged, &ump.token.recovery_key_encrypted)
+        })
+        .await
     }
 
     /// Deletes a profile by ID.
