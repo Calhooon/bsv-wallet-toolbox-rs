@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Update the north-star table from local JSON; see docs/NORTH-STAR.md."""
+"""Update the north-star table from local JSON; see docs/NORTH-STAR.md.
+
+Each cell is dated by its source: in an envelope source (a "metrics" object), a
+record section that carries its own measured_at (tools/ratchet.json's
+mutation_score, fuzz_hours) dates its metric's cell; every other cell takes
+the source's top-level measured_at. --check renders with the same rule, so a
+changed section date is drift (#587).
+"""
 
 import argparse
 import datetime
