@@ -13,7 +13,8 @@ use crate::error::{Error, Result};
 /// PBKDF2 rounds of a token with no KDF metadata (`PBKDF2_NUM_ROUNDS`, :83).
 pub const PBKDF2_NUM_ROUNDS: u32 = 7777;
 
-/// The reference's argon2id defaults (`ARGON2ID_DEFAULT_*`, :89-91).
+/// The reference's argon2id defaults (`ARGON2ID_DEFAULT_*`, :88-91).
+const ARGON2ID_ITERATIONS: u32 = 7;
 const ARGON2ID_MEMORY_KIB: u32 = 131_072;
 const ARGON2ID_PARALLELISM: u32 = 1;
 const ARGON2ID_HASH_LENGTH: u32 = 32;
@@ -83,6 +84,19 @@ impl PasswordKdf {
         Self {
             algorithm: KdfAlgorithm::Pbkdf2Sha512,
             iterations,
+            memory_kib: Some(ARGON2ID_MEMORY_KIB),
+            parallelism: Some(ARGON2ID_PARALLELISM),
+            hash_length: Some(ARGON2ID_HASH_LENGTH),
+        }
+    }
+
+    /// `argon2id` at the reference's defaults, its constructor's KDF for new
+    /// tokens (:1677-1686).
+    #[must_use]
+    pub(crate) fn argon2id() -> Self {
+        Self {
+            algorithm: KdfAlgorithm::Argon2id,
+            iterations: ARGON2ID_ITERATIONS,
             memory_kib: Some(ARGON2ID_MEMORY_KIB),
             parallelism: Some(ARGON2ID_PARALLELISM),
             hash_length: Some(ARGON2ID_HASH_LENGTH),

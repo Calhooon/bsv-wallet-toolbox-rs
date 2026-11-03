@@ -351,6 +351,11 @@ fn the_reference_token_at_its_default_kdf_opens_to_its_recorded_root_keys() {
     let token = UmpToken::from_bytes(&bytes).unwrap();
     assert_eq!(token.to_bytes(), bytes, "re-serialized byte for byte");
     assert_eq!(token.password_kdf, Some(reference_default_argon()));
+    assert_eq!(
+        PasswordKdf::argon2id(),
+        reference_default_argon(),
+        "new tokens"
+    );
     let params = br#"{"iterations":7,"memoryKiB":131072,"parallelism":1,"hashLength":32}"#;
     assert_eq!(reference_default_argon().params_json(), params);
     assert!(bytes.windows(params.len()).any(|w| w == params));
