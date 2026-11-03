@@ -330,7 +330,8 @@ in `ump-token-rust.result.json`.
 | a reference legacy token (no KDF metadata) opens at 7777 rounds and not at another count | `ts-stack@edf6e03 CWIStyleWalletManager.ts:83,319-328`; toolbox #560 | `the_reference_legacy_token_opens_at_7777_rounds` |
 | a reference-written token opens through `switch_profile`, the pad read from the token | `ts-stack@edf6e03 CWIStyleWalletManager.ts:2267-2316`; toolbox #560 | `a_reference_written_token_opens_through_switch_profile` |
 | the Rust-written vector the reference opened under Node, with no locator set, still opens in Rust | toolbox #560; `test_vectors/keys/ump-token-rust.result.json` | `the_rust_written_vector_still_opens_in_rust` |
-| an argon2id token parses and is refused at derivation until stage two | `ts-stack@edf6e03 CWIStyleWalletManager.ts:330-350`; toolbox #560 | `argon2id_parses_and_is_refused_at_derivation_until_stage_two` |
+| an argon2id token derives at its own parameters (Argon2id, version 0x13, the token's iterations, memoryKiB, parallelism and hashLength), as the reference's hash-wasm call | `ts-stack@edf6e03 CWIStyleWalletManager.ts:330-350`; toolbox #593 | `an_argon2id_token_opens_at_its_own_parameters` |
+| a KDF parameter set outside the reference's `isValidKdfConfig` bounds is refused with the reference's text | `ts-stack@edf6e03 CWIStyleWalletManager.ts:88-122, :316`; toolbox #593 | `argon2id_outside_the_reference_bounds_is_refused_with_its_text` |
 
 ## 2. The writer and the pool
 
