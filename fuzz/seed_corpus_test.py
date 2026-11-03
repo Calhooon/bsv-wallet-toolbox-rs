@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The cases of fuzz/seed_corpus.py's held set (#713, #723): writes into a
-scratch corpus under $TMPDIR, the committed fuzz/corpus untouched.
+"""The cases of fuzz/seed_corpus.py's held set (#713, #723) and its stale
+report (#743): writes into a scratch corpus under $TMPDIR, the committed fuzz/corpus untouched.
 
 Run from the repository root: python3 -m unittest fuzz/seed_corpus_test.py
 """
@@ -30,12 +30,13 @@ def sha(data):
 class HeldSet(unittest.TestCase):
     def setUp(self):
         self.corpus = tempfile.mkdtemp(prefix="seed_corpus_test-")
-        self.saved = (seed_corpus.CORPUS, seed_corpus.HELD)
+        self.saved = (seed_corpus.CORPUS, seed_corpus.HELD, seed_corpus.NAMED)
         seed_corpus.CORPUS = self.corpus
         seed_corpus.HELD = {}
+        seed_corpus.NAMED = collections.defaultdict(set)
 
     def tearDown(self):
-        seed_corpus.CORPUS, seed_corpus.HELD = self.saved
+        seed_corpus.CORPUS, seed_corpus.HELD, seed_corpus.NAMED = self.saved
         shutil.rmtree(self.corpus)
 
     def on_disk(self):
@@ -66,6 +67,17 @@ class HeldSet(unittest.TestCase):
         self.assertEqual(seed_corpus.HELD[TARGET], collections.Counter({sha(TWO): 1, sha(ONE): 1}))
         seed_corpus.write(TARGET, "z", ONE)
         self.assertEqual(self.on_disk(), [("x", TWO), ("y", ONE)])
+
+    def test_a_named_seed_the_run_does_not_name_is_stale(self):
+        directory = os.path.join(self.corpus, TARGET)
+        os.makedirs(directory)
+        hashed = sha(TWO).hex()
+        for name, data in (("tests_gone_0_0", ONE), (hashed, TWO)):
+            with open(os.path.join(directory, name), "wb") as f:
+                f.write(data)
+        seed_corpus.write(TARGET, "tests_kept_0_0", b"body three")
+        seed_corpus.write(TARGET, "tests_copy_0_0", ONE)
+        self.assertEqual(seed_corpus.stale(), [os.path.join(directory, "tests_gone_0_0")])
 
 
 if __name__ == "__main__":
