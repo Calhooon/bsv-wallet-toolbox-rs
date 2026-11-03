@@ -571,8 +571,14 @@ privileged request; the reveals' validators are reached through the
 ProtoWallet's `WalletInterface` adapter, which checks the `privileged` and
 `privilegedReason` its inherent types omit. `key_route.rs` holds the route;
 the wallet's nine calls and the certificate paths share it. The reveals ask
-no BRC-98/99 check of the wallet's own; the reference's permissions manager
-asks one (`linkageRevelation`, `WalletPermissionsManager.ts:5190-5221`). The follow-on row is #589.
+the BRC-98/99 check ahead of the route, as the reference's permissions
+manager does (`WalletPermissionsManager.ts:5190-5221`, #589): the level-2
+protocol `counterparty key linkage revelation <counterparty hex>` or
+`specific key linkage revelation <protocol name> <key id, or all below
+level 2>`, the verifier as counterparty, the request's `privileged` and
+reason, `LinkageRevelation` (exempt with
+`seek_permissions_for_key_linkage_revelation` off, `:1851`), through
+`linkage_permission!` beside `key_permission!`.
 
 `prove_certificate` with `privileged: true` derives the verifier's keyring
 through the manager (`create_keyring_for_verifier` decrypts and encrypts

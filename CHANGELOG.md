@@ -21,6 +21,22 @@
   changes for a host that whitelists nothing.
 
 ### Fixed
+- #589 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)): the two
+  key-linkage reveals ask the BRC-98/99 protocol permission ahead of the
+  key route, as the reference's permissions manager does (ts-stack@edf6e03
+  `WalletPermissionsManager.ts:5190-5221`): `reveal_counterparty_key_linkage`
+  the level-2 protocol `counterparty key linkage revelation <counterparty
+  hex>`, `reveal_specific_key_linkage` the level-2 protocol `specific key
+  linkage revelation <protocol name> <key id>` (`all` in place of the key
+  id below level 2), each for the request's verifier with its `privileged`
+  and `privileged_reason`, under `PermissionUsageType::LinkageRevelation`;
+  `seek_permissions_for_key_linkage_revelation` off admits it with no
+  prompt (`:1851`). A privileged reveal still goes to the privileged key
+  manager (#569), after the check. Before, neither reveal asked. Host note
+  (bsv-wallet-cli#386): a reveal under a permissions manager now prompts
+  where none did, with the protocol names above as the host's handler sees
+  them, the verifier as the counterparty; the config flag turns it off.
+
 - fuzz corpus: the four `bhs` seeds under #148's old fixture names (`get_chain_tip_header` and
   `get_header_for_height`, `429_is_an_error_asked_again` and `429_without_retry_after`, answer
   `0_0`) removed; their bytes sit under six other committed `bhs` names (one header), so the
