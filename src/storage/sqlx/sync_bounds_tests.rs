@@ -1,6 +1,7 @@
-//! The sync-chunk finders' bounds past `i32::MAX` (#703).
+//! The sync-chunk finders' bounds past `i32::MAX` (#703) and the chunk's
+//! sums at `u32::MAX` (#711).
 
-use super::{entity_names, get_sync_chunk_internal, process_sync_chunk_internal};
+use super::{entity_names, get_sync_chunk_internal, process_sync_chunk_internal, ChunkingState};
 use crate::storage::{
     RequestSyncChunkArgs, StorageSqlx, SyncChunk, SyncOffset, WalletStorageWriter,
 };
@@ -138,4 +139,32 @@ async fn sync_chunk_offset_past_i32_max_is_an_empty_chunk() {
             assert_eq!(rows, 0, "{name} at offset {offset}");
         }
     }
+}
+
+// `add_items` saturates both sums (#711). A plain add past `u32::MAX`
+// panicked in a debug build and wrapped small in release, so a huge chunk
+// read as having room. Bounds at `u32::MAX`: a saturated sum equals the
+// bound, `can_add` is false, and a later add keeps it false.
+#[test]
+fn chunking_sums_saturate_at_u32_max() {
+    let mut size = ChunkingState::new(u32::MAX, u32::MAX);
+    size.add_items(1, u32::MAX - 1);
+    assert!(size.can_add());
+    size.add_items(1, 10);
+    assert_eq!(size.rough_size, u32::MAX);
+    assert!(!size.can_add());
+    size.add_items(1, 1);
+    assert_eq!(size.rough_size, u32::MAX);
+    assert!(!size.can_add());
+
+    let mut items = ChunkingState::new(u32::MAX, u32::MAX);
+    items.add_items(u32::MAX - 1, 1);
+    assert!(items.can_add());
+    items.add_items(10, 1);
+    assert_eq!(items.items_count, u32::MAX);
+    assert_eq!(items.remaining_items(), 0);
+    assert!(!items.can_add());
+    items.add_items(1, 1);
+    assert_eq!(items.items_count, u32::MAX);
+    assert!(!items.can_add());
 }
