@@ -274,4 +274,49 @@ mod tests {
             "type_b"
         );
     }
+
+    /// The total's three branches (#686, `short_page_total`), BRC-100's
+    /// total in each: a full page counts; a short page is the offset plus
+    /// the page, where the reference's listCertificates.ts:67 answers the
+    /// page alone (1 at offset 2 over three); an empty page past the start
+    /// counts; an empty store is 0.
+    #[tokio::test]
+    async fn test_list_certificates_total_per_page_shape() {
+        async fn total(
+            storage: &StorageSqlx,
+            auth: &AuthId,
+            offset: u32,
+            limit: u32,
+        ) -> (usize, u32) {
+            let args = ListCertificatesArgs {
+                certifiers: vec![],
+                types: vec![],
+                limit: Some(limit),
+                offset: Some(offset),
+                privileged: None,
+                privileged_reason: None,
+            };
+            let result = storage.list_certificates(auth, args).await.unwrap();
+            (result.certificates.len(), result.total_certificates)
+        }
+        let storage = StorageSqlx::in_memory().await.unwrap();
+        storage.migrate("totals", &"2".repeat(64)).await.unwrap();
+        storage.make_available().await.unwrap();
+        let identity_key = "c".repeat(66);
+        let (user, _) = storage.find_or_insert_user(&identity_key).await.unwrap();
+        let auth = AuthId::with_user_id(&identity_key, user.user_id);
+        assert_eq!(total(&storage, &auth, 0, 10).await, (0, 0), "empty store");
+
+        let insert = "INSERT INTO certificates (user_id, type, serial_number, certifier, \
+             subject, revocation_outpoint, signature, is_deleted) \
+             VALUES (?, 'type_t', ?, 'certifier_t', 'subject_t', 'outpoint_t', 'sig_t', 0)";
+        for serial in ["s0", "s1", "s2"] {
+            let row = sqlx::query(insert).bind(user.user_id).bind(serial);
+            row.execute(storage.writer()).await.unwrap();
+        }
+        assert_eq!(total(&storage, &auth, 0, 2).await, (2, 3), "full page");
+        assert_eq!(total(&storage, &auth, 2, 10).await, (1, 3), "short page");
+        let past = total(&storage, &auth, 100, 10).await;
+        assert_eq!(past, (0, 3), "empty page past the end");
+    }
 }
