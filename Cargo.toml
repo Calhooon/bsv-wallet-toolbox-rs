@@ -105,7 +105,7 @@ opt-level = 3
 # The A8 census tests read 1, 4 and 10 MB BEEFs on both paths (#652). The
 # read hashes every transaction it carries: sha2 held 70 to 90% of a census
 # test's busy samples unoptimised. The tests then compare the stored rows in
-# hex: hex held the most of what remained.
+# hex: hex held a quarter of what remained.
 [profile.dev.package.sha2]
 opt-level = 3
 
