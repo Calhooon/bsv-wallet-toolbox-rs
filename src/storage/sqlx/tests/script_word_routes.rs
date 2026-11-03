@@ -357,6 +357,19 @@ async fn sign(
     let (_, mut beef, tracker, child) = posted(bad);
     storage.set_services(Arc::new(MockWalletServices::new()));
     storage.set_chain_tracker(tip.tracker(tracker)).await;
+    let processed = sign_on(&storage, user_id, &mut beef, &child, delayed).await;
+    (storage, child, processed)
+}
+
+/// `child` processed as the signed transaction of the unsigned action
+/// `script-word-new`, its input BEEF `beef`, queued with `delayed`.
+async fn sign_on(
+    storage: &StorageSqlx,
+    user_id: i64,
+    beef: &mut Beef,
+    child: &Transaction,
+    delayed: bool,
+) -> crate::Result<String> {
     let args = StorageProcessActionArgs {
         is_new_tx: true,
         is_send_with: false,
@@ -367,11 +380,10 @@ async fn sign(
         raw_tx: Some(child.to_binary()),
         send_with: vec![],
     };
-    unsigned_action(&storage, user_id, &mut beef).await;
-    let processed = process_action_internal(&storage, user_id, args)
+    unsigned_action(storage, user_id, beef).await;
+    process_action_internal(storage, user_id, args)
         .await
-        .map(|result| result.send_with_results.unwrap()[0].status.clone());
-    (storage, child, processed)
+        .map(|result| result.send_with_results.unwrap()[0].status.clone())
 }
 
 /// The unsigned action `script-word-new`, its input BEEF `beef`.
