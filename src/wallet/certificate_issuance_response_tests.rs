@@ -134,7 +134,7 @@ async fn response_run_with(
     let captured = Arc::clone(&issued_response);
     let subject = PublicKey::from_hex(wallet.identity_key()).unwrap();
     let request = signing_certifier(&mut server).await
-        .general(&mut server, "/issue", 200, super::peer_fixture::Answer::Signed, move |request| {
+        .general(&mut server, "/signCertificate", 200, super::peer_fixture::Answer::Signed, move |request| {
             let request: ProtocolIssuanceRequest = serde_json::from_slice(request.body().unwrap()).unwrap();
             let private = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
             let signer = ProtoWallet::new(Some(private.clone()));
@@ -166,11 +166,11 @@ async fn response_run_with(
             *captured.lock().unwrap() = response.clone();
             serde_json::to_vec(&response).unwrap()
         }).expect(1).create_async().await;
-    let mut acquisition = args(certifier(), format!("{}/issue", server.url()));
+    let mut acquisition = args(certifier(), server.url());
     acquisition.certificate_type = cert_type;
     acquisition.fields = fields;
     let fixture_url = acquisition.certifier_url.take().unwrap();
-    acquisition.certifier_url = Some("https://issuer.example/issue".to_string());
+    acquisition.certifier_url = Some("https://issuer.example".to_string());
     let result = ISSUANCE_TEST_URL
         .scope(
             fixture_url,
