@@ -428,3 +428,32 @@ async fn a_proto_wallets_create_and_list_refusals_read_as_no_token_each_by_its_o
     assert!(cannot_list(&listed));
     assert!(!proto_wallet_refuses(&listed, "createAction"));
 }
+
+/// The mints the manager holds in flight.
+fn in_flight(manager: &WalletPermissionsManager) -> usize {
+    manager.mints_in_flight.lock().unwrap().len()
+}
+
+#[tokio::test]
+async fn a_handler_that_grants_inside_itself_mints_its_token() {
+    let scene = funded().await;
+    let manager = Arc::new(restarted(&scene));
+    let weak = Arc::downgrade(&manager);
+    let expiry = live().unsigned_abs();
+    manager
+        .set_permission_request_handler(Arc::new(move |request| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                let manager = weak.upgrade().unwrap();
+                let id = request.request_id.clone().unwrap();
+                manager
+                    .grant_permission(&id, Some(expiry), false, None)
+                    .await?;
+                std::future::pending::<Result<PermissionToken>>().await
+            })
+        }))
+        .await;
+    assert!(spawn_call(&manager).await.unwrap().unwrap());
+    assert_eq!(minted(&scene).await, 1, "the inline grant's mint lands");
+    assert_eq!(in_flight(&manager), 0);
+}

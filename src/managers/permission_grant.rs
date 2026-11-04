@@ -7,7 +7,7 @@
 //! A handler that answers inline with a token is read as a persistent grant
 //! with the token's expiry and, for spending, its amount.
 
-use std::sync::{Mutex as StdMutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use bsv_rs::primitives::ec::PublicKey;
@@ -29,6 +29,32 @@ const RECENT_GRANT_COVER: Duration = Duration::from_secs(15);
 pub(super) struct ActiveRequest {
     request: PermissionRequest,
     pending: Vec<oneshot::Sender<Result<bool>>>,
+}
+
+/// The request a handler's future answers and, once the handler grants it
+/// inline, the end of that grant: the caller polls the handler to it, so
+/// the mint is not dropped with the handler's future.
+struct Answering {
+    key: String,
+    granting: StdMutex<Option<watch::Receiver<()>>>,
+}
+
+tokio::task_local! {
+    /// Set while the caller polls the handler's future.
+    static ANSWERING: Arc<Answering>;
+}
+
+/// When the handler's own future grants `request_id`, the mark its caller
+/// waits on until the grant ends; none for any other grant.
+fn inline_grant(request_id: &str) -> Option<watch::Sender<()>> {
+    let mark = |answering: &Arc<Answering>| {
+        (answering.key == request_id).then(|| {
+            let (granting, ended) = watch::channel(());
+            *locked(&answering.granting) = Some(ended);
+            granting
+        })
+    };
+    ANSWERING.try_with(mark).ok().flatten()
 }
 
 /// The reference's denial (`:1198`).
@@ -82,7 +108,9 @@ impl WalletPermissionsManager {
     /// the request is queued under its `request_id` and handed to the
     /// handler. The host answers by `grant_permission` or `deny_permission`
     /// with that id, while the handler runs or after it returns (a handler
-    /// may stay pending; the caller returns at the answer); a handler that
+    /// may stay pending; the caller returns at the answer, the handler's
+    /// future dropped, save that a persistent grant made inside the
+    /// handler's own future is polled to its mint's end); a handler that
     /// returns with the request still unanswered answers it, a token as a
     /// persistent grant with the token's expiry (and, for spending, its
     /// `authorized_amount`), an error as a denial with that error. With no
@@ -124,10 +152,26 @@ impl WalletPermissionsManager {
         if joined {
             return answer(waiting).await;
         }
+        let answering = Arc::new(Answering {
+            key: key.clone(),
+            granting: StdMutex::new(None),
+        });
+        let handled = ANSWERING.scope(Arc::clone(&answering), handler(request));
+        let mut handled = std::pin::pin!(handled);
         let mut waiting = waiting;
         let answered = tokio::select! {
-            answered = &mut waiting => return answered.unwrap_or_else(|_| Err(denied())),
-            answered = handler(request) => answered,
+            answered = &mut waiting => {
+                let granting = locked(&answering.granting).take();
+                if let Some(mut ended) = granting {
+                    // The handler granted inline: its mint runs to its end.
+                    tokio::select! {
+                        _ = &mut handled => {}
+                        _ = ended.changed() => {}
+                    }
+                }
+                return answered.unwrap_or_else(|_| Err(denied()));
+            }
+            answered = &mut handled => answered,
         };
         let unanswered = locked(&self.active_requests).contains_key(&key);
         if unanswered {
@@ -182,11 +226,17 @@ impl WalletPermissionsManager {
         let matching = locked(&self.active_requests)
             .remove(request_id)
             .ok_or_else(|| Error::InvalidArgument("Request ID not found.".to_string()))?;
+        if ephemeral {
+            for caller in matching.pending {
+                let _ = caller.send(Ok(true));
+            }
+            return Ok(());
+        }
+        // Held to the grant's end: a handler granting inside its own
+        // future keeps its caller polling it until the mint is done.
+        let _granting = inline_grant(request_id);
         for caller in matching.pending {
             let _ = caller.send(Ok(true));
-        }
-        if ephemeral {
-            return Ok(());
         }
         self.grant_persistent_permission(&matching.request, expiry.unwrap_or(0), amount)
             .await

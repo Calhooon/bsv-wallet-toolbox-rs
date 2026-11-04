@@ -12,8 +12,9 @@
   request admitted or refused with `Permission denied.`, an ephemeral grant
   ending there with nothing cached or minted (`:1179`), an unknown id
   `Request ID not found.`. The handler stays and receives the request with
-  its `request_id`; it may answer through either method while it runs or
-  stay pending, and a token it returns unanswered reads as a persistent
+  its `request_id`; it may answer through either method while it runs
+  (a persistent grant inside the handler's own future runs to its mint's
+  end) or stay pending, and a token it returns unanswered reads as a persistent
   grant with the token's expiry. A persistent grant mints, as
   `grantPersistentPermission` and `createPermissionOnChain` do
   (`:1104-1149`, `:3349-3392`): the kind's fields encrypted to the wallet
