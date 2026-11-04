@@ -32,8 +32,8 @@ This module provides manager components that sit above the core storage, service
 | `cwi_style_wallet_manager.rs` | 800 | CWI-compatible multi-profile manager: the v3 key file, the v1 read and migration, JSON import/export (tests in `cwi_style_wallet_manager_tests.rs`, the KDF bound's in `cwi_kdf_permits_tests.rs`) |
 | `ump_token.rs` | 656 | The reference's UMP token and snapshot layouts, the key-file records (tests in `ump_token_tests.rs`) |
 | `ump_kdf.rs` | 284 | The token's password KDF, a child module of `ump_token.rs`: `PasswordKdf`, `KdfAlgorithm`, pbkdf2-sha512 and argon2id (#593), `kdf_permits` and `off_worker` (the blocking pool under the `with_kdf_in_flight` permits, #624, #631) |
-| `permissions_manager.rs` | 1978 | BRC-98/99 permission enforcement with DPACP/DBAP/DCAP/DSAP, in-memory cache (5-min TTL), permission request handler |
-| `permission_grant.rs` | 477 | A child module of `permissions_manager.rs`: the request flow, `grant_permission`, `deny_permission` and the token mint (#751 step 2a; tests in `permission_grant_tests.rs`) |
+| `permissions_manager.rs` | 3213 | BRC-98/99 permission enforcement with DPACP/DBAP/DCAP/DSAP, in-memory cache (5-min TTL), permission request handler |
+| `permission_grant.rs` | 578 | A child module of `permissions_manager.rs`: the request flow, `grant_permission`, `deny_permission` and the token mint (#751 step 2a; tests in `permission_grant_tests.rs`) |
 | `settings_manager.rs` | 354 | Persistent wallet settings with mainnet/testnet defaults and string serialization |
 | `simple_wallet_manager.rs` | 336 | Two-factor authentication manager (primary key + privileged key) |
 | `auth_manager.rs` | 58 | WAB (Wallet Authentication Backend) integration wrapper |
