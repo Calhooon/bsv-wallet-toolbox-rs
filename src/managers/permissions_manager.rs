@@ -2904,11 +2904,11 @@ mod module_call_tests {
     // =========================================================================
 
     /// `args` and `output` in the reference's shape survive the round trip.
-    fn round_trip<A: ModuleCall>(args: Value, output: Value) {
-        let read = A::from_json(&args).unwrap_or_else(|e| panic!("{}: {e}", A::METHOD));
-        assert_eq!(Value::Object(read.to_json()), args, "{}", A::METHOD);
-        let result = A::output_from_json(&output).unwrap_or_else(|e| panic!("{}: {e}", A::METHOD));
-        assert_eq!(A::output_json(&result), output, "{}", A::METHOD);
+    fn round_trip<A: ModuleCall>(args: &Value, output: &Value) {
+        let read = A::from_json(args).unwrap_or_else(|e| panic!("{}: {e}", A::METHOD));
+        assert_eq!(&Value::Object(read.to_json()), args, "{}", A::METHOD);
+        let result = A::output_from_json(output).unwrap_or_else(|e| panic!("{}: {e}", A::METHOD));
+        assert_eq!(&A::output_json(&result), output, "{}", A::METHOD);
     }
 
     #[test]
@@ -2927,31 +2927,31 @@ mod module_call_tests {
             object
         };
         round_trip::<GetPublicKeyArgs>(
-            keyed(json!({ "identityKey": false, "forSelf": true })),
-            json!({ "publicKey": peer }),
+            &keyed(json!({ "identityKey": false, "forSelf": true })),
+            &json!({ "publicKey": peer }),
         );
         round_trip::<EncryptArgs>(
-            keyed(json!({ "plaintext": [1, 2] })),
-            json!({ "ciphertext": [3] }),
+            &keyed(json!({ "plaintext": [1, 2] })),
+            &json!({ "ciphertext": [3] }),
         );
         round_trip::<DecryptArgs>(
-            keyed(json!({ "ciphertext": [3] })),
-            json!({ "plaintext": [1, 2] }),
+            &keyed(json!({ "ciphertext": [3] })),
+            &json!({ "plaintext": [1, 2] }),
         );
-        round_trip::<CreateHmacArgs>(keyed(json!({ "data": [1] })), json!({ "hmac": hash }));
+        round_trip::<CreateHmacArgs>(&keyed(json!({ "data": [1] })), &json!({ "hmac": hash }));
         round_trip::<VerifyHmacArgs>(
-            keyed(json!({ "data": [1], "hmac": hash })),
-            json!({ "valid": true }),
+            &keyed(json!({ "data": [1], "hmac": hash })),
+            &json!({ "valid": true }),
         );
         round_trip::<CreateSignatureArgs>(
-            keyed(json!({ "hashToDirectlySign": hash, "counterparty": "anyone" })),
-            json!({ "signature": [48, 1] }),
+            &keyed(json!({ "hashToDirectlySign": hash, "counterparty": "anyone" })),
+            &json!({ "signature": [48, 1] }),
         );
         round_trip::<VerifySignatureArgs>(
-            keyed(
+            &keyed(
                 json!({ "data": [1], "signature": [48, 1], "counterparty": "self", "forSelf": false }),
             ),
-            json!({ "valid": false }),
+            &json!({ "valid": false }),
         );
     }
 
