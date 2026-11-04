@@ -58,6 +58,12 @@ mod peer_fixture;
 #[path = "certificate_issuance_auth.rs"]
 mod auth;
 
+// The production client's refusals (#334); a `bench-support` library build
+// takes the policy client and has no caller.
+#[cfg(any(test, not(feature = "bench-support")))]
+#[path = "certificate_issuance_public.rs"]
+mod public;
+
 #[cfg(test)]
 tokio::task_local! {
     // Route a validated public URL to a loopback fixture within one test future.

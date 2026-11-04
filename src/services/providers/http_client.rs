@@ -32,6 +32,30 @@ pub(crate) fn sdk_transport_client() -> reqwest::Client {
     isolated::sdk_transport_client()
 }
 
+/// The production issuance client (#334): bsv-rs's default (the request
+/// timeout given, 10 s connect, no idle reuse), no redirect followed, no
+/// proxy, and `host` pinned to the addresses the wallet approved
+/// (`wallet/certificate_issuance_public.rs`). Built in production only; the
+/// test build has it for the witnesses, against a loopback pin.
+#[cfg(any(test, not(feature = "bench-support")))]
+pub(crate) type PublicClient = reqwest::Client;
+
+#[cfg(any(test, not(feature = "bench-support")))]
+pub(crate) fn public_pinned_client(
+    host: &str,
+    addresses: &[std::net::SocketAddr],
+    timeout: std::time::Duration,
+) -> std::result::Result<PublicClient, reqwest::Error> {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .pool_max_idle_per_host(0)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .resolve_to_addrs(host, addresses)
+        .build()
+}
+
 /// The BRC-104 Peer transport both authenticated clients use (the storage
 /// client and certificate issuance): bsv-rs's own in production, and in test
 /// and bench builds a wrapper that checks its destination before SDK I/O.
