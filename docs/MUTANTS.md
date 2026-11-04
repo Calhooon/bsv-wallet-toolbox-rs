@@ -51,7 +51,7 @@ it to `main` with the files it reads: a `main` workflow that names
 ## Measurement
 
 `.cargo/mutants.toml` selects the three storage doors, the services orchestrator,
-all providers and all monitor tasks, less the three files of the door oracle
+all providers and all monitor tasks, less the four files of the door oracle
 below and the BEEF walk of the evidence oracle. Both mutation build and test phases use
 `--lib`, so the test command is `cargo test --lib`. The library exercises the
 storage doors with `MockWalletServices` and the providers with `mockito`.
@@ -201,8 +201,12 @@ whose witnesses live in an integration target reads low under it (must_spend:
 80 whose functions an integration target enters is measured again under the
 widened oracle before its finding is filed, and the finding stands on that
 figure; its entry's comment names both figures and calls the `--lib` one a lower
-bound. The floor stays the `--lib` rule's (80 for these files), since the
-workflow scores them under `--lib`; a low score never blocks a landing.
+bound. Since the keeper's reading of 2026-11-04 (the floor's oracle is the one
+whose targets enter the file, never `--lib` alone), such a file moves into the
+catalogue whose targets reach it (the door oracle, the evidence oracle, or a
+named one listing its targets) and the workflow scores it there; its floor is
+judged under that oracle and no `--lib` figure is written as a floor. A low
+score never blocks a landing.
 
 The widened re-measure of 2026-11-02 (lane p5-mutants-floors) runs each `--lib`
 survivor of the eight path files below 80 once more (217 mutants, none a timeout
