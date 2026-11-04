@@ -65,6 +65,10 @@ mod auth;
 mod public;
 
 #[cfg(test)]
+#[path = "certificate_issuance_public_tests.rs"]
+mod public_tests;
+
+#[cfg(test)]
 tokio::task_local! {
     // Route a validated public URL to a loopback fixture within one test future.
     // Argument validation always runs, and production has no override.
