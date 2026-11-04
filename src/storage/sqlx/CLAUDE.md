@@ -553,7 +553,13 @@ indexes follow: the create walk's "a BUMP already proves this" shortcut
 (`beef_graph::link_txids_carried_by_bumps`), each `rposition` where it was the
 earliest (`sibling_bump_tests.rs`, `_732` and `_765`). Every other proof read
 (`beef_storage.rs`, `beef_verification.rs`, `lookup_evidence.rs`) is
-`find_bump`'s.
+`find_bump`'s. Since the same pin `merge_transaction` merges a transaction's
+merkle path as a BUMP and walks the sources its inputs link (bsv-rs #764,
+`Beef.ts:849-901`); the two rebuilds that re-merge an in-memory entry meant
+to stand alone (the prune, `beef_graph::prune_beef_to_roots`, and the
+caller's txid-only split, `create_action/beef.rs`) merge its bytes alone
+with `merge_raw_tx`, the sibling's migration line, so neither puts back an
+ancestor (`_764` in `tests/beef_graph.rs` and `tests/beef_ancestry.rs`).
 
 The judge passes `memory_limit: Some(100_000_000)`
 (`spend_verifier::DOOR_STACK_MEMORY_BYTES`, #395): the SV mainnet node's stack

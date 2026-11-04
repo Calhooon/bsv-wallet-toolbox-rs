@@ -608,3 +608,21 @@ async fn test_build_input_beef_ten_hops_stops_at_the_proven_hop() {
         "exactly hops 5..9; the proven hop terminates the closure"
     );
 }
+
+/// bsv-rs #764: the split of the caller's txid-only entries re-merges an
+/// in-memory entry with the one-entry merge, as the sibling's migration
+/// line names this site, so its linked sources do not enter the kept BEEF.
+/// Red with `merge_transaction`, which walks them since beta.7.
+#[test]
+fn the_txid_only_split_keeps_an_in_memory_entry_alone_764() {
+    let (mut beef, [b, c, _]) = linked_in_memory_entry();
+    beef.merge_txid_only("ee".repeat(32));
+    let (kept, _) = super::split_txid_only_entries(&beef, std::slice::from_ref(&c));
+    let kept_txids = beef_txids(&kept);
+    assert!(kept_txids.contains(&c), "{kept_txids:?}");
+    assert!(
+        !kept_txids.contains(&b),
+        "the linked parent stays out: {kept_txids:?}"
+    );
+    assert!(kept.bumps.is_empty(), "no BUMP merged from the link");
+}

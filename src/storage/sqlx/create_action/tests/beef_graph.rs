@@ -242,3 +242,17 @@ fn test_prune_leaves_a_beef_alone_when_no_root_is_present() {
     prune_beef_to_roots(&mut beef, &["00".repeat(32)]);
     assert_eq!(beef.txs.len(), 2, "pruning must never empty a BEEF");
 }
+
+/// bsv-rs #764: the prune's rebuild re-merges a kept in-memory entry with
+/// the one-entry merge (`merge_raw_tx`), as the sibling's migration line
+/// names this site, so the root's linked sources do not enter the pruned
+/// BEEF. Red with `merge_transaction`, which walks them since beta.7.
+#[test]
+fn the_prune_rebuild_keeps_an_in_memory_entry_alone_764() {
+    let (mut beef, [b, c, u]) = linked_in_memory_entry();
+    prune_beef_to_roots(&mut beef, std::slice::from_ref(&c));
+    let kept = beef_txids(&beef);
+    assert!(kept.contains(&c) && !kept.contains(&u), "{kept:?}");
+    assert!(!kept.contains(&b), "the linked parent stays out: {kept:?}");
+    assert!(beef.bumps.is_empty(), "no BUMP merged from the link");
+}

@@ -265,7 +265,10 @@ pub(in crate::storage::sqlx) fn prune_beef_to_roots(beef: &mut Beef, roots: &[St
         } else if let Some(raw) = tx.raw_tx() {
             pruned.merge_raw_tx(raw.to_vec(), None);
         } else if let Some(t) = tx.tx() {
-            pruned.merge_transaction(t.clone());
+            // The entry alone: since bsv-rs 0.9.0-beta.7 (#764)
+            // `merge_transaction` walks the sources an in-memory transaction
+            // links, which would put back what the prune drops.
+            pruned.merge_raw_tx(t.to_binary(), None);
         }
     }
     // The rebuild links strictly; keep every link the original carried.
