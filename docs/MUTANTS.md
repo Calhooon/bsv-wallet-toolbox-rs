@@ -204,9 +204,15 @@ figure; its entry's comment names both figures and calls the `--lib` one a lower
 bound. Since the keeper's reading of 2026-11-04 (the floor's oracle is the one
 whose targets enter the file, never `--lib` alone), such a file moves into the
 catalogue whose targets reach it (the door oracle, the evidence oracle, or a
-named one listing its targets) and the workflow scores it there; its floor is
-judged under that oracle and no `--lib` figure is written as a floor. A low
-score never blocks a landing.
+named one listing its targets) WHEN ITS ROW LANDS, and the workflow scores it
+there from then on, its floor judged under that oracle and no `--lib` figure
+written as a floor for it. Moved so far: the four door files (#535, #572) and
+`create_action/beef_walk.rs` (#601). Still in the lib set with their `--lib`
+figure as the lower bound until their rows land: `providers/bhs.rs` (#602),
+`create_action/mod.rs` (#604), `internalize_action.rs` (#603),
+`process_action.rs` (#605), `create_action/beef_storage.rs` (#600),
+`monitor/tasks/reorg.rs` (#606) and `review_proven_txs.rs` (#607). A low score
+never blocks a landing.
 
 The widened re-measure of 2026-11-02 (lane p5-mutants-floors) runs each `--lib`
 survivor of the eight path files below 80 once more (217 mutants, none a timeout
