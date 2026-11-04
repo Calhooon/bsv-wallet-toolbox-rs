@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use bsv_rs::wallet::{CreateActionArgs, CreateActionOptions, CreateActionResult};
+use bsv_rs::wallet::{
+    CreateActionArgs, CreateActionOptions, CreateActionResult, SignActionArgs, WalletInterface,
+};
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::services::mock::{
     error_post_beef_result, success_post_beef_result, MockResponse,
@@ -13,12 +15,16 @@ use super::{model::Inputs, rows, seed};
 type TestWallet = Wallet<StorageSqlx, MockWalletServices>;
 
 async fn wallet() -> Result<TestWallet> {
+    wallet_with(MockWalletServices::new()).await
+}
+
+async fn wallet_with(services: MockWalletServices) -> Result<TestWallet> {
     let fixture: Value = serde_json::from_str(include_str!("../data/storage/process_nosend.json"))?;
     let mut inputs = fixture["inputs"].clone();
     inputs["transactions"][0]["outputs"][0]["repeat"] = json!(2);
     let inputs: Inputs = serde_json::from_value(inputs)?;
     let seeded = seed::setup(&inputs).await?;
-    Ok(Wallet::new(Some(seeded.root), seeded.storage, MockWalletServices::new()).await?)
+    Ok(Wallet::new(Some(seeded.root), seeded.storage, services).await?)
 }
 
 fn payment(no_send: bool) -> CreateActionArgs {
@@ -417,5 +423,61 @@ async fn composition_writes_the_post_note_the_door_post_writes() -> Result<()> {
         recorded_history(include_str!("../data/storage/door_build_then_post.json"), 1)?,
         "the recorded composition's request history is the recorded post's"
     );
+    Ok(())
+}
+
+async fn sign_posted(wallet: &TestWallet, coin: i64) -> Result<String> {
+    let mut args = payment(false);
+    args.options
+        .get_or_insert_with(CreateActionOptions::default)
+        .sign_and_process = Some(false);
+    let template = wallet
+        .create_action_offering(args, Some("fixture.local"), &[coin], &[])
+        .await?;
+    let reference = bsv_rs::primitives::to_base64(
+        &template.signable_transaction.context("template")?.reference,
+    );
+    let signed = wallet
+        .sign_action(
+            SignActionArgs {
+                spends: Default::default(),
+                reference,
+                options: None,
+            },
+            Some("fixture.local"),
+        )
+        .await?;
+    Ok(hex::encode(signed.txid.context("signed txid")?))
+}
+
+/// #330: `sign_action`'s post writes the post note the door's post path and
+/// the one-call composition write, the per-instance words or the post's
+/// fault, as every post in the reference goes through `shareReqsWithWorld`
+/// (signAction.ts:76, processAction.ts:151, attemptToPostReqsToNetwork.ts:90-111).
+#[tokio::test]
+async fn sign_action_writes_the_post_note_the_door_post_writes() -> Result<()> {
+    let wallet = wallet().await?;
+    let built = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
+    wallet
+        .process_action(post(built.clone()), Some("fixture.local"))
+        .await?;
+    let signed = sign_posted(&wallet, 2).await?;
+    let door = post_note(&wallet, &built).await?;
+    assert_eq!(door["what"], "processActionPost");
+    assert_eq!(post_note(&wallet, &signed).await?, door);
+
+    let faulted = wallet_with(
+        MockWalletServices::builder()
+            .post_beef_network_error("recorded outage")
+            .build(),
+    )
+    .await?;
+    let txid = sign_posted(&faulted, 1).await?;
+    let note = post_note(&faulted, &txid).await?;
+    assert_eq!(note["words"], json!([]));
+    assert!(note["serviceError"]
+        .as_str()
+        .context("fault")?
+        .contains("recorded outage"));
     Ok(())
 }
