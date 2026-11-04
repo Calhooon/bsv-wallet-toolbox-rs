@@ -1212,62 +1212,67 @@ where
         // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).
         let spend_guard = self.spend_lock.lock().await;
 
-        // The modules the outputs' `p <scheme>` baskets and the `p <scheme>`
-        // labels name, ahead of every check (#757,
-        // `WalletPermissionsManager.ts:4300-4302`); the door has refused
-        // `p nosend ` labels already, so `nosend` here is a basket.
+        let (args, chain) = self.create_action_admit(args, originator).await?;
+        let result = self
+            .create_action_checked(args, offer, must_spend, spend_guard)
+            .await?;
+        let module_originator = originator.unwrap_or_default();
+        crate::managers::chain_response::<CreateActionArgs>(&chain, result, module_originator).await
+    }
+
+    /// `create_action`'s modules and permission checks (#757): the chain the
+    /// outputs' `p <scheme>` baskets and the `p <scheme>` labels name, ahead
+    /// of every check (`WalletPermissionsManager.ts:4300-4302`; the door has
+    /// refused `p nosend ` labels already, so `nosend` here is a basket);
+    /// the checks; then `onRequest` in order, its arguments validated again
+    /// as the reference's underlying call validates its own
+    /// (`callCreateActionWithPModules`, `:4500-4520`).
+    async fn create_action_admit(
+        &self,
+        args: CreateActionArgs,
+        originator: Option<&str>,
+    ) -> bsv_rs::Result<(CreateActionArgs, crate::managers::ModuleChain)> {
         let outputs = args.outputs.as_deref().unwrap_or_default();
         let chain = self.module_chain(
             outputs.iter().filter_map(|o| o.basket.as_deref()),
             args.labels.iter().flatten().map(String::as_str),
             crate::managers::NoSend::Refuse(crate::managers::BRC177_UNSUPPORTED),
         )?;
-
-        // BRC-98/99: Check spending permission based on total output satoshis
-        if self.permissions_manager.is_some() {
-            let total_satoshis: u64 = args
-                .outputs
-                .as_ref()
-                .map(|outputs| outputs.iter().map(|o| o.satoshis).sum())
-                .unwrap_or(0);
-
-            if total_satoshis > 0 {
-                self.check_spending_permission(originator, total_satoshis)
-                    .await?;
-            }
-
-            // Also check basket access for any outputs that target specific
-            // baskets; a `p <scheme>` basket is its module's (`:4305`).
-            if let Some(ref outputs) = args.outputs {
-                for output in outputs {
-                    if let Some(ref basket) = output.basket {
-                        if crate::managers::module_scheme(basket).is_some() {
-                            continue;
-                        }
-                        self.check_basket_permission(
-                            originator,
-                            basket,
-                            crate::managers::BasketUsageType::Insertion,
-                        )
-                        .await?;
-                    }
-                }
-            }
-        }
-
-        // `onRequest` in order, the call on the last arguments, validated
-        // again as the reference's underlying call validates its own,
-        // `onResponse` in reverse (`callCreateActionWithPModules`,
-        // `:4500-4520`).
+        self.check_create_permissions(&args, originator).await?;
         let module_originator = originator.unwrap_or_default();
         let args = crate::managers::chain_request(&chain, args, module_originator).await?;
         if !chain.is_empty() {
             super::create_args::validate_create_action_args(&args)?;
         }
-        let result = self
-            .create_action_checked(args, offer, must_spend, spend_guard)
-            .await?;
-        crate::managers::chain_response::<CreateActionArgs>(&chain, result, module_originator).await
+        Ok((args, chain))
+    }
+
+    /// `create_action`'s spending and basket checks; a `p <scheme>` basket
+    /// is its module's (`:4305`).
+    async fn check_create_permissions(
+        &self,
+        args: &CreateActionArgs,
+        originator: Option<&str>,
+    ) -> Result<()> {
+        if self.permissions_manager.is_none() {
+            return Ok(());
+        }
+        // BRC-98/99: Check spending permission based on total output satoshis
+        let outputs = args.outputs.as_deref().unwrap_or_default();
+        let total_satoshis: u64 = outputs.iter().map(|o| o.satoshis).sum();
+        if total_satoshis > 0 {
+            self.check_spending_permission(originator, total_satoshis)
+                .await?;
+        }
+        // Also check basket access for any outputs that target specific baskets
+        for basket in outputs.iter().filter_map(|o| o.basket.as_deref()) {
+            if crate::managers::module_scheme(basket).is_none() {
+                let insertion = crate::managers::BasketUsageType::Insertion;
+                self.check_basket_permission(originator, basket, insertion)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// `list_outputs` past its basket check: the limit validated, then
@@ -1986,6 +1991,24 @@ macro_rules! key_check {
             return answer;
         }
         key_permission!($wallet, $originator, $args, $protocol, $usage $(, $seek)?).await?;
+    };
+}
+
+// A basket call's module (#757): under a `p <scheme>` basket the registered
+// module owns the call and its answer returns from the calling function, the
+// underlying call `$unchecked` on the module's arguments; any other name
+// falls through to the basket check.
+macro_rules! basket_delegation {
+    ($wallet:expr, $originator:expr, $args:ident, $unchecked:ident) => {
+        let underlying = |module_args| -> crate::managers::ModuleFuture<'_, _> {
+            Box::pin(async move { $wallet.$unchecked(module_args).await })
+        };
+        if let Some(answer) = $wallet
+            .module_name_answer($originator, &$args.basket, &$args, underlying)
+            .await
+        {
+            return answer;
+        }
     };
 }
 
@@ -2753,15 +2776,7 @@ where
         // A `p <scheme>` basket: the module owns the call, the basket check
         // skipped, the listing on its arguments (#757,
         // `WalletPermissionsManager.ts:5086-5099`).
-        let underlying = |module_args| -> crate::managers::ModuleFuture<'_, _> {
-            Box::pin(async move { self.list_outputs_unchecked(module_args).await })
-        };
-        if let Some(answer) = self
-            .module_name_answer(originator, &args.basket, &args, underlying)
-            .await
-        {
-            return answer;
-        }
+        basket_delegation!(self, originator, args, list_outputs_unchecked);
 
         // BRC-98/99: Check basket access permission for listing
         self.check_basket_permission(
@@ -2785,15 +2800,7 @@ where
 
         // A `p <scheme>` basket: the module owns the call, the basket check
         // skipped (#757, `WalletPermissionsManager.ts:5120-5131`).
-        let underlying = |module_args| -> crate::managers::ModuleFuture<'_, _> {
-            Box::pin(async move { self.relinquish_output_unchecked(module_args).await })
-        };
-        if let Some(answer) = self
-            .module_name_answer(originator, &args.basket, &args, underlying)
-            .await
-        {
-            return answer;
-        }
+        basket_delegation!(self, originator, args, relinquish_output_unchecked);
 
         // BRC-98/99: Check basket access permission for removal
         self.check_basket_permission(
