@@ -8,7 +8,12 @@
 # `.cargo/mutants.toml` excludes these files; the Mutants workflow runs this
 # config as its own shard group (`--config`), and the scores job reads both
 # catalogues as one.
+# `beef_verification/own_word.rs` (`verify_own`, the verifier the create door's
+# own word calls, and `InputJudgements`, the dispatcher every live door shares)
+# judges under the node's word with its witnesses in the lib and five
+# integration targets, internalize_custom_instructions_tests among them (#572).
 examine_globs = [
+    "src/storage/sqlx/beef_verification/own_word.rs",
     "src/storage/sqlx/create_action/must_spend.rs",
     "src/storage/sqlx/create_action/own_word.rs",
     "src/storage/sqlx/create_action/review_beef.rs",
@@ -18,6 +23,7 @@ additional_cargo_args = [
     "--test=fixtures",
     "--test=caller_complete_funding_tests",
     "--test=immediate_broadcast_hint_tests",
+    "--test=internalize_custom_instructions_tests",
     "--test=known_ancestor_tests",
     "--test=test_vectors",
 ]
