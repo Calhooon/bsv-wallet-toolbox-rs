@@ -73,7 +73,7 @@ async fn internalize_with_a_tracker_accepts_the_same_payment() {
 // bsv-wallet-cli fa1e28f: `Kind::answer` :77 Validation 400 and :95 Service
 // 502; `of_toolbox` :354-357 and :366; `of_sdk` :282; `of_fault` :295;
 // `of_refusal` :130-136). An unknown height is a kept divergence pending the
-// owner's word (`docs/DIVERGENCES.md` D1).
+// owner's word (`docs/DIVERGENCES.md` AD1).
 
 /// A tracker whose root read answers a typed transport fault.
 struct TransportFaultTracker;
@@ -192,7 +192,7 @@ async fn a_tracker_transport_fault_reaches_the_host_as_its_typed_fault() {
 /// (:366) and `of_fault` (:295) serve it as its Service kind, 502
 /// `SERVICE_ERROR`, retryable. Nothing is written, and the same payment is
 /// admitted on the next try once the header service has the header. The
-/// kept divergence: `docs/DIVERGENCES.md` D1.
+/// kept divergence: `docs/DIVERGENCES.md` AD1.
 #[tokio::test]
 async fn an_unknown_proof_height_holds_as_a_service_fault_and_admits_on_retry() {
     let (storage, result) = internalize_against_header(serde_json::Value::Null).await;

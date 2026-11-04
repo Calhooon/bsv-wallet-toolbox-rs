@@ -461,7 +461,7 @@
 - #769 (the keeper's 2026-11-03 22:3xZ reading on LOW's L59 row): a
   witness per cause a tracker gives the internalize door, and
   `docs/DIVERGENCES.md`, the divergence register beside the reorg one,
-  with D1: a proof at a height the header service does not have holds as
+  with AD1: a proof at a height the header service does not have holds as
   a retryable `ServiceError` (family `Service`) and is admitted on the
   next try, where the reference refuses it as an invalid root
   (ts-stack@edf6e03 `ChaintracksChainTracker.ts:189`, the SDK's
