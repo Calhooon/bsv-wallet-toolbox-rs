@@ -552,6 +552,22 @@ where
 // Step 2: Send HTTP Request
 // =============================================================================
 
+/// The certifier's issuance endpoint, as ts-stack@edf6e03 `Wallet.ts:772`
+/// builds it: ``new URL('signCertificate', `${certifierUrl}/`)``, which the
+/// fetch at :782 posts to. The WHATWG resolution keeps the base's path and
+/// appends the segment after the added slash (`https://c.example/api` reaches
+/// `/api/signCertificate`); an empty query or fragment the validator admits
+/// takes the added slash, so the segment replaces the path's last part and
+/// both are dropped (`https://c.example/api?` reaches `/signCertificate`).
+/// `validate_issuance_url` has trimmed the trailing slashes as
+/// `validationHelpers.ts:1390` does, so `/api//` reaches `/api/signCertificate`.
+fn sign_certificate_endpoint(certifier_url: &str) -> Result<String> {
+    Url::parse(&format!("{certifier_url}/"))
+        .and_then(|base| base.join("signCertificate"))
+        .map(String::from)
+        .map_err(|e| Error::NetworkError(format!("Invalid certifier URL: {e}")))
+}
+
 /// Sends the issuance request to the certifier over BRC-104 mutual auth.
 ///
 /// The answer's sender, which bsv-rs's Peer has bound to a signed session,
@@ -568,9 +584,10 @@ async fn send_issuance_request(
     let fixture_url = ISSUANCE_TEST_URL.try_with(Clone::clone).ok();
     #[cfg(test)]
     let certifier_url = fixture_url.as_deref().unwrap_or(certifier_url);
+    let endpoint = sign_certificate_endpoint(certifier_url)?;
 
     let (sender, response) =
-        auth::post_authenticated(peer_wallet, certifier_url, body, auth::RESPONSE_DEADLINE).await?;
+        auth::post_authenticated(peer_wallet, &endpoint, body, auth::RESPONSE_DEADLINE).await?;
     let sender = sender.to_hex();
     if sender != certifier_hex {
         return Err(Error::ValidationError(format!(
