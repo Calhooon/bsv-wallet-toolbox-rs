@@ -221,7 +221,10 @@
   under `p nosend ...` is refused with `BRC-177 noSend expiry labels are
   only valid for createAction and listActions`. No new public item. Host
   note (bsv-wallet-cli#386): a registered module is asked for a
-  `p <scheme>` protocol where the ordinary check ran; a grant held under a
+  `p <scheme>` protocol where the ordinary check ran, the admin originator's
+  calls included (an admin call under an unregistered scheme is refused where
+  it passed, the reference's order: the admin is checked inside
+  `ensureProtocolPermission`, after the delegation); a grant held under a
   `p ` name is no longer consulted, so that call needs a module; no config
   flag governs it; an unregistered scheme is refused with
   `WalletRefusal { class: InvalidParameter }` and the message
