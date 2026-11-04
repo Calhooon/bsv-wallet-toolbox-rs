@@ -343,6 +343,21 @@
   transaction, as its inputs' are. The file scores 100 percent (19 of 19);
   its floor is 100, the record in `docs/census/mutants-oracle-2026-11-01`
   (`issue_572` in its json).
+- #604 (tests and the catalogue; no code; the floors lane #534):
+  `create_action/mod.rs`, the create door itself, at 62.16 percent under
+  `--lib` and 81.08 under the widened re-measure against its floor of 80,
+  joins `.cargo/mutants-doors.toml` and leaves the lib set. Five of its
+  seven widened survivors are killed by lib tests from the door's rules:
+  the delayed route may spend a change coin not marked spendable and the
+  immediate route may not (`339:9`, `is_delayed` as `false` and as `true`),
+  the step counts only the coins its route may spend (`399:13: delete !`),
+  with no caller tracker the step reads stored proofs against the
+  storage's own (`203:47: replace || with &&`), and the door sets
+  `is_new_tx` itself (`738:21`). The other two (`311:9`, `Again`'s Display;
+  `713:27`, the no-input guard) are equivalent mutants (`docs/MUTANTS.md`).
+  The file scores 94.59 percent (35 of 37, 2 unviable) under the door
+  oracle; the floor stays 80, the record in
+  `docs/census/mutants-complete-2026-11-02` (`issue_604` in its json).
 - #602 (tests and the catalogue; no code; the floors lane #534):
   `services/providers/bhs.rs` (the header service's `current_height` and
   `is_valid_root_for_height`, the chain's evidence the tracker's verdict
