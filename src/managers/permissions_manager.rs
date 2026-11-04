@@ -1881,6 +1881,133 @@ async fn run_module<'a, A: ModuleCall>(
     A::output_from_json(&result).map_err(module_refusal)
 }
 
+/// The create door's word for BRC-177 (`create_args.rs`): the reference's
+/// built-in `nosend` module (`:795-825`) is not ported, so a `p nosend`
+/// basket on `createAction` is refused with it.
+pub(crate) const BRC177_UNSUPPORTED: &str = "Active storage does not support BRC-177 noSend expiry";
+
+/// What a chained call does with the reserved scheme `nosend`: a host's
+/// entry is never read either way.
+#[derive(Clone, Copy)]
+pub(crate) enum NoSend {
+    /// No module asked, the call as without one (`listActions`: the
+    /// built-in module's transforms are identity, `:819-823`).
+    Skip,
+    /// Refused with the text.
+    Refuse(&'static str),
+}
+
+/// The modules a basket and label call chains, one per scheme in the order
+/// met (the reference's `Map`, baskets then labels).
+pub(crate) type ModuleChain = Vec<(String, Arc<dyn PermissionsModule>)>;
+
+/// `splitLabelsByPermissionModule`'s grammar (`:920-958`): the scheme of a
+/// `p <scheme> <payload>` label, `None` for a label not starting `p `, or
+/// `Invalid P-label format: <label>`.
+fn label_scheme(label: &str) -> std::result::Result<Option<&str>, String> {
+    let Some(remainder) = label.strip_prefix("p ") else {
+        return Ok(None);
+    };
+    let invalid = || format!("Invalid P-label format: {label}");
+    let separator = remainder
+        .find(' ')
+        .filter(|&at| at > 0)
+        .ok_or_else(invalid)?;
+    let payload = &remainder[separator + 1..];
+    if payload.is_empty() || payload.starts_with(' ') {
+        return Err(invalid());
+    }
+    Ok(Some(&remainder[..separator]))
+}
+
+impl WalletPermissionsManager {
+    /// The modules `baskets` and `labels` name (`collectNonPBaskets`
+    /// `:4436-4451`, `collectInternalizeActionBaskets` `:4970-4989`,
+    /// `splitLabelsByPermissionModule` `:920-958`, `addPModuleByScheme`
+    /// `:890-901`): a basket's scheme its second word, a label's by the
+    /// grammar; an unregistered scheme refused with `Unsupported
+    /// P-basket scheme: p <scheme>` or `Unsupported P-label scheme: p
+    /// <scheme>`. A name not starting `p ` takes the ordinary check.
+    pub(crate) fn module_chain<'n>(
+        &self,
+        baskets: impl IntoIterator<Item = &'n str>,
+        labels: impl IntoIterator<Item = &'n str>,
+        nosend: NoSend,
+    ) -> bsv_rs::Result<ModuleChain> {
+        let mut chain = ModuleChain::new();
+        let mut add = |scheme: &str, kind: &str| -> bsv_rs::Result<()> {
+            if chain.iter().any(|(held, _)| held == scheme) {
+                return Ok(());
+            }
+            if scheme == "nosend" {
+                return match nosend {
+                    NoSend::Skip => Ok(()),
+                    NoSend::Refuse(text) => Err(module_refusal(text)),
+                };
+            }
+            let Some(module) = self.config.permission_modules.get(scheme) else {
+                return Err(module_refusal(format!(
+                    "Unsupported P-{kind} scheme: p {scheme}"
+                )));
+            };
+            chain.push((scheme.to_string(), Arc::clone(module)));
+            Ok(())
+        };
+        for basket in baskets {
+            if let Some(scheme) = module_scheme(basket) {
+                add(scheme, "basket")?;
+            }
+        }
+        for label in labels {
+            if let Some(scheme) = label_scheme(label).map_err(module_refusal)? {
+                add(scheme, "label")?;
+            }
+        }
+        Ok(chain)
+    }
+}
+
+/// `onRequest` through every module of the chain in order (`:4507-4514`,
+/// `:4932-4941`, `:5038-5045`), each given the previous one's arguments;
+/// the arguments unchanged with no module.
+pub(crate) async fn chain_request<A: ModuleCall>(
+    chain: &ModuleChain,
+    args: A,
+    originator: &str,
+) -> bsv_rs::Result<A> {
+    if chain.is_empty() {
+        return Ok(args);
+    }
+    let mut value = serde_json::Value::Object(args.to_json());
+    for (_, module) in chain {
+        value = module
+            .on_request(A::METHOD, value, originator)
+            .await
+            .map_err(module_refusal)?;
+    }
+    A::from_json(&value).map_err(module_refusal)
+}
+
+/// `onResponse` through the chain in reverse (`:4518-4520`, `:4949-4954`,
+/// `:5048-5053`); the result unchanged with no module.
+pub(crate) async fn chain_response<A: ModuleCall>(
+    chain: &ModuleChain,
+    output: A::Output,
+    originator: &str,
+) -> bsv_rs::Result<A::Output> {
+    if chain.is_empty() {
+        return Ok(output);
+    }
+    let mut value = A::output_json(&output);
+    for (_, module) in chain.iter().rev() {
+        value = module
+            .on_response(value, A::METHOD, originator)
+            .await
+            .map_err(module_refusal)?;
+    }
+    A::output_from_json(&value).map_err(module_refusal)
+}
+
 /// A key call's request and result in the reference's JSON shape
 /// (`Wallet.interfaces.ts`: `protocolID` as `[level, name]`, `keyID`,
 /// `counterparty` as `self`, `anyone` or hex, byte fields as number
@@ -2105,6 +2232,51 @@ module_call!(VerifySignatureArgs => VerifySignatureResult, "verifySignature", {
     protocol_id: "protocolID", key_id: "keyID", counterparty: "counterparty",
     for_self: "forSelf",
 }, { valid: "valid" });
+
+// The basket and label calls' mappings (#757): bsv-rs's own camelCase serde
+// is the reference's object, field for field, so each row is the method
+// name and the two types.
+macro_rules! module_call_serde {
+    ($args:ident => $output:ident, $method:literal) => {
+        impl ModuleCall for bsv_rs::wallet::$args {
+            const METHOD: &'static str = $method;
+            type Output = bsv_rs::wallet::$output;
+            fn to_json(&self) -> serde_json::Map<String, serde_json::Value> {
+                serde_object(self)
+            }
+            fn from_json(value: &serde_json::Value) -> std::result::Result<Self, String> {
+                module_object(value, $method, "arguments")?;
+                serde_json::from_value(value.clone())
+                    .map_err(|_| format!("P-module arguments for {} are invalid", $method))
+            }
+            fn output_json(output: &Self::Output) -> serde_json::Value {
+                serde_json::Value::Object(serde_object(output))
+            }
+            fn output_from_json(
+                value: &serde_json::Value,
+            ) -> std::result::Result<Self::Output, String> {
+                module_object(value, $method, "result")?;
+                serde_json::from_value(value.clone())
+                    .map_err(|_| format!("P-module result for {} is invalid", $method))
+            }
+        }
+    };
+}
+
+/// A wallet type's object; its derived serde never fails on these types,
+/// and an empty object would fail the parse back.
+fn serde_object<T: Serialize>(value: &T) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::Object(object)) => object,
+        _ => serde_json::Map::new(),
+    }
+}
+
+module_call_serde!(ListOutputsArgs => ListOutputsResult, "listOutputs");
+module_call_serde!(RelinquishOutputArgs => RelinquishOutputResult, "relinquishOutput");
+module_call_serde!(CreateActionArgs => CreateActionResult, "createAction");
+module_call_serde!(ListActionsArgs => ListActionsResult, "listActions");
+module_call_serde!(InternalizeActionArgs => InternalizeActionResult, "internalizeAction");
 
 // =============================================================================
 // Tests
@@ -2953,6 +3125,55 @@ mod module_call_tests {
             ),
             &json!({ "valid": false }),
         );
+    }
+
+    #[test]
+    fn basket_and_label_mappings_round_trip_the_reference_shape() {
+        use bsv_rs::wallet::{
+            CreateActionArgs, InternalizeActionArgs, ListActionsArgs, ListOutputsArgs,
+            RelinquishOutputArgs,
+        };
+        round_trip::<ListOutputsArgs>(
+            &json!({ "basket": "p btms token", "tags": ["t"], "limit": 10, "seekPermission": false }),
+            &json!({ "totalOutputs": 0, "outputs": [] }),
+        );
+        round_trip::<RelinquishOutputArgs>(
+            &json!({ "basket": "p btms token", "output": format!("{}.0", "ab".repeat(32)) }),
+            &json!({ "relinquished": true }),
+        );
+        round_trip::<CreateActionArgs>(
+            &json!({ "description": "a witness", "labels": ["p btms token"],
+                "outputs": [{ "lockingScript": "51", "satoshis": 1,
+                    "outputDescription": "a witness", "basket": "p btms token" }] }),
+            &json!({ "txid": "ab".repeat(32) }),
+        );
+        round_trip::<ListActionsArgs>(
+            &json!({ "labels": ["p btms token"], "includeLabels": true }),
+            &json!({ "totalActions": 0, "actions": [] }),
+        );
+        round_trip::<InternalizeActionArgs>(
+            &json!({ "tx": [1, 2], "description": "a witness", "labels": ["p btms token"],
+                "outputs": [{ "outputIndex": 0, "protocol": "basket insertion",
+                    "insertionRemittance": { "basket": "p btms token" } }] }),
+            &json!({ "accepted": true }),
+        );
+    }
+
+    #[test]
+    fn label_grammar_is_the_references() {
+        // `splitLabelsByPermissionModule`'s examples (`:907-915`).
+        for (label, scheme) in [
+            ("p btms token123", Some("btms")),
+            ("p invoicing invoice 2026-02-02", Some("invoicing")),
+            ("btms token", None),
+            ("P btms token", None),
+        ] {
+            assert_eq!(label_scheme(label), Ok(scheme), "{label}");
+        }
+        for label in ["p btms", "p btms ", "p  data", "p btms  x", "p "] {
+            let text = format!("Invalid P-label format: {label}");
+            assert_eq!(label_scheme(label), Err(text), "{label}");
+        }
     }
 
     #[test]
