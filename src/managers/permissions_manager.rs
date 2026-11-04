@@ -1804,6 +1804,309 @@ impl WalletPermissionsManager {
 }
 
 // =============================================================================
+// Permission-module delegation on the key calls (#726)
+// =============================================================================
+
+/// The future a delegated call's underlying wallet call answers with: the
+/// `std` spelling, crate-owned, so no outside crate's future type is named.
+pub(crate) type ModuleFuture<'a, T> = Pin<Box<dyn Future<Output = bsv_rs::Result<T>> + Send + 'a>>;
+
+/// The built-in BRC-177 module's refusal of every method but `createAction`
+/// and `listActions` (ts-stack@edf6e03 `WalletPermissionsManager.ts:799-801`).
+pub(crate) const NOSEND_KEY_CALL: &str =
+    "BRC-177 noSend expiry labels are only valid for createAction and listActions";
+
+/// A P-module refusal at the boundary: the text alone, the class
+/// `InvalidParameter` (the keeper's reading of #726).
+fn module_refusal(message: impl Into<String>) -> bsv_rs::Error {
+    bsv_rs::Error::WalletRefusal {
+        class: bsv_rs::WalletRefusalClass::InvalidParameter,
+        message: message.into(),
+    }
+}
+
+/// The scheme of a `p <scheme> <rest...>` name as passed, or `None` for any
+/// other name (`WalletPermissionsManager.ts:851-855`: the case-sensitive
+/// `'p '` test, the scheme `split(' ')[1]`).
+pub(crate) fn module_scheme(name: &str) -> Option<&str> {
+    name.strip_prefix("p ")?.split(' ').next()
+}
+
+impl WalletPermissionsManager {
+    /// The reference's `delegateToPModuleIfNeeded` (`:843-885`) for a key
+    /// call: `None` when `name` is not a `p ` name, so the caller runs its
+    /// ordinary check; else the module's answer. `nosend` is the reference's
+    /// built-in module, so a host's entry under it is never read (`:792-801`).
+    /// The module's `on_request` answers the arguments the underlying call
+    /// takes, and its `on_response` the result the caller receives.
+    pub(crate) async fn delegate_key_call<'a, A: ModuleCall>(
+        &self,
+        name: &str,
+        args: &A,
+        originator: &str,
+        underlying: impl FnOnce(A) -> ModuleFuture<'a, A::Output> + Send,
+    ) -> Option<bsv_rs::Result<A::Output>> {
+        let scheme = module_scheme(name)?;
+        if scheme == "nosend" {
+            return Some(Err(module_refusal(NOSEND_KEY_CALL)));
+        }
+        let Some(module) = self.config.permission_modules.get(scheme) else {
+            return Some(Err(module_refusal(format!(
+                "Unsupported P-module scheme: p {scheme}"
+            ))));
+        };
+        Some(run_module(module.as_ref(), args, originator, underlying).await)
+    }
+}
+
+/// `onRequest`, the underlying call on its arguments, `onResponse`
+/// (`:874-884`); a module's own refusal crosses with its text.
+async fn run_module<'a, A: ModuleCall>(
+    module: &dyn PermissionsModule,
+    args: &A,
+    originator: &str,
+    underlying: impl FnOnce(A) -> ModuleFuture<'a, A::Output>,
+) -> bsv_rs::Result<A::Output> {
+    let request = serde_json::Value::Object(args.to_json());
+    let transformed = module
+        .on_request(A::METHOD, request, originator)
+        .await
+        .map_err(module_refusal)?;
+    let transformed = A::from_json(&transformed).map_err(module_refusal)?;
+    let result = underlying(transformed).await?;
+    let result = module
+        .on_response(A::output_json(&result), A::METHOD, originator)
+        .await
+        .map_err(module_refusal)?;
+    A::output_from_json(&result).map_err(module_refusal)
+}
+
+/// A key call's request and result in the reference's JSON shape
+/// (`Wallet.interfaces.ts`: `protocolID` as `[level, name]`, `keyID`,
+/// `counterparty` as `self`, `anyone` or hex, byte fields as number
+/// arrays, an absent option omitted), the one place the port maps them.
+pub(crate) trait ModuleCall: Sized + Send + Sync {
+    /// The BRC-100 method name the module is told.
+    const METHOD: &'static str;
+    /// The call's result.
+    type Output: Send;
+    /// The request's arguments as the module reads them.
+    fn to_json(&self) -> serde_json::Map<String, serde_json::Value>;
+    /// The module's arguments back, or why they do not parse.
+    fn from_json(value: &serde_json::Value) -> std::result::Result<Self, String>;
+    /// The result as the module reads it.
+    fn output_json(output: &Self::Output) -> serde_json::Value;
+    /// The module's result back, or why it does not parse.
+    fn output_from_json(value: &serde_json::Value) -> std::result::Result<Self::Output, String>;
+}
+
+/// One field of a key call in the reference's JSON: `None` omits it.
+trait ModuleField: Sized {
+    fn to_field(&self) -> Option<serde_json::Value>;
+    /// `None` is the key absent or `null`.
+    fn from_field(value: Option<&serde_json::Value>) -> std::result::Result<Self, ()>;
+}
+
+impl<T: ModuleField> ModuleField for Option<T> {
+    fn to_field(&self) -> Option<serde_json::Value> {
+        self.as_ref().and_then(ModuleField::to_field)
+    }
+    fn from_field(value: Option<&serde_json::Value>) -> std::result::Result<Self, ()> {
+        match value {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            some => T::from_field(some).map(Some),
+        }
+    }
+}
+
+impl ModuleField for bool {
+    fn to_field(&self) -> Option<serde_json::Value> {
+        Some(serde_json::Value::Bool(*self))
+    }
+    /// Absent is false, as the reference's optional flags read.
+    fn from_field(value: Option<&serde_json::Value>) -> std::result::Result<Self, ()> {
+        match value {
+            None | Some(serde_json::Value::Null) => Ok(false),
+            Some(value) => value.as_bool().ok_or(()),
+        }
+    }
+}
+
+impl ModuleField for String {
+    fn to_field(&self) -> Option<serde_json::Value> {
+        Some(serde_json::Value::String(self.clone()))
+    }
+    fn from_field(value: Option<&serde_json::Value>) -> std::result::Result<Self, ()> {
+        value.and_then(|v| v.as_str()).map(str::to_string).ok_or(())
+    }
+}
+
+impl ModuleField for Vec<u8> {
+    fn to_field(&self) -> Option<serde_json::Value> {
+        Some(serde_json::Value::from(self.as_slice()))
+    }
+    fn from_field(value: Option<&serde_json::Value>) -> std::result::Result<Self, ()> {
+        let items = value.and_then(|v| v.as_array()).ok_or(())?;
+        items
+            .iter()
+            .map(|item| item.as_u64().and_then(|n| u8::try_from(n).ok()).ok_or(()))
+            .collect()
+    }
+}
+
+impl ModuleField for [u8; 32] {
+    fn to_field(&self) -> Option<serde_json::Value> {
+        Some(serde_json::Value::from(self.as_slice()))
+    }
+    fn from_field(value: Option<&serde_json::Value>) -> std::result::Result<Self, ()> {
+        Vec::<u8>::from_field(value)?.try_into().map_err(|_| ())
+    }
+}
+
+impl ModuleField for Protocol {
+    fn to_field(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!([
+            self.security_level.as_u8(),
+            self.protocol_name
+        ]))
+    }
+    fn from_field(value: Option<&serde_json::Value>) -> std::result::Result<Self, ()> {
+        match value.and_then(|v| v.as_array()).map(Vec::as_slice) {
+            Some([level, name]) => {
+                let level = level
+                    .as_u64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .ok_or(())?;
+                let level = SecurityLevel::from_u8(level).ok_or(())?;
+                Ok(Protocol::new(level, name.as_str().ok_or(())?))
+            }
+            _ => Err(()),
+        }
+    }
+}
+
+impl ModuleField for Counterparty {
+    fn to_field(&self) -> Option<serde_json::Value> {
+        let word = match self {
+            Counterparty::Self_ => "self".to_string(),
+            Counterparty::Anyone => "anyone".to_string(),
+            Counterparty::Other(key) => key.to_hex(),
+        };
+        Some(serde_json::Value::String(word))
+    }
+    fn from_field(value: Option<&serde_json::Value>) -> std::result::Result<Self, ()> {
+        match value.and_then(|v| v.as_str()).ok_or(())? {
+            "self" => Ok(Counterparty::Self_),
+            "anyone" => Ok(Counterparty::Anyone),
+            hex => bsv_rs::primitives::PublicKey::from_hex(hex)
+                .map(Counterparty::Other)
+                .map_err(|_| ()),
+        }
+    }
+}
+
+/// The module's object as a map, or the refusal naming what it answered.
+fn module_object<'v>(
+    value: &'v serde_json::Value,
+    method: &str,
+    what: &str,
+) -> std::result::Result<&'v serde_json::Map<String, serde_json::Value>, String> {
+    value
+        .as_object()
+        .ok_or_else(|| format!("P-module {what} for {method} must be an object"))
+}
+
+/// One field read back from the module's object, the refusal naming it.
+fn module_field<T: ModuleField>(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    method: &str,
+) -> std::result::Result<T, String> {
+    T::from_field(object.get(key)).map_err(|()| format!("P-module {key} for {method} is invalid"))
+}
+
+// Each key call's mapping: its method name, its fields (the Rust field and
+// the reference's key) and its result's; the three permission fields every
+// key call ends with are appended.
+macro_rules! module_call {
+    ($args:ident => $output:ident, $method:literal,
+        { $($field:ident: $key:literal),* $(,)? }, { $($out:ident: $out_key:literal),* $(,)? }) => {
+        impl ModuleCall for bsv_rs::wallet::$args {
+            const METHOD: &'static str = $method;
+            type Output = bsv_rs::wallet::$output;
+            fn to_json(&self) -> serde_json::Map<String, serde_json::Value> {
+                let mut object = serde_json::Map::new();
+                let fields = [
+                    $(($key, self.$field.to_field()),)*
+                    ("privileged", self.privileged.to_field()),
+                    ("privilegedReason", self.privileged_reason.to_field()),
+                    ("seekPermission", self.seek_permission.to_field()),
+                ];
+                for (key, value) in fields {
+                    if let Some(value) = value {
+                        object.insert(key.to_string(), value);
+                    }
+                }
+                object
+            }
+            fn from_json(value: &serde_json::Value) -> std::result::Result<Self, String> {
+                let object = module_object(value, $method, "arguments")?;
+                Ok(Self {
+                    $($field: module_field(object, $key, $method)?,)*
+                    privileged: module_field(object, "privileged", $method)?,
+                    privileged_reason: module_field(object, "privilegedReason", $method)?,
+                    seek_permission: module_field(object, "seekPermission", $method)?,
+                })
+            }
+            fn output_json(output: &Self::Output) -> serde_json::Value {
+                let mut object = serde_json::Map::new();
+                $(if let Some(value) = output.$out.to_field() {
+                    object.insert($out_key.to_string(), value);
+                })*
+                serde_json::Value::Object(object)
+            }
+            fn output_from_json(
+                value: &serde_json::Value,
+            ) -> std::result::Result<Self::Output, String> {
+                let object = module_object(value, $method, "result")?;
+                Ok(bsv_rs::wallet::$output {
+                    $($out: module_field(object, $out_key, $method)?,)*
+                })
+            }
+        }
+    };
+}
+
+module_call!(GetPublicKeyArgs => GetPublicKeyResult, "getPublicKey", {
+    identity_key: "identityKey", protocol_id: "protocolID", key_id: "keyID",
+    counterparty: "counterparty", for_self: "forSelf",
+}, { public_key: "publicKey" });
+module_call!(EncryptArgs => EncryptResult, "encrypt", {
+    plaintext: "plaintext", protocol_id: "protocolID", key_id: "keyID",
+    counterparty: "counterparty",
+}, { ciphertext: "ciphertext" });
+module_call!(DecryptArgs => DecryptResult, "decrypt", {
+    ciphertext: "ciphertext", protocol_id: "protocolID", key_id: "keyID",
+    counterparty: "counterparty",
+}, { plaintext: "plaintext" });
+module_call!(CreateHmacArgs => CreateHmacResult, "createHmac", {
+    data: "data", protocol_id: "protocolID", key_id: "keyID", counterparty: "counterparty",
+}, { hmac: "hmac" });
+module_call!(VerifyHmacArgs => VerifyHmacResult, "verifyHmac", {
+    data: "data", hmac: "hmac", protocol_id: "protocolID", key_id: "keyID",
+    counterparty: "counterparty",
+}, { valid: "valid" });
+module_call!(CreateSignatureArgs => CreateSignatureResult, "createSignature", {
+    data: "data", hash_to_directly_sign: "hashToDirectlySign", protocol_id: "protocolID",
+    key_id: "keyID", counterparty: "counterparty",
+}, { signature: "signature" });
+module_call!(VerifySignatureArgs => VerifySignatureResult, "verifySignature", {
+    data: "data", hash_to_directly_verify: "hashToDirectlyVerify", signature: "signature",
+    protocol_id: "protocolID", key_id: "keyID", counterparty: "counterparty",
+    for_self: "forSelf",
+}, { valid: "valid" });
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -2583,5 +2886,98 @@ mod tests {
         let manager = make_manager(WalletPermissionsManagerConfig::all_disabled());
         let result = manager.wallet_for_originator("app.example.com");
         assert!(result.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod module_call_tests {
+    use super::*;
+    use bsv_rs::primitives::PrivateKey;
+    use bsv_rs::wallet::{
+        CreateHmacArgs, CreateSignatureArgs, EncryptArgs, VerifyHmacArgs, VerifySignatureArgs,
+    };
+    use serde_json::{json, Value};
+
+    // =========================================================================
+    // The JSON mappings (`Wallet.interfaces.ts`'s shapes): each call's request
+    // and result in the reference's object, read and written back unchanged.
+    // =========================================================================
+
+    /// `args` and `output` in the reference's shape survive the round trip.
+    fn round_trip<A: ModuleCall>(args: Value, output: Value) {
+        let read = A::from_json(&args).unwrap_or_else(|e| panic!("{}: {e}", A::METHOD));
+        assert_eq!(Value::Object(read.to_json()), args, "{}", A::METHOD);
+        let result = A::output_from_json(&output).unwrap_or_else(|e| panic!("{}: {e}", A::METHOD));
+        assert_eq!(A::output_json(&result), output, "{}", A::METHOD);
+    }
+
+    #[test]
+    fn mappings_round_trip_the_reference_shape() {
+        let peer = PrivateKey::random().public_key().to_hex();
+        let hash: Vec<u8> = (0..32).collect();
+        let keyed = |extra: Value| {
+            let mut object = json!({
+                "protocolID": [2, "p btms witness"], "keyID": "1", "counterparty": peer,
+                "privileged": true, "privilegedReason": "privileged witness", "seekPermission": false,
+            });
+            object
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            object
+        };
+        round_trip::<GetPublicKeyArgs>(
+            keyed(json!({ "identityKey": false, "forSelf": true })),
+            json!({ "publicKey": peer }),
+        );
+        round_trip::<EncryptArgs>(
+            keyed(json!({ "plaintext": [1, 2] })),
+            json!({ "ciphertext": [3] }),
+        );
+        round_trip::<DecryptArgs>(
+            keyed(json!({ "ciphertext": [3] })),
+            json!({ "plaintext": [1, 2] }),
+        );
+        round_trip::<CreateHmacArgs>(keyed(json!({ "data": [1] })), json!({ "hmac": hash }));
+        round_trip::<VerifyHmacArgs>(
+            keyed(json!({ "data": [1], "hmac": hash })),
+            json!({ "valid": true }),
+        );
+        round_trip::<CreateSignatureArgs>(
+            keyed(json!({ "hashToDirectlySign": hash, "counterparty": "anyone" })),
+            json!({ "signature": [48, 1] }),
+        );
+        round_trip::<VerifySignatureArgs>(
+            keyed(
+                json!({ "data": [1], "signature": [48, 1], "counterparty": "self", "forSelf": false }),
+            ),
+            json!({ "valid": false }),
+        );
+    }
+
+    #[test]
+    fn mappings_refuse_what_does_not_parse() {
+        let refusals = [
+            EncryptArgs::from_json(&json!([])).map(drop),
+            EncryptArgs::from_json(
+                &json!({ "plaintext": [256], "protocolID": [1, "x"], "keyID": "1" }),
+            )
+            .map(drop),
+            EncryptArgs::from_json(
+                &json!({ "plaintext": [], "protocolID": [3, "x"], "keyID": "1" }),
+            )
+            .map(drop),
+            CreateHmacArgs::output_from_json(&json!({ "hmac": [1] })).map(drop),
+        ];
+        let texts: Vec<String> = refusals.into_iter().map(|r| r.unwrap_err()).collect();
+        assert_eq!(
+            texts,
+            [
+                "P-module arguments for encrypt must be an object",
+                "P-module plaintext for encrypt is invalid",
+                "P-module protocolID for encrypt is invalid",
+                "P-module hmac for createHmac is invalid",
+            ]
+        );
     }
 }
