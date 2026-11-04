@@ -56,6 +56,8 @@ Before: the Mutants workflow's oracle before this lane: `cargo test --lib`, defa
 | `src/storage/sqlx/create_action/review_beef.rs` | after | 13 | 0 | 0 | 1 | 100.00% |
 | `src/storage/sqlx/beef_verification/own_word.rs` | doors, at #572 | 17 | 2 | 0 | 4 | 89.47% |
 | `src/storage/sqlx/beef_verification/own_word.rs` | doors, after #572 | 19 | 0 | 0 | 4 | 100.00% |
+| `src/services/providers/bhs.rs` | `--lib`, before #602 (the complete record) | 8 | 4 | 0 | 5 | 66.67% |
+| `src/services/providers/bhs.rs` | doors, after #602 | 12 | 0 | 0 | 5 | 100.00% |
 
 - before: 45 runs, 2026-11-01T17:45:19.725138Z to 2026-11-01T18:33:11.434179Z, per mutant 72 to 369 s (mean 270 s) on the loaded host; collect problems: none; scoring problems: ['src/storage/sqlx/create_action/must_spend.rs: BELOW FLOOR'].
 - after: 45 runs, 2026-11-01T15:58:36.455874Z to 2026-11-01T17:44:53.000086Z, per mutant 114 to 927 s (mean 579 s) on the loaded host; collect problems: none; scoring problems: none.
@@ -206,3 +208,13 @@ The file under the door oracle (`.cargo/mutants-doors.toml`'s targets, `internal
 | `src/storage/sqlx/beef_verification/own_word.rs:255:5: replace verify_selected -> Result<()> with Ok(())` | CaughtMutant | CaughtMutant |
 | `src/storage/sqlx/beef_verification/own_word.rs:261:23: replace != with == in verify_selected` | CaughtMutant | CaughtMutant |
 | `src/storage/sqlx/beef_verification/own_word.rs:272:12: delete ! in verify_selected` | CaughtMutant | CaughtMutant |
+
+## The header service `services/providers/bhs.rs` in the catalogue, its four survivors killed (#602)
+
+The lane p5-602-bhs-survivors, on beta `88a93492`, the tree at `d17e8ca9` (the two tests) with the catalogue of `151d2d77`; the json under `issue_602` (the complete record's, the widened record's and the door oracle record's json carry the same key), the outputs under `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-602-bhs-survivors` (`run`, `run.log`, `catalog-lib.json`, `catalog-doors.json`). The oracle is the one whose targets enter the file: the file joins `.cargo/mutants-doors.toml` (the header service's `is_valid_root_for_height`, the chain's evidence the tracker's verdict reads, docs/ARCHITECTURE.md section 4 step 2; `fixtures` the one integration target that enters it) and leaves `.cargo/mutants.toml`'s lib set. `bhs.rs`'s rules are unchanged; each kill is a lib test in the file's own test module from the rule, red under the mutant planted by hand and green at the tip, then caught again by cargo-mutants.
+
+**123:12 (`delete !` in `current_height`), killed.** The rule (the line's guard): a non-success status is the service's error, never its body read as a height. The witness, `services::providers::bhs::tests::current_height_is_a_successful_answer_and_a_failed_status_is_an_error`: a 200 with the body `900002` answers 900002, and a 503 with the same body is `BHS current_height failed: HTTP 503`. Under the mutant the 200 is the error, red at the success's unwrap.
+
+**165:9 (the function replaced by `Ok(true)` and by `Ok(false)`) and 166:31 (`==` to `!=`), killed.** The rule: a root is valid for a height when it is the merkle root of the service's header at that height, and invalid when it is any other. The witness, `services::providers::bhs::tests::is_valid_root_for_height_is_the_root_of_the_header_at_the_height`: against a header at 900002 whose root is `c` repeated, that root answers true and the root `e` repeated answers false. `Ok(false)` and `!=` fail the matching root, `Ok(true)` the mismatching one.
+
+The file under the door oracle (given with `--no-config`, the doors config's flags by hand, in place, serial, timeouts 900 s): `17 mutants tested in 11m: 12 caught, 5 unviable`, 100.00% (12/12), no timeout to judge against the baseline (0 s build + 18 s test). Before (the complete record's `--lib` and the widened re-measure): 66.67% (8/12). The floor stays 80. The catalogues listed on the tree: the lib set 2218 (2235 before), the doors 85 (68 before, `bhs.rs` 17).
