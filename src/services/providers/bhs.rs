@@ -284,11 +284,11 @@ mod tests {
     async fn is_valid_root_for_height_is_the_root_of_the_header_at_the_height() {
         const HEIGHT: u32 = 900_002;
         let header = BlockHeader {
-            version: 536870912,
+            version: 536_870_912,
             previous_hash: "0".repeat(64),
             merkle_root: "c".repeat(64),
-            time: 1700000000,
-            bits: 402917821,
+            time: 1_700_000_000,
+            bits: 402_917_821,
             nonce: 42,
             hash: "d".repeat(64),
             height: HEIGHT,
