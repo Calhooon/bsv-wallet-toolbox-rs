@@ -244,6 +244,19 @@
   transaction, as its inputs' are. The file scores 100 percent (19 of 19);
   its floor is 100, the record in `docs/census/mutants-oracle-2026-11-01`
   (`issue_572` in its json).
+- #601 (tests and the catalogue; no code; the floors lane #534):
+  `create_action/beef_walk.rs` (`beef_bfs_walk`, the BEEF walk over the
+  stored BUMPs), at 72.73 percent under `--lib` and under the widened
+  re-measure against its floor of 80, joins a catalogue of its own,
+  `.cargo/mutants-evidence.toml`: the lib and the six integration targets
+  that enter it, run by the Mutants workflow's `evidence` job. Five of its
+  six survivors are killed by lib tests from the walk's rules (the proof
+  budget of eight asks a walk, every input of an unproven transaction
+  queued, a stored BEEF lacking its subject pruned to its inputs' closure);
+  `307:29: replace && with ||` is declared equivalent (a queued copy is
+  dropped at the loop's head). The file scores 95.45 percent (21 of 22,
+  1 unviable); the floor stays 80, the record in
+  `docs/census/mutants-paths-widened-2026-11-02` (`issue_601` in its json).
 - #573 (tests; no code): `own_word.rs`'s two survivors under the door
   oracle of the oracle-widening lane (#535). `46:47: replace match guard
   text == NO_HEADER_SERVICE with true in own_word_tip` is killed by a lib
