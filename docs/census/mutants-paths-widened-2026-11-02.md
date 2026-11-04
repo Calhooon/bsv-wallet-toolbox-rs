@@ -16,6 +16,7 @@ Base `42559923`, the base of the complete record [mutants-complete-2026-11-02.md
 | `src/monitor/tasks/reorg.rs` | 24 | 2 | 8.33% | 21 | 23 | 95.83% | 80 | monitor_tests, reorg_tests |
 | `src/monitor/tasks/review_proven_txs.rs` | 25 | 3 | 12.00% | 0 | 3 | 12.00% | 80 | monitor_tests |
 | `src/services/providers/bhs.rs` | 12 | 8 | 66.67% | 0 | 8 | 66.67% | 80 | fixtures |
+| `src/services/providers/bhs.rs` after #602 | 12 | 8 | 66.67% | 4 | 12 | 100.00% | 80 | fixtures and the rest of the door oracle `.cargo/mutants-doors.toml`, the section after #602 |
 | `src/storage/sqlx/create_action/beef_storage.rs` | 77 | 37 | 48.05% | 0 | 37 | 48.05% | 80 | arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests |
 | `src/storage/sqlx/create_action/beef_walk.rs` | 22 | 16 | 72.73% | 0 | 16 | 72.73% | 80 | arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests |
 | `src/storage/sqlx/create_action/beef_walk.rs` after #601 | 22 | 16 | 72.73% | 5 | 21 | 95.45% | 80 | arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests (the whole catalogue `.cargo/mutants-evidence.toml`, the section after #601) |
@@ -58,10 +59,10 @@ Survivors run: 217; caught under the widened oracle: 49; still missed: 168; time
 
 ### `src/services/providers/bhs.rs` (4)
 
-- `src/services/providers/bhs.rs:123:12: delete ! in BlockHeaderService::current_height`
-- `src/services/providers/bhs.rs:165:9: replace BlockHeaderService::is_valid_root_for_height -> Result<bool> with Ok(true)`
-- `src/services/providers/bhs.rs:165:9: replace BlockHeaderService::is_valid_root_for_height -> Result<bool> with Ok(false)`
-- `src/services/providers/bhs.rs:166:31: replace == with != in BlockHeaderService::is_valid_root_for_height`
+- `src/services/providers/bhs.rs:123:12: delete ! in BlockHeaderService::current_height` (killed by #602, the section below)
+- `src/services/providers/bhs.rs:165:9: replace BlockHeaderService::is_valid_root_for_height -> Result<bool> with Ok(true)` (killed by #602, the section below)
+- `src/services/providers/bhs.rs:165:9: replace BlockHeaderService::is_valid_root_for_height -> Result<bool> with Ok(false)` (killed by #602, the section below)
+- `src/services/providers/bhs.rs:166:31: replace == with != in BlockHeaderService::is_valid_root_for_height` (killed by #602, the section below)
 
 ### `src/storage/sqlx/create_action/beef_storage.rs` (40)
 
@@ -258,3 +259,13 @@ The file under that oracle (`cargo mutants --config .cargo/mutants-evidence.toml
 | `src/storage/sqlx/create_action/beef_walk.rs:309:67: replace + with - in beef_bfs_walk` | CaughtMutant |
 | `src/storage/sqlx/create_action/beef_walk.rs:309:67: replace + with * in beef_bfs_walk` | CaughtMutant |
 | `src/storage/sqlx/create_action/beef_walk.rs:317:22: replace == with != in beef_bfs_walk` | CaughtMutant |
+
+## After #602: `bhs.rs` at 12 of 12 under the door oracle
+
+The lane p5-602-bhs-survivors, on beta `88a93492`, the tree at `d17e8ca9` (the two tests) with the catalogue of `151d2d77`; the json under `issue_602` (the complete record's, the widened record's and the door oracle record's json carry the same key), the outputs under `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-602-bhs-survivors` (`run`, `run.log`, `catalog-lib.json`, `catalog-doors.json`). The oracle is the one whose targets enter the file: the file joins `.cargo/mutants-doors.toml` (the header service's `is_valid_root_for_height`, the chain's evidence the tracker's verdict reads, docs/ARCHITECTURE.md section 4 step 2; `fixtures` the one integration target that enters it) and leaves `.cargo/mutants.toml`'s lib set. `bhs.rs`'s rules are unchanged; each kill is a lib test in the file's own test module from the rule, red under the mutant planted by hand and green at the tip, then caught again by cargo-mutants.
+
+**123:12 (`delete !` in `current_height`), killed.** The rule (the line's guard): a non-success status is the service's error, never its body read as a height. The witness, `services::providers::bhs::tests::current_height_is_a_successful_answer_and_a_failed_status_is_an_error`: a 200 with the body `900002` answers 900002, and a 503 with the same body is `BHS current_height failed: HTTP 503`. Under the mutant the 200 is the error, red at the success's unwrap.
+
+**165:9 (the function replaced by `Ok(true)` and by `Ok(false)`) and 166:31 (`==` to `!=`), killed.** The rule: a root is valid for a height when it is the merkle root of the service's header at that height, and invalid when it is any other. The witness, `services::providers::bhs::tests::is_valid_root_for_height_is_the_root_of_the_header_at_the_height`: against a header at 900002 whose root is `c` repeated, that root answers true and the root `e` repeated answers false. `Ok(false)` and `!=` fail the matching root, `Ok(true)` the mismatching one.
+
+The file under the door oracle (given with `--no-config`, the doors config's flags by hand, in place, serial, timeouts 900 s): `17 mutants tested in 11m: 12 caught, 5 unviable`, 100.00% (12/12), no timeout to judge against the baseline (0 s build + 18 s test). Before (the complete record's `--lib` and the widened re-measure): 66.67% (8/12). The floor stays 80. The catalogues listed on the tree: the lib set 2218 (2235 before), the doors 85 (68 before, `bhs.rs` 17).
