@@ -73,6 +73,9 @@ pub use permissions_manager::{
     WalletPermissionsManager, WalletPermissionsManagerConfig,
 };
 
+// The key calls' permission-module delegation, crate-private (#726).
+pub(crate) use permissions_manager::{ModuleCall, ModuleFuture};
+
 pub use auth_manager::WalletAuthenticationManager;
 
 // ============================================================================

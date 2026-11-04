@@ -688,6 +688,27 @@ where
         Ok(())
     }
 
+    /// A key call under a `p <scheme>` protocol, delegated to the
+    /// permissions manager's module (#726): `None` with no manager or any
+    /// other name, so the call runs its ordinary check. The match runs ahead
+    /// of the admin bypass and every check, as the reference's
+    /// `delegateToPModuleIfNeeded` does (ts-stack@edf6e03
+    /// `WalletPermissionsManager.ts:843-885`, `:5142-5385`).
+    async fn module_answer<'a, A: crate::managers::ModuleCall>(
+        &'a self,
+        originator: Option<&'a str>,
+        protocol: &Protocol,
+        args: &A,
+        underlying: impl FnOnce(A) -> crate::managers::ModuleFuture<'a, A::Output> + Send,
+    ) -> Option<bsv_rs::Result<A::Output>> {
+        let manager = self.permissions_manager.as_ref()?;
+        let name = &protocol.protocol_name;
+        let originator = originator.unwrap_or_default();
+        manager
+            .delegate_key_call(name, args, originator, underlying)
+            .await
+    }
+
     /// Checks basket access permission if a permissions manager is set.
     async fn check_basket_permission(
         &self,
@@ -1847,6 +1868,38 @@ macro_rules! key_permission {
     };
 }
 
+// A key call's permission (#726): under a `p <scheme>` protocol the
+// registered module owns the call and its answer returns from the calling
+// function, the underlying call the key route's `$method` on the module's
+// arguments; any other name takes `key_permission!`. The key-linkage
+// reveals never delegate, as the reference's never do.
+macro_rules! key_check {
+    ($wallet:expr, $originator:expr, $args:ident, $protocol:expr, $usage:ident, $method:ident $(, $seek:ident)?) => {
+        let underlying = |module_args| -> crate::managers::ModuleFuture<'_, _> {
+            Box::pin(async move { $wallet.key_route($originator).$method(module_args).await })
+        };
+        if let Some(answer) = $wallet.module_answer($originator, $protocol, &$args, underlying).await {
+            return answer;
+        }
+        key_permission!($wallet, $originator, $args, $protocol, $usage $(, $seek)?).await?;
+    };
+}
+
+// `key_check!`, then the key route's `$method` on the caller's arguments.
+macro_rules! key_call {
+    ($wallet:expr, $originator:expr, $args:ident, $usage:ident, $method:ident) => {{
+        key_check!(
+            $wallet,
+            $originator,
+            $args,
+            &$args.protocol_id,
+            $usage,
+            $method
+        );
+        $wallet.key_route($originator).$method($args).await
+    }};
+}
+
 // A key-linkage reveal's BRC-98/99 check: the level-2 protocol `name` the
 // reveal builds, the verifier as counterparty, the request's `privileged`
 // and `privileged_reason`, `LinkageRevelation` (#589). Beside
@@ -1884,7 +1937,15 @@ where
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for public key revelation
         if let Some(ref protocol_id) = args.protocol_id {
-            key_permission!(self, originator, args, protocol_id, PublicKey, seek).await?;
+            key_check!(
+                self,
+                originator,
+                args,
+                protocol_id,
+                PublicKey,
+                get_public_key,
+                seek
+            );
         }
         // The identity key asks the level-1 protocol `identity key
         // retrieval` for `self`, as the reference does (ts-stack@edf6e03
@@ -1912,8 +1973,7 @@ where
     ) -> bsv_rs::Result<EncryptResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for encryption
-        key_permission!(self, originator, args, &args.protocol_id, Encrypting).await?;
-        self.key_route(originator).encrypt(args).await
+        key_call!(self, originator, args, Encrypting, encrypt)
     }
 
     async fn decrypt(
@@ -1923,8 +1983,7 @@ where
     ) -> bsv_rs::Result<DecryptResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for decryption
-        key_permission!(self, originator, args, &args.protocol_id, Encrypting).await?;
-        self.key_route(originator).decrypt(args).await
+        key_call!(self, originator, args, Encrypting, decrypt)
     }
 
     async fn create_hmac(
@@ -1934,8 +1993,7 @@ where
     ) -> bsv_rs::Result<CreateHmacResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for HMAC
-        key_permission!(self, originator, args, &args.protocol_id, Hmac).await?;
-        self.key_route(originator).create_hmac(args).await
+        key_call!(self, originator, args, Hmac, create_hmac)
     }
 
     async fn verify_hmac(
@@ -1945,8 +2003,7 @@ where
     ) -> bsv_rs::Result<VerifyHmacResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for HMAC verification
-        key_permission!(self, originator, args, &args.protocol_id, Hmac).await?;
-        self.key_route(originator).verify_hmac(args).await
+        key_call!(self, originator, args, Hmac, verify_hmac)
     }
 
     async fn create_signature(
@@ -1956,8 +2013,7 @@ where
     ) -> bsv_rs::Result<CreateSignatureResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for signing
-        key_permission!(self, originator, args, &args.protocol_id, Signing).await?;
-        self.key_route(originator).create_signature(args).await
+        key_call!(self, originator, args, Signing, create_signature)
     }
 
     async fn verify_signature(
@@ -1967,8 +2023,7 @@ where
     ) -> bsv_rs::Result<VerifySignatureResult> {
         validate_originator(originator)?;
         // BRC-98/99: Check protocol permission for signature verification
-        key_permission!(self, originator, args, &args.protocol_id, Signing).await?;
-        self.key_route(originator).verify_signature(args).await
+        key_call!(self, originator, args, Signing, verify_signature)
     }
 
     async fn reveal_counterparty_key_linkage(
