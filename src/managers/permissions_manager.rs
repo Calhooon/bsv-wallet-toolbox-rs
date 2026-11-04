@@ -2313,6 +2313,10 @@ mod permission_grant;
 #[path = "permission_token_lookup_tests.rs"]
 mod permission_token_lookup_tests;
 
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "permission_grant_tests.rs"]
+mod permission_grant_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
