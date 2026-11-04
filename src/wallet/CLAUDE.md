@@ -1151,9 +1151,14 @@ and the internalize sender's check read the key through bsv-rs's public
 `validationHelpers.ts:185-191`), the port's copy retired; its words are kept
 as the toolbox's `ValidationError`, so no verdict or text moves. The issued
 certificate's keys (`certificate_key`) and the overlay record's keys
-(`lookup_record.rs`) stay on `internalize_args::compressed_key`, `toBinary`'s
-rule (`Certificate.ts:240-254`: untrimmed, either case), which no public
-bsv-rs helper names (its `read_to_binary_key`, #585, is crate-private). The new guards share the argument error constructor
+(`lookup_record.rs`) read bsv-rs's `auth::certificates::certificate_key_bytes`
+(#610 since the beta.7 re-pin), `toBinary`'s rule (`Certificate.ts:240-254`:
+untrimmed, either case), with `"subject"` or `"certifier"`; the toolbox's own
+`internalize_args::compressed_key` retired. The issued certificate holds the
+key (`PublicKey::from_bytes` on the bytes), so an x at or above p whose
+reduction is a point (`02ff..fefffffc30`, x = p + 1) is refused there as
+before; the overlay record holds none, so it keeps that text as `toBinary`
+writes it and the entry is dropped at `verify()`, as the reference's is. The new guards share the argument error constructor
 and UTF-8 length helper. URL validation requires exact whitespace, an absolute
 HTTPS URL, no credentials/query/fragment and a public DNS hostname, in that
 order, then removes trailing slashes. Fields permit at most 100000 entries,

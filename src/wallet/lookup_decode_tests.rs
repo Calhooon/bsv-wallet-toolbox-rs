@@ -186,3 +186,39 @@ async fn a_record_behind_a_byte_order_mark_is_read_as_the_reference_reads_it() {
     let twice = [b"\xef\xbb\xbf".as_slice(), &marked].concat();
     assert!(decode_identity_output(&token(&key(SUBJECT), twice)).is_err());
 }
+
+/// bsv-rs #610's two texts past the field (`certificate_key_bytes_610.json`,
+/// written from ts-stack@edf6e03 `Certificate.ts:240-254`): x = p + 1, which
+/// `PublicKey.fromDER` reduces to the point at x = 1 and `toBinary` writes
+/// unreduced, and x = p, which reduces to no point.
+const X_ABOVE_P: &str = "02fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc30";
+const X_AT_P: &str = "02fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f";
+
+/// A certifier at x = p + 1: the record check reads it as `toBinary` writes
+/// it (bsv-rs's `certificate_key_bytes`, #610), so the subject's token
+/// decodes; the certificate's signature cannot be the key's at x = 1 (no
+/// one holds it), so `verify()` drops the entry, as the reference's does
+/// (`identityUtils.ts:540-552`, `Certificate.ts:425-441`). Red on the
+/// strict `from_bytes` read the record check had before the beta.7 re-pin
+/// (the decode refused it as outside the reference's bounds). x = p is no
+/// point and stays refused at the record check.
+#[tokio::test]
+async fn a_certifier_above_p_is_read_as_to_binary_writes_it_and_dropped_at_verify() {
+    let good = alice(5).await;
+    let mut record = alice(6).await;
+    record.certifier = X_ABOVE_P.to_string();
+    let script = token(&key(SUBJECT), record_json(&record));
+    let decoded = decode_identity_output(&script).unwrap();
+    assert_eq!(decoded.certifier, X_ABOVE_P);
+    assert!(decoded.verified_and_decrypted().await.is_none());
+    only_the_good_token(script, &good).await;
+
+    record.certifier = X_AT_P.to_string();
+    let refused = decode_identity_output(&token(&key(SUBJECT), record_json(&record))).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("outside the reference's bounds"),
+        "{refused}"
+    );
+}

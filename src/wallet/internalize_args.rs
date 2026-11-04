@@ -327,20 +327,3 @@ mod tests {
         }
     }
 }
-
-/// `02` or `03` and 64 hex digits of either case, untrimmed, naming a point
-/// with x below p, read through `PublicKey::from_bytes`: `toBinary`'s subject
-/// and certifier rule (ts-stack@edf6e03 `Certificate.ts:240-254`), which the
-/// issued certificate's keys (`certificate_issuance::certificate_key`) and the
-/// overlay record's keys (`lookup_record.rs`) read. No public bsv-rs helper is
-/// that rule (bsv-rs's own `read_to_binary_key`, #585, is crate-private):
-/// `wallet::validate_public_key` trims a space-padded text `toBinary` refuses,
-/// `auth::assert_auth_identity_key` refuses upper case `toBinary` reads.
-/// `PublicKey::from_hex` reads the reference's lenient `fromString` forms
-/// (bsv-rs #498), an x at or above p reduced among them, which this refuses.
-pub(crate) fn compressed_key(key_hex: &str) -> Option<PublicKey> {
-    if key_hex.len() != 66 || !matches!(key_hex.get(..2), Some("02" | "03")) {
-        return None;
-    }
-    PublicKey::from_bytes(&hex::decode(key_hex).ok()?).ok()
-}

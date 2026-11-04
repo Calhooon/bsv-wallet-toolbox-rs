@@ -81,8 +81,8 @@ impl OverlayCertificate {
         };
         base64_32(&self.type_id)
             && base64_32(&self.serial_number)
-            && compressed_key(&self.subject)
-            && compressed_key(&self.certifier)
+            && compressed_key(&self.subject, "subject")
+            && compressed_key(&self.certifier, "certifier")
             // :315: the written binary's bound.
             && length + signature.len() <= MAX_CERTIFICATE_BINARY_BYTES
     }
@@ -103,9 +103,13 @@ fn base64_32(value: &str) -> bool {
         .is_ok_and(|bytes| bytes.len() == 32 && STANDARD.encode(bytes) == value)
 }
 
-/// `subject` and `certifier`: a compressed public key (`Certificate.ts:241-254`).
-fn compressed_key(value: &str) -> bool {
-    crate::wallet::internalize_args::compressed_key(value).is_some()
+/// `subject` and `certifier`: the key bytes `toBinary` writes
+/// (`Certificate.ts:240-254`, bsv-rs's `certificate_key_bytes`, #610). No key
+/// is held here, so an x at or above p whose reduction is a point is kept as
+/// the reference writes it; the entry is dropped later, where its field
+/// signature or its certificate's signature is checked against the key.
+fn compressed_key(value: &str, field: &str) -> bool {
+    bsv_rs::auth::certificates::certificate_key_bytes(value, field).is_ok()
 }
 
 /// `<txid>[.<index>]` (`Certificate.ts:260-274`): 64 hex digits, then an
