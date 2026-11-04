@@ -1591,7 +1591,7 @@ runs on `storageCert.fields`, `signer/methods/proveCertificate.ts:35`).
 ### Protocol Flow
 
 1. **PrepareIssuanceActionData**: Create the client nonce as `createNonce` (16 random bytes and their 32-byte HMAC, 64 base64 characters), encrypt fields under independent symmetric keys, wrap the keys from subject to certifier, build JSON request body
-2. **BRC-104 request**: A handshake with the certifier, then the request as a signed general message through bsv-rs's `Peer` (#315)
+2. **BRC-104 request**: A handshake with the certifier, then the request as a signed general message through bsv-rs's `Peer` (#315), posted to `<certifierUrl>/signCertificate` as ts-stack@edf6e03 `Wallet.ts:772` resolves ``new URL('signCertificate', `${certifierUrl}/`)``: the URL's path kept, the segment appended (`sign_certificate_endpoint`, #332)
 3. **Signed sender**: Require the answer's verified sender equal to the certifier before the body is read
 4. **ParseCertificateResponse**: Require the certificate, then nonce, and retain the supplied certificate text
 5. **VerifyCertificateIssuance**: Run the nonce helper, verify the serial HMAC, validate metadata and fields, verify the signature, then decrypt every master field
