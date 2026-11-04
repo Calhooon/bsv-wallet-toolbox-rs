@@ -248,6 +248,30 @@ async fn test_walk_links_a_root_that_a_siblings_bump_carries_unflagged() {
     );
 }
 
+/// One walk from `subject` over `storage`, the read checks' writer its own;
+/// `asker` is the storage a walk may ask services through, if any.
+pub(super) async fn walk_from(
+    storage: &StorageSqlx,
+    subject: &str,
+    asker: Option<&StorageSqlx>,
+) -> Beef {
+    let (mut beef, mut seen) = (Beef::new(), HashSet::new());
+    let mut queue = vec![(subject.to_string(), 0usize)];
+    let mut conn = storage.pool().acquire().await.unwrap();
+    beef_bfs_walk(
+        &mut conn,
+        Some(storage.writer()),
+        &mut beef,
+        &mut queue,
+        &mut seen,
+        asker,
+        None,
+    )
+    .await
+    .expect("the walk completes");
+    beef
+}
+
 #[tokio::test]
 async fn test_walk_asks_for_at_most_its_proof_budget() {
     // One walk asks services for at most MAX_PROOF_FETCHES_PER_WALK merkle
@@ -258,9 +282,7 @@ async fn test_walk_asks_for_at_most_its_proof_budget() {
     use crate::storage::traits::WalletStorageProvider;
     use bsv_rs::transaction::MockChainTracker;
 
-    let storage = StorageSqlx::in_memory().await.unwrap();
-    storage.migrate("test", "000000").await.unwrap();
-    storage.make_available().await.unwrap();
+    let storage = l2_23_storage().await;
 
     let chain = synth_chain(11);
     seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, 965_000).await;
@@ -284,21 +306,7 @@ async fn test_walk_asks_for_at_most_its_proof_budget() {
         .set_chain_tracker(std::sync::Arc::new(tracker))
         .await;
 
-    let mut beef = Beef::new();
-    let mut pending = vec![(chain[10].1.clone(), 0usize)];
-    let mut processed = HashSet::new();
-    let mut conn = storage.pool().acquire().await.unwrap();
-    beef_bfs_walk(
-        &mut conn,
-        Some(storage.writer()),
-        &mut beef,
-        &mut pending,
-        &mut processed,
-        Some(&storage),
-        None,
-    )
-    .await
-    .unwrap();
+    let beef = walk_from(&storage, &chain[10].1, Some(&storage)).await;
 
     assert_eq!(
         services.call_count("get_merkle_path"),
@@ -321,9 +329,7 @@ async fn test_walk_queues_every_input_of_an_unproven_transaction() {
     // the BEEF without the transaction an input spends.
     use super::super::test_support::synth_tx;
 
-    let storage = StorageSqlx::in_memory().await.unwrap();
-    storage.migrate("test", "000000").await.unwrap();
-    storage.make_available().await.unwrap();
+    let storage = l2_23_storage().await;
 
     let (left_raw, left) = synth_tx(&"11".repeat(32), 0, 5_000);
     let (right_raw, right) = synth_tx(&"22".repeat(32), 0, 6_000);
@@ -350,21 +356,7 @@ async fn test_walk_queues_every_input_of_an_unproven_transaction() {
     let subject = txid_of(&raw);
     seed_unproven_tx(&storage, &subject, &raw, None).await;
 
-    let mut beef = Beef::new();
-    let mut pending = vec![(subject.clone(), 0usize)];
-    let mut processed = HashSet::new();
-    let mut conn = storage.pool().acquire().await.unwrap();
-    beef_bfs_walk(
-        &mut conn,
-        Some(storage.writer()),
-        &mut beef,
-        &mut pending,
-        &mut processed,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let beef = walk_from(&storage, &subject, None).await;
 
     let kept = beef_txids(&beef);
     assert!(kept.contains(&subject), "the subject is carried whole");
