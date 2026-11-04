@@ -12,7 +12,11 @@
 # own word calls, and `InputJudgements`, the dispatcher every live door shares)
 # judges under the node's word with its witnesses in the lib and five
 # integration targets, internalize_custom_instructions_tests among them (#572).
+# `services/providers/bhs.rs` (the header service's `is_valid_root_for_height`,
+# the chain's evidence the tracker's verdict reads, docs/ARCHITECTURE.md section
+# 4 step 2) has its witnesses in the lib and the `fixtures` target (#602).
 examine_globs = [
+    "src/services/providers/bhs.rs",
     "src/storage/sqlx/beef_verification/own_word.rs",
     "src/storage/sqlx/create_action/must_spend.rs",
     "src/storage/sqlx/create_action/own_word.rs",
