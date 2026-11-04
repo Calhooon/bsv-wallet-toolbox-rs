@@ -109,7 +109,11 @@ pub(in crate::storage::sqlx) async fn beef_bfs_walk(
         // parent, the parent was never walked, and the whole BEEF is refused:
         // LOW seat p25, five roots, two of them siblings in block 964422,
         // "missing inputs [2617c486…]" (2026-09-04).
-        if let Some(bump_idx) = beef.bumps.iter().position(|b| b.contains(&txid)) {
+        //
+        // Of two BUMPs holding the txid the LAST is the proof, as the
+        // reference's index answers (ts-stack@edf6e03 `Beef.ts:576-585`) and
+        // bsv-rs's merge takes it since 0.9.0-beta.7 (#732, #765).
+        if let Some(bump_idx) = beef.bumps.iter().rposition(|b| b.contains(&txid)) {
             flag_txid_leaf(&mut beef.bumps[bump_idx], &txid);
             // Decide from a copy: no borrow of `beef` may live across the await.
             let existing = beef

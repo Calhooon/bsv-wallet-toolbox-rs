@@ -543,6 +543,18 @@ over the scriptCode without the locking script, which it accepted
 P1's pre-Chronicle case is the transaction-level word's push-only refusal at
 both pins).
 
+Of two BUMPs holding one txid at level 0 (two blocks after a reorg, two roots
+at one height) the LAST is its proof, as the reference's index answers
+(ts-stack@edf6e03 `Beef.ts:576-585`). Since the beta.7 re-pin bsv-rs's
+`find_bump`, `from_beef`, `merge_raw_tx` and the merges take it (#732, #757,
+#765, the last as any level-0 leaf, flagged), and the toolbox's own two
+indexes follow: the create walk's "a BUMP already proves this" shortcut
+(`create_action/beef_walk.rs`) and the carried-txid linker
+(`beef_graph::link_txids_carried_by_bumps`), each `rposition` where it was the
+earliest (`sibling_bump_tests.rs`, `_732` and `_765`). Every other proof read
+(`beef_storage.rs`, `beef_verification.rs`, `lookup_evidence.rs`) is
+`find_bump`'s.
+
 The judge passes `memory_limit: Some(100_000_000)`
 (`spend_verifier::DOOR_STACK_MEMORY_BYTES`, #395): the SV mainnet node's stack
 memory policy on the node's count, one budget over both stacks with 32 bytes an
