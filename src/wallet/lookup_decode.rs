@@ -29,6 +29,29 @@ fn dropped(why: &str) -> crate::Error {
     crate::Error::ServiceError(format!("Identity output dropped: {why}"))
 }
 
+/// A SLAP advertisement's `PushDrop` read with the shape the beta.6 decode
+/// required: two chunks at least, and `OP_CHECKSIG` second behind a key.
+/// Since bsv-rs 0.9.0-beta.7 (#618) `PushDrop::decode` reads a key-only
+/// script and a key without `OP_CHECKSIG` second as `PushDrop.decode` does;
+/// the reference's SLAP read refuses both (`decodeCanonicalPushDrop`,
+/// `OverlayAdminTokenTemplate.ts:159-168`, `PushDropValidation.ts:54-79`),
+/// so the shape is checked here, in the beta.6 words.
+pub(super) fn slap_token(script: &LockingScript) -> bsv_rs::Result<PushDrop> {
+    let refused = |why: &str| Err(bsv_rs::Error::ScriptParseError(why.into()));
+    let chunks = script.chunks();
+    if chunks.len() < 2 {
+        return refused("Script too short for PushDrop");
+    }
+    let key_first = chunks[0]
+        .data
+        .as_ref()
+        .is_some_and(|d| d.len() == 33 || d.len() == 65);
+    if key_first && chunks[1].op != OP_CHECKSIG {
+        return refused("Expected OP_CHECKSIG after pubkey");
+    }
+    PushDrop::decode(script)
+}
+
 /// `decodeIdentityOutput`'s checks on the output (`identityUtils.ts:501-539`):
 /// two `PushDrop` fields, the record of 1 byte to 256 KiB and the field
 /// signature of 8 to 80; exactly five chunks, the 33-byte locking key,

@@ -10,7 +10,6 @@ use indexmap::IndexMap;
 use serde::Serialize;
 
 use bsv_rs::overlay::{LookupAnswer, NetworkPreset, OutputListItem};
-use bsv_rs::script::templates::PushDrop;
 use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{IdentityCertificate, IdentityCertifier, WalletCertificate};
 
@@ -451,7 +450,7 @@ fn extract_host_from_beef(beef: &[u8], output_index: u32) -> Result<String> {
         .get(output_index as usize)
         .ok_or_else(|| crate::Error::ServiceError("SLAP output index out of bounds".into()))?;
 
-    let decoded = PushDrop::decode(&output.locking_script)
+    let decoded = decode::slap_token(&output.locking_script)
         .map_err(|e| crate::Error::ServiceError(format!("SLAP PushDrop decode failed: {}", e)))?;
 
     // Search PushDrop fields for a URL string
