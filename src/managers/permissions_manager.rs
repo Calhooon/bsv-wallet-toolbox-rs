@@ -237,6 +237,28 @@ pub struct PermissionRequest {
     pub previous_token: Option<PermissionToken>,
 }
 
+impl PermissionRequest {
+    /// A request of `request_type` from `originator` naming nothing else.
+    pub(crate) fn bare(request_type: PermissionType, originator: &str) -> Self {
+        Self {
+            request_type,
+            originator: originator.to_string(),
+            display_originator: None,
+            privileged: None,
+            protocol_id: None,
+            counterparty: None,
+            basket: None,
+            certificate: None,
+            spending: None,
+            reason: None,
+            operation: None,
+            request_id: None,
+            renewal: None,
+            previous_token: None,
+        }
+    }
+}
+
 /// Type of permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -899,20 +921,11 @@ impl WalletPermissionsManager {
 
         // 8) Request permission flow
         self.request_permission_flow(PermissionRequest {
-            request_type: PermissionType::Protocol,
-            originator: originator.to_string(),
-            display_originator: None,
             privileged: Some(priv_flag),
             protocol_id: Some(protocol.clone()),
             counterparty: counterparty.map(|s| s.to_string()),
-            basket: None,
-            certificate: None,
-            spending: None,
             reason: reason.map(|s| s.to_string()),
-            operation: None,
-            request_id: None,
-            renewal: None,
-            previous_token: None,
+            ..PermissionRequest::bare(PermissionType::Protocol, originator)
         })
         .await
     }
@@ -1014,20 +1027,9 @@ impl WalletPermissionsManager {
 
         // 5) Request permission flow
         self.request_permission_flow(PermissionRequest {
-            request_type: PermissionType::Basket,
-            originator: originator.to_string(),
-            display_originator: None,
-            privileged: None,
-            protocol_id: None,
-            counterparty: None,
             basket: Some(basket.to_string()),
-            certificate: None,
-            spending: None,
             reason: reason.map(|s| s.to_string()),
-            operation: None,
-            request_id: None,
-            renewal: None,
-            previous_token: None,
+            ..PermissionRequest::bare(PermissionType::Basket, originator)
         })
         .await
     }
@@ -1104,20 +1106,10 @@ impl WalletPermissionsManager {
 
         // 5) Request permission flow
         self.request_permission_flow(PermissionRequest {
-            request_type: PermissionType::Certificate,
-            originator: originator.to_string(),
-            display_originator: None,
             privileged: Some(priv_flag),
-            protocol_id: None,
-            counterparty: None,
-            basket: None,
             certificate: Some(cert_details),
-            spending: None,
             reason: reason.map(|s| s.to_string()),
-            operation: None,
-            request_id: None,
-            renewal: None,
-            previous_token: None,
+            ..PermissionRequest::bare(PermissionType::Certificate, originator)
         })
         .await
     }
@@ -1162,23 +1154,12 @@ impl WalletPermissionsManager {
 
         // 4) Request permission flow
         self.request_permission_flow(PermissionRequest {
-            request_type: PermissionType::Spending,
-            originator: originator.to_string(),
-            display_originator: None,
-            privileged: None,
-            protocol_id: None,
-            counterparty: None,
-            basket: None,
-            certificate: None,
             spending: Some(SpendingPermissionDetails {
                 satoshis,
                 line_items: None,
             }),
             reason: reason.map(|s| s.to_string()),
-            operation: None,
-            request_id: None,
-            renewal: None,
-            previous_token: None,
+            ..PermissionRequest::bare(PermissionType::Spending, originator)
         })
         .await
     }
@@ -2565,23 +2546,14 @@ mod tests {
     #[test]
     fn test_permission_request_serialization() {
         let request = PermissionRequest {
-            request_type: PermissionType::Protocol,
-            originator: "app.example.com".to_string(),
-            display_originator: None,
             privileged: Some(false),
             protocol_id: Some(Protocol::new(
                 SecurityLevel::Counterparty,
                 "test protocol".to_string(),
             )),
-            counterparty: None,
-            basket: None,
-            certificate: None,
-            spending: None,
             reason: Some("Testing".to_string()),
             operation: Some("createAction".to_string()),
-            request_id: None,
-            renewal: None,
-            previous_token: None,
+            ..PermissionRequest::bare(PermissionType::Protocol, "app.example.com")
         };
         let json = serde_json::to_string(&request).unwrap();
         let parsed: PermissionRequest = serde_json::from_str(&json).unwrap();
@@ -3032,20 +3004,8 @@ mod tests {
     fn test_check_permission_admin_always_allowed() {
         let manager = make_manager(WalletPermissionsManagerConfig::all_enabled());
         let req = PermissionRequest {
-            request_type: PermissionType::Protocol,
-            originator: "admin.wallet".to_string(),
-            display_originator: None,
-            privileged: None,
-            protocol_id: None,
-            counterparty: None,
-            basket: None,
-            certificate: None,
-            spending: None,
-            reason: None,
             operation: Some("createAction".to_string()),
-            request_id: None,
-            renewal: None,
-            previous_token: None,
+            ..PermissionRequest::bare(PermissionType::Protocol, "admin.wallet")
         };
         assert!(manager.check_permission(&req));
     }
@@ -3056,20 +3016,8 @@ mod tests {
         config.allow_create_action = false;
         let manager = make_manager(config);
         let req = PermissionRequest {
-            request_type: PermissionType::Protocol,
-            originator: "app.example.com".to_string(),
-            display_originator: None,
-            privileged: None,
-            protocol_id: None,
-            counterparty: None,
-            basket: None,
-            certificate: None,
-            spending: None,
-            reason: None,
             operation: Some("createAction".to_string()),
-            request_id: None,
-            renewal: None,
-            previous_token: None,
+            ..PermissionRequest::bare(PermissionType::Protocol, "app.example.com")
         };
         assert!(!manager.check_permission(&req));
     }

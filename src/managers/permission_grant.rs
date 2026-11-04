@@ -15,7 +15,10 @@ use bsv_rs::script::LockingScript;
 use bsv_rs::wallet::{CreateSignatureArgs, EncryptArgs};
 use tokio::sync::{oneshot, watch};
 
-use super::*;
+use super::{
+    normalize_originator, permission_token_protocol, Counterparty, Error, PermissionRequest,
+    PermissionToken, PermissionType, PushDrop, Result, TokenQuery, WalletPermissionsManager,
+};
 
 /// The window in which a fresh grant admits and skips a duplicate mint
 /// (`RECENT_GRANT_COVER_MS`, `:748`).
@@ -99,20 +102,17 @@ impl WalletPermissionsManager {
         let (sender, waiting) = oneshot::channel();
         let joined = {
             let mut active = locked(&self.active_requests);
-            match active.get_mut(&key).filter(|q| !q.pending.is_empty()) {
-                Some(queue) => {
-                    queue.pending.push(sender);
-                    true
-                }
-                None => {
-                    request.request_id = Some(key.clone());
-                    let queued = ActiveRequest {
-                        request: request.clone(),
-                        pending: vec![sender],
-                    };
-                    active.insert(key.clone(), queued);
-                    false
-                }
+            if let Some(queue) = active.get_mut(&key).filter(|q| !q.pending.is_empty()) {
+                queue.pending.push(sender);
+                true
+            } else {
+                request.request_id = Some(key.clone());
+                let queued = ActiveRequest {
+                    request: request.clone(),
+                    pending: vec![sender],
+                };
+                active.insert(key.clone(), queued);
+                false
             }
         };
         if joined {
@@ -125,28 +125,34 @@ impl WalletPermissionsManager {
         };
         let unanswered = locked(&self.active_requests).contains_key(&key);
         if unanswered {
-            match answered {
-                Ok(token) => {
-                    let (expiry, amount) = (Some(token.expiry), token.authorized_amount);
-                    // The callers are admitted before the grant persists
-                    // (`:1171-1180`); a failed persist is the host's to
-                    // hear, and an inline host has no other ear than the log.
-                    if let Err(error) = self.grant_permission(&key, expiry, false, amount).await {
-                        tracing::warn!(%error, "permission granted but not persisted");
-                    }
-                }
-                Err(error) => {
-                    let queue = locked(&self.active_requests).remove(&key);
-                    if let Some(queue) = queue {
-                        for caller in queue.pending {
-                            let _ = caller.send(Err(Error::AccessDenied(error.to_string())));
-                        }
-                    }
-                    return Err(error);
-                }
-            }
+            self.answer_inline(&key, answered).await?;
         }
         answer(waiting).await
+    }
+
+    /// A handler's own answer to the request `key` names: a token grants
+    /// it persistently with the token's expiry and amount, an error refuses
+    /// every waiting caller and is returned.
+    async fn answer_inline(&self, key: &str, answered: Result<PermissionToken>) -> Result<()> {
+        match answered {
+            Ok(token) => {
+                let (expiry, amount) = (Some(token.expiry), token.authorized_amount);
+                // The callers are admitted before the grant persists
+                // (`:1171-1180`); a failed persist is the host's to hear,
+                // and an inline host has no other ear than the log.
+                if let Err(error) = self.grant_permission(key, expiry, false, amount).await {
+                    tracing::warn!(%error, "permission granted but not persisted");
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let queue = locked(&self.active_requests).remove(key);
+                for caller in queue.into_iter().flat_map(|queue| queue.pending) {
+                    let _ = caller.send(Err(Error::AccessDenied(error.to_string())));
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Grants the request `request_id` names (`grantPermission`,
@@ -154,7 +160,12 @@ impl WalletPermissionsManager {
     /// grant ends there, nothing cached or stored (`:1179`, `:304-305`);
     /// else the grant persists with `expiry` (UNIX seconds, 0 or none for
     /// never) and, for spending, `amount` (the request's satoshis when
-    /// none). `Request ID not found.` for an id with no request waiting.
+    /// none).
+    ///
+    /// # Errors
+    ///
+    /// `Request ID not found.` for an id with no request waiting; a failed
+    /// mint, after the callers are admitted, with nothing cached.
     pub async fn grant_permission(
         &self,
         request_id: &str,
@@ -178,7 +189,11 @@ impl WalletPermissionsManager {
     /// Denies the request `request_id` names (`denyPermission`,
     /// `:1189-1205`): every caller waiting on it is refused with
     /// `Permission denied.`; nothing is stored.
-    pub async fn deny_permission(&self, request_id: &str) -> Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// `Request ID not found.` for an id with no request waiting.
+    pub fn deny_permission(&self, request_id: &str) -> Result<()> {
         let matching = locked(&self.active_requests)
             .remove(request_id)
             .ok_or_else(|| Error::InvalidArgument("Request ID not found.".to_string()))?;
@@ -221,8 +236,7 @@ impl WalletPermissionsManager {
             locked(&self.mints_in_flight).insert(key.clone(), waiting);
             let minted = match (renewal, request.previous_token.as_ref()) {
                 (true, Some(previous)) => {
-                    self.renew_permission_on_chain(previous, request, expiry, amount)
-                        .await
+                    Self::renew_permission_on_chain(previous, request, expiry, amount)
                 }
                 _ => {
                     self.create_permission_on_chain(request, expiry, amount)
@@ -278,8 +292,7 @@ impl WalletPermissionsManager {
     /// `renewPermissionOnChain` (`:3634-3700`) is #751 lane b's: it spends
     /// the previous token, which needs the token input signer. Until then a
     /// renewal mints nothing and is refused; the manager raises none yet.
-    async fn renew_permission_on_chain(
-        &self,
+    fn renew_permission_on_chain(
         _previous: &PermissionToken,
         _request: &PermissionRequest,
         _expiry: u64,
@@ -413,65 +426,83 @@ fn mint_plan(
     expiry: u64,
     amount: Option<u64>,
 ) -> Result<(&'static str, Vec<String>, Vec<String>)> {
+    if request.request_type == PermissionType::Spending {
+        let requested = request.spending.as_ref().map_or(0, |s| s.satoshis);
+        let texts = vec![
+            originator.to_string(),
+            amount.unwrap_or(requested).to_string(),
+        ];
+        let tags = vec![format!("originator {originator}").trim().to_lowercase()];
+        return Ok((SPENDING_TOKEN_BASKET, texts, tags));
+    }
+    let query = token_query(request)?;
+    let texts = query.plaintexts(originator, expiry)?;
+    Ok((query.basket(), texts, query.tags(Some(originator))))
+}
+
+/// What a token minted for `request`, of a kind the lookup reads, says.
+fn token_query(request: &PermissionRequest) -> Result<TokenQuery<'_>> {
     let missing = |what: &str| Error::InvalidArgument(format!("A grant names no {what}."));
     let privileged = request.privileged == Some(true);
-    let (domain, expiry) = (originator.to_string(), expiry.to_string());
-    let (query, texts) = match request.request_type {
-        PermissionType::Protocol => {
-            let protocol = request
+    Ok(match request.request_type {
+        PermissionType::Protocol => TokenQuery::Protocol {
+            privileged,
+            protocol: request
                 .protocol_id
                 .as_ref()
-                .ok_or_else(|| missing("protocol"))?;
-            let level = protocol.security_level.as_u8();
-            let counterparty = request.counterparty.as_deref().unwrap_or("self");
-            let field = if level == 2 { counterparty } else { "" };
-            let texts = vec![
-                domain,
-                expiry,
-                privileged.to_string(),
-                level.to_string(),
-                protocol.protocol_name.clone(),
-                field.to_string(),
-            ];
-            let query = TokenQuery::Protocol {
-                privileged,
-                protocol,
-                counterparty,
-            };
-            (query, texts)
-        }
-        PermissionType::Basket => {
-            let basket = request.basket.as_deref().ok_or_else(|| missing("basket"))?;
-            let texts = vec![domain, expiry, basket.to_string()];
-            (TokenQuery::Basket { basket }, texts)
-        }
+                .ok_or_else(|| missing("protocol"))?,
+            counterparty: request.counterparty.as_deref().unwrap_or("self"),
+        },
+        PermissionType::Basket => TokenQuery::Basket {
+            basket: request.basket.as_deref().ok_or_else(|| missing("basket"))?,
+        },
         PermissionType::Certificate => {
             let details = request
                 .certificate
                 .as_ref()
                 .ok_or_else(|| missing("certificate"))?;
-            let texts = vec![
-                domain,
-                expiry,
-                privileged.to_string(),
-                details.cert_type.clone(),
-                serde_json::to_string(&details.fields)?,
-                details.verifier.clone(),
-            ];
-            let query = TokenQuery::Certificate {
+            TokenQuery::Certificate {
                 privileged,
                 verifier: &details.verifier,
                 cert_type: &details.cert_type,
                 fields: &details.fields,
-            };
-            (query, texts)
+            }
         }
-        PermissionType::Spending => {
-            let requested = request.spending.as_ref().map_or(0, |s| s.satoshis);
-            let texts = vec![domain, amount.unwrap_or(requested).to_string()];
-            let tags = vec![format!("originator {originator}").trim().to_lowercase()];
-            return Ok((SPENDING_TOKEN_BASKET, texts, tags));
+        PermissionType::Spending => return Err(missing("token the lookup reads")),
+    })
+}
+
+impl TokenQuery<'_> {
+    /// `buildPushdropFields`' plaintexts (`:3708-3749`): the counterparty
+    /// at level 2 alone, empty below it.
+    fn plaintexts(&self, domain: &str, expiry: u64) -> Result<Vec<String>> {
+        let mut texts = vec![domain.to_string(), expiry.to_string()];
+        match self {
+            Self::Protocol {
+                privileged,
+                protocol,
+                counterparty,
+            } => {
+                let level = protocol.security_level.as_u8();
+                let counterparty = if level == 2 { *counterparty } else { "" };
+                texts.push(privileged.to_string());
+                texts.push(level.to_string());
+                texts.push(protocol.protocol_name.clone());
+                texts.push(counterparty.to_string());
+            }
+            Self::Basket { basket } => texts.push((*basket).to_string()),
+            Self::Certificate {
+                privileged,
+                verifier,
+                cert_type,
+                fields,
+            } => {
+                texts.push(privileged.to_string());
+                texts.push((*cert_type).to_string());
+                texts.push(serde_json::to_string(fields)?);
+                texts.push((*verifier).to_string());
+            }
         }
-    };
-    Ok((query.basket(), texts, query.tags(Some(originator))))
+        Ok(texts)
+    }
 }

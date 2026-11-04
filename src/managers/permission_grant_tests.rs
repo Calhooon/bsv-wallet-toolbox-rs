@@ -162,11 +162,28 @@ async fn plaintexts(scene: &Scene, script: &[u8], count: usize) -> Vec<String> {
 
 /// The manager's cache emptied and its cover ended, as five minutes do.
 async fn age(manager: &WalletPermissionsManager) {
-    let past = Instant::now() - Duration::from_secs(CACHE_TTL_SECS + 1);
+    let ttl = Duration::from_secs(CACHE_TTL_SECS + 1);
+    let past = Instant::now().checked_sub(ttl).unwrap();
     for entry in manager.permission_cache.write().await.values_mut() {
         entry.cached_at = past;
     }
     manager.recent_grants.lock().unwrap().clear();
+}
+
+/// The witness protocol call on `manager`, not seeking.
+async fn seek_false(manager: &WalletPermissionsManager) -> Result<bool> {
+    let usage = PermissionUsageType::Generic;
+    let protocol = witness_protocol();
+    let call = manager.ensure_protocol_permission_seeking(
+        APP,
+        false,
+        false,
+        &protocol,
+        Some("self"),
+        None,
+        usage,
+    );
+    call.await
 }
 
 /// A new manager over the same wallet with no handler: a restart.
@@ -214,17 +231,7 @@ async fn a_seek_false_call_is_admitted_from_the_token_after_the_cache_and_a_rest
     age(&scene.manager).await;
     assert!(protocol_call(&scene, false).await.unwrap());
     let manager = restarted(&scene);
-    let admitted = manager
-        .ensure_protocol_permission_seeking(
-            APP,
-            false,
-            false,
-            &witness_protocol(),
-            Some("self"),
-            None,
-            PermissionUsageType::Generic,
-        )
-        .await;
+    let admitted = seek_false(&manager).await;
     assert!(admitted.unwrap(), "the restarted manager reads the token");
     assert_eq!(scene.prompts.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -307,10 +314,10 @@ async fn a_denial_refuses_the_caller_and_mints_nothing() {
     let (manager, mut asked) = asking(&scene).await;
     let call = spawn_call(&manager);
     let id = asked.recv().await.unwrap();
-    manager.deny_permission(&id).await.unwrap();
+    manager.deny_permission(&id).unwrap();
     assert_eq!(refusal(call.await.unwrap()), "Permission denied.");
     assert_eq!(minted(&scene).await, 0);
-    let again = manager.deny_permission(&id).await;
+    let again = manager.deny_permission(&id);
     assert!(matches!(again, Err(Error::InvalidArgument(m)) if m == "Request ID not found."));
 }
 
@@ -326,17 +333,7 @@ async fn an_ephemeral_grant_admits_its_callers_alone_and_mints_nothing() {
         .unwrap();
     assert!(call.await.unwrap().unwrap());
     assert_eq!(minted(&scene).await, 0);
-    let refused = manager
-        .ensure_protocol_permission_seeking(
-            APP,
-            false,
-            false,
-            &witness_protocol(),
-            Some("self"),
-            None,
-            PermissionUsageType::Generic,
-        )
-        .await;
+    let refused = seek_false(&manager).await;
     let absent = "No protocol permission token found (seekPermission=false).";
     assert_eq!(refusal(refused), absent, "nothing cached, nothing stored");
 }
@@ -356,26 +353,6 @@ async fn a_host_grant_by_request_id_mints_and_admits_the_caller() {
     assert_eq!(minted(&scene).await, 1);
 }
 
-/// A request of `kind` from `APP` naming nothing else.
-fn bare(kind: PermissionType) -> PermissionRequest {
-    PermissionRequest {
-        request_type: kind,
-        originator: APP.to_string(),
-        display_originator: None,
-        privileged: None,
-        protocol_id: None,
-        counterparty: None,
-        basket: None,
-        certificate: None,
-        spending: None,
-        reason: None,
-        operation: None,
-        request_id: None,
-        renewal: None,
-        previous_token: None,
-    }
-}
-
 #[tokio::test]
 async fn every_spending_grant_mints_its_amount_and_is_never_covered() {
     let scene = funded().await;
@@ -384,7 +361,7 @@ async fn every_spending_grant_mints_its_amount_and_is_never_covered() {
             satoshis: 2_500,
             line_items: None,
         }),
-        ..bare(PermissionType::Spending)
+        ..PermissionRequest::bare(PermissionType::Spending, APP)
     };
     let flow = &scene.manager;
     assert!(flow.request_permission_flow(request.clone()).await.unwrap());
@@ -403,7 +380,7 @@ async fn a_duplicate_grant_inside_the_cover_mints_once() {
         privileged: Some(false),
         protocol_id: Some(witness_protocol()),
         counterparty: Some("self".to_string()),
-        ..bare(PermissionType::Protocol)
+        ..PermissionRequest::bare(PermissionType::Protocol, APP)
     };
     let flow = &scene.manager;
     assert!(flow.request_permission_flow(request.clone()).await.unwrap());
