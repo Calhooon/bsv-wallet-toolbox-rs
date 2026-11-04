@@ -4,7 +4,7 @@ use super::*;
 use bsv_rs::wallet::KeyringRevealer;
 
 fn acquisition() -> AcquireCertificateArgs {
-    args(certifier(), "https://issuer.example/issue".to_string())
+    args(certifier(), "https://issuer.example".to_string())
 }
 
 async fn refuses(acquisition: AcquireCertificateArgs, name: &str, rule: &str) {

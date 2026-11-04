@@ -25,18 +25,18 @@ async fn served(server: &mut ServerGuard, path: &str, case: &Case) -> Mock {
 }
 
 /// The door's refusal of `case`'s answer: on the handshake path with no
-/// session, else on `/issue` after the fixture's handshake.
+/// session, else on `/signCertificate` after the fixture's handshake.
 async fn refusal(case: &Case) -> (bsv_rs::Error, String) {
     let mut server = mockito::Server::new_async().await;
     let path = if case.handshake {
         "/.well-known/auth"
     } else {
         signing_certifier(&mut server).await;
-        "/issue"
+        "/signCertificate"
     };
     let answer = served(&mut server, path, case).await;
     let wallet = wallet().await;
-    let url = format!("{}/issue", server.url());
+    let url = server.url();
     let error = acquire_from_fixture(&wallet, args(certifier(), url))
         .await
         .unwrap_err();
@@ -62,7 +62,7 @@ fn transport_message(name: &str, error: bsv_rs::Error) -> String {
 async fn refused(family: &str, name: &str) {
     let case = case(family, name);
     let (error, origin) = refusal(&case).await;
-    let text = case.refusal(&origin, "/issue");
+    let text = case.refusal(&origin, "/signCertificate");
     assert_eq!(transport_message(name, error), format!("{ENVELOPE}{text}"));
 }
 
@@ -140,5 +140,8 @@ async fn the_signed_header_count_bound_is_not_reached_over_http1() {
     // The door's client speaks HTTP/1: 512 signed headers already fail in
     // hyper, so the 513th never reaches bsv-rs's count bound.
     let (error, origin) = refusal(&case("signed_headers", "signed_count_513")).await;
-    assert_eq!(error, header_limit_fault(&format!("{origin}/issue")));
+    assert_eq!(
+        error,
+        header_limit_fault(&format!("{origin}/signCertificate"))
+    );
 }

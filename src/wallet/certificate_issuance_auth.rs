@@ -115,13 +115,13 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         certifier.handshake(&mut server).await;
         let _request = certifier
-            .general(&mut server, "/issue", 200, Answer::Signed, |_| {
+            .general(&mut server, "/signCertificate", 200, Answer::Signed, |_| {
                 std::thread::sleep(Duration::from_millis(600));
                 b"{}".to_vec()
             })
             .create_async()
             .await;
-        let url = format!("{}/issue", server.url());
+        let url = format!("{}/signCertificate", server.url());
         let deadline = Duration::from_millis(200);
         let error = post_authenticated(ProtoWallet::new(None), &url, b"{}", deadline)
             .await

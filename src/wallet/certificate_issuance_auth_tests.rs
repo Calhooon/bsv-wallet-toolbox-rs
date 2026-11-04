@@ -22,11 +22,7 @@ fn no_certificate(_: &Request) -> Vec<u8> {
 
 async fn issue(server: &ServerGuard) -> bsv_rs::Result<WalletCertificate> {
     let wallet = wallet().await;
-    acquire_from_fixture(
-        &wallet,
-        args(certifier(), format!("{}/issue", server.url())),
-    )
-    .await
+    acquire_from_fixture(&wallet, args(certifier(), server.url())).await
 }
 
 /// The refusal's text, which must be bsv-rs's and carry `words`.
@@ -46,7 +42,7 @@ async fn refused_exact(server: &ServerGuard, detail: &str) {
     );
 }
 
-/// `certifier`'s answer on `/issue`, expected once.
+/// `certifier`'s answer on `/signCertificate`, expected once.
 async fn answered(
     server: &mut ServerGuard,
     certifier: &PeerCertifier,
@@ -55,7 +51,7 @@ async fn answered(
     body: impl Fn(&Request) -> Vec<u8> + Send + Sync + 'static,
 ) -> Mock {
     certifier
-        .general(server, "/issue", status, answer, body)
+        .general(server, "/signCertificate", status, answer, body)
         .expect(1)
         .create_async()
         .await
@@ -120,7 +116,7 @@ async fn a_plain_server_writing_the_identity_header_is_refused_before_the_body()
     let mut server = mockito::Server::new_async().await;
     let handshake = plain(&mut server, "/.well-known/auth", 200, 1).await;
     // No keyring is sent past the handshake.
-    let request = plain(&mut server, "/issue", 200, 0).await;
+    let request = plain(&mut server, "/signCertificate", 200, 0).await;
     refused_in_send(&server, "authentication error:").await;
     handshake.assert_async().await;
     request.assert_async().await;
@@ -130,7 +126,7 @@ async fn a_plain_server_writing_the_identity_header_is_refused_before_the_body()
 async fn an_unsigned_answer_to_the_signed_request_is_refused_before_the_body() {
     let mut server = mockito::Server::new_async().await;
     signing_certifier(&mut server).await;
-    let request = plain(&mut server, "/issue", 200, 1).await;
+    let request = plain(&mut server, "/signCertificate", 200, 1).await;
     // SimplifiedFetchTransport.ts:220-232, bsv-rs #354's words.
     refused_in_send(
         &server,
@@ -170,7 +166,7 @@ async fn a_bad_response_signature_is_refused_with_the_body_unread() {
 async fn a_handshake_answered_404_is_refused_with_no_general_request() {
     let mut server = mockito::Server::new_async().await;
     let handshake = plain(&mut server, "/.well-known/auth", 404, 1).await;
-    let request = plain(&mut server, "/issue", 200, 0).await;
+    let request = plain(&mut server, "/signCertificate", 200, 0).await;
     refused_exact(&server, &format!(
         "authentication error: Received HTTP 404 Not Found from {}/.well-known/auth without valid BSV authentication (response lacked required BSV auth headers) - body preview: {NO_CERTIFICATE}", server.url()
     )).await;
@@ -183,7 +179,13 @@ async fn the_request_carries_no_caller_bsv_header() {
     let mut server = mockito::Server::new_async().await;
     let certifier = signing_certifier(&mut server).await;
     let request = certifier
-        .general(&mut server, "/issue", 200, Answer::Signed, no_certificate)
+        .general(
+            &mut server,
+            "/signCertificate",
+            200,
+            Answer::Signed,
+            no_certificate,
+        )
         .match_header("x-bsv-identity-key", Matcher::Missing)
         .match_header("content-type", "application/json")
         .expect(1)
@@ -230,7 +232,7 @@ async fn a_redirect_on_the_handshake_is_refused() {
     let mut server = mockito::Server::new_async().await;
     let handshake = plain(&mut server, "/.well-known/auth", 307, 1).await;
     let hop = plain(&mut server, "/elsewhere", 200, 0).await;
-    let request = plain(&mut server, "/issue", 200, 0).await;
+    let request = plain(&mut server, "/signCertificate", 200, 0).await;
     refused_exact(&server, &format!(
         "authentication error: Network error while sending authenticated request to {}/.well-known/auth: fetch failed", server.url()
     )).await;
@@ -243,10 +245,10 @@ async fn a_redirect_on_the_handshake_is_refused() {
 async fn a_redirect_on_the_signed_request_is_refused() {
     let mut server = mockito::Server::new_async().await;
     signing_certifier(&mut server).await;
-    let request = plain(&mut server, "/issue", 307, 1).await;
+    let request = plain(&mut server, "/signCertificate", 307, 1).await;
     let hop = plain(&mut server, "/elsewhere", 200, 0).await;
     refused_exact(&server, &format!(
-        "authentication error: Network error while sending authenticated request to {}/issue: fetch failed", server.url()
+        "authentication error: Network error while sending authenticated request to {}/signCertificate: fetch failed", server.url()
     )).await;
     request.assert_async().await;
     hop.assert_async().await;
@@ -261,7 +263,7 @@ async fn malformed_handshake_json_uses_the_reference_words() {
         .expect(1)
         .create_async()
         .await;
-    let request = plain(&mut server, "/issue", 200, 0).await;
+    let request = plain(&mut server, "/signCertificate", 200, 0).await;
     refused_exact(
         &server,
         "authentication error: Unexpected token 'o', \"not auth\" is not valid JSON",
@@ -276,13 +278,19 @@ async fn malformed_requested_certificates_are_refused_before_the_issuance_body()
     let mut server = mockito::Server::new_async().await;
     let certifier = signing_certifier(&mut server).await;
     let request = certifier
-        .general(&mut server, "/issue", 200, Answer::Signed, no_certificate)
+        .general(
+            &mut server,
+            "/signCertificate",
+            200,
+            Answer::Signed,
+            no_certificate,
+        )
         .with_header("x-bsv-auth-requested-certificates", "not auth")
         .expect(1)
         .create_async()
         .await;
     refused_exact(&server, &format!(
-        "authentication error: Failed to parse x-bsv-auth-requested-certificates returned by {}/issue: not auth. Unexpected token 'o', \"not auth\" is not valid JSON", server.url()
+        "authentication error: Failed to parse x-bsv-auth-requested-certificates returned by {}/signCertificate: not auth. Unexpected token 'o', \"not auth\" is not valid JSON", server.url()
     )).await;
     request.assert_async().await;
 }

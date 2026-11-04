@@ -23,7 +23,7 @@ fn text_decoder(bytes: &[u8]) -> String {
 async fn client_nonce(wallet: &TestWallet) -> String {
     let certifier_key = PublicKey::from_hex(&certifier()).unwrap();
     let subject = PublicKey::from_hex(wallet.identity_key()).unwrap();
-    let acquisition = args(certifier(), "https://issuer.example/issue".to_string());
+    let acquisition = args(certifier(), "https://issuer.example".to_string());
     prepare_issuance_action_data(
         wallet,
         &acquisition,

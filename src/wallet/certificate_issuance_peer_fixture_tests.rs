@@ -30,13 +30,13 @@ fn fixture_signature_verifies_through_proto_wallet() {
     assert!(verified.valid);
 }
 
-/// A bsv-rs Peer, the client's, sends one general request to `/issue`.
+/// A bsv-rs Peer, the client's, sends one general request to `/signCertificate`.
 async fn peer_run(answer: Answer) -> (PeerCertifier, bsv_rs::Result<(PublicKey, Vec<u8>)>) {
     let certifier = PeerCertifier::new(key(31));
     let mut server = mockito::Server::new_async().await;
     let handshake = certifier.handshake(&mut server).await;
     let general = certifier
-        .general(&mut server, "/issue", 200, answer, |_| {
+        .general(&mut server, "/signCertificate", 200, answer, |_| {
             b"{\"ok\":true}".to_vec()
         })
         .expect(1)
@@ -63,7 +63,7 @@ async fn peer_run(answer: Answer) -> (PeerCertifier, bsv_rs::Result<(PublicKey, 
     let request = HttpRequest {
         request_id: [9; 32],
         method: "POST".to_string(),
-        path: "/issue".to_string(),
+        path: "/signCertificate".to_string(),
         search: String::new(),
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body: b"{}".to_vec(),
@@ -102,7 +102,7 @@ async fn fixture_bad_signature_is_refused_by_a_bsv_rs_peer() {
     );
 }
 
-/// A general request to `/issue` past a handshake the client opened, its
+/// A general request to `/signCertificate` past a handshake the client opened, its
 /// signature `signature` and its session nonce the certifier's unless `stale`;
 /// the handler is never called, as `index.ts:1380-1395` calls no `next`.
 async fn raw_run(signature: &str, stale: bool) -> (PeerCertifier, reqwest::Response) {
@@ -111,7 +111,7 @@ async fn raw_run(signature: &str, stale: bool) -> (PeerCertifier, reqwest::Respo
     let mut server = mockito::Server::new_async().await;
     certifier.handshake(&mut server).await;
     let handler = certifier
-        .general(&mut server, "/issue", 200, Answer::Signed, |_| {
+        .general(&mut server, "/signCertificate", 200, Answer::Signed, |_| {
             b"{\"ok\":true}".to_vec()
         })
         .expect(0)
@@ -134,7 +134,7 @@ async fn raw_run(signature: &str, stale: bool) -> (PeerCertifier, reqwest::Respo
         false => answer.initial_nonce.unwrap(),
     };
     let response = http
-        .post(format!("{}/issue", server.url()))
+        .post(format!("{}/signCertificate", server.url()))
         .header("content-type", "application/json")
         .header("x-bsv-auth-version", "0.1")
         .header("x-bsv-auth-identity-key", client.public_key().to_hex())

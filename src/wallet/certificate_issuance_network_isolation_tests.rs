@@ -15,7 +15,7 @@ async fn issuance_client_refuses_non_loopback_before_transport() {
     for scheme in ["http", "https"] {
         let error = send_issuance_request(
             ProtoWallet::new(None),
-            &format!("{scheme}://provider.invalid/issue"),
+            &format!("{scheme}://provider.invalid"),
             b"{}",
             &certifier().identity(),
         )
@@ -31,7 +31,7 @@ async fn issuance_client_accepts_loopback_fixtures() {
     let mut server = mockito::Server::new_async().await;
     certifier.handshake(&mut server).await;
     let request = certifier
-        .general(&mut server, "/issue", 200, Answer::Signed, |_| {
+        .general(&mut server, "/signCertificate", 200, Answer::Signed, |_| {
             br#"{"serverNonce":"fixture","certificate":null}"#.to_vec()
         })
         .match_header("content-type", "application/json")
@@ -42,7 +42,7 @@ async fn issuance_client_accepts_loopback_fixtures() {
 
     let response = send_issuance_request(
         ProtoWallet::new(None),
-        &format!("{}/issue", server.url()),
+        &server.url(),
         b"{}",
         &certifier.identity(),
     )
@@ -66,7 +66,7 @@ async fn issuance_client_refuses_non_loopback_redirects() {
     // The SDK refuses the redirect status before any hop (bsv-rs #320).
     let error = send_issuance_request(
         ProtoWallet::new(None),
-        &format!("{}/issue", server.url()),
+        &server.url(),
         b"{}",
         &certifier().identity(),
     )
