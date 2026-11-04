@@ -402,5 +402,132 @@
    }
   ],
   "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-573-own-word-survivors/run"
+ },
+ "issue_572": {
+  "lane": "p5-572-verify-own-catalogue",
+  "base": "68275a33",
+  "tree": "git archive of d9295bca (the catalogue entry) in a scratch tree with the worktree's Cargo.lock, in place, serial; the tip run with afb323c8's test file (src identical to the lane's tip)",
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "tool_version": "cargo-mutants 27.1.0",
+  "catalogue": ".cargo/mutants-doors.toml: the file in examine_globs; --test=internalize_custom_instructions_tests added to the oracle, the one reach-table target that entered the file (6 fn) and was not in it",
+  "command": "HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 CARGO_TARGET_DIR=$HOME/bsv/targets/p5-572-mutants cargo mutants --no-config --in-place [--baseline skip after shard 0] --timeout 900 --build-timeout 900 --cap-lints true --features sqlite,remote,bench-support --file src/storage/sqlx/beef_verification/own_word.rs --shard K/N --sharding round-robin --output <out>/<run>/sK -- --lib --test=fixtures --test=caller_complete_funding_tests --test=immediate_broadcast_hint_tests --test=internalize_custom_instructions_tests --test=known_ancestor_tests --test=test_vectors",
+  "measure": {
+   "shards": "6, round-robin",
+   "baseline": "Unmutated baseline in 4s build + 19s test (shard 0's tree warm)",
+   "started": "2026-11-04T00:15:36.339215Z",
+   "finished": "2026-11-04T00:34:52.752405Z",
+   "summary": "23 mutants: 17 caught, 2 missed, 4 unviable (the six shards' lines: 3 caught 1 unviable; 3 caught 1 unviable; 3 caught 1 missed; 3 caught 1 missed; 3 caught; 2 caught 2 unviable)",
+   "file": {
+    "caught": 17,
+    "missed": 2,
+    "timeout": 0,
+    "unviable": 4,
+    "listed": 23,
+    "score": 89.47,
+    "survivors": [
+     "src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with += in read_tx",
+     "src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with /= in read_tx"
+    ]
+   },
+   "verdicts": {
+    "src/storage/sqlx/beef_verification/own_word.rs:33:5: replace read_tx -> Result<(Hash32, TxBody)> with Ok((Default::default(), Default::default()))": "Unviable",
+    "src/storage/sqlx/beef_verification/own_word.rs:45:26: replace -= with += in read_tx": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:45:26: replace -= with /= in read_tx": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with += in read_tx": "MissedMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with /= in read_tx": "MissedMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(None)": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(Vec::new()))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(vec![0]))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(vec![1]))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(Vec::new()))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(vec![0]))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(vec![1]))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:72:18: replace == with != in source_output": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:95:5: replace verify_own -> Result<()> with Ok(())": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:174:9: replace InputJudgements<'a>::with_transaction_work -> Self with Default::default()": "Unviable",
+    "src/storage/sqlx/beef_verification/own_word.rs:185:9: replace InputJudgements<'a>::judge -> Result<()> with Ok(())": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:232:9: replace InputJudgements<'a>::finish -> Result<()> with Ok(())": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:236:9: replace InputJudgements<'a>::into_selected -> Vec<(SpendRequest, SpendVerificationContext)> with vec![(Default::default(), Default::default())]": "Unviable",
+    "src/storage/sqlx/beef_verification/own_word.rs:236:9: replace InputJudgements<'a>::into_selected -> Vec<(SpendRequest, SpendVerificationContext)> with vec![]": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:241:5: replace host_refusal -> Error with Default::default()": "Unviable",
+    "src/storage/sqlx/beef_verification/own_word.rs:255:5: replace verify_selected -> Result<()> with Ok(())": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:261:23: replace != with == in verify_selected": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:272:12: delete ! in verify_selected": "CaughtMutant"
+   },
+   "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-572-verify-own-catalogue/run"
+  },
+  "kills_recheck": {
+   "command": "the same, --re 48:27, the test file of afb323c8 in the tree",
+   "summary": "2 mutants tested in 3m: 2 caught",
+   "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-572-verify-own-catalogue/run/kills"
+  },
+  "tip": {
+   "shards": "4, round-robin",
+   "baseline": "Unmutated baseline in 37s build + 18s test",
+   "started": "2026-11-04T00:42:15.466739Z",
+   "finished": "2026-11-04T01:01:04.37847Z",
+   "summary": "23 mutants: 19 caught, 0 missed, 4 unviable (5 caught 1 unviable; 6 caught; 4 caught 2 unviable; 4 caught 1 unviable)",
+   "file": {
+    "caught": 19,
+    "missed": 0,
+    "timeout": 0,
+    "unviable": 4,
+    "listed": 23,
+    "score": 100.0,
+    "survivors": []
+   },
+   "verdicts": {
+    "src/storage/sqlx/beef_verification/own_word.rs:33:5: replace read_tx -> Result<(Hash32, TxBody)> with Ok((Default::default(), Default::default()))": "Unviable",
+    "src/storage/sqlx/beef_verification/own_word.rs:45:26: replace -= with += in read_tx": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:45:26: replace -= with /= in read_tx": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with += in read_tx": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with /= in read_tx": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(None)": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(Vec::new()))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(vec![0]))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(vec![1]))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(Vec::new()))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(vec![0]))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(vec![1]))))": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:72:18: replace == with != in source_output": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:95:5: replace verify_own -> Result<()> with Ok(())": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:174:9: replace InputJudgements<'a>::with_transaction_work -> Self with Default::default()": "Unviable",
+    "src/storage/sqlx/beef_verification/own_word.rs:185:9: replace InputJudgements<'a>::judge -> Result<()> with Ok(())": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:232:9: replace InputJudgements<'a>::finish -> Result<()> with Ok(())": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:236:9: replace InputJudgements<'a>::into_selected -> Vec<(SpendRequest, SpendVerificationContext)> with vec![(Default::default(), Default::default())]": "Unviable",
+    "src/storage/sqlx/beef_verification/own_word.rs:236:9: replace InputJudgements<'a>::into_selected -> Vec<(SpendRequest, SpendVerificationContext)> with vec![]": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:241:5: replace host_refusal -> Error with Default::default()": "Unviable",
+    "src/storage/sqlx/beef_verification/own_word.rs:255:5: replace verify_selected -> Result<()> with Ok(())": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:261:23: replace != with == in verify_selected": "CaughtMutant",
+    "src/storage/sqlx/beef_verification/own_word.rs:272:12: delete ! in verify_selected": "CaughtMutant"
+   },
+   "score_check": "tools/mutants-score --catalog catalog-doors.json --file src/storage/sqlx/beef_verification/own_word.rs --baseline-skipped tip/s{0,1,2,3}: 19 0 0 4, 23/23, 100.00%, floor 100, PASS",
+   "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-572-verify-own-catalogue/tip"
+  },
+  "survivors": [
+   {
+    "mutant": "src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with += in read_tx",
+    "verdict": "killed",
+    "targets": [
+     "lib"
+    ],
+    "tests": [
+     "storage::sqlx::beef_verification::own_word::tests::host::host_body_offsets_lie_within_the_signed_transaction"
+    ],
+    "rule": "read_tx rebases every offset of the streamed body onto the signed transaction's bytes (its doc line); the body reaches a host SpendVerifier in SpendRequest.body, so an output's `at` there must point at its value within body.raw; under the mutant it is the BEEF stream offset plus the envelope's length (+=) or divided by it (/=), and the witness reads the wrong 8 bytes"
+   },
+   {
+    "mutant": "src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with /= in read_tx",
+    "verdict": "killed",
+    "targets": [
+     "lib"
+    ],
+    "tests": [
+     "storage::sqlx::beef_verification::own_word::tests::host::host_body_offsets_lie_within_the_signed_transaction"
+    ],
+    "rule": "read_tx rebases every offset of the streamed body onto the signed transaction's bytes (its doc line); the body reaches a host SpendVerifier in SpendRequest.body, so an output's `at` there must point at its value within body.raw; under the mutant it is the BEEF stream offset plus the envelope's length (+=) or divided by it (/=), and the witness reads the wrong 8 bytes"
+   }
+  ],
+  "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-572-verify-own-catalogue"
  }
 }

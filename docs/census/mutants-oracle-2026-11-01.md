@@ -20,7 +20,7 @@ A scratch copy of the base (never committed) logs each door function on entry; e
 | `src/storage/sqlx/create_action/review_beef.rs` | 7 fn, 13 kills (13) | 1 fn, 0 kills (0) | 1 fn, 0 kills (0) | 1 fn, 0 kills (0) | 1 fn, 0 kills (0) | . | . |
 | `src/storage/sqlx/beef_verification/own_word.rs` | 11 fn | 10 fn | 6 fn | 10 fn | 6 fn | . | 6 fn |
 
-`beef_verification/own_word.rs` (the verifier the create door's own word calls, `verify_own`) is outside the Mutants workflow's set (`.cargo/mutants.toml`'s globs), so it has no catalogue entry, no floor and no score; it is named here as a finding, not measured.
+`beef_verification/own_word.rs` (the verifier the create door's own word calls, `verify_own`) is outside the Mutants workflow's set (`.cargo/mutants.toml`'s globs), so it has no catalogue entry, no floor and no score; it is named here as a finding, not measured. Since #572 it is in `.cargo/mutants-doors.toml`, with `internalize_custom_instructions_tests` added to that oracle's targets, and measured under it (the last section).
 
 **Finding: the other create-door files.** The second probe (`reach2/`, every function of `create_action/*.rs`, `process_action.rs` and `internalize_action.rs`, integration targets only) shows each of them entered by integration targets as well as the lib, so their `--lib` scores in the Mutants workflow count only the lib's witnesses. Under the owner's 14:1xZ word they stay on the ratchet with the `--lib` oracle; widening them is not this lane's. Targets entering each file:
 
@@ -54,6 +54,8 @@ Before: the Mutants workflow's oracle before this lane: `cargo test --lib`, defa
 | `src/storage/sqlx/create_action/own_word.rs` | after #573 | 6 | 1 | 0 | 2 | 85.71% |
 | `src/storage/sqlx/create_action/review_beef.rs` | before | 13 | 0 | 0 | 1 | 100.00% |
 | `src/storage/sqlx/create_action/review_beef.rs` | after | 13 | 0 | 0 | 1 | 100.00% |
+| `src/storage/sqlx/beef_verification/own_word.rs` | doors, at #572 | 17 | 2 | 0 | 4 | 89.47% |
+| `src/storage/sqlx/beef_verification/own_word.rs` | doors, after #572 | 19 | 0 | 0 | 4 | 100.00% |
 
 - before: 45 runs, 2026-11-01T17:45:19.725138Z to 2026-11-01T18:33:11.434179Z, per mutant 72 to 369 s (mean 270 s) on the loaded host; collect problems: none; scoring problems: ['src/storage/sqlx/create_action/must_spend.rs: BELOW FLOOR'].
 - after: 45 runs, 2026-11-01T15:58:36.455874Z to 2026-11-01T17:44:53.000086Z, per mutant 114 to 927 s (mean 579 s) on the loaded host; collect problems: none; scoring problems: none.
@@ -168,3 +170,39 @@ The file under the door oracle (`.cargo/mutants-doors.toml`'s targets and featur
 | `src/storage/sqlx/create_action/own_word.rs:59:5: replace beef_source -> Option<SourceTx> with Some(Default::default())` | Unviable |
 | `src/storage/sqlx/create_action/own_word.rs:83:5: replace judge_own_tx -> Result<()> with Ok(())` | CaughtMutant |
 | `src/storage/sqlx/create_action/own_word.rs:92:44: replace || with && in judge_own_tx` | MissedMutant |
+
+## The verifier `beef_verification/own_word.rs` in the catalogue, its survivors at 48:27 killed (#572)
+
+The lane p5-572-verify-own-catalogue, on beta `68275a33`; the record's json under `issue_572`, the outputs under `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-572-verify-own-catalogue/` (`run`, `run/kills`, `tip`, `catalog-doors.json`).
+
+**The catalogue entry.** The file holds `verify_own`, the verifier the create door's own word calls (`create_action/own_word.rs`'s `judge_own_tx` and the signAction route), and `InputJudgements` and `verify_selected`, the per-transaction dispatcher and the host batch the live doors share. It judges under the node's word and its witnesses live in the lib and five integration targets (the reach table's row), so it joins `.cargo/mutants-doors.toml`'s globs, not the lib set; `internalize_custom_instructions_tests`, which enters six of its functions and was in no oracle, joins that config's targets (a target only adds witnesses to the other three door files). Its 23 mutants enter the Mutants workflow's doors shards through the config's globs.
+
+**48:27, killed (both mutants).** The mutants: `output.at -= offset` in `read_tx` read as `+=` and as `/=`. The rule (`read_tx`'s own line: the body read by bsv-rs's streaming reader, its offsets rebased onto `raw`): `verify_own` wraps the signed transaction in a BEEF to stream it, so every offset bsv-rs gives (`InputRef::at`, `OutputRef::at`, stream offsets) is moved back by the transaction's place in that stream; the inputs' offsets name a refusal's place, and the whole body, outputs included, reaches a host `SpendVerifier` as `SpendRequest::body`. No interpreter path reads an output's `at` (the sighash cache reads `satoshis` and the script range), which is why no target caught them. The witness, `storage::sqlx::beef_verification::own_word::tests::host::host_body_offsets_lie_within_the_signed_transaction` (the lib, `own_word_host_tests.rs`): a signed transaction of three inputs and two outputs judged with a recording host; every body the host receives has each input's previous txid at its `at` and each output's eight value bytes at its `at`, within the signed transaction's bytes. At the tip: green (offsets 129 and 139 within 153 bytes). Under each mutant (planted by hand, then by cargo-mutants, `run/kills`: `2 mutants tested in 3m: 2 caught`): red at the output's value, the only failure in the oracle.
+
+The file under the door oracle (`.cargo/mutants-doors.toml`'s targets, `internalize_custom_instructions_tests` among them, and features, given with `--no-config`; `--in-place` in a `git archive` tree with the worktree's `Cargo.lock`, serial, sharded round-robin), timeouts 900 s. At the entry (`d9295bca`, six shards, baseline 4 s build + 19 s test on a warm tree): 23 mutants, 17 caught, 2 missed, 4 unviable, 89.47% (17/19). At the tip (`afb323c8`'s test, four shards, baseline 37 s build + 18 s test): 19 caught, 0 missed, 4 unviable, 100.00% (19/19); `tools/mutants-score` over the four shards: `19 | 0 | 0 | 4 | 23/23 | 100.00% | 100 | PASS`. No timeout, so no Timeout to judge against the baseline. The floor written at 100, the figure rounded down.
+
+| Mutant | At the entry | At the tip |
+|---|---|---|
+| `src/storage/sqlx/beef_verification/own_word.rs:33:5: replace read_tx -> Result<(Hash32, TxBody)> with Ok((Default::default(), Default::default()))` | Unviable | Unviable |
+| `src/storage/sqlx/beef_verification/own_word.rs:45:26: replace -= with += in read_tx` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:45:26: replace -= with /= in read_tx` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with += in read_tx` | MissedMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:48:27: replace -= with /= in read_tx` | MissedMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(None)` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(Vec::new()))))` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(vec![0]))))` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((0, Vec::leak(vec![1]))))` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(Vec::new()))))` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(vec![0]))))` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:62:5: replace source_output -> Result<Option<(u64, &[u8])>> with Ok(Some((1, Vec::leak(vec![1]))))` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:72:18: replace == with != in source_output` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:95:5: replace verify_own -> Result<()> with Ok(())` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:174:9: replace InputJudgements<'a>::with_transaction_work -> Self with Default::default()` | Unviable | Unviable |
+| `src/storage/sqlx/beef_verification/own_word.rs:185:9: replace InputJudgements<'a>::judge -> Result<()> with Ok(())` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:232:9: replace InputJudgements<'a>::finish -> Result<()> with Ok(())` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:236:9: replace InputJudgements<'a>::into_selected -> Vec<(SpendRequest, SpendVerificationContext)> with vec![(Default::default(), Default::default())]` | Unviable | Unviable |
+| `src/storage/sqlx/beef_verification/own_word.rs:236:9: replace InputJudgements<'a>::into_selected -> Vec<(SpendRequest, SpendVerificationContext)> with vec![]` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:241:5: replace host_refusal -> Error with Default::default()` | Unviable | Unviable |
+| `src/storage/sqlx/beef_verification/own_word.rs:255:5: replace verify_selected -> Result<()> with Ok(())` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:261:23: replace != with == in verify_selected` | CaughtMutant | CaughtMutant |
+| `src/storage/sqlx/beef_verification/own_word.rs:272:12: delete ! in verify_selected` | CaughtMutant | CaughtMutant |
