@@ -398,7 +398,7 @@
    {
     "mutant": "src/storage/sqlx/create_action/own_word.rs:92:44: replace || with && in judge_own_tx",
     "verdict": "equivalent",
-    "reason": "each txid is placed in exactly one of sources (beef_source answers) or stored (it does not), beef_source a function of the call's parsed BEEF and the txid alone, so the && is never true; a repeated parent is placed again with an equal SourceTx, a stored one read twice by get_tx_with_proof on the same connection with nothing written between, and verify_own receives the same map: only the repeated read differs"
+    "reason": "each txid is placed in exactly one of sources (beef_source answers) or stored (it does not), beef_source a function of the call's parsed BEEF and the txid alone, so the && is never true; a repeated parent is placed again with an equal SourceTx, a stored one read twice by get_tx_with_proof on the same connection (inside write_tx on the create route, so nothing lands between; on the signAction route, a reader-pool connection in autocommit, another connection's commit can land between them and the second read carry the parent's newer row), and verify_own receives the same map in every call that runs alone: only the repeated read differs"
    }
   ],
   "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-573-own-word-survivors/run"
