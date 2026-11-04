@@ -406,3 +406,24 @@ async fn a_caller_dropped_while_it_waits_leaves_the_next_caller_its_own_prompt()
         .unwrap();
     assert!(call.await.unwrap().unwrap());
 }
+
+#[tokio::test]
+async fn a_proto_wallets_create_and_list_refusals_read_as_no_token_each_by_its_own_verb() {
+    use bsv_rs::primitives::ec::PrivateKey;
+    use bsv_rs::wallet::{ProtoWallet, WalletInterface};
+    let proto = ProtoWallet::new(Some(PrivateKey::random()));
+    let args = serde_json::json!({ "description": "Grant protocol permission" });
+    let created = proto.create_action(serde_json::from_value(args).unwrap(), Some(ADMIN));
+    let created = created.await.unwrap_err();
+    let text = "createAction requires a full wallet implementation with UTXO management";
+    assert!(matches!(&created, bsv_rs::Error::WalletError(m) if m == text));
+    assert!(proto_wallet_refuses(&created, "createAction"));
+    assert!(!proto_wallet_refuses(&created, "listOutputs"));
+    let args = serde_json::json!({ "basket": "admin protocol-permission" });
+    let listed = proto.list_outputs(serde_json::from_value(args).unwrap(), Some(ADMIN));
+    let listed = listed.await.unwrap_err();
+    let text = "listOutputs requires a full wallet implementation with UTXO management";
+    assert!(matches!(&listed, bsv_rs::Error::WalletError(m) if m == text));
+    assert!(cannot_list(&listed));
+    assert!(!proto_wallet_refuses(&listed, "createAction"));
+}

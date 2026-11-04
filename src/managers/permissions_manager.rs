@@ -1593,15 +1593,22 @@ fn token_source(beef: &Beef, output: &WalletOutput, count: usize) -> Option<Push
     valid.then_some(decoded)
 }
 
-/// `ProtoWallet::list_outputs`' refusal (bsv-rs 0.9.0-beta.6
-/// `proto_wallet/interface.rs:210-212`): the underlying keeps no outputs.
-const PROTO_WALLET_LIST_REFUSAL: &str =
-    "listOutputs requires a full wallet implementation with UTXO management";
+/// The tail of `ProtoWallet`'s refusal of a call that needs outputs, after
+/// the call's name (bsv-rs 0.9.0-beta.6 `proto_wallet/interface.rs:154-156`,
+/// `:210-212`): the underlying keeps no outputs.
+const PROTO_WALLET_REFUSAL_TAIL: &str =
+    " requires a full wallet implementation with UTXO management";
 
-/// Whether a list failure is an underlying that cannot list, which holds no
-/// token, rather than a fault.
+/// Whether a failure of `call` is `ProtoWallet`'s refusal of it: an
+/// underlying that keeps no outputs, so holds no token, rather than a fault.
+fn proto_wallet_refuses(error: &bsv_rs::Error, call: &str) -> bool {
+    matches!(error, bsv_rs::Error::WalletError(message)
+        if message.strip_suffix(PROTO_WALLET_REFUSAL_TAIL) == Some(call))
+}
+
+/// Whether a list failure is an underlying that cannot list.
 fn cannot_list(error: &bsv_rs::Error) -> bool {
-    matches!(error, bsv_rs::Error::WalletError(message) if message == PROTO_WALLET_LIST_REFUSAL)
+    proto_wallet_refuses(error, "listOutputs")
 }
 
 /// A stored token's standing for a request.
@@ -2352,7 +2359,9 @@ mod tests {
         ) -> bsv_rs::Result<ListOutputsResult> {
             // The stored-token lookup's read (#751): a `ProtoWallet`'s
             // refusal, no token held.
-            Err(bsv_rs::Error::WalletError(PROTO_WALLET_LIST_REFUSAL.into()))
+            Err(bsv_rs::Error::WalletError(format!(
+                "listOutputs{PROTO_WALLET_REFUSAL_TAIL}"
+            )))
         }
         async fn relinquish_output(
             &self,

@@ -16,8 +16,9 @@ use bsv_rs::wallet::{CreateSignatureArgs, EncryptArgs};
 use tokio::sync::{oneshot, watch};
 
 use super::{
-    normalize_originator, permission_token_protocol, Counterparty, Error, PermissionRequest,
-    PermissionToken, PermissionType, PushDrop, Result, TokenQuery, WalletPermissionsManager,
+    normalize_originator, permission_token_protocol, proto_wallet_refuses, Counterparty, Error,
+    PermissionRequest, PermissionToken, PermissionType, PushDrop, Result, TokenQuery,
+    WalletPermissionsManager,
 };
 
 /// The window in which a fresh grant admits and skips a duplicate mint
@@ -401,14 +402,9 @@ impl WalletPermissionsManager {
     }
 }
 
-/// `ProtoWallet::create_action`'s refusal (bsv-rs 0.9.0-beta.6
-/// `proto_wallet/interface.rs:154-156`): the underlying keeps no outputs.
-const PROTO_WALLET_CREATE_REFUSAL: &str =
-    "createAction requires a full wallet implementation with UTXO management";
-
 /// Whether a create failure is an underlying that cannot hold a token.
 fn cannot_create(error: &bsv_rs::Error) -> bool {
-    matches!(error, bsv_rs::Error::WalletError(message) if message == PROTO_WALLET_CREATE_REFUSAL)
+    proto_wallet_refuses(error, "createAction")
 }
 
 /// The reference's `r.type`, as its description and output name it.
