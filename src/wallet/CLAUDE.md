@@ -360,7 +360,8 @@ today's words).
 | `wallet.rs` | ~3547 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `WalletBalance`, `UtxoInfo`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, balance/sweep helpers, permission checks, and helper functions |
 | `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1430 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
-| `certificate_issuance_auth.rs` | ~130 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
+| `certificate_issuance_public.rs` | ~200 | The production issuance client's refusals at connect, the address ranges and the pinned no-redirect client (#334) |
+| `certificate_issuance_auth.rs` | ~140 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
 | `key_route.rs` | ~190 | The key route (#186, #142, #569): a key call or a key-linkage reveal with `privileged: true` to the `PrivilegedKeyManager`, its arguments intact, else the reference's refusal; every other call to the everyday `ProtoWallet`; the route as a `WalletInterface` for bsv-rs's certificate helpers |
 | `direct_acquire.rs` | ~210 | Direct `acquire_certificate` argument validation and normalization, signature verification and keyring decryption proof before storage (#311, #374) |
 | `label.rs` | ~110 | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392), and the BRC-177 module-label matcher both doors call (#363); declared without a feature gate, the sqlx folder imports it as `label` (#420); `normalize_label` and `trim_ecmascript` are public since #505, re-exported as `bsv_wallet_toolbox_rs::wallet::{normalize_label, trim_ecmascript}`, the one definition of the reference's label rule for every host (bsv-wallet-cli#376's spend gate); `is_ecmascript_whitespace` stays private |
@@ -1265,7 +1266,25 @@ response.` (`AuthFetch.ts:298-300`). A bsv-rs transport fault keeps its
 class (`Error::SdkError`); any other refusal is `Error::NetworkError` with
 `Failed to send request: <bsv-rs text>`, as the storage client's. Not
 ported, each its own issue: the 402 payment (#328), the certifier's
-certificate request (#333), the private-address refusal (#334).
+certificate request (#333).
+
+For #334 the production client is the reference's `createPublicHTTPSFetch(endpoint.origin)`
+(`Wallet.ts:773`; `certificate_issuance_public.rs`): before any connection it
+refuses a URL with credentials or a fragment, or not HTTPS, with `Restricted
+requests require a credential-free HTTPS URL` (`PublicHTTPSFetch.ts:193-200`),
+a non-public literal with `Restricted HTTPS request targets a non-public
+address` (`:201-204`), and a hostname whose resolved answer is empty, past 64
+addresses or holds a non-public one with `Restricted HTTPS request resolved to
+a non-public address` (`:262-271`), a resolution past 30 s with `Restricted
+HTTPS DNS resolution timed out` (`:171`), each a `NetworkError`. The ranges are
+`isPublicNetworkAddress` (`:112-152`) over `std::net`, the textual
+`::ffff:a.b.c.d` form under the IPv4 rule. The approved answer is pinned into a
+reqwest client (`resolve_to_addrs`) with no proxy and `Policy::none()`, handed
+to bsv-rs's transport through `with_client`. The resolver is a crate-private
+seam. Under test and `bench-support` the #182 policy client stands in its
+place, unchanged, so a host running a local certifier on purpose uses that
+build. Witnesses: `certificate_issuance_public_tests.rs` (the reference's own
+vectors, a stub resolver, a mockito redirect not followed).
 
 What a certifier behind the reference middleware is expected to see, per
 issuance (read from `index.ts`, not yet run against it): a
