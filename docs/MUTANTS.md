@@ -10,7 +10,7 @@ half hours queued every other repository's CI behind them. The schedule returns
 when the run is shaped to finish: the three door files (861 mutants) nightly in
 fewer shards and the full inventory weekly, a cheaper per-mutant build, or both.
 It is informational and must not become a required branch protection context.
-Beside the sixteen shards, the `doors` job runs the five files that judge under
+Beside the sixteen shards, the `doors` job runs the six files that judge under
 the node's word in two shards of their own, under a wider oracle (below, #535),
 and the `evidence` job runs the BEEF walk (`create_action/beef_walk.rs`) in one
 shard under its own reach targets (below, #601).
@@ -51,7 +51,7 @@ it to `main` with the files it reads: a `main` workflow that names
 ## Measurement
 
 `.cargo/mutants.toml` selects the three storage doors, the services orchestrator,
-all providers and all monitor tasks, less the five files of the door oracle
+all providers and all monitor tasks, less the six files of the door oracle
 below and the BEEF walk of the evidence oracle. Both mutation build and test phases use
 `--lib`, so the test command is `cargo test --lib`. The library exercises the
 storage doors with `MockWalletServices` and the providers with `mockito`.
@@ -100,8 +100,8 @@ that judge under the node's word, `create_action/must_spend.rs`,
 `create_action/own_word.rs` and `create_action/review_beef.rs`, at an 80 percent
 gate, measured with their real witnesses: `must_spend.rs`'s live in the
 `fixtures` suite, so `--lib` alone read it at 0 of 19 (#535). Those files (the
-three, `beef_verification/own_word.rs` since #572 and `providers/bhs.rs` since
-#602) run from
+three, `beef_verification/own_word.rs` since #572, `providers/bhs.rs` since
+#602 and `create_action/mod.rs`, the create door itself, since #604) run from
 `.cargo/mutants-doors.toml`: the lib and every integration target that enters a
 door function (`fixtures`, `caller_complete_funding_tests`,
 `immediate_broadcast_hint_tests`, `internalize_custom_instructions_tests`,
@@ -114,14 +114,14 @@ every target once; the table and the figures before and after the widening are
 `docs/census/mutants-oracle-2026-11-01.md`, and the door floors in
 `tools/mutants-floor.json` come from the widened figure only.
 
-The 85 door mutants (45 before #572 added `beef_verification/own_word.rs` and
+The 124 door mutants (45 before #572 added `beef_verification/own_word.rs` and
 `internalize_custom_instructions_tests` to the oracle, 68 before #602 added
-`providers/bhs.rs`) run as their own shard group, `doors`, two round-robin
+`providers/bhs.rs`, 85 before #604 added `create_action/mod.rs`) run as their own shard group, `doors`, two round-robin
 shards. The six targets add six test binaries to
 each mutant's build and about 13 s to its test run beside the lib's (the `fixtures` suite 11.7 s on the lane
 host), so a door mutant costs about what a lib mutant costs (about 2.8 minutes on
-the runners, mostly the build): about 43 mutants a shard is about 120 minutes,
-inside the 330 minute limit with room to spare. The rest of the inventory stays on
+the runners, mostly the build): 62 mutants a shard is about 175 minutes,
+inside the 330 minute limit. The rest of the inventory stays on
 `--lib` as ruled (the ratchet). Other create-door files are entered by
 integration targets as well (the record's second probe); widening them is not
 in the ruling.
@@ -164,6 +164,37 @@ equivalent mutant, counted as missed as cargo-mutants counts it:
 
 The record: `docs/census/mutants-paths-widened-2026-11-02.md`, the section
 after #601, and the complete record's json under `issue_601`.
+
+## The create door under the door oracle (#604, 2026-11-04)
+
+`create_action/mod.rs` (`create_action_at_door_internal` and `Door::step`;
+`docs/ARCHITECTURE.md` section 1, the `createAction` row) is entered by the lib
+and five of the door oracle's targets, so it runs from `.cargo/mutants-doors.toml`
+since #604. Under that oracle (lane p5-604-create-door-survivors, 2026-11-04):
+35 caught, 2 missed, 2 unviable, 94.59% against the floor of 80. Five of the
+seven widened survivors are killed by lib tests from the door's rules
+(`create_action/tests/door_steps.rs`); the other two are equivalent mutants,
+counted as missed as cargo-mutants counts them:
+
+- `mod.rs:311:9: replace <impl std::fmt::Display for Again>::fmt ->
+  std::fmt::Result with Ok(Default::default())`, equivalent. The rule: a
+  rolled-back step is checked once more, its reason logged. The text is read
+  only by the `reason` field of the `create_action_precheck_again` log; every
+  refusal built from an `Again` is the match's own error (`ServiceError` naming
+  the height, `StoreBusy { MovedUnderUs }`), never the Display. No caller,
+  response or stored row reads it.
+- `mod.rs:713:27: replace match guard !created.inputs.is_empty() with true in
+  Door<'_>::step`, equivalent. The rule: a template with no inputs is not
+  signed (the caller signs it). The step reaches the guard only after
+  `plan_change` returned a plan, and every plan carries an input: the fee is at
+  least 2 sats (a transaction is at least 10 bytes at the fixed 101 sat/kB,
+  rounded up), so an action with no input is short and `generate_change`
+  refuses `InsufficientFunds`; a caller-complete plan has a caller input by its
+  definition. The two forms agree on every call that reaches the guard.
+
+The record: `docs/census/mutants-complete-2026-11-02.md`, the section after
+#604, and the json under `issue_604` in it, the widened record and
+`docs/census/mutants-oracle-2026-11-01`.
 
 ## The floors from the complete figure (#534, 2026-11-02)
 
@@ -209,9 +240,10 @@ catalogue whose targets reach it (the door oracle, the evidence oracle, or a
 named one listing its targets) WHEN ITS ROW LANDS, and the workflow scores it
 there from then on, its floor judged under that oracle and no `--lib` figure
 written as a floor for it. Moved so far: the four door files (#535, #572),
-`create_action/beef_walk.rs` (#601) and `providers/bhs.rs` (#602, into the
-door oracle). Still in the lib set with their `--lib` figure as the lower bound
-until their rows land: `create_action/mod.rs` (#604), `internalize_action.rs` (#603),
+`create_action/beef_walk.rs` (#601), `providers/bhs.rs` (#602, into the
+door oracle) and `create_action/mod.rs` (#604, into the door oracle). Still in
+the lib set with their `--lib` figure as the lower bound until their rows land:
+`internalize_action.rs` (#603),
 `process_action.rs` (#605), `create_action/beef_storage.rs` (#600),
 `monitor/tasks/reorg.rs` (#606) and `review_proven_txs.rs` (#607). A low score
 never blocks a landing.
