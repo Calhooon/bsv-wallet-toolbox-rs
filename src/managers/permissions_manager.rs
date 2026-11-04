@@ -781,9 +781,8 @@ impl WalletPermissionsManager {
     /// Ahead of the refusal and the prompt the stored token is looked up
     /// (`:1522-1566`, #751 step 1): a live token admits and is cached, an
     /// expired one refuses a seek-false call with `:1549`'s text and prompts
-    /// otherwise. The port mints no token yet, so its own grants admit a
-    /// seek-false call only while the cache holds them (`CACHE_TTL_SECS`,
-    /// lost on a restart).
+    /// otherwise. A persistent grant mints that token (#751 step 2a), so
+    /// it admits a seek-false call past the cache and across a restart.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn ensure_protocol_permission_seeking(
         &self,
