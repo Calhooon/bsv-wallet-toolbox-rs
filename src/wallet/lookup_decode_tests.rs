@@ -139,7 +139,7 @@ async fn an_entry_carrying_decrypted_fields_is_dropped() {
 /// bsv-rs 0.9.0-beta.5's `from_hex` reads the reference's lenient key forms
 /// (bsv-rs #498). A subject written as the odd-length or hybrid text of the
 /// subject's key is still dropped: the record's compressed-key check
-/// (`lookup_record.rs`, `compressed_key`: 66 characters, `02` or `03`) refuses
+/// (`lookup_record.rs`, `reads_certificate_key_bytes`: 66 characters, `02` or `03`) refuses
 /// it before the decode parses it, where the reference reads the text with
 /// `PublicKey.fromString` for the derivation (`identityUtils.ts:526-539`) and
 /// drops the entry at `verifiableCert.verify()` (`toBinary`'s

@@ -81,8 +81,8 @@ impl OverlayCertificate {
         };
         base64_32(&self.type_id)
             && base64_32(&self.serial_number)
-            && compressed_key(&self.subject, "subject")
-            && compressed_key(&self.certifier, "certifier")
+            && reads_certificate_key_bytes(&self.subject, "subject")
+            && reads_certificate_key_bytes(&self.certifier, "certifier")
             // :315: the written binary's bound.
             && length + signature.len() <= MAX_CERTIFICATE_BINARY_BYTES
     }
@@ -108,7 +108,7 @@ fn base64_32(value: &str) -> bool {
 /// is held here, so an x at or above p whose reduction is a point is kept as
 /// the reference writes it; the entry is dropped later, where its field
 /// signature or its certificate's signature is checked against the key.
-fn compressed_key(value: &str, field: &str) -> bool {
+fn reads_certificate_key_bytes(value: &str, field: &str) -> bool {
     bsv_rs::auth::certificates::certificate_key_bytes(value, field).is_ok()
 }
 
