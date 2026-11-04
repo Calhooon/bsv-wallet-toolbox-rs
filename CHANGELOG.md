@@ -219,13 +219,16 @@
   validates its own. The method names are `listOutputs`,
   `relinquishOutput`, `createAction`, `listActions` and
   `internalizeAction`; the JSON is bsv-rs's camelCase serde of the
-  arguments and results. A host's `nosend` module is never asked: a `p
-  nosend` basket on `list_outputs`, `relinquish_output` or
-  `internalize_action` is refused with `BRC-177 noSend expiry labels are
-  only valid for createAction and listActions` (`:799-801`), on
-  `create_action` with `Active storage does not support BRC-177 noSend
-  expiry` (the built-in module is not ported), and a `p nosend ` label on
-  `list_actions` asks no module. No new public item. Host note
+  arguments and results. A host's `nosend` module is never asked, and the
+  reserved name is refused alike (the keeper's 2026-11-04 reading): a `p
+  nosend` basket on any of the five calls and a `p nosend <payload>` label
+  on `create_action`, `list_actions` or `internalize_action`, the BRC-177
+  expiry label included, are refused with `BRC-177 noSend expiry labels are
+  only valid for createAction and listActions` (`:799-801`). The
+  reference's built-in module (`:792-826`) parses the BRC-177 labels and
+  checks label access on `listActions` (`:796-821`); the port does not run
+  it (it checks no labels on `list_actions`, #786), so it refuses the name
+  until the module's own row lands. No new public item. Host note
   (bsv-wallet-cli#386): the five calls now ask a registered module for a
   `p <scheme>` basket or label name, the admin originator's calls included;
   a basket grant held under a `p ` name is no longer consulted, so that call
@@ -234,8 +237,15 @@
   `Unsupported P-module scheme: p <scheme>` (the two basket calls) or
   `Unsupported P-basket scheme: p <scheme>` / `Unsupported P-label scheme:
   p <scheme>` (the three chained calls), a `p ` label outside the grammar
-  with `Invalid P-label format: <label>`, each with no prefix; a module's
-  own refusal crosses the same way with the module's text.
+  with `Invalid P-label format: <label>`, a `p nosend` basket or label
+  with `BRC-177 noSend expiry labels are only valid for createAction and
+  listActions`, each with no prefix (with a manager, a `p nosend` label on
+  `create_action` was the door's `InvalidOperation` `Invalid operation:
+  Active storage does not support BRC-177 noSend expiry` or its grammar
+  refusal, on `internalize_action` the door's `Validation error: ...`, and
+  `list_actions` listed; a label the chain does not read as `p nosend`,
+  such as `P NoSend expiry seconds 300`, stays the door's); a module's own
+  refusal crosses the same way with the module's text.
 - #726 (the keeper's 2026-11-03 22:0xZ reading): the permission modules'
   `on_request` and `on_response` on the seven key calls, as the reference's
   `delegateToPModuleIfNeeded` does (ts-stack@edf6e03

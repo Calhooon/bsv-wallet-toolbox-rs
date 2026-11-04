@@ -1881,22 +1881,6 @@ async fn run_module<'a, A: ModuleCall>(
     A::output_from_json(&result).map_err(module_refusal)
 }
 
-/// The create door's word for BRC-177 (`create_args.rs`): the reference's
-/// built-in `nosend` module (`:795-825`) is not ported, so a `p nosend`
-/// basket on `createAction` is refused with it.
-pub(crate) const BRC177_UNSUPPORTED: &str = "Active storage does not support BRC-177 noSend expiry";
-
-/// What a chained call does with the reserved scheme `nosend`: a host's
-/// entry is never read either way.
-#[derive(Clone, Copy)]
-pub(crate) enum NoSend {
-    /// No module asked, the call as without one (`listActions`: the
-    /// built-in module's transforms are identity, `:819-823`).
-    Skip,
-    /// Refused with the text.
-    Refuse(&'static str),
-}
-
 /// The modules a basket and label call chains, one per scheme in the order
 /// met (the reference's `Map`, baskets then labels).
 pub(crate) type ModuleChain = Vec<(String, Arc<dyn PermissionsModule>)>;
@@ -1920,6 +1904,12 @@ fn label_scheme(label: &str) -> std::result::Result<Option<&str>, String> {
     Ok(Some(&remainder[..separator]))
 }
 
+/// Whether the module chain reads `label` as `p nosend <payload>`, the
+/// reserved scheme it refuses.
+pub(crate) fn is_nosend_label(label: &str) -> bool {
+    matches!(label_scheme(label), Ok(Some("nosend")))
+}
+
 impl WalletPermissionsManager {
     /// The modules `baskets` and `labels` name (`collectNonPBaskets`
     /// `:4436-4451`, `collectInternalizeActionBaskets` `:4970-4989`,
@@ -1928,11 +1918,19 @@ impl WalletPermissionsManager {
     /// grammar; an unregistered scheme refused with `Unsupported
     /// P-basket scheme: p <scheme>` or `Unsupported P-label scheme: p
     /// <scheme>`. A name not starting `p ` takes the ordinary check.
+    ///
+    /// The reserved scheme `nosend`, a basket's or a label's, is refused on
+    /// every chained call with [`NOSEND_KEY_CALL`] alone, class
+    /// `InvalidParameter` (the keeper's 2026-11-04 reading), and a host's
+    /// entry under it is never read. The reference's built-in module
+    /// (`:792-826`) parses the BRC-177 labels and checks label access on
+    /// `listActions` (`:796-821`); the port does not run it (it checks no
+    /// labels on `list_actions` at all, #786), so it refuses the name until
+    /// the module's own row lands.
     pub(crate) fn module_chain<'n>(
         &self,
         baskets: impl IntoIterator<Item = &'n str>,
         labels: impl IntoIterator<Item = &'n str>,
-        nosend: NoSend,
     ) -> bsv_rs::Result<ModuleChain> {
         let mut chain = ModuleChain::new();
         let mut add = |scheme: &str, kind: &str| -> bsv_rs::Result<()> {
@@ -1940,10 +1938,7 @@ impl WalletPermissionsManager {
                 return Ok(());
             }
             if scheme == "nosend" {
-                return match nosend {
-                    NoSend::Skip => Ok(()),
-                    NoSend::Refuse(text) => Err(module_refusal(text)),
-                };
+                return Err(module_refusal(NOSEND_KEY_CALL));
             }
             let Some(module) = self.config.permission_modules.get(scheme) else {
                 return Err(module_refusal(format!(
