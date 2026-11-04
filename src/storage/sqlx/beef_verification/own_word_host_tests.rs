@@ -139,6 +139,41 @@ fn host_true_receives_the_input_and_both_words() {
     eprintln!("host true: input 0, spend PostChronicle, coin PostGenesis, height {GENESIS}");
 }
 
+/// `read_tx`'s rule: the body the host receives has every offset rebased onto
+/// the signed transaction's bytes, the outputs' as the inputs' (#572).
+#[test]
+fn host_body_offsets_lie_within_the_signed_transaction() {
+    let (parent, mut child) = three_inputs();
+    child.outputs.push(TransactionOutput {
+        satoshis: Some(7),
+        locking_script: LockingScript::from_binary(&[0x52]).unwrap(),
+        change: false,
+    });
+    let host = RecordingVerifier::new(true);
+    host_judge(&child, &parent, None, &host).unwrap();
+    let calls = host.verified.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    let raw = child.to_binary();
+    for (spend, _) in calls.iter() {
+        let body = &spend.body;
+        assert_eq!(body.raw, raw);
+        for input in &body.inputs {
+            let at = usize::try_from(input.at).unwrap();
+            assert_eq!(raw[at..at + 32], input.prev);
+        }
+        assert_eq!(body.outputs.len(), 2);
+        for output in &body.outputs {
+            let at = usize::try_from(output.at).unwrap();
+            assert_eq!(raw[at..at + 8], output.satoshis.to_le_bytes());
+        }
+    }
+    let offsets: Vec<u64> = calls[0].0.body.outputs.iter().map(|o| o.at).collect();
+    eprintln!(
+        "host body: output offsets {offsets:?} within {} bytes",
+        raw.len()
+    );
+}
+
 #[test]
 fn host_false_refuses_an_interpreter_valid_spend() {
     let parent = source(&[0x51]);
