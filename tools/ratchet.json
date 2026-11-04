@@ -97,8 +97,8 @@
   "files_over_800": {
     "limit": 800,
     "count": 33,
-    "src_files": 282,
-    "src_lines": 141906,
+    "src_files": 283,
+    "src_lines": 141999,
     "max_lines": 7595,
     "files": {
       "src/wallet/wallet.rs": 7595,
@@ -319,7 +319,7 @@
   "duplicated_blocks": {
     "method": "built-in: windows of 6 non-blank lines, comments removed, whitespace collapsed; locations whose window repeats",
     "count": 6621,
-    "windows": 108938,
+    "windows": 108993,
     "top_pairs": [
       "src/storage/sqlx/create_action/beef_storage.rs:69 = src/storage/sqlx/process_action.rs:147 (52 lines)",
       "src/storage/sqlx/create_action/tests/beef_inputs.rs:36 = src/storage/sqlx/create_action/tests/beef_options.rs:327 (38 lines)",
