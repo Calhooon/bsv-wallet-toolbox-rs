@@ -230,6 +230,20 @@
   `WalletRefusal { class: InvalidParameter }` and the message
   `Unsupported P-module scheme: p <scheme>`, no prefix, and a module's own
   refusal crosses the same way with the module's text.
+- #572 (tests and the catalogue; no code): `beef_verification/own_word.rs`
+  (`verify_own`, the verifier the create door's own word calls, and
+  `InputJudgements`, the dispatcher the live doors share), outside every
+  catalogue at the oracle-widening lane (#535), joins
+  `.cargo/mutants-doors.toml`, and `internalize_custom_instructions_tests`,
+  which enters it, joins that oracle's targets. Measured there at 89.47
+  percent (17 of 19, 4 unviable); its two survivors,
+  `48:27: replace -= with += in read_tx` and `with /=`, are killed by a
+  lib host-verifier test,
+  `host_body_offsets_lie_within_the_signed_transaction`: the body a host
+  `SpendVerifier` receives carries every output offset within the signed
+  transaction, as its inputs' are. The file scores 100 percent (19 of 19);
+  its floor is 100, the record in `docs/census/mutants-oracle-2026-11-01`
+  (`issue_572` in its json).
 - #573 (tests; no code): `own_word.rs`'s two survivors under the door
   oracle of the oracle-widening lane (#535). `46:47: replace match guard
   text == NO_HEADER_SERVICE with true in own_word_tip` is killed by a lib
