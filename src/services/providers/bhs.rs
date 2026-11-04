@@ -228,4 +228,92 @@ mod tests {
         assert!(Arc::ptr_eq(&a.gate, &b.gate));
         assert!(!Arc::ptr_eq(&a.gate, &keyed.gate));
     }
+
+    /// A provider for a local fixture with a gate of its own.
+    fn at_fixture(url: &str) -> BlockHeaderService {
+        BlockHeaderService::at_clock(
+            BhsConfig {
+                url: url.to_string(),
+                api_key: None,
+            },
+            Clock::held(),
+        )
+    }
+
+    /// The tip height is the body of a successful answer; a non-success
+    /// status is the service's error, never its body read as a height.
+    #[tokio::test]
+    async fn current_height_is_a_successful_answer_and_a_failed_status_is_an_error() {
+        let mut server = crate::services::mock_server().await;
+        let ok = server
+            .mock("GET", "/api/v1/chain/tip/height")
+            .with_status(200)
+            .with_body("900002\n")
+            .expect(1)
+            .create_async()
+            .await;
+        assert_eq!(
+            at_fixture(&server.url()).current_height().await.unwrap(),
+            900_002
+        );
+        ok.assert_async().await;
+        ok.remove_async().await;
+
+        let failed = server
+            .mock("GET", "/api/v1/chain/tip/height")
+            .with_status(503)
+            .with_body("900002")
+            .expect(1)
+            .create_async()
+            .await;
+        let err = at_fixture(&server.url())
+            .current_height()
+            .await
+            .expect_err("a 503 is no height");
+        assert!(
+            err.to_string()
+                .contains("BHS current_height failed: HTTP 503"),
+            "{err}"
+        );
+        failed.assert_async().await;
+    }
+
+    /// A root is valid for a height when it is the merkle root of the
+    /// service's header at that height, and invalid when it is any other.
+    #[tokio::test]
+    async fn is_valid_root_for_height_is_the_root_of_the_header_at_the_height() {
+        const HEIGHT: u32 = 900_002;
+        let header = BlockHeader {
+            version: 536870912,
+            previous_hash: "0".repeat(64),
+            merkle_root: "c".repeat(64),
+            time: 1700000000,
+            bits: 402917821,
+            nonce: 42,
+            hash: "d".repeat(64),
+            height: HEIGHT,
+        };
+        let mut server = crate::services::mock_server().await;
+        let m = server
+            .mock(
+                "GET",
+                format!("/api/v1/chain/header/byHeight?height={HEIGHT}").as_str(),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::to_string(&header).unwrap())
+            .expect(2)
+            .create_async()
+            .await;
+        let bhs = at_fixture(&server.url());
+        assert!(bhs
+            .is_valid_root_for_height(&"c".repeat(64), HEIGHT)
+            .await
+            .unwrap());
+        assert!(!bhs
+            .is_valid_root_for_height(&"e".repeat(64), HEIGHT)
+            .await
+            .unwrap());
+        m.assert_async().await;
+    }
 }
