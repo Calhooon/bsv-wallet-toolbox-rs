@@ -18,6 +18,7 @@ Base `42559923`, the base of the complete record [mutants-complete-2026-11-02.md
 | `src/services/providers/bhs.rs` | 12 | 8 | 66.67% | 0 | 8 | 66.67% | 80 | fixtures |
 | `src/storage/sqlx/create_action/beef_storage.rs` | 77 | 37 | 48.05% | 0 | 37 | 48.05% | 80 | arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests |
 | `src/storage/sqlx/create_action/beef_walk.rs` | 22 | 16 | 72.73% | 0 | 16 | 72.73% | 80 | arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests |
+| `src/storage/sqlx/create_action/beef_walk.rs` after #601 | 22 | 16 | 72.73% | 5 | 21 | 95.45% | 80 | arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests (the whole catalogue `.cargo/mutants-evidence.toml`, the section after #601) |
 | `src/storage/sqlx/create_action/mod.rs` | 37 | 23 | 62.16% | 7 | 30 | 81.08% | 80 | caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, test_vectors |
 | `src/storage/sqlx/internalize_action.rs` | 91 | 67 | 73.63% | 5 | 72 | 79.12% | 80 | fixtures, immediate_broadcast_hint_tests, internalize_custom_instructions_tests |
 | `src/storage/sqlx/process_action.rs` | 222 | 137 | 61.71% | 16 | 153 | 68.92% | 80 | caller_complete_funding_tests, concurrent_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests, poisoned_chain_tests, retire_rejected_tests |
@@ -107,12 +108,12 @@ Survivors run: 217; caught under the widened oracle: 49; still missed: 168; time
 
 ### `src/storage/sqlx/create_action/beef_walk.rs` (6)
 
-- `src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with >= in beef_bfs_walk`
-- `src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with += in beef_bfs_walk`
-- `src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with /= in beef_bfs_walk`
-- `src/storage/sqlx/create_action/beef_walk.rs:180:32: delete ! in beef_bfs_walk`
-- `src/storage/sqlx/create_action/beef_walk.rs:307:29: replace && with || in beef_bfs_walk`
-- `src/storage/sqlx/create_action/beef_walk.rs:307:69: replace == with != in beef_bfs_walk`
+- `src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with >= in beef_bfs_walk` (killed by #601, the section below)
+- `src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with += in beef_bfs_walk` (killed by #601, the section below)
+- `src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with /= in beef_bfs_walk` (killed by #601, the section below)
+- `src/storage/sqlx/create_action/beef_walk.rs:180:32: delete ! in beef_bfs_walk` (killed by #601, the section below)
+- `src/storage/sqlx/create_action/beef_walk.rs:307:29: replace && with || in beef_bfs_walk` (declared equivalent by #601, the section below)
+- `src/storage/sqlx/create_action/beef_walk.rs:307:69: replace == with != in beef_bfs_walk` (killed by #601, the section below)
 
 ### `src/storage/sqlx/create_action/mod.rs` (7)
 
@@ -217,3 +218,43 @@ Survivors run: 217; caught under the widened oracle: 49; still missed: 168; time
 - `src/storage/sqlx/process_action.rs:1065:13: replace || with && in process_action_writes`
 - `src/storage/sqlx/process_action.rs:1204:17: replace || with && in process_action_writes`
 - `src/storage/sqlx/process_action.rs:1203:17: replace || with && in process_action_writes`
+
+## After #601: `beef_walk.rs` at 21 of 22 under its reach targets
+
+The lane p5-601-beef-walk-survivors, on beta `047ef756`, the tree at `e7e93351` (the three tests) with the catalogue of `b8b75158`; the json under `issue_601` (the complete record's json carries the same key), the outputs under `/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-601-beef-walk-survivors`. The oracle is the one whose targets enter the file: `.cargo/mutants-evidence.toml`, the lib and the six targets of the row above, features `sqlite,remote,bench-support`, the whole of each, not the filtered selection of the method above. `beef_walk.rs` is unchanged; each kill is a lib test from the rule, red under the mutant planted by hand and green at the tip, then caught again by cargo-mutants.
+
+**146:65 and 152:40 (`>` to `>=`; `-=` to `+=` and to `/=`), killed.** The rule: one walk asks services for at most `MAX_PROOF_FETCHES_PER_WALK` (8) merkle paths, the cap on the case where nothing on the chain is mined yet. The witness, `storage::sqlx::create_action::beef_walk::beef_walk_ancestry::test_walk_asks_for_at_most_its_proof_budget`: ten old unproven hops above a proven root, a tracker on the storage, every ask answered with a service error. At the tip: 8 asks and every hop carried. Under `>=` the ninth hop subtracts from a zero budget (`attempt to subtract with overflow` at 152:21); under `+=` and `/=` the budget never runs out: 10 asks.
+
+**180:32 (`delete !`), killed.** The rule: a stored input_beef that does not hold its subject is pruned to the closure of the subject's inputs, so a stored transaction the subject never spends does not reach the BEEF. The witness, `storage::sqlx::create_action::beef_walk::beef_walk_stored::test_walk_keeps_the_closure_of_the_inputs_when_the_stored_beef_lacks_its_subject`: a stored BEEF of the subject's proven parent and a proven stray. At the tip the stray is pruned; under the mutant the roots stay the absent subject, nothing is pruned, and the stray is carried.
+
+**307:69 (`==` to `!=`), killed.** The rule: every input of an unproven transaction is walked, whatever is already queued. The witness, `storage::sqlx::create_action::beef_walk::beef_walk_ancestry::test_walk_queues_every_input_of_an_unproven_transaction`: an unproven subject spending two proven parents. At the tip both parents and their BUMPs are carried; under the mutant the right parent is not queued (the left one, queued, differs from it) and is missing.
+
+**307:29 (`&&` to `||`), equivalent.** The rule (the same line): an input is queued unless already walked or already queued. Under `||` an input already walked, or already queued, is queued again. Every entry the walk pops meets the `processed_txids` check at the loop's head before any read, merge or write, and the earlier entry of the same txid sits ahead of the copy (pushes append, pops take the front), so the copy is popped after the txid is in `processed_txids` and dropped. A copy carries `depth + 1`, never 0, so the direct-input refusal reads the earlier entry's depth. The four callers (`build_input_beef`, `rebuild_beef_for_broadcast`, `change_coin_gap` in `beef.rs` and the BEEF of `list_outputs`) build `pending` and `processed` for the one call and read neither after it, an `Err` returned or mapped without them. The BEEF, the refusals and the stored rows agree; only the queue's length differs, bounded by the inputs of the transactions walked. cargo-mutants counts an equivalent as missed, and the figure below counts it so.
+
+The file under that oracle (`cargo mutants --config .cargo/mutants-evidence.toml --timeout 900`, copy mode, serial, six round-robin shards run one after another, shard 0 with the unmutated baseline: 64 s build, 21 s test, the others `--baseline skip`), 2026-11-04T02:05:51Z to 02:26:58Z: 23 mutants, 21 caught, 1 missed, 1 unviable, 0 timeout. Score 95.45% (21/22) against the floor of 80; `tools/mutants-score --baseline-skipped` over the six outcomes with the catalogue's `--list --json`: PASS.
+
+| Mutant | Verdict |
+|---|---|
+| `src/storage/sqlx/create_action/beef_walk.rs:57:5: replace stored_bump_refuted -> bool with true` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:57:5: replace stored_bump_refuted -> bool with false` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:80:5: replace beef_bfs_walk -> Result<()> with Ok(())` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:85:9: delete match arm (None, Some(s)) in beef_bfs_walk` | Unviable |
+| `src/storage/sqlx/create_action/beef_walk.rs:146:43: replace && with || in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with == in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with < in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with >= in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:149:36: replace >= with < in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with += in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with /= in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:167:12: delete ! in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:180:32: delete ! in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:256:39: replace == with != in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:259:29: replace && with || in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:258:46: replace != with == in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:307:29: replace && with || in beef_bfs_walk` | MissedMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:306:28: delete ! in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:307:32: delete ! in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:307:69: replace == with != in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:309:67: replace + with - in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:309:67: replace + with * in beef_bfs_walk` | CaughtMutant |
+| `src/storage/sqlx/create_action/beef_walk.rs:317:22: replace == with != in beef_bfs_walk` | CaughtMutant |
