@@ -97,6 +97,10 @@ mod privileged_keys_permission_tests;
 mod permission_modules_tests;
 
 #[cfg(all(test, feature = "sqlite"))]
+#[path = "permission_modules_basket_tests.rs"]
+mod permission_modules_basket_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
 #[path = "privileged_certificate_tests.rs"]
 mod privileged_certificate_tests;
 

@@ -101,7 +101,7 @@ fn atomic_beef_paying(lock: &str) -> Vec<u8> {
 }
 
 /// [`atomic_beef_paying`] with the parent's BUMP at `height`.
-fn atomic_beef_paying_at(lock: &str, height: u32) -> Vec<u8> {
+pub(super) fn atomic_beef_paying_at(lock: &str, height: u32) -> Vec<u8> {
     use bsv_rs::transaction::{Beef, MerklePath};
 
     let parent = spend_to("11".repeat(32), 20_000, "7551");
