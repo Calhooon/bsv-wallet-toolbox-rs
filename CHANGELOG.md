@@ -214,6 +214,23 @@
   `<certifierUrl>/signCertificate` where it was reached at the URL as given,
   so a certifier served at the bare URL answers on `/signCertificate` or
   its users pass the URL above that path.
+- #334 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)): the
+  production issuance client refuses, before any connection, what the
+  reference's `createPublicHTTPSFetch(endpoint.origin)` refuses
+  (ts-stack@edf6e03 `Wallet.ts:773`, `PublicHTTPSFetch.ts:189-204,258-271`):
+  a URL with a username, password or fragment, or not HTTPS (`Restricted
+  requests require a credential-free HTTPS URL`), a literal address that is
+  not public (`Restricted HTTPS request targets a non-public address`), a
+  hostname resolving to no address, more than 64, or any non-public one
+  (`Restricted HTTPS request resolved to a non-public address`), and a
+  resolution past 30 s (`Restricted HTTPS DNS resolution timed out`), each
+  inside `Network error: `; the approved answer is pinned into the
+  connection, no proxy is used and no redirect is followed. The ranges are
+  `isPublicNetworkAddress`'s (`:112-152`). Host note (bsv-wallet-cli#386): a
+  host running a local certifier on purpose (regtest, the stack's local
+  oracles under rule 10) uses the policy client (the test-time or
+  `bench-support` build), so nothing of the stack's local harness breaks;
+  the production client now refuses what the reference refuses.
 - #757 (the keeper's 2026-11-03 22:0xZ reading, after #726): the permission
   modules' `on_request` and `on_response` on the five basket and label
   calls, as the reference's wrappers do (ts-stack@edf6e03
