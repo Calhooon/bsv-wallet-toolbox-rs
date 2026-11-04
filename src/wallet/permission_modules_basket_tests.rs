@@ -419,20 +419,58 @@ async fn label_outside_the_grammar_is_refused() {
 async fn host_nosend_module_is_never_asked() {
     let host = Rewriter::quiet();
     let (_dir, wallet, _prompts) = funded(vec![("nosend", host.clone())]).await;
-    for (name, text) in [
-        ("list_outputs", NOSEND_TEXT),
-        ("relinquish_output", NOSEND_TEXT),
-        ("create_action", crate::managers::BRC177_UNSUPPORTED),
-        ("internalize_action", NOSEND_TEXT),
+    for name in [
+        "list_outputs",
+        "relinquish_output",
+        "create_action",
+        "internalize_action",
     ] {
         let answer = call(&wallet, name, "p nosend x", "plain", ORIGINATOR).await;
-        assert_module_refusal(answer, text, name);
+        assert_module_refusal(answer, NOSEND_TEXT, name);
     }
-    // list_actions under a `p nosend ` label asks no module and lists.
-    call(&wallet, "list_actions", "", "p nosend x", ORIGINATOR)
-        .await
-        .unwrap();
     assert!(host.asked().is_empty());
+}
+
+/// The reserved scheme on the three chained calls: one class and one text,
+/// a label's (`list_actions` takes no basket) and a basket's, the BRC-177
+/// expiry label included (the keeper's 2026-11-04 reading).
+#[tokio::test]
+async fn nosend_is_refused_alike_on_every_chained_call() {
+    let module = Rewriter::quiet();
+    let (_dir, wallet, prompts) = funded(vec![("btms", module.clone())]).await;
+    for name in ["create_action", "list_actions", "internalize_action"] {
+        for label in ["p nosend x", "p nosend expiry seconds 300"] {
+            let answer = call(&wallet, name, "p btms coins", label, ORIGINATOR).await;
+            assert_module_refusal(answer, NOSEND_TEXT, &format!("{name} {label}"));
+        }
+    }
+    for name in ["create_action", "internalize_action"] {
+        let answer = call(&wallet, name, "p nosend x", "p btms token", ORIGINATOR).await;
+        assert_module_refusal(answer, NOSEND_TEXT, name);
+    }
+    assert!(module.asked().is_empty());
+    assert!(prompts.lock().unwrap().is_empty());
+}
+
+/// A BRC-177 label the chain does not read as `p nosend`, which the door
+/// normalizes to one, still meets the door's capability refusal, ahead of
+/// the chain.
+#[tokio::test]
+async fn brc177_label_outside_the_chain_meets_the_door() {
+    let module = Rewriter::quiet();
+    let (_dir, wallet, _prompts) = funded(vec![("btms", module.clone())]).await;
+    let label = "P NoSend expiry seconds 300";
+    let err = call(&wallet, "create_action", "p btms coins", label, ORIGINATOR)
+        .await
+        .expect_err("refused");
+    let class = bsv_rs::WalletRefusalClass::InvalidOperation;
+    assert!(
+        matches!(&err, bsv_rs::Error::WalletRefusal { class: c, .. } if *c == class),
+        "{err:?}"
+    );
+    let text = "Invalid operation: Active storage does not support BRC-177 noSend expiry";
+    assert_eq!(err.to_string(), text);
+    assert!(module.asked().is_empty());
 }
 
 // =========================================================================

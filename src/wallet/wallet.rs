@@ -737,10 +737,9 @@ where
         &self,
         baskets: impl IntoIterator<Item = &'n str>,
         labels: impl IntoIterator<Item = &'n str>,
-        nosend: crate::managers::NoSend,
     ) -> bsv_rs::Result<crate::managers::ModuleChain> {
         match self.permissions_manager {
-            Some(ref manager) => manager.module_chain(baskets, labels, nosend),
+            Some(ref manager) => manager.module_chain(baskets, labels),
             None => Ok(Vec::new()),
         }
     }
@@ -1206,7 +1205,11 @@ where
         validate_originator(originator)?;
         // ts-stack@edf6e03 Wallet.ts:1154 validates the arguments before any
         // storage call; the sqlx door runs the same checks again (#416).
-        super::create_args::validate_create_action_args(&args)?;
+        // With a manager a `p nosend` label is the module chain's (the
+        // keeper's 2026-11-04 reading): the door judges the rest, and the
+        // chain refuses it with the chained calls' one text.
+        let door = self.nosend_labels_dropped(&args);
+        super::create_args::validate_create_action_args(door.as_ref().unwrap_or(&args))?;
 
         // Serialize spending operations to prevent UTXO contention and
         // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).
@@ -1220,12 +1223,29 @@ where
         crate::managers::chain_response::<CreateActionArgs>(&chain, result, module_originator).await
     }
 
+    /// With a manager, `args` without the labels the module chain reads as
+    /// `p nosend <payload>`, for the door to judge; `None` when none is
+    /// dropped. A label the chain does not read so (`P NoSend ...`) stays
+    /// the door's.
+    fn nosend_labels_dropped(&self, args: &CreateActionArgs) -> Option<CreateActionArgs> {
+        let labels = args.labels.as_deref().unwrap_or_default();
+        let nosend = crate::managers::is_nosend_label;
+        if self.permissions_manager.is_none() || !labels.iter().any(|l| nosend(l)) {
+            return None;
+        }
+        let kept = labels.iter().filter(|l| !nosend(l)).cloned().collect();
+        Some(CreateActionArgs {
+            labels: Some(kept),
+            ..args.clone()
+        })
+    }
+
     /// `create_action`'s modules and permission checks (#757): the chain the
     /// outputs' `p <scheme>` baskets and the `p <scheme>` labels name, ahead
-    /// of every check (`WalletPermissionsManager.ts:4300-4302`; the door has
-    /// refused `p nosend ` labels already, so `nosend` here is a basket);
-    /// the basket checks (`:4305-4312`); `onRequest` in order, its arguments
-    /// validated again as the reference's underlying call validates its own
+    /// of every check (`WalletPermissionsManager.ts:4300-4302`), `nosend`
+    /// refused with the chained calls' one text; the basket checks
+    /// (`:4305-4312`); `onRequest` in order, its arguments validated again
+    /// as the reference's underlying call validates its own
     /// (`callCreateActionWithPModules`, `:4500-4520`); then the spending
     /// check on the arguments the modules answered, as the reference
     /// authorises the spend of the action they built (`getExactActionSpend`,
@@ -1239,7 +1259,6 @@ where
         let chain = self.module_chain(
             outputs.iter().filter_map(|o| o.basket.as_deref()),
             args.labels.iter().flatten().map(String::as_str),
-            crate::managers::NoSend::Refuse(crate::managers::BRC177_UNSUPPORTED),
         )?;
         self.check_create_baskets(&args, originator).await?;
         let module_originator = originator.unwrap_or_default();
@@ -2639,13 +2658,12 @@ where
     ) -> bsv_rs::Result<ListActionsResult> {
         validate_originator(originator)?;
         // The modules the `p <scheme>` labels name, chained around the
-        // listing (#757, `WalletPermissionsManager.ts:4920-4961`); `nosend`
-        // is the reference's built-in module, whose transforms are identity.
-        let chain = self.module_chain(
-            [],
-            args.labels.iter().map(String::as_str),
-            crate::managers::NoSend::Skip,
-        )?;
+        // listing (#757, `WalletPermissionsManager.ts:4920-4961`). The
+        // reference's built-in `nosend` module parses the BRC-177 labels and
+        // checks label access here (`:796-821`); the port does not run it
+        // (it checks no labels on `list_actions`, #786) and refuses the
+        // reserved name as the other chained calls do.
+        let chain = self.module_chain([], args.labels.iter().map(String::as_str))?;
         let module_originator = originator.unwrap_or_default();
         let args = crate::managers::chain_request(&chain, args, module_originator).await?;
         // validateListActionsArgs, validationHelpers.ts:1708 (#226).
@@ -2664,14 +2682,12 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<InternalizeActionResult> {
         validate_originator(originator)?;
-        // Validate arguments before the BRC-29 script comparison and storage;
-        // each wallet payment's sender is the validated key (#453).
-        let senders = super::internalize_args::validate_internalize_action_args(&args)?;
         // The modules the insertions' `p <scheme>` baskets and the
         // `p <scheme>` labels name (#757, `WalletPermissionsManager.ts:
-        // 5059-5078`); the door has refused `p nosend ` labels, and the
-        // built-in module refuses this method (`:799-801`). Their arguments
-        // validate again, as the reference's underlying call does.
+        // 5059-5078`), ahead of the door as the reference's chain runs ahead
+        // of the underlying call's validation (`Wallet.ts:1245-1252`), so a
+        // `p nosend` label meets the chained calls' one text. Their
+        // arguments validate again, as the reference's underlying call does.
         let chain = self.module_chain(
             args.outputs
                 .iter()
@@ -2679,8 +2695,10 @@ where
                 .filter_map(|o| o.insertion_remittance.as_ref())
                 .map(|r| r.basket.as_str()),
             args.labels.iter().flatten().map(String::as_str),
-            crate::managers::NoSend::Refuse(crate::managers::NOSEND_KEY_CALL),
         )?;
+        // Validate arguments before the BRC-29 script comparison and storage;
+        // each wallet payment's sender is the validated key (#453).
+        let senders = super::internalize_args::validate_internalize_action_args(&args)?;
         let module_originator = originator.unwrap_or_default();
         let (args, senders) = if chain.is_empty() {
             (args, senders)
