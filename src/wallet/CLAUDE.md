@@ -131,7 +131,7 @@ the SDK's `TransportFault` (bsv-wallet-cli's Service, 502); a proof at a
 height the header service does not have holds as `ServiceError`, family
 `Service` (Service, 502, retryable), where the reference refuses it as an
 invalid root, a kept divergence pending the owner's word
-(`docs/DIVERGENCES.md` D1); a wrong root at a known height is `InvalidBeef`,
+(`docs/DIVERGENCES.md` AD1); a wrong root at a known height is `InvalidBeef`,
 `InvalidParameter` (Validation, 400). Witnesses in
 `src/storage/sqlx/internalize_no_header_tests.rs`.
 
