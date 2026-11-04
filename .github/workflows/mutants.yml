@@ -41,7 +41,8 @@ jobs:
       # occupancy read repeats every 48 hours and re-sets the number.
       max-parallel: 4
       matrix:
-        # 2179 mutants at about 90 s each (build plus the whole lib suite) need 16
+        # 2180 mutants (at beta 6db6a159; the count moves with the lib) at about
+        # 90 s each (build plus the whole lib suite) need 16
         # shards to stay under the job limit. The four doors that judge under the
         # node's word (three in create_action and beef_verification/own_word.rs,
         # #572), services/providers/bhs.rs (#602) and create_action/mod.rs (#604)
