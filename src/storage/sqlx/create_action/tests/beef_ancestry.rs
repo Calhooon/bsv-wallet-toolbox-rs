@@ -411,16 +411,28 @@ async fn test_input_beef_with_a_bump_carrying_its_txid_unflagged_is_linked_not_r
     use super::super::sibling_bump_tests::{
         leaf_flagged, path_flagging, siblings, soak_storage, HEIGHT,
     };
+    //
+    // Since bsv-rs 0.9.0-beta.7 (#765) `merge_raw_tx` links b itself, so the
+    // soak's bytes are written as bsv-rs 0.9.0-beta.6 and go-sdk@2ca481c
+    // (`MergeRawTx`, no index for an entry merged without one) wrote them:
+    // b's entry unindexed and its leaf plain.
     let x = siblings();
     let mut user = Beef::new();
     user.merge_bump(path_flagging(&x.a.1, &x.b.1, &x.a.1));
     user.merge_raw_tx(x.b.0.clone(), None);
     user.merge_raw_tx(x.t.0.clone(), None);
-    assert!(
-        user.find_txid(&x.b.1).unwrap().bump_index().is_none(),
-        "precondition: the soak shape, b unlinked"
-    );
+    for tx in user.txs.iter_mut().filter(|tx| tx.txid() == x.b.1) {
+        tx.set_bump_index(None);
+    }
+    for leaf in user.bumps[0].path[0].iter_mut() {
+        leaf.txid = leaf.hash.as_deref() == Some(x.a.1.as_str());
+    }
     let user_bytes = user.to_binary();
+    let soak = Beef::from_binary(&user_bytes).unwrap();
+    assert!(
+        soak.find_txid(&x.b.1).unwrap().bump_index().is_none() && !leaf_flagged(&soak, &x.b.1),
+        "precondition: the soak shape, b unlinked and its leaf plain"
+    );
     let mut tracker = bsv_rs::transaction::MockChainTracker::new(1_000_000);
     tracker.add_root(HEIGHT, x.root.clone());
     let inputs = vec![ExtendedInput {
