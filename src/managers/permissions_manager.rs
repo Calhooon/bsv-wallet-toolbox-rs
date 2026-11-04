@@ -49,8 +49,11 @@ pub type PermissionRequestHandler = Arc<
 // Usage Type Enums
 // =============================================================================
 
-/// Protocol usage type - determines which config flag to check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Protocol usage type - determines which config flag to check. Its wire
+/// names are the reference's (ts-stack@edf6e03
+/// `WalletPermissionsManager.ts:1496`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PermissionUsageType {
     /// Signing operations (createSignature)
     Signing,
@@ -68,8 +71,9 @@ pub enum PermissionUsageType {
     Generic,
 }
 
-/// Basket usage type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Basket usage type (`:1584`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BasketUsageType {
     /// Inserting outputs into a basket (createAction, internalizeAction)
     Insertion,
@@ -79,11 +83,66 @@ pub enum BasketUsageType {
     Listing,
 }
 
-/// Certificate usage type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Certificate usage type (`:1648`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CertificateUsageType {
     /// Disclosing certificate fields (proveCertificate)
     Disclosure,
+}
+
+/// The usage a [`PermissionRequest`] asks for, as the reference's request
+/// carries it in `usageType` (ts-stack@edf6e03
+/// `WalletPermissionsManager.ts:311`): a protocol request one of the seven
+/// protocol usage types, a basket request its basket usage and a
+/// certificate request `disclosure` (`:1540`, `:1599`, `:1687`); a
+/// spending request none. On the wire the bare usage name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RequestUsageType {
+    /// A protocol request's usage.
+    Protocol(PermissionUsageType),
+    /// A basket request's usage.
+    Basket(BasketUsageType),
+    /// A certificate request's usage.
+    Certificate(CertificateUsageType),
+}
+
+impl RequestUsageType {
+    /// The reference's name for the usage (`signing`, `insertion`, ...).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Protocol(PermissionUsageType::Signing) => "signing",
+            Self::Protocol(PermissionUsageType::Encrypting) => "encrypting",
+            Self::Protocol(PermissionUsageType::Hmac) => "hmac",
+            Self::Protocol(PermissionUsageType::PublicKey) => "publicKey",
+            Self::Protocol(PermissionUsageType::IdentityKey) => "identityKey",
+            Self::Protocol(PermissionUsageType::LinkageRevelation) => "linkageRevelation",
+            Self::Protocol(PermissionUsageType::Generic) => "generic",
+            Self::Basket(BasketUsageType::Insertion) => "insertion",
+            Self::Basket(BasketUsageType::Removal) => "removal",
+            Self::Basket(BasketUsageType::Listing) => "listing",
+            Self::Certificate(CertificateUsageType::Disclosure) => "disclosure",
+        }
+    }
+}
+
+impl From<PermissionUsageType> for RequestUsageType {
+    fn from(usage: PermissionUsageType) -> Self {
+        Self::Protocol(usage)
+    }
+}
+
+impl From<BasketUsageType> for RequestUsageType {
+    fn from(usage: BasketUsageType) -> Self {
+        Self::Basket(usage)
+    }
+}
+
+impl From<CertificateUsageType> for RequestUsageType {
+    fn from(usage: CertificateUsageType) -> Self {
+        Self::Certificate(usage)
+    }
 }
 
 // =============================================================================
@@ -198,6 +257,12 @@ pub struct PermissionRequest {
     /// Optional display originator for UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_originator: Option<String>,
+    /// The usage the request asks for (`usageType`, `:311`), so a handler
+    /// tells a signing prompt from a linkage-revelation prompt for one
+    /// protocol; set by the manager on every protocol, basket and
+    /// certificate request, none on a spending request (#763).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_type: Option<RequestUsageType>,
     /// Whether privileged access is requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub privileged: Option<bool>,
@@ -244,6 +309,7 @@ impl PermissionRequest {
             request_type,
             originator: originator.to_string(),
             display_originator: None,
+            usage_type: None,
             privileged: None,
             protocol_id: None,
             counterparty: None,
@@ -925,6 +991,7 @@ impl WalletPermissionsManager {
             protocol_id: Some(protocol.clone()),
             counterparty: counterparty.map(|s| s.to_string()),
             reason: reason.map(|s| s.to_string()),
+            usage_type: Some(usage_type.into()),
             ..PermissionRequest::bare(PermissionType::Protocol, originator)
         })
         .await
@@ -1029,6 +1096,7 @@ impl WalletPermissionsManager {
         self.request_permission_flow(PermissionRequest {
             basket: Some(basket.to_string()),
             reason: reason.map(|s| s.to_string()),
+            usage_type: Some(usage_type.into()),
             ..PermissionRequest::bare(PermissionType::Basket, originator)
         })
         .await
@@ -1109,6 +1177,7 @@ impl WalletPermissionsManager {
             privileged: Some(priv_flag),
             certificate: Some(cert_details),
             reason: reason.map(|s| s.to_string()),
+            usage_type: Some(usage_type.into()),
             ..PermissionRequest::bare(PermissionType::Certificate, originator)
         })
         .await

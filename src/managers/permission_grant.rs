@@ -17,7 +17,8 @@ use tokio::sync::{oneshot, watch};
 
 use super::{
     normalize_originator, permission_token_protocol, Counterparty, Error, PermissionRequest,
-    PermissionToken, PermissionType, PushDrop, Result, TokenQuery, WalletPermissionsManager,
+    PermissionToken, PermissionType, PushDrop, RequestUsageType, Result, TokenQuery,
+    WalletPermissionsManager,
 };
 
 /// The window in which a fresh grant admits and skips a duplicate mint
@@ -61,8 +62,9 @@ impl WalletPermissionsManager {
     }
 
     /// `buildActiveRequestKey` (`:5830-5840`): a spending request its own
-    /// id, every other kind the request key and its usage type (none here
-    /// until #763).
+    /// id, every other kind the request key and its usage type (#763), so
+    /// two usages of one protocol, basket or certificate prompt apart while
+    /// they share the grant's request key.
     fn active_request_key(&self, request: &PermissionRequest) -> String {
         let base = Self::request_key(request);
         if request.request_type == PermissionType::Spending {
@@ -72,7 +74,8 @@ impl WalletPermissionsManager {
                 + 1;
             format!("{base}:request:{sequence}")
         } else {
-            format!("{base}:")
+            let usage = request.usage_type.as_ref().map(RequestUsageType::as_str);
+            format!("{base}:{}", usage.unwrap_or_default())
         }
     }
 
