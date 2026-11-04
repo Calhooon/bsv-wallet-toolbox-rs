@@ -636,5 +636,133 @@
    }
   ],
   "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-602-bhs-survivors"
- }
+ },
+  "issue_604": {
+    "lane": "p5-604-create-door-survivors",
+    "base": "b044407f (origin/beta b1879b8d and #602's lane commits)",
+    "tree": "2fb239d5 (the five tests) in the lane's worktree, in place, serial, four shards (--shard k/4); the catalogue as committed at 7313d361",
+    "oracle": ".cargo/mutants-doors.toml (the file in its examine_globs since #604): the lib and fixtures, caller_complete_funding_tests, immediate_broadcast_hint_tests, internalize_custom_instructions_tests, known_ancestor_tests, test_vectors, features sqlite,remote,bench-support",
+    "tool_version": "cargo-mutants 27.1.0",
+    "command": "LADDER_FIXTURES_STALL_REPLAYS=2 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=$HOME/bsv/targets/p5-604-create-door-survivors cargo mutants --no-config --in-place --no-shuffle --cap-lints=true --features sqlite,remote,bench-support -C --lib -C --test=fixtures -C --test=caller_complete_funding_tests -C --test=immediate_broadcast_hint_tests -C --test=internalize_custom_instructions_tests -C --test=known_ancestor_tests -C --test=test_vectors --timeout 900 --build-timeout 900 -f src/storage/sqlx/create_action/mod.rs --shard k/4 -o <out>",
+    "started": "2026-11-04T05:39:50Z",
+    "finished": "2026-11-04T06:14:03Z",
+    "summary": "39 mutants tested in four shards (10, 10, 10, 9) in 33m: 35 caught, 2 missed, 2 unviable",
+    "file": {
+      "caught": 35,
+      "missed": 2,
+      "timeout": 0,
+      "unviable": 2,
+      "listed": 39,
+      "score": 94.59,
+      "survivors": [
+        "src/storage/sqlx/create_action/mod.rs:311:9: replace <impl std::fmt::Display for Again>::fmt -> std::fmt::Result with Ok(Default::default())",
+        "src/storage/sqlx/create_action/mod.rs:713:27: replace match guard !created.inputs.is_empty() with true in Door<'_>::step"
+      ]
+    },
+    "kills": [
+      {
+        "mutant": "src/storage/sqlx/create_action/mod.rs:203:47: replace || with && in create_action_at_door_internal",
+        "verdict": "killed",
+        "targets": [
+          "lib"
+        ],
+        "tests": [
+          "storage::sqlx::create_action::tests::door_steps::without_a_caller_tracker_the_step_reads_stored_proofs_against_the_storages_own"
+        ]
+      },
+      {
+        "mutant": "src/storage/sqlx/create_action/mod.rs:339:9: replace Door<'_>::is_delayed -> bool with false",
+        "verdict": "killed",
+        "targets": [
+          "lib"
+        ],
+        "tests": [
+          "storage::sqlx::create_action::tests::door_steps::the_delayed_route_may_spend_a_change_coin_not_marked_spendable"
+        ]
+      },
+      {
+        "mutant": "src/storage/sqlx/create_action/mod.rs:339:9: replace Door<'_>::is_delayed -> bool with true",
+        "verdict": "killed",
+        "targets": [
+          "lib"
+        ],
+        "tests": [
+          "storage::sqlx::create_action::tests::door_steps::the_immediate_route_spends_only_a_change_coin_marked_spendable",
+          "storage::sqlx::create_action::tests::door_steps::the_step_counts_only_the_change_coins_its_route_may_spend"
+        ]
+      },
+      {
+        "mutant": "src/storage/sqlx/create_action/mod.rs:399:13: delete ! in Door<'_>::step",
+        "verdict": "killed",
+        "targets": [
+          "lib"
+        ],
+        "tests": [
+          "storage::sqlx::create_action::tests::door_steps::the_step_counts_only_the_change_coins_its_route_may_spend"
+        ]
+      },
+      {
+        "mutant": "src/storage/sqlx/create_action/mod.rs:738:21: delete field is_new_tx from struct StorageProcessActionArgs expression in Door<'_>::step",
+        "verdict": "killed",
+        "targets": [
+          "lib"
+        ],
+        "tests": [
+          "storage::sqlx::create_action::tests::door_steps::the_door_processes_its_signed_action_as_a_new_transaction"
+        ]
+      }
+    ],
+    "equivalents": [
+      {
+        "mutant": "src/storage/sqlx/create_action/mod.rs:311:9: replace <impl std::fmt::Display for Again>::fmt -> std::fmt::Result with Ok(Default::default())",
+        "verdict": "equivalent: the text is read only by the tracing field `reason` of the create_action_precheck_again log; every refusal built from an Again is the match's own Error, never the Display"
+      },
+      {
+        "mutant": "src/storage/sqlx/create_action/mod.rs:713:27: replace match guard !created.inputs.is_empty() with true in Door<'_>::step",
+        "verdict": "equivalent: the step reaches the guard only after plan_change returned Ok, and every Ok plan carries an input: the fee is at least 2 sats (size >= 10 bytes at 101 sat/kB, div_ceil), so an action with no input has fee_excess < 0 and generate_change refuses InsufficientFunds; a caller-complete plan has a caller input"
+      }
+    ],
+    "verdicts": {
+      "src/storage/sqlx/create_action/mod.rs:124:5: replace create_action_internal -> Result<StorageCreateActionResult> with Ok(Default::default())": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:152:5: replace create_action_at_door_internal -> std::result::Result<CreateActionDone, DoorRefusal> with Ok(Default::default())": "Unviable",
+      "src/storage/sqlx/create_action/mod.rs:203:47: replace || with && in create_action_at_door_internal": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:311:9: replace <impl std::fmt::Display for Again>::fmt -> std::fmt::Result with Ok(Default::default())": "MissedMutant",
+      "src/storage/sqlx/create_action/mod.rs:327:9: replace Door<'_>::allows_received -> bool with true": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:327:9: replace Door<'_>::allows_received -> bool with false": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:330:67: replace == with != in Door<'_>::allows_received": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:335:9: replace Door<'_>::options -> Option<&bsv_rs::wallet::CreateActionOptions> with None": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:335:9: replace Door<'_>::options -> Option<&bsv_rs::wallet::CreateActionOptions> with Some(Box::leak(Box::new(Default::default())))": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:339:9: replace Door<'_>::is_delayed -> bool with true": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:339:9: replace Door<'_>::is_delayed -> bool with false": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:345:9: replace Door<'_>::return_txid_only -> bool with true": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:345:9: replace Door<'_>::return_txid_only -> bool with false": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:351:9: replace Door<'_>::known_txids -> Vec<String> with vec![]": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:351:9: replace Door<'_>::known_txids -> Vec<String> with vec![String::new()]": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:351:9: replace Door<'_>::known_txids -> Vec<String> with vec![\"xyzzy\".into()]": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:358:9: replace Door<'_>::trust_self -> bool with true": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:358:9: replace Door<'_>::trust_self -> bool with false": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:358:51: replace == with != in Door<'_>::trust_self": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:369:9: replace Door<'_>::step -> std::result::Result<Step, DoorRefusal> with Ok(Default::default())": "Unviable",
+      "src/storage/sqlx/create_action/mod.rs:399:13: delete ! in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:462:40: replace - with + in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:462:40: replace - with / in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:536:34: replace + with - in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:536:34: replace + with * in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:623:31: replace + with - in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:623:31: replace + with * in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:677:24: replace match guard self.return_txid_only() with true in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:677:24: replace match guard self.return_txid_only() with false in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:713:27: replace match guard !created.inputs.is_empty() with true in Door<'_>::step": "MissedMutant",
+      "src/storage/sqlx/create_action/mod.rs:713:27: replace match guard !created.inputs.is_empty() with false in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:713:27: delete ! in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:738:21: delete field is_new_tx from struct StorageProcessActionArgs expression in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:739:21: delete field reference from struct StorageProcessActionArgs expression in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:740:21: delete field txid from struct StorageProcessActionArgs expression in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:741:21: delete field raw_tx from struct StorageProcessActionArgs expression in Door<'_>::step": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:776:5: replace trim_known_txids -> Result<Vec<u8>> with Ok(vec![])": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:776:5: replace trim_known_txids -> Result<Vec<u8>> with Ok(vec![0])": "CaughtMutant",
+      "src/storage/sqlx/create_action/mod.rs:776:5: replace trim_known_txids -> Result<Vec<u8>> with Ok(vec![1])": "CaughtMutant"
+    },
+    "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-604-create-door-survivors"
+  }
 }
