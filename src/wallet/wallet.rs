@@ -77,6 +77,10 @@ mod nosend_label_tests;
 mod direct_refusal_tests;
 
 #[cfg(all(test, feature = "sqlite"))]
+#[path = "send_with_bound_tests.rs"]
+mod send_with_bound_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
 #[path = "direct_acquire_tests.rs"]
 mod direct_acquire_tests;
 
@@ -2258,6 +2262,13 @@ where
                 class: bsv_rs::WalletRefusalClass::InvalidParameter,
                 message: "Missing reference argument for sign action".to_string(),
             });
+        }
+
+        // validateSignActionArgs (validationHelpers.ts:834-881) runs ahead of
+        // the session lookup (signAction.ts:57): options at 862, sendWith's
+        // validateSendWith at 823.
+        if let Some(send_with) = args.options.as_ref().and_then(|o| o.send_with.as_ref()) {
+            super::create_args::validate_sign_action_send_with(send_with)?;
         }
 
         // A missing session follows ts-stack@edf6e03 signAction.ts:57-60.
