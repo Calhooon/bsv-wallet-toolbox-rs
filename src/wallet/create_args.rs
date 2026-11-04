@@ -46,6 +46,20 @@ const BRC177_UNSUPPORTED: &str = "Active storage does not support BRC-177 noSend
 // Validation
 // =============================================================================
 
+/// signAction's `sendWith` (ts-stack@edf6e03 validationHelpers.ts:823,
+/// validateSignActionOptions calling validateSendWith at 136-144): the bound
+/// at 137, then the duplicate transaction IDs at 140-142.
+pub(crate) fn validate_sign_action_send_with(send_with: &[[u8; 32]]) -> Result<()> {
+    validate_array_bound(send_with.len(), "sendWith", MAXIMUM_SEND_WITH_TRANSACTIONS)?;
+    let mut seen = std::collections::HashSet::new();
+    if !send_with.iter().all(|txid| seen.insert(txid)) {
+        return Err(Error::ValidationError(
+            "The sendWith parameter must be unique transaction IDs".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Validates create action arguments.
 pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArgs) -> Result<()> {
     validate_description(&args.description)?;
