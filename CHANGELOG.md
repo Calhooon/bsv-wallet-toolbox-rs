@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.7] - 2026-11-04
+
 ### Added
 - #725 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
   `WalletPermissionsManager::with_whitelisted_counterparties(map) -> Self`,
