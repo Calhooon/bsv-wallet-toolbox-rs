@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use bsv_rs::wallet::{
     CreateActionArgs, CreateActionOptions, CreateActionResult, SignActionArgs, WalletInterface,
@@ -60,6 +62,19 @@ async fn build(wallet: &TestWallet, coin: i64) -> Result<CreateActionResult> {
         .await?)
 }
 
+async fn template(wallet: &TestWallet, no_send: bool, coin: i64) -> Result<String> {
+    let mut args = payment(no_send);
+    args.options
+        .get_or_insert_with(CreateActionOptions::default)
+        .sign_and_process = Some(false);
+    let template = wallet
+        .create_action_offering(args, Some("fixture.local"), &[coin], &[])
+        .await?;
+    Ok(bsv_rs::primitives::to_base64(
+        &template.signable_transaction.context("template")?.reference,
+    ))
+}
+
 #[tokio::test]
 async fn two_built_actions_post_concurrently_and_record_each_instance() -> Result<()> {
     let wallet = wallet().await?;
@@ -90,16 +105,7 @@ async fn two_built_actions_post_concurrently_and_record_each_instance() -> Resul
 #[tokio::test]
 async fn post_handles_templates_unknown_references_and_repeats_without_writes() -> Result<()> {
     let wallet = wallet().await?;
-    let mut args = payment(true);
-    args.options
-        .get_or_insert_with(CreateActionOptions::default)
-        .sign_and_process = Some(false);
-    let template = wallet
-        .create_action_offering(args, Some("fixture.local"), &[1], &[])
-        .await?;
-    let reference = bsv_rs::primitives::to_base64(
-        &template.signable_transaction.context("template")?.reference,
-    );
+    let reference = template(&wallet, true, 1).await?;
     let before = rows(wallet.storage()).await?;
     let refused = wallet
         .process_action(post(reference), Some("fixture.local"))
@@ -364,6 +370,11 @@ async fn post_service_fault_is_recorded_without_fabricating_an_instance() -> Res
         .iter()
         .find(|note| note["what"] == "processActionPost")
         .context("post fault")?;
+    assert_outage(note)
+}
+
+/// The post note of a post no broadcaster answered: no instance, the fault.
+fn assert_outage(note: &Value) -> Result<()> {
     assert_eq!(note["words"], json!([]));
     assert!(note["serviceError"]
         .as_str()
@@ -393,6 +404,17 @@ async fn post_note(wallet: &TestWallet, txid: &str) -> Result<Value> {
     Ok(note)
 }
 
+/// The note the door's post path writes for an action built on `coin`.
+async fn door_note(wallet: &TestWallet, coin: i64) -> Result<Value> {
+    let built = hex::encode(build(wallet, coin).await?.txid.context("signed txid")?);
+    wallet
+        .process_action(post(built.clone()), Some("fixture.local"))
+        .await?;
+    let door = post_note(wallet, &built).await?;
+    assert_eq!(door["what"], "processActionPost");
+    Ok(door)
+}
+
 fn recorded_history(source: &str, step: usize) -> Result<Value> {
     let fixture: Value = serde_json::from_str(source)?;
     Ok(fixture["expected"][step]["rows"]["proven_tx_reqs"][0]["history"].clone())
@@ -404,10 +426,7 @@ fn recorded_history(source: &str, step: usize) -> Result<Value> {
 #[tokio::test]
 async fn composition_writes_the_post_note_the_door_post_writes() -> Result<()> {
     let wallet = wallet().await?;
-    let built = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
-    wallet
-        .process_action(post(built.clone()), Some("fixture.local"))
-        .await?;
+    let door = door_note(&wallet, 1).await?;
     let composed = hex::encode(
         wallet
             .create_action_offering(payment(false), Some("fixture.local"), &[2], &[])
@@ -415,8 +434,6 @@ async fn composition_writes_the_post_note_the_door_post_writes() -> Result<()> {
             .txid
             .context("signed txid")?,
     );
-    let door = post_note(&wallet, &built).await?;
-    assert_eq!(door["what"], "processActionPost");
     assert_eq!(post_note(&wallet, &composed).await?, door);
     assert_eq!(
         recorded_history(include_str!("../data/storage/door_composition.json"), 0)?,
@@ -427,20 +444,11 @@ async fn composition_writes_the_post_note_the_door_post_writes() -> Result<()> {
 }
 
 async fn sign_posted(wallet: &TestWallet, coin: i64) -> Result<String> {
-    let mut args = payment(false);
-    args.options
-        .get_or_insert_with(CreateActionOptions::default)
-        .sign_and_process = Some(false);
-    let template = wallet
-        .create_action_offering(args, Some("fixture.local"), &[coin], &[])
-        .await?;
-    let reference = bsv_rs::primitives::to_base64(
-        &template.signable_transaction.context("template")?.reference,
-    );
+    let reference = template(wallet, false, coin).await?;
     let signed = wallet
         .sign_action(
             SignActionArgs {
-                spends: Default::default(),
+                spends: HashMap::new(),
                 reference,
                 options: None,
             },
@@ -453,17 +461,13 @@ async fn sign_posted(wallet: &TestWallet, coin: i64) -> Result<String> {
 /// #330: `sign_action`'s post writes the post note the door's post path and
 /// the one-call composition write, the per-instance words or the post's
 /// fault, as every post in the reference goes through `shareReqsWithWorld`
-/// (signAction.ts:76, processAction.ts:151, attemptToPostReqsToNetwork.ts:90-111).
+/// (`signAction.ts:76`, `processAction.ts:151`,
+/// `attemptToPostReqsToNetwork.ts:90-111`).
 #[tokio::test]
 async fn sign_action_writes_the_post_note_the_door_post_writes() -> Result<()> {
     let wallet = wallet().await?;
-    let built = hex::encode(build(&wallet, 1).await?.txid.context("signed txid")?);
-    wallet
-        .process_action(post(built.clone()), Some("fixture.local"))
-        .await?;
+    let door = door_note(&wallet, 1).await?;
     let signed = sign_posted(&wallet, 2).await?;
-    let door = post_note(&wallet, &built).await?;
-    assert_eq!(door["what"], "processActionPost");
     assert_eq!(post_note(&wallet, &signed).await?, door);
 
     let faulted = wallet_with(
@@ -473,11 +477,5 @@ async fn sign_action_writes_the_post_note_the_door_post_writes() -> Result<()> {
     )
     .await?;
     let txid = sign_posted(&faulted, 1).await?;
-    let note = post_note(&faulted, &txid).await?;
-    assert_eq!(note["words"], json!([]));
-    assert!(note["serviceError"]
-        .as_str()
-        .context("fault")?
-        .contains("recorded outage"));
-    Ok(())
+    assert_outage(&post_note(&faulted, &txid).await?)
 }
