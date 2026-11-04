@@ -21,6 +21,15 @@
   changes for a host that whitelists nothing.
 
 ### Fixed
+- #330 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
+  `sign_action`'s post writes the `processActionPost` note on
+  `proven_tx_reqs.history` with the broadcasters' per-instance words, or
+  `serviceError` when no broadcaster answered, through
+  `update_transaction_status_after_post`, as the door's post path and the
+  one-call composition do (#187, the owner's ruling 18.5 (a)); the
+  reference's every post goes through `shareReqsWithWorld`
+  (ts-stack@edf6e03 `attemptToPostReqsToNetwork.ts:90-111`). The status
+  transitions are unchanged.
 - #324 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
   `sendWith`'s bounds beyond the create door's 1000 (#309). `sign_action`
   validates its `sendWith` ahead of the session lookup as
