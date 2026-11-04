@@ -457,3 +457,27 @@ async fn a_handler_that_grants_inside_itself_mints_its_token() {
     assert_eq!(minted(&scene).await, 1, "the inline grant's mint lands");
     assert_eq!(in_flight(&manager), 0);
 }
+
+#[tokio::test]
+async fn a_mint_cancelled_midway_leaves_no_mint_in_flight() {
+    use std::future::Future;
+    use std::task::Poll;
+    let scene = funded().await;
+    let (manager, mut asked) = asking(&scene).await;
+    let call = spawn_call(&manager);
+    let id = asked.recv().await.unwrap();
+    let expiry = live().unsigned_abs();
+    let mut grant = Box::pin(manager.grant_permission(&id, Some(expiry), false, None));
+    for _ in 0..100 {
+        let polled = std::future::poll_fn(|cx| Poll::Ready(grant.as_mut().poll(cx))).await;
+        assert!(polled.is_pending(), "the mint is still running");
+        if in_flight(&manager) == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(in_flight(&manager), 1, "the mint is in flight");
+    drop(grant);
+    assert_eq!(in_flight(&manager), 0, "a cancelled mint clears its mark");
+    assert!(call.await.unwrap().unwrap());
+}

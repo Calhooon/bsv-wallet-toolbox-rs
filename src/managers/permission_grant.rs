@@ -72,6 +72,20 @@ async fn answer(waiting: oneshot::Receiver<Result<bool>>) -> Result<bool> {
     waiting.await.unwrap_or_else(|_| Err(denied()))
 }
 
+/// A mint's in-flight mark (`:1133-1144`), cleared however the mint ends,
+/// a cancellation included; its sender drops after, waking the waiters.
+struct InFlight<'a> {
+    mints: &'a StdMutex<std::collections::HashMap<String, watch::Receiver<()>>>,
+    key: &'a str,
+    _minting: watch::Sender<()>,
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        locked(self.mints).remove(self.key);
+    }
+}
+
 impl WalletPermissionsManager {
     /// `buildRequestKey` (`:5816-5828`) as this port keys its cache.
     fn request_key(request: &PermissionRequest) -> String {
@@ -295,6 +309,11 @@ impl WalletPermissionsManager {
         if !skip {
             let (minting, waiting) = watch::channel(());
             locked(&self.mints_in_flight).insert(key.clone(), waiting);
+            let mark = InFlight {
+                mints: &self.mints_in_flight,
+                key: &key,
+                _minting: minting,
+            };
             let minted = match (renewal, request.previous_token.as_ref()) {
                 (true, Some(previous)) => {
                     Self::renew_permission_on_chain(previous, request, expiry, amount)
@@ -304,8 +323,7 @@ impl WalletPermissionsManager {
                         .await
                 }
             };
-            locked(&self.mints_in_flight).remove(&key);
-            drop(minting);
+            drop(mark);
             minted?;
         }
         self.cache_permission(key.clone(), expiry).await;
