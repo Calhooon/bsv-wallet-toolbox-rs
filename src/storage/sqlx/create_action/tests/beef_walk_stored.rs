@@ -465,3 +465,50 @@ fn test_beef_walk_skips_stored_beef_for_proven_tx() {
         "Missing tx data (None) must set has_proof = false, allowing stored BEEF merge"
     );
 }
+
+#[tokio::test]
+async fn test_walk_keeps_the_closure_of_the_inputs_when_the_stored_beef_lacks_its_subject() {
+    // A stored input_beef holding only ancestors is pruned to the closure
+    // of the subject's inputs: a transaction the subject never spends is
+    // dead weight and does not reach the BEEF.
+    use super::super::test_support::synth_tx;
+
+    let storage = StorageSqlx::in_memory().await.unwrap();
+    storage.migrate("test", "000000").await.unwrap();
+    storage.make_available().await.unwrap();
+
+    let (parent_raw, parent) = synth_tx(&"11".repeat(32), 0, 5_000);
+    let (stray_raw, stray) = synth_tx(&"22".repeat(32), 0, 6_000);
+    let (subject_raw, subject) = synth_tx(&parent, 0, 4_000);
+
+    let mut stored = Beef::new();
+    let parent_bump = stored.merge_bump(synth_bump(965_000, &parent));
+    stored.merge_raw_tx(parent_raw, Some(parent_bump));
+    let stray_bump = stored.merge_bump(synth_bump(965_001, &stray));
+    stored.merge_raw_tx(stray_raw, Some(stray_bump));
+    seed_unproven_tx(&storage, &subject, &subject_raw, Some(&stored.to_binary())).await;
+
+    let mut beef = Beef::new();
+    let mut pending = vec![(subject.clone(), 0usize)];
+    let mut processed = HashSet::new();
+    let mut conn = storage.pool().acquire().await.unwrap();
+    beef_bfs_walk(
+        &mut conn,
+        Some(storage.writer()),
+        &mut beef,
+        &mut pending,
+        &mut processed,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let kept = beef_txids(&beef);
+    assert!(kept.contains(&subject), "the subject is carried whole");
+    assert!(kept.contains(&parent), "the input it spends is kept");
+    assert!(
+        !kept.contains(&stray),
+        "a stored transaction outside the inputs' closure is pruned"
+    );
+}

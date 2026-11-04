@@ -247,3 +247,131 @@ async fn test_walk_links_a_root_that_a_siblings_bump_carries_unflagged() {
         "and stays valid after the trim"
     );
 }
+
+#[tokio::test]
+async fn test_walk_asks_for_at_most_its_proof_budget() {
+    // One walk asks services for at most MAX_PROOF_FETCHES_PER_WALK merkle
+    // paths: the budget caps the case where nothing on the chain is mined
+    // yet. Ten old unproven hops above a proven root, every ask unanswered:
+    // eight asks, and the walk still carries every hop.
+    use crate::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
+    use crate::storage::traits::WalletStorageProvider;
+    use bsv_rs::transaction::MockChainTracker;
+
+    let storage = StorageSqlx::in_memory().await.unwrap();
+    storage.migrate("test", "000000").await.unwrap();
+    storage.make_available().await.unwrap();
+
+    let chain = synth_chain(11);
+    seed_proven_chain_tx(&storage, &chain[0].1, &chain[0].0, 965_000).await;
+    for (raw, txid) in &chain[1..] {
+        seed_unproven_tx(&storage, txid, raw, None).await;
+        backdate_tx(&storage, txid, 30).await;
+    }
+
+    let services = std::sync::Arc::new(
+        MockWalletServices::builder()
+            .get_merkle_path_response(MockResponse::Error(
+                MockErrorKind::ServiceError,
+                "not mined".to_string(),
+            ))
+            .build(),
+    );
+    storage.set_services(services.clone());
+    let mut tracker = MockChainTracker::new(965_100);
+    tracker.add_root(965_000, chain[0].1.clone());
+    storage
+        .set_chain_tracker(std::sync::Arc::new(tracker))
+        .await;
+
+    let mut beef = Beef::new();
+    let mut pending = vec![(chain[10].1.clone(), 0usize)];
+    let mut processed = HashSet::new();
+    let mut conn = storage.pool().acquire().await.unwrap();
+    beef_bfs_walk(
+        &mut conn,
+        Some(storage.writer()),
+        &mut beef,
+        &mut pending,
+        &mut processed,
+        Some(&storage),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        services.call_count("get_merkle_path"),
+        MAX_PROOF_FETCHES_PER_WALK,
+        "ten unproven hops, and the walk asks for its budget of proofs and no more"
+    );
+    let kept = beef_txids(&beef);
+    for (_, txid) in &chain {
+        assert!(
+            kept.contains(txid),
+            "every hop down to the proven root is carried"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_walk_queues_every_input_of_an_unproven_transaction() {
+    // An unproven transaction is carried whole and EVERY one of its inputs
+    // is walked, whatever else is already queued: a parent left out leaves
+    // the BEEF without the transaction an input spends.
+    use super::super::test_support::synth_tx;
+
+    let storage = StorageSqlx::in_memory().await.unwrap();
+    storage.migrate("test", "000000").await.unwrap();
+    storage.make_available().await.unwrap();
+
+    let (left_raw, left) = synth_tx(&"11".repeat(32), 0, 5_000);
+    let (right_raw, right) = synth_tx(&"22".repeat(32), 0, 6_000);
+    seed_proven_chain_tx(&storage, &left, &left_raw, 965_000).await;
+    seed_proven_chain_tx(&storage, &right, &right_raw, 965_001).await;
+
+    // The subject spends both parents' output 0.
+    let mut raw: Vec<u8> = Vec::new();
+    raw.extend_from_slice(&1u32.to_le_bytes());
+    raw.push(2);
+    for parent in [&left, &right] {
+        let mut prev = hex::decode(parent).unwrap();
+        prev.reverse();
+        raw.extend_from_slice(&prev);
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        raw.push(0);
+        raw.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
+    }
+    raw.push(1);
+    raw.extend_from_slice(&10_000u64.to_le_bytes());
+    raw.push(1);
+    raw.push(0x51);
+    raw.extend_from_slice(&0u32.to_le_bytes());
+    let subject = txid_of(&raw);
+    seed_unproven_tx(&storage, &subject, &raw, None).await;
+
+    let mut beef = Beef::new();
+    let mut pending = vec![(subject.clone(), 0usize)];
+    let mut processed = HashSet::new();
+    let mut conn = storage.pool().acquire().await.unwrap();
+    beef_bfs_walk(
+        &mut conn,
+        Some(storage.writer()),
+        &mut beef,
+        &mut pending,
+        &mut processed,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let kept = beef_txids(&beef);
+    assert!(kept.contains(&subject), "the subject is carried whole");
+    assert!(kept.contains(&left), "its left parent is walked");
+    assert!(
+        kept.contains(&right),
+        "its right parent is walked though the left one was queued ahead of it"
+    );
+    assert_eq!(beef.bumps.len(), 2, "each parent with its BUMP");
+}
