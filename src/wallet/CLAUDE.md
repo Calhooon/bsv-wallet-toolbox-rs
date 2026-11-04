@@ -807,9 +807,11 @@ CreateActionArgs → storage.create_action() → build_unsigned_transaction()
 Later via sign_action:
 SignActionArgs → Lookup from cache → Merge and require caller unlocking scripts
     → WalletSigner.sign_transaction() → storage.process_action()
-    → services.post_beef() → storage.update_transaction_status_after_broadcast()
+    → services.post_beef() → storage.update_transaction_status_after_post()
     → SignActionResult { txid, tx, ... }
 ```
+
+`sign_action`'s post hands the broadcasters' per-instance words, or the post's own fault when no broadcaster answered, to `update_transaction_status_after_post`, which writes the `processActionPost` note on `proven_tx_reqs.history` the door's post path and the one-call composition write, then moves the statuses as before (#330; the reference's `signAction.ts:76` runs `processAction`, whose post goes through `shareReqsWithWorld` at `processAction.ts:151` and transfers the notes at `attemptToPostReqsToNetwork.ts:90-111`, ts-stack@edf6e03).
 
 The private cache retains which inputs storage allocated (`provided_by = "storage"`), separately from the public `PendingTransaction` data. A caller-named input is never authorized for wallet signing. Its non-empty script from `create_action` or `sign_action` is preserved. This port refuses a missing or empty named-input script before signing or processing, using the reference's `The inputs[N].unlockScript parameter must be valid.` text and mapping its `WERR_INVALID_PARAMETER` to `Error::ValidationError`; `ts-stack@edf6e03` completes and processes the action before `verifyUnlockScripts` reports a missing script's refusal, and refuses an empty script earlier, at its argument gate, as not a hexadecimal string (`validationHelpers.ts:522-530`), the same class. The WalletInterface boundary carries this as `WalletRefusal` of class `InvalidParameter`, with `Validation error: ...` as its message. The action stays unsigned and its inputs stay reserved, so the caller can supply the script on a later call. Reference: `ts-stack@edf6e03`'s `signer/methods/signAction.ts:65-90`, `buildSignableTransaction.ts:176-189`, `completeSignedTransaction.ts:15-32,50-79`, and `verifyUnlockScripts.ts:51-64`.
 
