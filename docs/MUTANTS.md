@@ -95,11 +95,12 @@ The owner's word of 2026-11-01 (14:1xZ, 23.5 (c), and 14:4xZ) puts the doors
 that judge under the node's word, `create_action/must_spend.rs`,
 `create_action/own_word.rs` and `create_action/review_beef.rs`, at an 80 percent
 gate, measured with their real witnesses: `must_spend.rs`'s live in the
-`fixtures` suite, so `--lib` alone read it at 0 of 19 (#535). Those three files
-run from `.cargo/mutants-doors.toml`: the lib and every integration target that
-enters a door function (`fixtures`, `caller_complete_funding_tests`,
-`immediate_broadcast_hint_tests`, `known_ancestor_tests`, `test_vectors`), with
-the CI integration step's features `sqlite,remote,bench-support`. A target that
+`fixtures` suite, so `--lib` alone read it at 0 of 19 (#535). Those files (the
+three, and `beef_verification/own_word.rs` since #572) run from
+`.cargo/mutants-doors.toml`: the lib and every integration target that enters a
+door function (`fixtures`, `caller_complete_funding_tests`,
+`immediate_broadcast_hint_tests`, `internalize_custom_instructions_tests`,
+`known_ancestor_tests`, `test_vectors`), with the CI integration step's features `sqlite,remote,bench-support`. A target that
 never enters a file's functions cannot kill its mutants, and no integration
 target reads a door file's text, so the oracle is the reach set; a new target
 that enters a door joins the list in both the config and the workflow's compile
@@ -111,10 +112,9 @@ every target once; the table and the figures before and after the widening are
 The 68 door mutants (45 before #572 added `beef_verification/own_word.rs` and
 `internalize_custom_instructions_tests` to the oracle) run as their own shard
 group, `doors`, two round-robin shards. The six targets add six test binaries to
-each mutant's build and about
-13 s to its test run beside the lib's (the `fixtures` suite 11.7 s on the lane
+each mutant's build and about 13 s to its test run beside the lib's (the `fixtures` suite 11.7 s on the lane
 host), so a door mutant costs about what a lib mutant costs (about 2.8 minutes on
-the runners, mostly the build): 23 mutants a shard is about 64 minutes, inside
+the runners, mostly the build): 34 mutants a shard is about 95 minutes, inside
 the 330 minute limit with room to spare. The rest of the inventory stays on
 `--lib` as ruled (the ratchet). Other create-door files are entered by
 integration targets as well (the record's second probe); widening them is not
