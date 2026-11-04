@@ -684,3 +684,31 @@ async fn a_token_under_this_wallets_key_with_a_bad_signature_does_not_answer() {
     // field is decrypted.
     assert_eq!(scene.counted.reads(), (2, 0, 1));
 }
+
+// =========================================================================
+// bsv-rs #618: `PushDrop::decode` reads a key-only token and a token
+// without CHECKSIG second since 0.9.0-beta.7; the source check re-locks the
+// decoded token and compares the bytes, so neither answers, as
+// `decodeCanonicalPushDrop` refuses both at the reference's source check
+// (`:2798-2816`, `PushDropValidation.ts:54-79`)
+// =========================================================================
+
+#[tokio::test]
+async fn a_key_only_or_no_checksig_token_does_not_answer_618() {
+    for shape in 0..2 {
+        let scene = scene().await;
+        let wallet = &scene.counted.inner;
+        let fields = strings(&[APP, &live().to_string(), BASKET]);
+        let mut chunks = token_script(wallet, &fields).await.chunks();
+        if shape == 0 {
+            chunks.truncate(1);
+        } else {
+            chunks[1] = bsv_rs::script::ScriptChunk::new_opcode(0x51);
+        }
+        let tags = strings(&["originator app.example.com", "basket tickets"]);
+        let script = LockingScript::from_chunks(chunks);
+        store_token(wallet, script, "admin basket-access", &tags).await;
+        assert!(basket_call(&scene).await.unwrap());
+        assert_eq!(prompts(&scene), 1, "shape {shape}");
+    }
+}

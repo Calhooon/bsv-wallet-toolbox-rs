@@ -222,3 +222,63 @@ async fn a_certifier_above_p_is_read_as_to_binary_writes_it_and_dropped_at_verif
         "{refused}"
     );
 }
+
+/// bsv-rs #618's two tokens (`parser_words_489`'s `token_key_only` and
+/// `token_no_checksig`): since 0.9.0-beta.7 `PushDrop::decode` reads them
+/// as `PushDrop.decode` does (a key and no field; the fields behind `OP_1`
+/// in the CHECKSIG's place), each for `script`'s key.
+fn tokens_618(script: &LockingScript) -> [LockingScript; 2] {
+    let chunks = script.chunks();
+    let mut no_checksig = chunks.clone();
+    no_checksig[1] = ScriptChunk::new_opcode(0x51);
+    [
+        LockingScript::from_chunks(chunks[..1].to_vec()),
+        LockingScript::from_chunks(no_checksig),
+    ]
+}
+
+/// The identity decode drops both, as `decodeIdentityOutput` does on its
+/// field count and its five chunks (`identityUtils.ts:501-516`): the key
+/// alone for its field count, the token without CHECKSIG for its chunks.
+/// Dropped at beta.6 by the decode's own refusal; the verdict is the same.
+#[tokio::test]
+async fn a_key_only_and_a_no_checksig_identity_token_are_dropped_618() {
+    let good = alice(5).await;
+    let script = token(&key(SUBJECT), record_json(&alice(6).await));
+    let [key_only, no_checksig] = tokens_618(&script);
+    for (bad, why) in [
+        (key_only, "not two fields"),
+        (no_checksig, "not the identity token's chunks"),
+    ] {
+        let refused = decode_identity_output(&bad).unwrap_err().to_string();
+        assert!(refused.contains(why), "{refused}");
+        only_the_good_token(bad, &good).await;
+    }
+}
+
+/// A SLAP advertisement's host read: the reference reads it with
+/// `decodeCanonicalPushDrop` (`OverlayAdminTokenTemplate.ts:159-168`), which
+/// refuses both #618 tokens, so the toolbox's host read refuses them in the
+/// beta.6 words (`slap_token`); without that check the no-CHECKSIG token's
+/// URL field is read as a host since beta.7. The lock-before token with
+/// CHECKSIG is read.
+#[test]
+fn a_key_only_and_a_no_checksig_slap_token_are_refused_in_the_beta6_words_618() {
+    let fields = vec![b"SLAP".to_vec(), b"https://slap.example".to_vec()];
+    let script = bsv_rs::script::templates::PushDrop::new(key(SUBJECT).public_key(), fields).lock();
+    let host = |script: LockingScript| {
+        let beef = beef(script);
+        super::super::extract_host_from_beef(&beef, 0)
+    };
+    assert_eq!(host(script.clone()).unwrap(), "https://slap.example");
+    let [key_only, no_checksig] = tokens_618(&script);
+    for (bad, words) in [
+        (key_only, "Script too short for PushDrop"),
+        (no_checksig, "Expected OP_CHECKSIG after pubkey"),
+    ] {
+        assert_eq!(
+            host(bad).unwrap_err().to_string(),
+            format!("Service error: SLAP PushDrop decode failed: script parse error: {words}")
+        );
+    }
+}
