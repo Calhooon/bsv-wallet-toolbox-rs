@@ -102,6 +102,11 @@ impl WalletPermissionsManager {
         let (sender, waiting) = oneshot::channel();
         let joined = {
             let mut active = locked(&self.active_requests);
+            if let Some(queue) = active.get_mut(&key) {
+                // A caller dropped while it waited (a disconnect) answers
+                // nobody; a queue of those alone is asked again.
+                queue.pending.retain(|caller| !caller.is_closed());
+            }
             if let Some(queue) = active.get_mut(&key).filter(|q| !q.pending.is_empty()) {
                 queue.pending.push(sender);
                 true

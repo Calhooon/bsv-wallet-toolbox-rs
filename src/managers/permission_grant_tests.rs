@@ -388,3 +388,21 @@ async fn a_duplicate_grant_inside_the_cover_mints_once() {
     assert_eq!(scene.prompts.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(minted(&scene).await, 1, "the second grant is covered");
 }
+
+#[tokio::test]
+async fn a_caller_dropped_while_it_waits_leaves_the_next_caller_its_own_prompt() {
+    let scene = funded().await;
+    let (manager, mut asked) = asking(&scene).await;
+    let dropped = spawn_call(&manager);
+    asked.recv().await.unwrap();
+    dropped.abort();
+    assert!(dropped.await.unwrap_err().is_cancelled());
+    let call = spawn_call(&manager);
+    let prompt = tokio::time::timeout(Duration::from_secs(5), asked.recv()).await;
+    let id = prompt.expect("the next caller is asked again").unwrap();
+    manager
+        .grant_permission(&id, None, true, None)
+        .await
+        .unwrap();
+    assert!(call.await.unwrap().unwrap());
+}
