@@ -114,13 +114,14 @@ every target once; the table and the figures before and after the widening are
 `docs/census/mutants-oracle-2026-11-01.md`, and the door floors in
 `tools/mutants-floor.json` come from the widened figure only.
 
-The 68 door mutants (45 before #572 added `beef_verification/own_word.rs` and
-`internalize_custom_instructions_tests` to the oracle) run as their own shard
-group, `doors`, two round-robin shards. The six targets add six test binaries to
+The 85 door mutants (45 before #572 added `beef_verification/own_word.rs` and
+`internalize_custom_instructions_tests` to the oracle, 68 before #602 added
+`providers/bhs.rs`) run as their own shard group, `doors`, two round-robin
+shards. The six targets add six test binaries to
 each mutant's build and about 13 s to its test run beside the lib's (the `fixtures` suite 11.7 s on the lane
 host), so a door mutant costs about what a lib mutant costs (about 2.8 minutes on
-the runners, mostly the build): 34 mutants a shard is about 95 minutes, inside
-the 330 minute limit with room to spare. The rest of the inventory stays on
+the runners, mostly the build): about 43 mutants a shard is about 120 minutes,
+inside the 330 minute limit with room to spare. The rest of the inventory stays on
 `--lib` as ruled (the ratchet). Other create-door files are entered by
 integration targets as well (the record's second probe); widening them is not
 in the ruling.
