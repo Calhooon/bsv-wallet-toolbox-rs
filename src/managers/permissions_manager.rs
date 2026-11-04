@@ -2367,6 +2367,10 @@ mod permission_token_lookup_tests;
 mod permission_grant_tests;
 
 #[cfg(test)]
+#[path = "permission_usage_type_tests.rs"]
+mod permission_usage_type_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use bsv_rs::wallet::*;

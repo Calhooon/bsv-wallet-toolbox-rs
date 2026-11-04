@@ -416,6 +416,7 @@ async fn each_key_call_prompts_with_the_requests_counterparty_and_reason() {
             assert_eq!(request.counterparty.as_deref(), expected, "{scene}");
             assert_eq!(request.reason.as_deref(), Some(REASON), "{scene}");
             assert_eq!(request.protocol_id.as_ref(), Some(protocol), "{scene}");
+            assert_eq!(request.usage_type, Some(usage_type(name).into()), "{scene}");
         }
     }
     assert!(prompts.requests.lock().unwrap().is_empty());
@@ -442,6 +443,7 @@ async fn the_identity_key_prompts_for_identity_key_retrieval() {
         assert_eq!(request.counterparty, None, "{privileged:?}");
         assert_eq!(request.reason.as_deref(), Some(REASON), "{privileged:?}");
         assert_eq!(request.privileged, Some(privileged == Some(true)));
+        assert_eq!(request.usage_type, Some(usage_type(IDENTITY_KEY).into()));
     }
     assert!(prompts.requests.lock().unwrap().is_empty());
     assert_eq!(double.asked(), Vec::<Asked>::new());
@@ -728,6 +730,8 @@ async fn each_reveal_prompts_for_its_linkage_protocol_and_the_verifier() {
             assert_eq!(request.protocol_id.as_ref(), Some(&linkage), "{scene}");
             assert_eq!(request.counterparty, Some(verifier.to_hex()), "{scene}");
             assert_eq!(request.reason.as_deref(), Some(REASON), "{scene}");
+            let linkage_usage = crate::managers::PermissionUsageType::LinkageRevelation;
+            assert_eq!(request.usage_type, Some(linkage_usage.into()), "{scene}");
             assert_eq!(
                 request.privileged,
                 Some(privileged == Some(true)),
