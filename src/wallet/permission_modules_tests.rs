@@ -20,8 +20,8 @@ use crate::managers::{
 
 /// The reason the module's arguments carry to the underlying call.
 const MODULE_REASON: &str = "module reason";
-const ADMIN: &str = "wallet.admin";
-const NOSEND_TEXT: &str =
+pub(super) const ADMIN: &str = "wallet.admin";
+pub(super) const NOSEND_TEXT: &str =
     "BRC-177 noSend expiry labels are only valid for createAction and listActions";
 
 /// Where the module double refuses, if it does.
@@ -102,8 +102,8 @@ impl PermissionsModule for ModuleDouble {
 /// A wallet whose privileged double holds the wallet's own key, under a
 /// permissions manager with `modules` registered; every prompt is refused
 /// and counted.
-async fn module_wallet(
-    modules: Vec<(&str, Arc<ModuleDouble>)>,
+pub(super) async fn module_wallet<M: PermissionsModule + 'static>(
+    modules: Vec<(&str, Arc<M>)>,
 ) -> (
     tempfile::TempDir,
     TestWallet,
@@ -239,7 +239,11 @@ const METHODS: [&str; 7] = [
 
 /// The refusal a host sees: `InvalidParameter`, `text` byte for byte, no
 /// prefix in the message or its display.
-fn assert_module_refusal(answer: bsv_rs::Result<Value>, text: &str, call: &str) {
+pub(super) fn assert_module_refusal<T: std::fmt::Debug>(
+    answer: bsv_rs::Result<T>,
+    text: &str,
+    call: &str,
+) {
     let err = answer.expect_err(call);
     let shown = err.to_string();
     match err {
