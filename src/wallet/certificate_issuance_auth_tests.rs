@@ -294,3 +294,25 @@ async fn malformed_requested_certificates_are_refused_before_the_issuance_body()
     )).await;
     request.assert_async().await;
 }
+
+/// #332: the certifier is reached at `<certifierUrl>/signCertificate`, as
+/// ts-stack@edf6e03 `Wallet.ts:772` resolves it; a URL with a path keeps it.
+#[tokio::test]
+async fn the_certifier_is_reached_at_sign_certificate_under_its_url() {
+    for base in ["", "/api"] {
+        let mut server = mockito::Server::new_async().await;
+        let peer = signing_certifier(&mut server).await;
+        let path = format!("{base}/signCertificate");
+        let request = peer
+            .general(&mut server, &path, 200, Answer::Signed, no_certificate)
+            .expect(1)
+            .create_async()
+            .await;
+        let url = format!("{}{base}", server.url());
+        assert_invalid_parameter(
+            acquire_from_fixture(&wallet().await, args(certifier(), url)).await,
+            "Validation error: No certificate received from certifier!",
+        );
+        request.assert_async().await;
+    }
+}

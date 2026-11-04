@@ -48,6 +48,10 @@ use crate::storage::{not_busy, AuthId, WalletStorageProvider};
 mod network_isolation_tests;
 
 #[cfg(test)]
+#[path = "certificate_issuance_endpoint_tests.rs"]
+mod endpoint_tests;
+
+#[cfg(test)]
 #[path = "certificate_issuance_peer_fixture.rs"]
 mod peer_fixture;
 
