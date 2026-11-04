@@ -532,6 +532,9 @@ pub struct WalletPermissionsManager {
     active_requests: StdMutex<HashMap<String, permission_grant::ActiveRequest>>,
     /// The spending requests' sequence, one prompt per spend (`:710`, `:5830-5835`).
     spending_request_sequence: AtomicU64,
+    /// The mints in flight, by request key (`mintsInFlight`, `:702`): a
+    /// receiver whose sender drops when the mint ends.
+    mints_in_flight: StdMutex<HashMap<String, tokio::sync::watch::Receiver<()>>>,
     /// The recent grants' cover ends, by request key (`recentGrants`, `:675`).
     recent_grants: StdMutex<HashMap<String, Instant>>,
 }
@@ -553,6 +556,7 @@ impl WalletPermissionsManager {
             permission_token_locking_key: OnceCell::new(),
             active_requests: StdMutex::new(HashMap::new()),
             spending_request_sequence: AtomicU64::new(0),
+            mints_in_flight: StdMutex::new(HashMap::new()),
             recent_grants: StdMutex::new(HashMap::new()),
         }
     }
@@ -875,7 +879,8 @@ impl WalletPermissionsManager {
             None,
             None,
         );
-        if self.is_permission_cached(&cache_key).await {
+        // The cache, the recent-grant cover or a mint in flight (`:1518-1519`).
+        if self.has_recent_or_pending_grant(&cache_key).await {
             return Ok(true);
         }
 
@@ -999,7 +1004,7 @@ impl WalletPermissionsManager {
             None,
             None,
         );
-        if self.is_permission_cached(&cache_key).await {
+        if self.has_recent_or_pending_grant(&cache_key).await {
             return Ok(true);
         }
         // The stored token (`:1595-1615`, #751); an expired one prompts.
@@ -1084,7 +1089,7 @@ impl WalletPermissionsManager {
             Some(&cert_details),
             None,
         );
-        if self.is_permission_cached(&cache_key).await {
+        if self.has_recent_or_pending_grant(&cache_key).await {
             return Ok(true);
         }
         // The stored token (`:1669-1709`, #751); an expired one prompts.
@@ -2398,7 +2403,8 @@ mod tests {
             _args: EncryptArgs,
             _originator: Option<&str>,
         ) -> bsv_rs::Result<EncryptResult> {
-            unimplemented!()
+            // A grant's mint encrypts first; this wallet keeps no outputs.
+            Err(bsv_rs::Error::WalletError("no mint here".to_string()))
         }
         async fn decrypt(
             &self,

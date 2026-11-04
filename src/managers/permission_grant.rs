@@ -10,7 +10,10 @@
 use std::sync::{Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use tokio::sync::oneshot;
+use bsv_rs::primitives::ec::PublicKey;
+use bsv_rs::script::LockingScript;
+use bsv_rs::wallet::{CreateSignatureArgs, EncryptArgs};
+use tokio::sync::{oneshot, watch};
 
 use super::*;
 
@@ -74,7 +77,8 @@ impl WalletPermissionsManager {
     /// a caller for a request already awaiting an answer waits on it; else
     /// the request is queued under its `request_id` and handed to the
     /// handler. The host answers by `grant_permission` or `deny_permission`
-    /// with that id, from within the handler or after it; a handler that
+    /// with that id, while the handler runs or after it returns (a handler
+    /// may stay pending; the caller returns at the answer); a handler that
     /// returns with the request still unanswered answers it, a token as a
     /// persistent grant with the token's expiry (and, for spending, its
     /// `authorized_amount`), an error as a denial with that error. With no
@@ -114,7 +118,11 @@ impl WalletPermissionsManager {
         if joined {
             return answer(waiting).await;
         }
-        let answered = handler(request).await;
+        let mut waiting = waiting;
+        let answered = tokio::select! {
+            answered = &mut waiting => return answered.unwrap_or_else(|_| Err(denied())),
+            answered = handler(request) => answered,
+        };
         let unanswered = locked(&self.active_requests).contains_key(&key);
         if unanswered {
             match answered {
@@ -180,21 +188,70 @@ impl WalletPermissionsManager {
         Ok(())
     }
 
-    /// `grantPersistentPermission` (`:1104-1149`): the five-minute cache
-    /// entry (never for spending, `:1147`) and the recent-grant mark
-    /// (`:1148`).
+    /// `grantPersistentPermission` (`:1104-1149`): the mint, skipped for
+    /// a request whose grant is cached, inside its cover or minting, never
+    /// for spending or a renewal (`:1112-1124`), the in-flight mint awaited
+    /// first; a renewal to `renew_permission_on_chain` (`:1127-1128`), else
+    /// `create_permission_on_chain` (`:1129`), published in flight while it
+    /// runs (`:1133-1144`); then the five-minute cache entry (never for
+    /// spending, `:1147`) and the recent-grant mark (`:1148`). A failed mint
+    /// is returned, nothing cached.
     async fn grant_persistent_permission(
         &self,
         request: &PermissionRequest,
         expiry: u64,
-        _amount: Option<u64>,
+        amount: Option<u64>,
     ) -> Result<()> {
         let key = Self::request_key(request);
-        if request.request_type != PermissionType::Spending {
+        let renewal = request.renewal == Some(true);
+        let spending = request.request_type == PermissionType::Spending;
+        let in_flight = locked(&self.mints_in_flight).get(&key).cloned();
+        let mut skip = !renewal
+            && !spending
+            && (self.is_permission_cached(&key).await
+                || self.is_recently_granted(&key)
+                || in_flight.is_some());
+        if let (true, Some(mut minting)) = (skip, in_flight) {
+            // The sender drops when the mint ends; only a mint that landed skips.
+            let _ = minting.changed().await;
+            skip = self.is_permission_cached(&key).await || self.is_recently_granted(&key);
+        }
+        if !skip {
+            let (minting, waiting) = watch::channel(());
+            locked(&self.mints_in_flight).insert(key.clone(), waiting);
+            let minted = match (renewal, request.previous_token.as_ref()) {
+                (true, Some(previous)) => {
+                    self.renew_permission_on_chain(previous, request, expiry, amount)
+                        .await
+                }
+                _ => {
+                    self.create_permission_on_chain(request, expiry, amount)
+                        .await
+                }
+            };
+            locked(&self.mints_in_flight).remove(&key);
+            drop(minting);
+            minted?;
+        }
+        if !spending {
             self.cache_permission(key.clone(), expiry).await;
         }
         self.mark_recent_grant(request, key);
         Ok(())
+    }
+
+    /// `hasRecentOrPendingGrantCore` (`:5652-5658`): cached or inside the
+    /// cover, else, with a mint in flight, the same once it ends.
+    pub(super) async fn has_recent_or_pending_grant(&self, key: &str) -> bool {
+        if self.is_permission_cached(key).await || self.is_recently_granted(key) {
+            return true;
+        }
+        let in_flight = locked(&self.mints_in_flight).get(key).cloned();
+        let Some(mut minting) = in_flight else {
+            return false;
+        };
+        let _ = minting.changed().await;
+        self.is_permission_cached(key).await || self.is_recently_granted(key)
     }
 
     /// `markRecentGrant` (`:5684-5690`): never for spending.
@@ -204,4 +261,217 @@ impl WalletPermissionsManager {
         }
         locked(&self.recent_grants).insert(key, Instant::now() + RECENT_GRANT_COVER);
     }
+
+    /// `isRecentlyGranted` (`:5692-5700`).
+    fn is_recently_granted(&self, key: &str) -> bool {
+        let mut recent = locked(&self.recent_grants);
+        match recent.get(key) {
+            Some(end) if Instant::now() <= *end => true,
+            Some(_) => {
+                recent.remove(key);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// `renewPermissionOnChain` (`:3634-3700`) is #751 lane b's: it spends
+    /// the previous token, which needs the token input signer. Until then a
+    /// renewal mints nothing and is refused; the manager raises none yet.
+    async fn renew_permission_on_chain(
+        &self,
+        _previous: &PermissionToken,
+        _request: &PermissionRequest,
+        _expiry: u64,
+        _amount: Option<u64>,
+    ) -> Result<()> {
+        Err(Error::InvalidOperation(
+            "Permission token renewal is not ported yet (#751).".to_string(),
+        ))
+    }
+
+    /// `createPermissionOnChain` (`:3349-3392`): the request's originator
+    /// normalized; the kind's fields (`buildPushdropFields`, `:3708-3749`),
+    /// each encrypted to this wallet under the token protocol as the admin
+    /// originator (`encryptPermissionTokenField`, `:2722-2737`); the
+    /// `PushDrop.lock(fields, protocol, '1', 'self', true, true)` script
+    /// (`:3360-3367`); the kind's tags (`buildTagsForRequest`, `:3755-3787`),
+    /// trimmed and lowercased as the reference's `createAction` stores them
+    /// (the step 1 lookup's `TokenQuery::tags`); one 1-satoshi output in the
+    /// kind's admin basket, no explicit input, `acceptDelayedBroadcast`,
+    /// through the underlying wallet's `create_action` as the admin
+    /// originator (`completePermissionTokenAction`, `:3566-3576`).
+    pub(super) async fn create_permission_on_chain(
+        &self,
+        request: &PermissionRequest,
+        expiry: u64,
+        amount: Option<u64>,
+    ) -> Result<()> {
+        let originator = normalize_originator(&request.originator);
+        let (basket, texts, tags) = mint_plan(request, &originator, expiry, amount)?;
+        let mut fields = Vec::with_capacity(texts.len() + 1);
+        for text in texts {
+            fields.push(self.encrypt_token_text(text).await?);
+        }
+        let script = self.token_lock(fields).await?;
+        let kind = kind_name(request.request_type);
+        let args = serde_json::json!({
+            "description": format!("Grant {kind} permission"),
+            "outputs": [{
+                "lockingScript": script.to_hex(),
+                "satoshis": 1,
+                "outputDescription": format!("{kind} permission token"),
+                "basket": basket,
+                "tags": tags,
+            }],
+            "options": { "acceptDelayedBroadcast": true },
+        });
+        let args = serde_json::from_value(args)?;
+        match self
+            .underlying
+            .create_action(args, Some(&self.admin_originator))
+            .await
+        {
+            Ok(_) => Ok(()),
+            // An underlying that keeps no outputs holds no token, as the
+            // lookup reads it (`cannot_list`): the grant stands on the cache.
+            Err(error) if cannot_create(&error) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// `encryptPermissionTokenField` (`:2722-2737`): keyID `"1"`, the
+    /// counterparty `self` by default.
+    async fn encrypt_token_text(&self, text: String) -> Result<Vec<u8>> {
+        let args = EncryptArgs {
+            plaintext: text.into_bytes(),
+            protocol_id: permission_token_protocol(),
+            key_id: "1".to_string(),
+            counterparty: None,
+            ..Default::default()
+        };
+        let encrypted = self
+            .underlying
+            .encrypt(args, Some(&self.admin_originator))
+            .await?;
+        Ok(encrypted.ciphertext)
+    }
+
+    /// The sdk's `PushDrop.lock` with `forSelf` and `includeSignature`
+    /// true, the lock before the fields: the token protocol's key for
+    /// `self`, the signature under it over the fields joined, pushed last.
+    async fn token_lock(&self, mut fields: Vec<Vec<u8>>) -> Result<LockingScript> {
+        let key = self.token_locking_key().await.ok_or_else(|| {
+            Error::AccessDenied(
+                "Wallet returned an invalid permission-token locking key.".to_string(),
+            )
+        })?;
+        let key = PublicKey::from_hex(key)?;
+        let args = CreateSignatureArgs {
+            data: Some(fields.concat()),
+            protocol_id: permission_token_protocol(),
+            key_id: "1".to_string(),
+            counterparty: Some(Counterparty::Self_),
+            ..Default::default()
+        };
+        let signed = self
+            .underlying
+            .create_signature(args, Some(&self.admin_originator))
+            .await?;
+        fields.push(signed.signature);
+        Ok(PushDrop::new(key, fields).lock())
+    }
+}
+
+/// `ProtoWallet::create_action`'s refusal (bsv-rs 0.9.0-beta.6
+/// `proto_wallet/interface.rs:154-156`): the underlying keeps no outputs.
+const PROTO_WALLET_CREATE_REFUSAL: &str =
+    "createAction requires a full wallet implementation with UTXO management";
+
+/// Whether a create failure is an underlying that cannot hold a token.
+fn cannot_create(error: &bsv_rs::Error) -> bool {
+    matches!(error, bsv_rs::Error::WalletError(message) if message == PROTO_WALLET_CREATE_REFUSAL)
+}
+
+/// The reference's `r.type`, as its description and output name it.
+fn kind_name(kind: PermissionType) -> &'static str {
+    match kind {
+        PermissionType::Protocol => "protocol",
+        PermissionType::Basket => "basket",
+        PermissionType::Certificate => "certificate",
+        PermissionType::Spending => "spending",
+    }
+}
+
+/// The admin basket a spending token is minted in (`BASKET_MAP`, `:422`).
+const SPENDING_TOKEN_BASKET: &str = "admin spending-authorization";
+
+/// The mint's basket, plaintext fields and stored tags for `request`.
+fn mint_plan(
+    request: &PermissionRequest,
+    originator: &str,
+    expiry: u64,
+    amount: Option<u64>,
+) -> Result<(&'static str, Vec<String>, Vec<String>)> {
+    let missing = |what: &str| Error::InvalidArgument(format!("A grant names no {what}."));
+    let privileged = request.privileged == Some(true);
+    let (domain, expiry) = (originator.to_string(), expiry.to_string());
+    let (query, texts) = match request.request_type {
+        PermissionType::Protocol => {
+            let protocol = request
+                .protocol_id
+                .as_ref()
+                .ok_or_else(|| missing("protocol"))?;
+            let level = protocol.security_level.as_u8();
+            let counterparty = request.counterparty.as_deref().unwrap_or("self");
+            let field = if level == 2 { counterparty } else { "" };
+            let texts = vec![
+                domain,
+                expiry,
+                privileged.to_string(),
+                level.to_string(),
+                protocol.protocol_name.clone(),
+                field.to_string(),
+            ];
+            let query = TokenQuery::Protocol {
+                privileged,
+                protocol,
+                counterparty,
+            };
+            (query, texts)
+        }
+        PermissionType::Basket => {
+            let basket = request.basket.as_deref().ok_or_else(|| missing("basket"))?;
+            let texts = vec![domain, expiry, basket.to_string()];
+            (TokenQuery::Basket { basket }, texts)
+        }
+        PermissionType::Certificate => {
+            let details = request
+                .certificate
+                .as_ref()
+                .ok_or_else(|| missing("certificate"))?;
+            let texts = vec![
+                domain,
+                expiry,
+                privileged.to_string(),
+                details.cert_type.clone(),
+                serde_json::to_string(&details.fields)?,
+                details.verifier.clone(),
+            ];
+            let query = TokenQuery::Certificate {
+                privileged,
+                verifier: &details.verifier,
+                cert_type: &details.cert_type,
+                fields: &details.fields,
+            };
+            (query, texts)
+        }
+        PermissionType::Spending => {
+            let requested = request.spending.as_ref().map_or(0, |s| s.satoshis);
+            let texts = vec![domain, amount.unwrap_or(requested).to_string()];
+            let tags = vec![format!("originator {originator}").trim().to_lowercase()];
+            return Ok((SPENDING_TOKEN_BASKET, texts, tags));
+        }
+    };
+    Ok((query.basket(), texts, query.tags(Some(originator))))
 }
