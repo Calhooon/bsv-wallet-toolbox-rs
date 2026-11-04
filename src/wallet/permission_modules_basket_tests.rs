@@ -533,6 +533,11 @@ async fn granted(
     (dir, wallet, prompts)
 }
 
+/// The action `spending`'s module answers, from the granted originator.
+async fn spend(wallet: &TestWallet) -> bsv_rs::Result<Value> {
+    call(wallet, "create_action", "p btms coins", "plain", ORIGINATOR).await
+}
+
 #[tokio::test]
 async fn module_cannot_lift_the_spending_ceiling() {
     // The refusal a caller asking 1000 past the grant is given.
@@ -546,14 +551,7 @@ async fn module_cannot_lift_the_spending_ceiling() {
     assert!(matches!(expected, bsv_rs::Error::WalletRefusal { .. }));
     // A module raising the zero-satoshi output to 1000 meets it too.
     let (_dir, wallet, prompts) = granted(spending(1000)).await;
-    let answer = call(
-        &wallet,
-        "create_action",
-        "p btms coins",
-        "plain",
-        ORIGINATOR,
-    )
-    .await;
+    let answer = spend(&wallet).await;
     let err = answer.expect_err("past the ceiling");
     assert_eq!(format!("{err:?}"), format!("{expected:?}"));
     assert_eq!(err.to_string(), expected.to_string());
@@ -563,15 +561,7 @@ async fn module_cannot_lift_the_spending_ceiling() {
 #[tokio::test]
 async fn module_answering_within_the_ceiling_is_admitted() {
     let (_dir, wallet, prompts) = granted(spending(600)).await;
-    call(
-        &wallet,
-        "create_action",
-        "p btms coins",
-        "plain",
-        ORIGINATOR,
-    )
-    .await
-    .unwrap();
+    spend(&wallet).await.unwrap();
     let (satoshis,): (i64,) =
         sqlx::query_as("SELECT satoshis FROM outputs WHERE locking_script = X'006a'")
             .fetch_one(wallet.storage().pool())
