@@ -17,7 +17,8 @@ use bsv_rs::transaction::{Beef, ChainTracker, MerklePath, MerklePathLeaf, MockCh
 use chrono::Utc;
 
 use super::create_action::{
-    beef_bfs_walk, compact_stored_beef, describe_invalid_beef, prune_beef_to_roots,
+    beef_bfs_walk, compact_stored_beef, describe_invalid_beef, link_txids_carried_by_bumps,
+    prune_beef_to_roots,
 };
 use super::reorg_tests::{child_spending, seed_user, txid_of, COINBASE_TXID};
 use super::StorageSqlx;
@@ -422,5 +423,90 @@ async fn the_monitors_compaction_stores_the_leaf_flagged() {
     assert!(
         leaf_flagged(&after, &x.b.1),
         "b's leaf is flagged in storage"
+    );
+}
+
+// =============================================================================
+// bsv-rs #732, #765: of two BUMPs holding a txid the LAST is its proof, as
+// the reference's index answers (ts-stack@edf6e03 `Beef.ts:576-585`): the
+// walk's shortcut and the carried-txid linker take it too
+// =============================================================================
+
+/// A second block's path holding `b` at offset 0 beside another leaf, at
+/// `HEIGHT + 1` (a reorg's second proof of one txid).
+fn second_proof_of(b: &str) -> MerklePath {
+    let leaf = |offset: u64, hash: String, txid: bool| MerklePathLeaf {
+        offset,
+        hash: Some(hash),
+        txid,
+        duplicate: false,
+    };
+    MerklePath {
+        block_height: HEIGHT + 1,
+        path: vec![vec![
+            leaf(0, b.to_string(), false),
+            leaf(1, "cd".repeat(32), false),
+        ]],
+    }
+}
+
+/// The walk meets `b`, which two BUMPs of the BEEF hold, and links the stored
+/// transaction to the last of them. Red with the earliest (`position`), the
+/// toolbox's own index before the beta.7 re-pin.
+#[tokio::test]
+async fn the_walk_links_a_txid_two_bumps_hold_to_the_last_732() {
+    let x = siblings();
+    let s = soak_storage(&x).await;
+    let mut beef = Beef::new();
+    beef.merge_bump(path_flagging(&x.a.1, &x.b.1, &x.a.1));
+    beef.merge_bump(second_proof_of(&x.b.1));
+    assert_eq!(beef.bumps.len(), 2, "two blocks, two BUMPs");
+    let mut conn = s.pool().acquire().await.unwrap();
+    let mut pending = vec![(x.b.1.clone(), 0)];
+    let mut processed = HashSet::new();
+    let walked = beef_bfs_walk(
+        &mut conn,
+        Some(s.writer()),
+        &mut beef,
+        &mut pending,
+        &mut processed,
+        Some(&s),
+        None,
+    )
+    .await;
+    walked.unwrap();
+    let linked = beef.find_txid(&x.b.1).and_then(|t| t.bump_index());
+    assert_eq!(linked, Some(1), "b's proof is the last BUMP holding it");
+    assert_eq!(beef.find_bump(&x.b.1).unwrap().block_height, HEIGHT + 1);
+}
+
+/// The carried-txid linker, on an entry no merge linked (the bytes a
+/// beta.6 or go-sdk writer leaves): the last BUMP holding it, its leaf
+/// flagged. Red with the earliest.
+#[test]
+fn the_linker_takes_the_last_bump_holding_a_txid_765() {
+    let x = siblings();
+    let mut beef = Beef::new();
+    beef.merge_bump(path_flagging(&x.a.1, &x.b.1, &x.a.1));
+    beef.merge_bump(second_proof_of(&x.b.1));
+    beef.merge_raw_tx(x.b.0.clone(), None);
+    for tx in beef.txs.iter_mut() {
+        tx.set_bump_index(None);
+    }
+    for bump in beef.bumps.iter_mut() {
+        for leaf in bump.path[0].iter_mut() {
+            leaf.txid = leaf.hash.as_deref() == Some(x.a.1.as_str());
+        }
+    }
+    link_txids_carried_by_bumps(&mut beef);
+    assert_eq!(beef.find_txid(&x.b.1).unwrap().bump_index(), Some(1));
+    let flagged = |i: usize| {
+        beef.bumps[i].path[0]
+            .iter()
+            .any(|l| l.txid && l.hash.as_deref() == Some(x.b.1.as_str()))
+    };
+    assert!(
+        flagged(1) && !flagged(0),
+        "the last BUMP's leaf alone flagged"
     );
 }

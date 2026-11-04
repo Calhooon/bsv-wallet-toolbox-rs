@@ -105,7 +105,10 @@ pub(in crate::storage::sqlx) fn merge_proof_for(
 /// a sibling hash (the template BEEF of P0-1d, handed back as `inputBEEF`)
 /// arrives with that transaction unproven and its parent demanded. Every
 /// level-0 hash of a merkle path is a transaction of that block, so the link
-/// claims nothing the path does not prove; the roots are still checked.
+/// claims nothing the path does not prove; the roots are still checked. Of
+/// two BUMPs holding the txid the last is taken, as the reference's index
+/// answers (`Beef.ts:576-585`). Since bsv-rs 0.9.0-beta.7 (#765) its merges
+/// link so themselves; this pass keeps the rule for an entry they did not.
 pub(in crate::storage::sqlx) fn link_txids_carried_by_bumps(beef: &mut Beef) {
     let unlinked: Vec<(usize, String)> = beef
         .txs
@@ -116,7 +119,7 @@ pub(in crate::storage::sqlx) fn link_txids_carried_by_bumps(beef: &mut Beef) {
         .collect();
     let mut linked = false;
     for (i, txid) in unlinked {
-        if let Some(bump_idx) = beef.bumps.iter().position(|b| b.contains(&txid)) {
+        if let Some(bump_idx) = beef.bumps.iter().rposition(|b| b.contains(&txid)) {
             flag_txid_leaf(&mut beef.bumps[bump_idx], &txid);
             beef.txs[i].set_bump_index(Some(bump_idx));
             linked = true;
