@@ -732,5 +732,6 @@ async fn internalize_on(
 }
 
 mod network_words;
+mod pubkey_encoding_660;
 mod reader_witnesses;
 mod scriptcode_654;
