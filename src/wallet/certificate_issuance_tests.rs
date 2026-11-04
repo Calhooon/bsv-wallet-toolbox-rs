@@ -581,3 +581,28 @@ fn an_uncompressed_key_text_does_not_verify_as_the_reference_refuses_it() {
         "certifier {certifier} verified; the reference's toBinary refuses it"
     );
 }
+
+/// An issued certificate's subject or certifier at x = p + 1 (bsv-rs #610's
+/// `x_above_p`): `toBinary` writes the text (bsv-rs's
+/// `certificate_key_bytes` answers its bytes unreduced), and no key can be
+/// held of it (`PublicKey::from_bytes` refuses x at or above p, #183), so
+/// `certificate_key` answers none and the response is refused, as the
+/// reference's `verify()` answers false for a point no one holds the key
+/// to. The texts the helper refuses stay refused; a valid key is held.
+#[test]
+fn a_key_above_p_is_written_by_to_binary_and_never_held() {
+    let above_p = "02fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc30";
+    for field in ["subject", "certifier"] {
+        assert!(bsv_rs::auth::certificates::certificate_key_bytes(above_p, field).is_ok());
+        assert!(certificate_key(above_p, field).is_none(), "{field}");
+        assert!(certificate_key(&format!(" {}", &above_p[1..]), field).is_none());
+    }
+    let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
+    let issued = fixture.reference_issued;
+    let parsed = parse_issued(&issued);
+    let certifier = parsed.certificate.certifier.clone();
+    assert!(certificate_key(&certifier, "certifier").is_some());
+    let mut raw = parsed.certificate.clone();
+    raw.certifier = above_p.to_string();
+    assert!(!issued_certificate_verifies(&raw));
+}
