@@ -77,6 +77,16 @@ Normalization preserves nulls, flags, counts, order, values and relationships:
   Mock broadcast byte counts are canonicalized to 107-byte P2PKH unlocks only
   when the count matches a BEEF reconstructed from the persisted request.
 
+The permission grant scene (#751 step 2a, `storage/permission_grant.rs`, its
+data `data/permissions/protocol_grant_mint.json`) seeds the recorded funding and
+drives a `WalletPermissionsManager` over a wallet on that store: a seek-false key
+call is refused, a seeking one prompts and the grant mints one 1-satoshi token in
+`admin protocol-permission` under the recorded tags, its six fields decrypting to
+the recorded plaintexts, delayed, so the mock services see no post; a new manager
+over the same store, with no handler and an empty cache, admits the seek-false
+call from the token. A token's ciphertexts take a fresh IV each run, so the scene
+checks plaintexts, the script's shape and the rows; it is not a snapshot replay.
+
 Database rows occupy one JSON line each to keep the 100-coin offer in one file
 below 800 lines. The formatter and offset/script preservation have focused tests.
 
