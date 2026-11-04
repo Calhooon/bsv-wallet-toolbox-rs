@@ -471,3 +471,74 @@ async fn other_names_take_the_ordinary_check() {
     .unwrap();
     assert!(module.asked().is_empty());
 }
+
+// =========================================================================
+// The spending check judges the action the modules answered (`:4516`).
+// =========================================================================
+
+/// A module answering `satoshis` on the one output of the action.
+fn spending(satoshis: u64) -> Arc<Rewriter> {
+    let output = json!({ "lockingScript": "006a", "satoshis": satoshis,
+        "outputDescription": "a module witness", "basket": "p btms coins" });
+    Rewriter::new(json!({ "outputs": [output] }), json!({}))
+}
+
+/// A wallet whose module is `module`, its user granted a spend of 600.
+async fn granted(
+    module: Arc<Rewriter>,
+) -> (tempfile::TempDir, TestWallet, Arc<StdMutex<Vec<String>>>) {
+    let (dir, wallet, prompts) = funded(vec![("btms", module)]).await;
+    // `build_cache_key`'s spending key, `spend:<originator>:<satoshis>`.
+    let key = format!("spend:{ORIGINATOR}:600");
+    let manager = wallet.permissions_manager().unwrap();
+    manager.cache_permission(key, 0).await;
+    (dir, wallet, prompts)
+}
+
+#[tokio::test]
+async fn module_cannot_lift_the_spending_ceiling() {
+    // The refusal a caller asking 1000 past the grant is given.
+    let (_dir, wallet, _prompts) = granted(Rewriter::quiet()).await;
+    let mut direct = creating("p btms coins", "plain");
+    direct.outputs.as_mut().unwrap()[0].satoshis = 1000;
+    let expected = wallet
+        .create_action(direct, Some(ORIGINATOR))
+        .await
+        .expect_err("direct");
+    assert!(matches!(expected, bsv_rs::Error::WalletRefusal { .. }));
+    // A module raising the zero-satoshi output to 1000 meets it too.
+    let (_dir, wallet, prompts) = granted(spending(1000)).await;
+    let answer = call(
+        &wallet,
+        "create_action",
+        "p btms coins",
+        "plain",
+        ORIGINATOR,
+    )
+    .await;
+    let err = answer.expect_err("past the ceiling");
+    assert_eq!(format!("{err:?}"), format!("{expected:?}"));
+    assert_eq!(err.to_string(), expected.to_string());
+    assert_eq!(prompts.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn module_answering_within_the_ceiling_is_admitted() {
+    let (_dir, wallet, prompts) = granted(spending(600)).await;
+    call(
+        &wallet,
+        "create_action",
+        "p btms coins",
+        "plain",
+        ORIGINATOR,
+    )
+    .await
+    .unwrap();
+    let (satoshis,): (i64,) =
+        sqlx::query_as("SELECT satoshis FROM outputs WHERE locking_script = X'006a'")
+            .fetch_one(wallet.storage().pool())
+            .await
+            .unwrap();
+    assert_eq!(satoshis, 600);
+    assert!(prompts.lock().unwrap().is_empty());
+}

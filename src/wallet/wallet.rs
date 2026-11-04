@@ -1224,9 +1224,12 @@ where
     /// outputs' `p <scheme>` baskets and the `p <scheme>` labels name, ahead
     /// of every check (`WalletPermissionsManager.ts:4300-4302`; the door has
     /// refused `p nosend ` labels already, so `nosend` here is a basket);
-    /// the checks; then `onRequest` in order, its arguments validated again
-    /// as the reference's underlying call validates its own
-    /// (`callCreateActionWithPModules`, `:4500-4520`).
+    /// the basket checks (`:4305-4312`); `onRequest` in order, its arguments
+    /// validated again as the reference's underlying call validates its own
+    /// (`callCreateActionWithPModules`, `:4500-4520`); then the spending
+    /// check on the arguments the modules answered, as the reference
+    /// authorises the spend of the action they built (`getExactActionSpend`,
+    /// `:4516`): a module cannot lift the ceiling.
     async fn create_action_admit(
         &self,
         args: CreateActionArgs,
@@ -1238,18 +1241,19 @@ where
             args.labels.iter().flatten().map(String::as_str),
             crate::managers::NoSend::Refuse(crate::managers::BRC177_UNSUPPORTED),
         )?;
-        self.check_create_permissions(&args, originator).await?;
+        self.check_create_baskets(&args, originator).await?;
         let module_originator = originator.unwrap_or_default();
         let args = crate::managers::chain_request(&chain, args, module_originator).await?;
         if !chain.is_empty() {
             super::create_args::validate_create_action_args(&args)?;
         }
+        self.check_create_spending(&args, originator).await?;
         Ok((args, chain))
     }
 
-    /// `create_action`'s spending and basket checks; a `p <scheme>` basket
-    /// is its module's (`:4305`).
-    async fn check_create_permissions(
+    /// `create_action`'s basket checks; a `p <scheme>` basket is its
+    /// module's (`:4305`).
+    async fn check_create_baskets(
         &self,
         args: &CreateActionArgs,
         originator: Option<&str>,
@@ -1257,20 +1261,29 @@ where
         if self.permissions_manager.is_none() {
             return Ok(());
         }
-        // BRC-98/99: Check spending permission based on total output satoshis
         let outputs = args.outputs.as_deref().unwrap_or_default();
-        let total_satoshis: u64 = outputs.iter().map(|o| o.satoshis).sum();
-        if total_satoshis > 0 {
-            self.check_spending_permission(originator, total_satoshis)
-                .await?;
-        }
-        // Also check basket access for any outputs that target specific baskets
         for basket in outputs.iter().filter_map(|o| o.basket.as_deref()) {
             if crate::managers::module_scheme(basket).is_none() {
                 let insertion = crate::managers::BasketUsageType::Insertion;
                 self.check_basket_permission(originator, basket, insertion)
                     .await?;
             }
+        }
+        Ok(())
+    }
+
+    /// `create_action`'s spending check (BRC-98/99) on the total output
+    /// satoshis.
+    async fn check_create_spending(
+        &self,
+        args: &CreateActionArgs,
+        originator: Option<&str>,
+    ) -> Result<()> {
+        let outputs = args.outputs.as_deref().unwrap_or_default();
+        let total_satoshis: u64 = outputs.iter().map(|o| o.satoshis).sum();
+        if total_satoshis > 0 {
+            self.check_spending_permission(originator, total_satoshis)
+                .await?;
         }
         Ok(())
     }
