@@ -278,6 +278,24 @@
     the earliest; the create walk's shortcut and the carried-txid linker
     follow (`sibling_bump_tests.rs`).
 
+  Not reaching the toolbox (grep at the pin): #631, #641 and #649
+  (`MerklePath::new`'s refusal texts and the empty path): the two
+  constructor sites, `src/tsc_proof.rs:115` and
+  `src/services/services.rs:3052`, refuse an empty node list, build a txid
+  leaf at level 0 and siblings on the path, so no moved shape reaches
+  them; #625 (the P2PK and Multisig locks): no caller, the toolbox locks
+  P2PKH alone; #723 (`to_asm`'s names): no caller; #616 (PushDrop's
+  `canonical_refusal`): no caller, the toolbox calls `PushDrop::decode`;
+  #718 (the contacts manager): no caller; #721 and #730 (the
+  `IdentityClient`'s `ls_identity` parsers): the toolbox ports the
+  reference wallet's discovery and builds no `IdentityClient`. #634 (the
+  chunker's IF depth) reaches `script.chunks()` and `PushDrop::decode` at
+  `lookup_decode.rs` and `permissions_manager.rs:1586` only on a script
+  with a stray `OP_ENDIF` ahead of an `OP_RETURN`: the identity read's
+  five-chunk shape and the permission token's byte-equal re-lock refuse
+  one at both pins; the SLAP host read's field scan may read other fields
+  on one, a token the reference's canonical read refuses (#813, the move
+  onto bsv-rs's admin-token decoder).
 - #332 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
   certificate issuance posts to `<certifierUrl>/signCertificate`, as the
   reference's door resolves ``new URL('signCertificate', `${certifierUrl}/`)``
