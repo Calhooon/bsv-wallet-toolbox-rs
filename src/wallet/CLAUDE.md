@@ -73,6 +73,9 @@ from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
 | `InvalidIdentityKey(detail)` | `InvalidPublicKey` | `WERR_INVALID_PUBLIC_KEY` | `Invalid identity key: {detail}` |
 | `InsufficientFunds { needed, available }` | `InsufficientFunds` | `WERR_INSUFFICIENT_FUNDS` | `Insufficient funds: need {needed}, have {available}` |
 | `StorageNotAvailable` | `NotActive` | `WERR_NOT_ACTIVE` (nearest) | `Storage not available` |
+| Permission module, unregistered scheme (#726) | `InvalidParameter` | plain `Error` (`WalletPermissionsManager.ts:859`); the keeper's reading | `Unsupported P-module scheme: p <scheme>` |
+| Permission module, `p nosend` on a key call (#726) | `InvalidParameter` | plain `Error` (`WalletPermissionsManager.ts:800`) | `BRC-177 noSend expiry labels are only valid for createAction and listActions` |
+| Permission module's own refusal or unparsable answer (#726) | `InvalidParameter` | the module's `Error`, unwrapped | the module's text, or `P-module <key> for <method> is invalid` / `must be an object`, no prefix |
 
 Neither reference supplies dedicated not-found, duplicate, unspendable-coin,
 failed-ancestor or storage-not-available classes. The nearest classes describe

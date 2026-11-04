@@ -202,6 +202,31 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #726 (the keeper's 2026-11-03 22:0xZ reading): the permission modules'
+  `on_request` and `on_response` on the seven key calls, as the reference's
+  `delegateToPModuleIfNeeded` does (ts-stack@edf6e03
+  `WalletPermissionsManager.ts:843-885`, the wrappers `:5142-5385`). A
+  `get_public_key`, `encrypt`, `decrypt`, `create_hmac`, `verify_hmac`,
+  `create_signature` or `verify_signature` whose protocol name starts
+  `p ` (as passed, case-sensitive) goes to the module in
+  `WalletPermissionsManagerConfig::permission_modules` under the name's
+  second word: the module's `on_request` gets the method's camelCase name,
+  the arguments in the reference's JSON and the originator, and answers the
+  arguments the key route runs with; its `on_response` answers the result
+  the caller gets. The protocol check (admin, level 0, the whitelist, the
+  seek flag, the prompt) is skipped for that call. `get_public_key`
+  delegates only with a protocol id, ahead of the identity-key check; the
+  two linkage reveals never delegate. `nosend` is the reference's built-in
+  module (`:792-801`): a host's entry under it is ignored, and a key call
+  under `p nosend ...` is refused with `BRC-177 noSend expiry labels are
+  only valid for createAction and listActions`. No new public item. Host
+  note (bsv-wallet-cli#386): a registered module is asked for a
+  `p <scheme>` protocol where the ordinary check ran; a grant held under a
+  `p ` name is no longer consulted, so that call needs a module; no config
+  flag governs it; an unregistered scheme is refused with
+  `WalletRefusal { class: InvalidParameter }` and the message
+  `Unsupported P-module scheme: p <scheme>`, no prefix, and a module's own
+  refusal crosses the same way with the module's text.
 - #573 (tests; no code): `own_word.rs`'s two survivors under the door
   oracle of the oracle-widening lane (#535). `46:47: replace match guard
   text == NO_HEADER_SERVICE with true in own_word_tip` is killed by a lib

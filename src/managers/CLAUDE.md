@@ -99,7 +99,7 @@ pub use permissions_manager::{
 - `GroupedPermissions` - BRC-73 grouped permissions (spending, protocol, basket, certificate)
 - `PermissionRequest` - Permission request from an application (includes `operation` field)
 - `PermissionToken` - On-chain permission token (BRC-98/99)
-- `PermissionsModule` - Trait for request/response transformation by scheme
+- `PermissionsModule` - Trait for request/response transformation by scheme; read by the seven key calls (#726, below)
 
 ### Logging
 
@@ -375,6 +375,10 @@ Each `ensure_*` method follows the same pattern:
 4. **Cache check** - In-memory cache with 5-minute TTL (`CACHE_TTL_SECS`), then the stored token in the kind's admin basket (protocol, basket, certificate; #751 step 1)
 5. **Permission request flow** - Invokes `PermissionRequestHandler` callback for user consent
 6. **Cache result** - Granted permissions are cached for subsequent calls
+
+### Permission Modules (#726)
+
+A key call (`get_public_key` with a protocol id, `encrypt`, `decrypt`, `create_hmac`, `verify_hmac`, `create_signature`, `verify_signature`) whose protocol name starts `p ` is delegated before any step of the enforcement flow, admin included (`WalletPermissionsManager.ts:843-885`, `:5142-5385`). The crate-private `delegate_key_call` takes the scheme as the name's second word (`module_scheme`), refuses `nosend` with `:800`'s text without reading the map (the reference's built-in module overwrites a host's), refuses an unregistered scheme with `Unsupported P-module scheme: p <scheme>`, then runs `on_request` (its returned `Value` is the arguments object itself, not `{ args }`), the key route on the parsed arguments, and `on_response`. Every refusal is `WalletRefusal { class: InvalidParameter }` with the text alone. The JSON mappings to the reference's objects are `ModuleCall`, one `module_call!` row per call (`protocolID` `[level, name]`, counterparty `self`/`anyone`/hex, bytes as number arrays, absent options omitted). The linkage reveals and the basket/label calls do not delegate; `handleRequest` is not ported (the owner's word).
 
 ### Whitelisted Counterparties
 
