@@ -41,10 +41,11 @@ jobs:
       # occupancy read repeats every 48 hours and re-sets the number.
       max-parallel: 4
       matrix:
-        # 2183 mutants at about 90 s each (build plus the whole lib suite) need 16
+        # 2218 mutants at about 90 s each (build plus the whole lib suite) need 16
         # shards to stay under the job limit. The four doors that judge under the
         # node's word (three in create_action and beef_verification/own_word.rs,
-        # #572) are not in this set; the doors job measures them (#535).
+        # #572) and services/providers/bhs.rs (#602) are not in this set; the
+        # doors job measures them (#535).
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -130,12 +131,13 @@ jobs:
   doors:
     # The doors that judge under the node's word (must_spend, own_word,
     # review_beef and beef_verification/own_word.rs; the owner's word of
-    # 2026-11-01 14:1xZ and 14:4xZ, #535; #572):
+    # 2026-11-01 14:1xZ and 14:4xZ, #535; #572) and the header service's root
+    # verdict (services/providers/bhs.rs, #602):
     # `.cargo/mutants-doors.toml`, the lib and every integration target that
-    # enters a door function. 68 mutants since #572 (45 before); each builds the
-    # lib and six test binaries and runs the lib suite and those targets, about
-    # 2.8 minutes a mutant, so two shards of about 95 minutes keep each well
-    # under the job limit.
+    # enters a door function. 85 mutants since #602 (68 since #572, 45 before);
+    # each builds the lib and six test binaries and runs the lib suite and those
+    # targets, about 2.8 minutes a mutant, so two shards of about 120 minutes
+    # keep each well under the job limit.
     name: Mutants doors shard ${{ matrix.shard }}/2
     runs-on: ubuntu-latest
     timeout-minutes: 330
