@@ -10,7 +10,7 @@ half hours queued every other repository's CI behind them. The schedule returns
 when the run is shaped to finish: the three door files (861 mutants) nightly in
 fewer shards and the full inventory weekly, a cheaper per-mutant build, or both.
 It is informational and must not become a required branch protection context.
-Beside the sixteen shards, the `doors` job runs the three doors that judge under
+Beside the sixteen shards, the `doors` job runs the four doors that judge under
 the node's word in two shards of their own, under a wider oracle (below, #535).
 Each shard uploads its `mutants.out`, inventory and exit code for 14 days, even
 on failure. `Mutation scores` combines disjoint outcomes of both shard groups against the
@@ -108,8 +108,10 @@ every target once; the table and the figures before and after the widening are
 `docs/census/mutants-oracle-2026-11-01.md`, and the door floors in
 `tools/mutants-floor.json` come from the widened figure only.
 
-The 45 door mutants run as their own shard group, `doors`, two round-robin
-shards. The five targets add five test binaries to each mutant's build and about
+The 68 door mutants (45 before #572 added `beef_verification/own_word.rs` and
+`internalize_custom_instructions_tests` to the oracle) run as their own shard
+group, `doors`, two round-robin shards. The six targets add six test binaries to
+each mutant's build and about
 13 s to its test run beside the lib's (the `fixtures` suite 11.7 s on the lane
 host), so a door mutant costs about what a lib mutant costs (about 2.8 minutes on
 the runners, mostly the build): 23 mutants a shard is about 64 minutes, inside
@@ -143,7 +145,10 @@ No cap applies: a file measured above 80 carries its measured figure as its floo
   `chaintracks_client.rs`, `fallback_chain_tracker.rs`);
 - a file whose figure fell below its existing floor keeps the floor, and is a
   finding;
-- the three doors keep the floors #571 wrote from the widened figure (80, 71, 80);
+- the three create_action doors keep the floors #571 wrote from the widened
+  figure (80, 71, 80), #573 raising own_word.rs's to 80 and #574 keeping
+  must_spend.rs's at 80 with 100 measured; beef_verification/own_word.rs's floor
+  is 100 (#572, 19 of 19);
 - each comment names the record, the figure, the date and the oracle, and a file
   whose figure carries a timeout under the restored environment names it.
 
@@ -200,7 +205,7 @@ mutant per `cargo mutants` call: `--no-config --file F --in-diff <that line>
 --cargo-arg=--lib --cap-lints true`, five workers on warmed snapshots under
 `$TMPDIR`, driven by `drive.py` in the evidence directory and scored with
 `score.sh` there (`tools/mutants-score --baseline-skipped`). The baseline was
-green before the runs (`cargo test --lib`: 957 passed). Outside the three doors
+green before the runs (`cargo test --lib`: 957 passed). Outside the four doors
 the runs skip one test, `wallet::wallet::busy_door_tests::a_wallet_and_a_monitor_over_one_store_share_the_writer`
 (52 s under load, a wallet-level store test): skipping a test can only lose
 kills, so those scores are lower bounds on the nightly's. The doors ran the
