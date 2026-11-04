@@ -582,8 +582,12 @@ so an argument refusal (the `privilegedReason` text among them) keeps its
 text and place with and without a manager, as the reference's order has
 it: its substrates run `validateWalletArgs` ahead of `Wallet.ts`
 (`WalletArgumentValidation.ts`, from `HTTPWalletJSON.ts:48`,
-`WalletWireProcessor.ts:21`). The no-manager refusal answers only a valid
-privileged request; the reveals' validators are reached through the
+`WalletWireProcessor.ts:21`). The seven key calls are judged by bsv-rs's
+public validators, one per reference site (`validate_get_public_key_args`
+through `validate_verify_signature_args`, `validationHelpers.ts:1717-1804`,
+bsv-rs #609 since 0.9.0-beta.7), where the toolbox ran the everyday
+ProtoWallet's call only to keep its refusal. The no-manager refusal answers
+only a valid privileged request; the reveals' validators are reached through the
 ProtoWallet's `WalletInterface` adapter, which checks the `privileged` and
 `privilegedReason` its inherent types omit. `key_route.rs` holds the route;
 the wallet's nine calls and the certificate paths share it. The reveals ask
