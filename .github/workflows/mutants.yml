@@ -54,7 +54,8 @@ jobs:
         # 2180 mutants (at beta 6db6a159; the count moves with the lib) at about
         # 90 s each (build plus the whole lib suite): 24 shards of about 91
         # mutants, about 2.5 hours each, so two waves at twelve fit the window
-        # (16 shards of 204 minutes took two waves of 3.4 hours). The four doors that judge under the
+        # (16 shards of 204 minutes took two waves of 3.4 hours). The four
+        # doors that judge under the
         # node's word (three in create_action and beef_verification/own_word.rs,
         # #572), services/providers/bhs.rs (#602) and create_action/mod.rs (#604)
         # are not in this set; the doors job measures them (#535).
