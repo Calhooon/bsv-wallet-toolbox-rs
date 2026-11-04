@@ -28,9 +28,11 @@ pub(super) const RESPONSE_DEADLINE: Duration = Duration::from_secs(30);
 const TIMED_OUT: &str = "Timed out waiting for authenticated response.";
 
 /// Posts `body` as JSON to `endpoint` over BRC-104 and answers the verified
-/// sender with the response. The transport is the shared guarded one: under
-/// test and bench-support every send, the handshake included, is checked
-/// against #182's policy and goes through its client (`with_client`).
+/// sender with the response. In production the transport's client is the
+/// public one (`public.rs`, #334): the endpoint checked, its host resolved to
+/// public addresses only and pinned to them, no redirect. Under test and
+/// bench-support every send, the handshake included, is checked against
+/// #182's policy and goes through its client (`with_client`).
 pub(super) async fn post_authenticated(
     peer_wallet: ProtoWallet,
     endpoint: &str,
@@ -39,9 +41,19 @@ pub(super) async fn post_authenticated(
 ) -> Result<(PublicKey, HttpResponse)> {
     let url = Url::parse(endpoint)
         .map_err(|e| Error::NetworkError(format!("Invalid certifier URL: {e}")))?;
+    let origin = url.origin().ascii_serialization();
+    // Production: the reference's `createPublicHTTPSFetch(endpoint.origin)`
+    // (`Wallet.ts:773`, #334); under test and bench-support the #182 wrapper.
+    #[cfg(not(any(test, feature = "bench-support")))]
+    let transport = SimplifiedFetchTransport::with_client(
+        &origin,
+        super::public::public_client(&url, super::public::system_resolver).await?,
+    );
+    #[cfg(any(test, feature = "bench-support"))]
+    let transport = SimplifiedFetchTransport::new(&origin);
     let peer = Peer::new(PeerOptions {
         wallet: peer_wallet,
-        transport: SimplifiedFetchTransport::new(&url.origin().ascii_serialization()),
+        transport,
         certificates_to_request: None,
         session_manager: None,
         auto_persist_last_session: false,
