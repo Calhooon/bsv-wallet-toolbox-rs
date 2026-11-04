@@ -177,6 +177,7 @@ pub use managers::{
     PermissionUsageType,
     PermissionsModule,
     Profile,
+    RequestUsageType,
     // Setup helpers
     SetupWalletOptions,
     // Simple wallet manager

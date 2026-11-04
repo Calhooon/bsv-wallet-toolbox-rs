@@ -341,6 +341,14 @@ parity-safe on its own, so the decision on the public shape (step 2) can wait wi
 cheaper of the two (C) forms, as a builder method, with step 1's read of the admin baskets
 beside it so that tokens are still honoured.
 
+**Status (2026-11-04).** Step 1 landed (PR #767). Step 2a landed on the owner's word of
+2026-11-04 13:5xZ: (P), the answer shape `grant_permission(request_id, ..)` and
+`deny_permission` beside the handler, the mint on a persistent grant
+(`src/managers/permission_grant.rs`, `:1104-1149`, `:3349-3392`), the grant rule as a
+fixtures corpus scene. Step 2b (renewal, coalescing, revocation, the lists and probes, the
+token input signer) and step 2c (the spending token's labels, lookup and monthly tally) are
+open.
+
 Questions for the owner: (a) the parity target (P) or the divergence (C1/C2); (b) under (P),
 the answer shape: `grant_permission(request_id, ..)` beside the handler, or the handler's
 answer read as the grant with a new ephemeral flag; (c) whether step 1 may land alone ahead of

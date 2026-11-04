@@ -3,6 +3,44 @@
 ## [Unreleased]
 
 ### Added
+- #751 step 2a (the owner's word of 2026-11-04 13:5xZ, api-break): a
+  persistent permission grant mints the reference's token, and the host can
+  answer a request by its id. `WalletPermissionsManager::grant_permission(
+  request_id, expiry, ephemeral, amount)` and `deny_permission(request_id)`,
+  the reference's `grantPermission` and `denyPermission` (ts-stack@edf6e03
+  `WalletPermissionsManager.ts:1160-1205`): every caller waiting on the
+  request admitted or refused with `Permission denied.`, an ephemeral grant
+  ending there with nothing cached or minted (`:1179`), an unknown id
+  `Request ID not found.`. The handler stays and receives the request with
+  its `request_id`; it may answer through either method while it runs or
+  stay pending, and a token it returns unanswered reads as a persistent
+  grant with the token's expiry. A persistent grant mints, as
+  `grantPersistentPermission` and `createPermissionOnChain` do
+  (`:1104-1149`, `:3349-3392`): the kind's fields encrypted to the wallet
+  under `[2, 'admin permission token encryption']`, the PushDrop lock with
+  its signature, the kind's tags, one 1-satoshi output in `admin
+  protocol-permission`, `admin basket-access`, `admin certificate-access` or
+  `admin spending-authorization`, through the underlying wallet's
+  `create_action` as the admin originator under `acceptDelayedBroadcast`;
+  a duplicate mint is skipped while the grant is cached, inside its
+  15-second cover or in flight (never for spending), and the protocol,
+  basket and certificate checks read the cover and an in-flight mint beside
+  the cache. So #751's case closes: a seek-false call is admitted from the
+  token after the five-minute cache and across a restart. An underlying
+  that cannot create actions (a `ProtoWallet`) mints nothing and the grant
+  stands on the cache, as before. `PermissionRequest` gains `request_id`,
+  `renewal` and `previous_token`; `PermissionToken` gains `raw_originator`
+  (a MAJOR change to `cargo semver-checks`: both are constructible public
+  structs). Renewal, revocation, the lists and the token input signer are
+  lane b's; the spending token's lookup and monthly tally lane c's. Host
+  note (bsv-wallet-cli#386): a persistent grant now spends from the
+  wallet's balance, one transaction per grant (a 1-satoshi token output and
+  its fee, under acceptDelayedBroadcast, sent by the monitor), and a grant
+  older than five minutes or from before a restart now admits where it
+  prompted or refused; a mint that fails (no spendable coin) admits the
+  caller, logs and caches nothing, so the next call prompts again; a
+  handler that constructs a `PermissionRequest` or a `PermissionToken`
+  literal must name the new fields.
 - #725 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
   `WalletPermissionsManager::with_whitelisted_counterparties(map) -> Self`,
   the reference's `whitelistedCounterparties` (ts-stack@edf6e03
@@ -229,6 +267,28 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #763 (the owner's word of 2026-11-04 13:5xZ, api-break, in #751 step 2's
+  release): `PermissionRequest` carries the usage it asks for, as the
+  reference's request carries `usageType` (ts-stack@edf6e03
+  `WalletPermissionsManager.ts:311`), so a handler tells a signing prompt
+  from a linkage-revelation prompt for one protocol. The new field
+  `usage_type: Option<RequestUsageType>` (serde `usageType`, omitted when
+  none) is set by the manager on every protocol request (the seven
+  `PermissionUsageType` values, wire names `signing`, `encrypting`, `hmac`,
+  `publicKey`, `identityKey`, `linkageRevelation`, `generic`), every basket
+  request (`insertion`, `removal`, `listing`) and every certificate request
+  (`disclosure`), as the reference sets it at `:1540`, `:1599` and `:1687`;
+  a spending request carries none. The request id appends the usage name,
+  as `buildActiveRequestKey` does (`:5830-5840`): two usages of one
+  protocol, basket or certificate prompt apart, one usage asked twice
+  prompts once; the grant and its cache stay keyed without it
+  (`:5816-5828`). `PermissionUsageType`, `BasketUsageType` and
+  `CertificateUsageType` gain serde. A MAJOR change to `cargo
+  semver-checks`: `PermissionRequest` is a constructible public struct.
+  Host note (bsv-wallet-cli#386): a handler that matches on the request's
+  fields sees one more; a handler that constructs a `PermissionRequest`
+  literal names `usage_type`; a host that compares request ids sees the
+  usage name at their end.
 - #332 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
   certificate issuance posts to `<certifierUrl>/signCertificate`, as the
   reference's door resolves ``new URL('signCertificate', `${certifierUrl}/`)``

@@ -70,7 +70,7 @@ pub use ump_token::{KdfAlgorithm, PasswordKdf, UmpToken, WalletSnapshot};
 pub use permissions_manager::{
     BasketUsageType, CertificateUsageType, GroupedPermissions, PermissionRequest,
     PermissionRequestHandler, PermissionToken, PermissionUsageType, PermissionsModule,
-    WalletPermissionsManager, WalletPermissionsManagerConfig,
+    RequestUsageType, WalletPermissionsManager, WalletPermissionsManagerConfig,
 };
 
 // The key calls' permission-module delegation, crate-private (#726).
