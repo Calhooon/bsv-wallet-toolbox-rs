@@ -669,6 +669,20 @@ the `certifiers` parameter; the CLI implements no resolver today (#347).
 `HttpLookupResolver` includes the array in both query bodies. Discovery still
 applies the wallet's trust settings to the returned certificates.
 
+Read at the bsv-rs 0.9.0-beta.7 re-pin against bsv-rs's `IdentityClient`
+filters (#737, #739, #744, #746, #752, #754): the toolbox ports the reference
+wallet's discovery (ts-stack@edf6e03 `Wallet.ts:966-1080`), not the SDK's
+identity client, and agrees with it: `discover_by_identity_key` asks
+`ls_identity` `{identityKey, certifiers}` and keeps the asked subject's
+certificates alone, case-blind (`filter_by_identity_key`, the reference's
+`filterCertificatesByIdentityKey`, `identityUtils.ts:247-255`);
+`discover_by_attributes` asks `{attributes, certifiers}` and keeps what
+`filterCertificatesByAttributes` keeps; the wallet asks no type question.
+The evidence graph (`lookup_evidence.rs`) reads raw entries alone, so a
+txid-only parent before an unproven subject is dropped (`a parent not in its
+BEEF`), as the reference's `assertUnconfirmedGraph` skips it: the residue
+bsv-rs stated before #730 does not arise here. No row.
+
 ### HttpLookupResolver
 
 Default implementation that queries overlay `/lookup` endpoints via HTTP POST. Features:
@@ -678,6 +692,20 @@ Default implementation that queries overlay `/lookup` endpoints via HTTP POST. F
 - Answers the outputs of the overlay's `output-list` answer as it read them (`answer_outputs`); the door verifies and decodes them
 - Default hosts: `https://lookup.babbage.systems` (mainnet), `https://staging-lookup.babbage.systems` (testnet)
 - 10-second request timeout per endpoint
+- No host reputation (read at the bsv-rs 0.9.0-beta.7 re-pin against bsv-rs
+  #760, #762, #768): the resolver asks the SLAP hosts in order and returns
+  the earliest answering host's parsed `LookupAnswer` (serde, `bsv_rs::overlay::types`,
+  unchanged at beta.7), an empty output list and a freeform answer (no
+  outputs) included; a transport fault, a non-2xx status, an `error` body or
+  an unparseable answer moves to the next host. It records nothing per host
+  and never backs one off; bsv-rs's `LookupResolver`, its process-global
+  `HostReputationTracker` and its JSON facilitator parse are not on any
+  toolbox path, so their beta.7 accounting (any output list a success, a
+  freeform answer neutral, as ts-stack@edf6e03 `LookupResolver.ts:2395-2402`
+  keeps it; `ts-sdk@9e3ede6` records a freeform answer a failure) reaches no
+  toolbox call. Parity row (pre-existing, not moved by the pin): the
+  reference queries every competent host and keeps each host's reputation;
+  this resolver stops at the earliest answer.
 
 ### Helper Functions
 
