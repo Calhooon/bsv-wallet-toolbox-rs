@@ -202,6 +202,40 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #757 (the keeper's 2026-11-03 22:0xZ reading, after #726): the permission
+  modules' `on_request` and `on_response` on the five basket and label
+  calls, as the reference's wrappers do (ts-stack@edf6e03
+  `WalletPermissionsManager.ts`). `list_outputs` and `relinquish_output`
+  delegate a `p <scheme>` basket through #726's helper (`:5080-5140`): the
+  basket check (listing, removal) is skipped and the module's arguments
+  reach the listing or the relinquish. `create_action`, `list_actions` and
+  `internalize_action` chain every module their `p ` baskets (the outputs',
+  the basket insertions') and `p ` labels name, one per scheme, baskets
+  then labels, `on_request` in order and `on_response` in reverse
+  (`:4294-4338` with `:4500-4520`, `:4913-4961`, `:5059-5078`); a `p `
+  label must be `p <scheme> <payload>` (`:920-958`); `create_action` skips
+  the insertion check on a `p ` basket, the spending check unchanged; the
+  modules' arguments are validated again, as the reference's underlying call
+  validates its own. The method names are `listOutputs`,
+  `relinquishOutput`, `createAction`, `listActions` and
+  `internalizeAction`; the JSON is bsv-rs's camelCase serde of the
+  arguments and results. A host's `nosend` module is never asked: a `p
+  nosend` basket on `list_outputs`, `relinquish_output` or
+  `internalize_action` is refused with `BRC-177 noSend expiry labels are
+  only valid for createAction and listActions` (`:799-801`), on
+  `create_action` with `Active storage does not support BRC-177 noSend
+  expiry` (the built-in module is not ported), and a `p nosend ` label on
+  `list_actions` asks no module. No new public item. Host note
+  (bsv-wallet-cli#386): the five calls now ask a registered module for a
+  `p <scheme>` basket or label name, the admin originator's calls included;
+  a basket grant held under a `p ` name is no longer consulted, so that call
+  needs a module; an unregistered scheme is refused with
+  `WalletRefusal { class: InvalidParameter }` and the message
+  `Unsupported P-module scheme: p <scheme>` (the two basket calls) or
+  `Unsupported P-basket scheme: p <scheme>` / `Unsupported P-label scheme:
+  p <scheme>` (the three chained calls), a `p ` label outside the grammar
+  with `Invalid P-label format: <label>`, each with no prefix; a module's
+  own refusal crosses the same way with the module's text.
 - #726 (the keeper's 2026-11-03 22:0xZ reading): the permission modules'
   `on_request` and `on_response` on the seven key calls, as the reference's
   `delegateToPModuleIfNeeded` does (ts-stack@edf6e03

@@ -75,6 +75,9 @@ from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
 | `StorageNotAvailable` | `NotActive` | `WERR_NOT_ACTIVE` (nearest) | `Storage not available` |
 | Permission module, unregistered scheme (#726) | `InvalidParameter` | plain `Error` (`WalletPermissionsManager.ts:859`); the keeper's reading | `Unsupported P-module scheme: p <scheme>` |
 | Permission module, `p nosend` on a key call (#726) | `InvalidParameter` | plain `Error` (`WalletPermissionsManager.ts:800`) | `BRC-177 noSend expiry labels are only valid for createAction and listActions` |
+| Permission module, unregistered basket or label scheme on a chained call (#757) | `InvalidParameter` | plain `Error` (`WalletPermissionsManager.ts:890-901`) | `Unsupported P-basket scheme: p <scheme>` or `Unsupported P-label scheme: p <scheme>` |
+| Permission module, a `p ` label outside the grammar (#757) | `InvalidParameter` | plain `Error` (`WalletPermissionsManager.ts:920-958`) | `Invalid P-label format: <label>` |
+| Permission module, a `p nosend` basket on `create_action` (#757) | `InvalidParameter` | the built-in module, not ported | `Active storage does not support BRC-177 noSend expiry` |
 | Permission module's own refusal or unparsable answer (#726) | `InvalidParameter` | the module's `Error`, unwrapped | the module's text, or `P-module <key> for <method> is invalid` / `must be an object`, no prefix |
 
 Neither reference supplies dedicated not-found, duplicate, unspendable-coin,
