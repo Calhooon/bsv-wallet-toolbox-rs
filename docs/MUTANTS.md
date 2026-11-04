@@ -100,7 +100,8 @@ that judge under the node's word, `create_action/must_spend.rs`,
 `create_action/own_word.rs` and `create_action/review_beef.rs`, at an 80 percent
 gate, measured with their real witnesses: `must_spend.rs`'s live in the
 `fixtures` suite, so `--lib` alone read it at 0 of 19 (#535). Those files (the
-three, and `beef_verification/own_word.rs` since #572) run from
+three, `beef_verification/own_word.rs` since #572 and `providers/bhs.rs` since
+#602) run from
 `.cargo/mutants-doors.toml`: the lib and every integration target that enters a
 door function (`fixtures`, `caller_complete_funding_tests`,
 `immediate_broadcast_hint_tests`, `internalize_custom_instructions_tests`,
@@ -206,10 +207,10 @@ whose targets enter the file, never `--lib` alone), such a file moves into the
 catalogue whose targets reach it (the door oracle, the evidence oracle, or a
 named one listing its targets) WHEN ITS ROW LANDS, and the workflow scores it
 there from then on, its floor judged under that oracle and no `--lib` figure
-written as a floor for it. Moved so far: the four door files (#535, #572) and
-`create_action/beef_walk.rs` (#601). Still in the lib set with their `--lib`
-figure as the lower bound until their rows land: `providers/bhs.rs` (#602),
-`create_action/mod.rs` (#604), `internalize_action.rs` (#603),
+written as a floor for it. Moved so far: the four door files (#535, #572),
+`create_action/beef_walk.rs` (#601) and `providers/bhs.rs` (#602, into the
+door oracle). Still in the lib set with their `--lib` figure as the lower bound
+until their rows land: `create_action/mod.rs` (#604), `internalize_action.rs` (#603),
 `process_action.rs` (#605), `create_action/beef_storage.rs` (#600),
 `monitor/tasks/reorg.rs` (#606) and `review_proven_txs.rs` (#607). A low score
 never blocks a landing.
