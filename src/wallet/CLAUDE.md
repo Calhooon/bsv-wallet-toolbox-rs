@@ -1516,7 +1516,7 @@ labels, output tags, knownTxids and noSendChange; listCertificates' certifiers a
 listOutputs' tags; listActions' labels) validate outside `wallet.rs` in this
 port and are not bounded here; createAction's are bounded at both doors by
 `create_args` (#416). `sendWith` (137) carries its own bound,
-`MAXIMUM_SEND_WITH_TRANSACTIONS` (1000), and is #309's. InternalizeAction's outputs, insertion tags and labels are bounded at both wallet and storage doors by `internalize_args` (#376).
+`MAXIMUM_SEND_WITH_TRANSACTIONS` (1000), and is #309's. `sign_action` validates its own `sendWith` ahead of the session lookup (823: the bound at 137, the duplicates at 140, the 999 rule at 871-876), and the create validator refuses 1000 IDs when the new transaction joins the broadcast set (795-800); both are #324's, texts in `src/storage/sqlx/CLAUDE.md`. InternalizeAction's outputs, insertion tags and labels are bounded at both wallet and storage doors by `internalize_args` (#376).
 
 For #291, a direct `acquire_certificate` passes `revocationOutpoint` through
 the same outpoint validator before storing, as `validateAcquireDirectCertificateArgs`
