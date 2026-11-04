@@ -178,13 +178,20 @@ fn spawn_ask(
     })
 }
 
+/// The next prompt, or a failure within five seconds: a request that joins
+/// another's queue prompts nothing.
+async fn next_prompt(asked: &mut mpsc::UnboundedReceiver<PermissionRequest>) -> PermissionRequest {
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), asked.recv()).await;
+    next.expect("a prompt of its own").unwrap()
+}
+
 #[tokio::test]
 async fn two_usages_of_one_protocol_prompt_apart_and_one_usage_prompts_once() {
     let (manager, mut asked) = pending().await;
     let signing = spawn_ask(&manager, PermissionUsageType::Signing);
-    let signing_request = asked.recv().await.unwrap();
+    let signing_request = next_prompt(&mut asked).await;
     let linkage = spawn_ask(&manager, PermissionUsageType::LinkageRevelation);
-    let linkage_request = asked.recv().await.unwrap();
+    let linkage_request = next_prompt(&mut asked).await;
     let signing_id = signing_request.request_id.unwrap();
     let linkage_id = linkage_request.request_id.unwrap();
     assert!(signing_id.ends_with(":signing"), "{signing_id}");
