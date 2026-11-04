@@ -795,8 +795,9 @@ pub trait WalletStorageWriter: WalletStorageReader {
         outcome: &crate::storage::broadcast::BroadcastOutcome,
     ) -> Result<()>;
 
-    /// Update the statuses after the one-call composition's post (createAction
-    /// with signAndProcess), with the broadcasters' per-instance results
+    /// Update the statuses after a post from the wallet, the one-call
+    /// composition's (createAction with signAndProcess) or `sign_action`'s
+    /// (#330), with the broadcasters' per-instance results
     /// (`WalletServices::post_beef`'s answer) or the post's own fault when no
     /// broadcaster answered (#187, the owner's ruling 18.5 (a)). A storage
     /// keeping request histories writes the `processActionPost` note the

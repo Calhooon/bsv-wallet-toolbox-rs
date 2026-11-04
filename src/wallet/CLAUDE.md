@@ -827,7 +827,7 @@ When broadcasting (not no_send, not delayed):
 3. Downgrade BEEF V2 to V1 for ARC compatibility (if all txs have full data)
 4. Broadcast via `services.post_beef()`
 5. Check results: at least one provider must return "success"
-6. Call `storage.update_transaction_status_after_broadcast(txid, success)` to update status
+6. Call `storage.update_transaction_status_after_post()` with the per-instance words, or the post's fault, to write the `processActionPost` note and update the status (#330; the same note the door's post writes)
 7. On broadcast failure: return error with "Transaction marked as failed and inputs restored"
 
 ### Change Output Locking Scripts

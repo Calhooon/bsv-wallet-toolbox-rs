@@ -3,7 +3,7 @@
 
 ## Overview
 
-The stored sendWith path in `process_action.rs` resolves user-scoped handles, rebuilds BEEF before the writer, commits `unsent`/`sending`, posts without the writer, then records every instance's word (the `processActionPost` note on `proven_tx_reqs.history`, `record_stored_post_words`: `reqStatus` and `attempts` as the request stands before the status writes, the per-instance `words`, the reference's four counts, `serviceError` when no broadcaster answered; capped at 32 notes). The one-call composition (`create_action` with `signAndProcess`) posts from the wallet and hands the per-instance words to `update_transaction_status_after_post`, which writes the same note before the status writes (#187, the owner's ruling 18.5 (a)); signed noSend outputs retain their spendable flag as at the reference pin (#66, B3).
+The stored sendWith path in `process_action.rs` resolves user-scoped handles, rebuilds BEEF before the writer, commits `unsent`/`sending`, posts without the writer, then records every instance's word (the `processActionPost` note on `proven_tx_reqs.history`, `record_stored_post_words`: `reqStatus` and `attempts` as the request stands before the status writes, the per-instance `words`, the reference's four counts, `serviceError` when no broadcaster answered; capped at 32 notes). The one-call composition (`create_action` with `signAndProcess`) and `sign_action`'s post (#330) post from the wallet and hand the per-instance words to `update_transaction_status_after_post`, which writes the same note before the status writes (#187, the owner's ruling 18.5 (a)); signed noSend outputs retain their spendable flag as at the reference pin (#66, B3).
 
 This module provides a production-ready storage backend for BSV wallet state using SQLx with SQLite. It implements the full `WalletStorageProvider` trait hierarchy, enabling persistent storage of transactions, outputs, certificates, and synchronization state. The implementation mirrors the TypeScript `@bsv/wallet-toolbox` storage architecture.
 
@@ -174,7 +174,7 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `process_action()` | Process signed transaction (delegates to process_action.rs) |
 | `internalize_action()` | Internalize external transaction into wallet (delegates to internalize_action.rs) |
 | `update_transaction_status_after_broadcast()` | Update tx status after broadcast success/failure (delegates to process_action.rs) |
-| `update_transaction_status_after_post()` | The composition's post: the `processActionPost` note with the per-instance words, then the statuses as `update_transaction_status_after_broadcast()` (#187) |
+| `update_transaction_status_after_post()` | The wallet's post (the composition's, and `sign_action`'s since #330): the `processActionPost` note with the per-instance words, then the statuses as `update_transaction_status_after_broadcast()` (#187) |
 | `review_status()` | Sync proven_tx_req completion status to transaction table |
 | `purge_data()` | Purge old failed/invalid proven_tx_reqs, clean completed raw data |
 | `begin_transaction()` | Begin a TrxToken transaction scope; returns opaque u64 token |
