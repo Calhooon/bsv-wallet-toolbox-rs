@@ -10,7 +10,10 @@
 //! substrates run `validateWalletArgs` ahead of the wallet
 //! (`WalletArgumentValidation.ts`, from `HTTPWalletJSON.ts:48`,
 //! `WalletWireProcessor.ts:21`), so a privileged request with a bad argument
-//! answers the validator's refusal, with or without a manager.
+//! answers the validator's refusal, with or without a manager. The seven key
+//! calls are judged by bsv-rs's public validators, one per reference site
+//! (`validationHelpers.ts:1717-1804`, bsv-rs #609); the two reveals, which
+//! have no public validator, by the everyday ProtoWallet's call.
 
 use super::*;
 use bsv_rs::wallet::{
@@ -35,9 +38,9 @@ pub(super) fn privileged_refusal() -> bsv_rs::Error {
 
 /// The everyday `ProtoWallet`'s argument refusal, if its call gave one: its
 /// validators run before any key is touched and are the only source of the
-/// `InvalidParameter` class on the nine calls, so the everyday answer is
-/// discarded and only the refusal kept. bsv-rs keeps the validators
-/// themselves crate-private; the call is how they are reached.
+/// `InvalidParameter` class on the two reveals, so the everyday answer is
+/// discarded and only the refusal kept. bsv-rs keeps the reveals' validators
+/// crate-private; the call is how they are reached.
 fn argument_refusal<T>(everyday: bsv_rs::Result<T>) -> bsv_rs::Result<()> {
     match everyday {
         Err(
@@ -48,6 +51,34 @@ fn argument_refusal<T>(everyday: bsv_rs::Result<T>) -> bsv_rs::Result<()> {
         ) => Err(refusal),
         _ => Ok(()),
     }
+}
+
+/// A key call's arguments judged by bsv-rs's public validator for its
+/// reference site (bsv-rs #609), the texts the ProtoWallet's own.
+trait KeyCallArgs {
+    fn validate(&self) -> bsv_rs::Result<()>;
+}
+
+macro_rules! key_call_args {
+    ($($args:ty => $validator:ident;)*) => {
+        $(
+            impl KeyCallArgs for $args {
+                fn validate(&self) -> bsv_rs::Result<()> {
+                    bsv_rs::wallet::$validator(self)
+                }
+            }
+        )*
+    };
+}
+
+key_call_args! {
+    GetPublicKeyArgs => validate_get_public_key_args;
+    EncryptArgs => validate_wallet_encrypt_args;
+    DecryptArgs => validate_wallet_decrypt_args;
+    CreateHmacArgs => validate_create_hmac_args;
+    VerifyHmacArgs => validate_verify_hmac_args;
+    CreateSignatureArgs => validate_create_signature_args;
+    VerifySignatureArgs => validate_verify_signature_args;
 }
 
 /// The keys one call is answered under: the everyday `ProtoWallet`, or the
@@ -83,11 +114,12 @@ macro_rules! key_calls {
 pub(super) use key_calls;
 
 // One routed method per key call: the manager for `privileged: true` once
-// the everyday ProtoWallet's validators pass the arguments, the everyday
-// ProtoWallet otherwise. `$everyday` names how the ProtoWallet is asked:
-// `inherent` for the seven; `adapter` for the two reveals, whose validators
-// sit behind the ProtoWallet's `WalletInterface` adapter, which checks the
-// `privileged` and `privileged_reason` its inherent argument types omit.
+// the arguments are judged, the everyday ProtoWallet otherwise. `$everyday`
+// names how the ProtoWallet is asked and the arguments judged: `inherent` for
+// the seven, judged by bsv-rs's public validator; `adapter` for the two
+// reveals, whose validators sit behind the ProtoWallet's `WalletInterface`
+// adapter, which checks the `privileged` and `privileged_reason` its inherent
+// argument types omit.
 macro_rules! routed_key_calls {
     ($everyday:ident; $($name:ident($args:ty) -> $result:ty;)*) => {
         $(
@@ -95,7 +127,7 @@ macro_rules! routed_key_calls {
                 if args.privileged != Some(true) {
                     return $everyday!(self, $name, args);
                 }
-                argument_refusal($everyday!(self, $name, args.clone()))?;
+                $everyday!(@judge self, $name, args);
                 let manager = self.manager.ok_or_else(privileged_refusal)?;
                 manager.$name(args, self.originator).await
             }
@@ -104,12 +136,18 @@ macro_rules! routed_key_calls {
 }
 
 macro_rules! inherent {
+    (@judge $route:expr, $name:ident, $args:expr) => {
+        KeyCallArgs::validate(&$args)?
+    };
     ($route:expr, $name:ident, $args:expr) => {
         $route.proto.$name($args)
     };
 }
 
 macro_rules! adapter {
+    (@judge $route:expr, $name:ident, $args:expr) => {
+        argument_refusal(adapter!($route, $name, $args.clone()))?
+    };
     ($route:expr, $name:ident, $args:expr) => {
         WalletInterface::$name($route.proto, $args, Some($route.originator)).await
     };
