@@ -9,6 +9,11 @@ name: Mutants
 # inventory weekly, or a cheaper per-mutant build.
 on:
   workflow_dispatch:
+    inputs:
+      max_parallel:
+        description: "Lib shards at once: 11 inside the toolbox's 09:00Z to 16:00Z window with no other heavy run sharing it, 4 otherwise (the owner's word of 2026-11-04)."
+        required: false
+        default: "11"
 
 permissions:
   contents: read
@@ -29,17 +34,18 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false
-      # The fleet's runner cap, revised on the #638 occupancy read (the keeper's
-      # line of 2026-11-03 10:0xZ): the account's twenty runners are one pool
-      # across its repositories and sit at twenty in 22 of 24 hours, so a heavy
-      # run holds at most six of them until the next read shows the non-heavy
-      # p95 under ten concurrent jobs. The sixteen shards run four at a time, beside
-      # the two doors shards below makes the six at the peak. A dispatch takes
-      # the toolbox's slot, 16:00Z (a measured light hour), and never overlaps
-      # another repository's heavy run (bsv-rs 07:00Z, the CLI 17:30Z). The
-      # cap's cost and gain go in the census record at the next run; the
-      # occupancy read repeats every 48 hours and re-sets the number.
-      max-parallel: 4
+      # The fleet's runner cap, on the owner's word of 2026-11-04 17:1xZ (the
+      # keeper's reading): the account's twenty runners are one pool across its
+      # repositories (the #638 occupancy read, docs/census/ci-speed-loop-4.md),
+      # and a heavy run may hold up to fourteen of them inside its own window
+      # when no other heavy run shares it, six otherwise. The toolbox's window
+      # is 09:00Z to 16:00Z (the keeper's table: bsv-rs 01:00Z to 09:00Z, the
+      # CLI 17:00Z; the hour table's lightest free stretch), the dispatch at
+      # 09:00Z by the captain's hand, never a schedule. Eleven lib shards beside
+      # the two doors shards and the evidence shard make the fourteen; outside
+      # the window, or beside another heavy run, the dispatch passes
+      # max_parallel=4. The run's cost and gain go in the census record.
+      max-parallel: ${{ fromJSON(inputs.max_parallel || '11') }}
       matrix:
         # 2180 mutants (at beta 6db6a159; the count moves with the lib) at about
         # 90 s each (build plus the whole lib suite) need 16
