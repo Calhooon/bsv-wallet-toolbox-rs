@@ -2289,12 +2289,12 @@ module_call_serde!(CreateActionArgs => CreateActionResult, "createAction");
 module_call_serde!(ListActionsArgs => ListActionsResult, "listActions");
 module_call_serde!(InternalizeActionArgs => InternalizeActionResult, "internalizeAction");
 
+#[path = "permission_grant.rs"]
+mod permission_grant;
+
 // =============================================================================
 // Tests
 // =============================================================================
-
-#[path = "permission_grant.rs"]
-mod permission_grant;
 
 #[cfg(all(test, feature = "sqlite"))]
 #[path = "permission_token_lookup_tests.rs"]
