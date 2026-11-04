@@ -3143,7 +3143,7 @@ mod module_call_tests {
         );
         round_trip::<VerifySignatureArgs>(
             &keyed(
-                json!({ "data": [1], "signature": [48, 1], "counterparty": "self", "forSelf": false }),
+                json!({ "hashToDirectlyVerify": hash, "signature": [48, 1], "counterparty": "self", "forSelf": false }),
             ),
             &json!({ "valid": false }),
         );
