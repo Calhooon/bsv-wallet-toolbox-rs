@@ -110,6 +110,7 @@ pub enum RequestUsageType {
 
 impl RequestUsageType {
     /// The reference's name for the usage (`signing`, `insertion`, ...).
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Protocol(PermissionUsageType::Signing) => "signing",
