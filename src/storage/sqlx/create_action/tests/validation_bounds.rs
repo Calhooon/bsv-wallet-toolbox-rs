@@ -1,7 +1,8 @@
 //! The reference's array bounds at the create door (#309): ts-stack@edf6e03
 //! validationHelpers.ts `validateArray` (105-114, `MAXIMUM_WALLET_COLLECTION_ITEMS`
 //! 100000 at 67) and `validateSendWith` (136-144, `MAXIMUM_SEND_WITH_TRANSACTIONS`
-//! 1000 at 69), rendered through WERR_INVALID_PARAMETER.ts:14.
+//! 1000 at 69), rendered through WERR_INVALID_PARAMETER.ts:14; and the 999
+//! rule at 795-800 (#324).
 
 use super::*;
 use crate::error::Error;
@@ -343,4 +344,49 @@ fn no_send_change_bound_runs_ahead_of_the_send_with_bound() {
     o.send_with = Some((0..=SEND_WITH_LIMIT).map(txid).collect());
     args.options = Some(o);
     assert_eq!(refusal(&args), bound_text("noSendChange", LIMIT));
+}
+
+// The 999 rule (#324): isSendWith, isRemixChange and isNewTx (792-794), then
+// 795-800 refusing 1000 sendWith IDs when the new transaction joins the
+// broadcast set.
+
+const NEW_TX_RULE_TEXT: &str = "The sendWith parameter must be at most 999 transaction IDs when the new transaction joins the broadcast set";
+
+fn send_with_args(
+    inputs: usize,
+    outputs: usize,
+    send_with: usize,
+) -> bsv_rs::wallet::CreateActionArgs {
+    let mut args = args();
+    args.inputs = Some((0..inputs).map(input).collect());
+    args.outputs = Some((0..outputs).map(|_| output()).collect());
+    let mut o = options();
+    o.send_with = Some((0..send_with).map(txid).collect());
+    args.options = Some(o);
+    args
+}
+
+#[test]
+fn a_new_transaction_with_outputs_refuses_1000_send_with_ids() {
+    let args = send_with_args(0, 1, SEND_WITH_LIMIT);
+    assert_eq!(refusal(&args), NEW_TX_RULE_TEXT);
+}
+
+#[test]
+fn a_new_transaction_with_inputs_refuses_1000_send_with_ids() {
+    let args = send_with_args(1, 0, SEND_WITH_LIMIT);
+    assert_eq!(refusal(&args), NEW_TX_RULE_TEXT);
+}
+
+#[test]
+fn a_new_transaction_passes_999_send_with_ids() {
+    let args = send_with_args(1, 1, SEND_WITH_LIMIT - 1);
+    assert!(validate_create_action_args(&args).is_ok());
+}
+
+#[test]
+fn a_send_with_only_create_is_not_a_new_transaction_and_passes_1000_ids() {
+    // No inputs and no outputs with sendWith: isRemixChange and isNewTx false.
+    let args = send_with_args(0, 0, SEND_WITH_LIMIT);
+    assert!(validate_create_action_args(&args).is_ok());
 }

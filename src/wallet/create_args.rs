@@ -48,7 +48,8 @@ const BRC177_UNSUPPORTED: &str = "Active storage does not support BRC-177 noSend
 
 /// signAction's `sendWith` (ts-stack@edf6e03 validationHelpers.ts:823,
 /// validateSignActionOptions calling validateSendWith at 136-144): the bound
-/// at 137, then the duplicate transaction IDs at 140-142.
+/// at 137, then the duplicate transaction IDs at 140-142, then the 999 rule
+/// at 871-876.
 pub(crate) fn validate_sign_action_send_with(send_with: &[[u8; 32]]) -> Result<()> {
     validate_array_bound(send_with.len(), "sendWith", MAXIMUM_SEND_WITH_TRANSACTIONS)?;
     let mut seen = std::collections::HashSet::new();
@@ -56,6 +57,13 @@ pub(crate) fn validate_sign_action_send_with(send_with: &[[u8; 32]]) -> Result<(
         return Err(Error::ValidationError(
             "The sendWith parameter must be unique transaction IDs".to_string(),
         ));
+    }
+    // validateSignActionArgs (871-876): the signed transaction joins the set.
+    if send_with.len() >= MAXIMUM_SEND_WITH_TRANSACTIONS {
+        return Err(Error::ValidationError(format!(
+            "The sendWith parameter must be at most {} transaction IDs when the signed transaction joins the broadcast set",
+            MAXIMUM_SEND_WITH_TRANSACTIONS - 1
+        )));
     }
     Ok(())
 }
@@ -229,6 +237,24 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
                 )));
             }
         }
+    }
+
+    // isSendWith, isRemixChange and isNewTx (792-794), then 795-800: a new
+    // transaction joins the broadcast set, so sendWith holds 999 at most.
+    let send_with_len = args
+        .options
+        .as_ref()
+        .and_then(|o| o.send_with.as_ref())
+        .map_or(0, Vec::len);
+    let inputs_len = args.inputs.as_ref().map_or(0, Vec::len);
+    let outputs_len = args.outputs.as_ref().map_or(0, Vec::len);
+    let is_remix_change = send_with_len == 0 && inputs_len == 0 && outputs_len == 0;
+    let is_new_tx = is_remix_change || inputs_len > 0 || outputs_len > 0;
+    if is_new_tx && send_with_len >= MAXIMUM_SEND_WITH_TRANSACTIONS {
+        return Err(Error::ValidationError(format!(
+            "The sendWith parameter must be at most {} transaction IDs when the new transaction joins the broadcast set",
+            MAXIMUM_SEND_WITH_TRANSACTIONS - 1
+        )));
     }
 
     // BRC-177 (0177.md:53): a wallet without module `nosend` rejects the

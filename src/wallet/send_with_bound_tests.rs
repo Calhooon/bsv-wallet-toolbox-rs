@@ -74,3 +74,24 @@ async fn sign_send_with_bound_runs_ahead_of_the_duplicates() {
     let (_, message) = refusal(send_with).await;
     assert_eq!(message, BOUND_TEXT);
 }
+
+#[tokio::test]
+async fn sign_send_with_of_1000_ids_is_refused_by_the_999_rule() {
+    // 871-876: the signed transaction joins the broadcast set.
+    let (class, message) = refusal((0..SEND_WITH_LIMIT).map(txid).collect()).await;
+    assert_eq!(class, WalletRefusalClass::InvalidParameter);
+    assert_eq!(
+        message,
+        "Validation error: The sendWith parameter must be at most 999 transaction IDs when the signed transaction joins the broadcast set"
+    );
+}
+
+#[tokio::test]
+async fn sign_send_with_of_999_ids_passes_to_the_session_lookup() {
+    let (class, message) = refusal((0..SEND_WITH_LIMIT - 1).map(txid).collect()).await;
+    assert_eq!(class, WalletRefusalClass::NotImplemented);
+    assert_eq!(
+        message,
+        format!("No pending transaction found for reference: {REFERENCE}")
+    );
+}
