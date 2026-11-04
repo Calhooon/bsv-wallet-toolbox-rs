@@ -1,5 +1,5 @@
 {
-  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. The floors come from the complete record docs/census/mutants-complete-2026-11-02.{md,json} (base 42559923, the --lib oracle of .cargo/mutants.toml) by the owner's 23.5 (c) word and the keeper's reading of 2026-11-02 10:4xZ (#534): each the figure rounded down, never below an existing floor (a fall keeps the floor and is a finding), and 80 for a file on the paths that judge the node's word and the chain's evidence that measures below 80 (red by design, one triage issue per file). A --lib figure is a lower bound where an integration target also enters the file; each path file's comment says so and, below 80, gives its widened figure. The doors that judge under the node's word (create_action/must_spend.rs, own_word.rs, review_beef.rs; #535) run under the door oracle (.cargo/mutants-doors.toml) and keep the floors #571 wrote from that widened figure (docs/census/mutants-oracle-2026-11-01.md, base 83a5b049). The rule and the oracle note: docs/MUTANTS.md.",
+  "_comment": "Score = caught / (caught + missed + timeout); unviable excluded. The floors come from the complete record docs/census/mutants-complete-2026-11-02.{md,json} (base 42559923, the --lib oracle of .cargo/mutants.toml) by the owner's 23.5 (c) word and the keeper's reading of 2026-11-02 10:4xZ (#534): each the figure rounded down, never below an existing floor (a fall keeps the floor and is a finding), and 80 for a file on the paths that judge the node's word and the chain's evidence that measures below 80 (red by design, one triage issue per file). A --lib figure is a lower bound where an integration target also enters the file; each path file's comment says so and, below 80, gives its widened figure. The doors that judge under the node's word (create_action/must_spend.rs, own_word.rs, review_beef.rs; #535; and beef_verification/own_word.rs, #572) run under the door oracle (.cargo/mutants-doors.toml) and keep the floors #571 wrote from that widened figure (docs/census/mutants-oracle-2026-11-01.md, base 83a5b049). The rule and the oracle note: docs/MUTANTS.md.",
   "files": {
     "src/monitor/tasks/arcade_events.rs": {
       "floor": 52,
@@ -112,6 +112,10 @@
     "src/services/services.rs": {
       "floor": 59,
       "_comment": "docs/census/mutants-complete-2026-11-02 (base 42559923, 2026-11-02), the --lib oracle: 59.90% (118 caught, 79 missed, 0 timeout, 56 unviable). The figure rounded down is 59 (the floor was 54)."
+    },
+    "src/storage/sqlx/beef_verification/own_word.rs": {
+      "floor": 100,
+      "_comment": "Measured 100.00% (19/19) under the door oracle since #572 (89.47%, 17/19, at its entry into the doors catalogue; docs/census/mutants-oracle-2026-11-01.md, the issue_572 key of its json); the survivors 48:27 (-= read as += and as /=) killed by a lib host-verifier test. The figure rounded down is 100."
     },
     "src/storage/sqlx/create_action/allocation.rs": {
       "floor": 64,
