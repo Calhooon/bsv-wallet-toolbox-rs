@@ -445,5 +445,112 @@
   {"n": 1592, "file": "src/storage/sqlx/process_action.rs", "name": "src/storage/sqlx/process_action.rs:1192:45: replace > with >= in process_action_writes", "line": 1192, "lib_verdict": "MissedMutant", "widened_verdict": "CaughtMutant", "host": "box", "lane": "p5-mutants-floors-remeasure", "load_at_claim": "24.89 21.70 22.25", "test_results": 4, "caught_by": "fixtures::storage::replay_storage_fixtures", "run": "runs/n1592"},
   {"n": 1593, "file": "src/storage/sqlx/process_action.rs", "name": "src/storage/sqlx/process_action.rs:1204:17: replace || with && in process_action_writes", "line": 1204, "lib_verdict": "MissedMutant", "widened_verdict": "MissedMutant", "host": "box", "lane": "p5-mutants-floors-remeasure", "load_at_claim": "24.89 21.70 22.25", "test_results": 9, "caught_by": null, "run": "runs/n1593"},
   {"n": 1594, "file": "src/storage/sqlx/process_action.rs", "name": "src/storage/sqlx/process_action.rs:1203:17: replace || with && in process_action_writes", "line": 1203, "lib_verdict": "MissedMutant", "widened_verdict": "MissedMutant", "host": "box", "lane": "p5-mutants-floors-remeasure", "load_at_claim": "20.03 20.97 21.96", "test_results": 9, "caught_by": null, "run": "runs/n1594"}
- ]
+ ],
+ "issue_601": {
+  "lane": "p5-601-beef-walk-survivors",
+  "base": "047ef756",
+  "tree": "e7e93351 (the three tests) with .cargo/mutants-evidence.toml as committed at b8b75158",
+  "oracle": ".cargo/mutants-evidence.toml: the lib and arc_broadcast_body_tests, caller_complete_funding_tests, fixtures, immediate_broadcast_hint_tests, known_ancestor_tests, monitor_tests, features sqlite,remote,bench-support",
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "tool_version": "cargo-mutants 27.1.0",
+  "command": "HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 NO_PROXY=127.0.0.1,localhost,::1 no_proxy=127.0.0.1,localhost,::1 CARGO_TARGET_DIR=$HOME/bsv/targets/p5-601-beef-walk-survivors-mutants cargo mutants --config .cargo/mutants-evidence.toml --timeout 900 --shard K/6 --sharding round-robin --output <out>/shard-K (K 0 with the baseline, 1 to 5 with --baseline skip; serial, copy mode)",
+  "baseline": "Unmutated baseline in 64s build + 21s test",
+  "started": "2026-11-04T02:05:51.238792Z",
+  "finished": "2026-11-04T02:26:58.100043Z",
+  "summary": "23 mutants over six shards: 21 caught, 1 missed, 1 unviable",
+  "file": {
+   "caught": 21,
+   "missed": 1,
+   "timeout": 0,
+   "unviable": 1,
+   "listed": 23,
+   "score": 95.45,
+   "survivors": [
+    "src/storage/sqlx/create_action/beef_walk.rs:307:29: replace && with || in beef_bfs_walk"
+   ]
+  },
+  "verdicts": {
+   "src/storage/sqlx/create_action/beef_walk.rs:57:5: replace stored_bump_refuted -> bool with true": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:57:5: replace stored_bump_refuted -> bool with false": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:80:5: replace beef_bfs_walk -> Result<()> with Ok(())": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:85:9: delete match arm (None, Some(s)) in beef_bfs_walk": "Unviable",
+   "src/storage/sqlx/create_action/beef_walk.rs:146:43: replace && with || in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with == in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with < in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with >= in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:149:36: replace >= with < in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with += in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with /= in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:167:12: delete ! in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:180:32: delete ! in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:256:39: replace == with != in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:259:29: replace && with || in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:258:46: replace != with == in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:307:29: replace && with || in beef_bfs_walk": "MissedMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:306:28: delete ! in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:307:32: delete ! in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:307:69: replace == with != in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:309:67: replace + with - in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:309:67: replace + with * in beef_bfs_walk": "CaughtMutant",
+   "src/storage/sqlx/create_action/beef_walk.rs:317:22: replace == with != in beef_bfs_walk": "CaughtMutant"
+  },
+  "survivors": [
+   {
+    "mutant": "src/storage/sqlx/create_action/beef_walk.rs:146:65: replace > with >= in beef_bfs_walk",
+    "verdict": "killed",
+    "targets": [
+     "lib"
+    ],
+    "tests": [
+     "storage::sqlx::create_action::beef_walk::beef_walk_ancestry::test_walk_asks_for_at_most_its_proof_budget"
+    ]
+   },
+   {
+    "mutant": "src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with += in beef_bfs_walk",
+    "verdict": "killed",
+    "targets": [
+     "lib"
+    ],
+    "tests": [
+     "storage::sqlx::create_action::beef_walk::beef_walk_ancestry::test_walk_asks_for_at_most_its_proof_budget"
+    ]
+   },
+   {
+    "mutant": "src/storage/sqlx/create_action/beef_walk.rs:152:40: replace -= with /= in beef_bfs_walk",
+    "verdict": "killed",
+    "targets": [
+     "lib"
+    ],
+    "tests": [
+     "storage::sqlx::create_action::beef_walk::beef_walk_ancestry::test_walk_asks_for_at_most_its_proof_budget"
+    ]
+   },
+   {
+    "mutant": "src/storage/sqlx/create_action/beef_walk.rs:180:32: delete ! in beef_bfs_walk",
+    "verdict": "killed",
+    "targets": [
+     "lib"
+    ],
+    "tests": [
+     "storage::sqlx::create_action::beef_walk::beef_walk_stored::test_walk_keeps_the_closure_of_the_inputs_when_the_stored_beef_lacks_its_subject"
+    ]
+   },
+   {
+    "mutant": "src/storage/sqlx/create_action/beef_walk.rs:307:29: replace && with || in beef_bfs_walk",
+    "verdict": "equivalent",
+    "reason": "under || an input already walked or already queued is queued again; every popped entry meets the processed_txids check at the loop's head before any read, merge or write, and the earlier entry of the txid sits ahead of the copy (push appends, pop takes the front), so the copy is dropped; a copy's depth is depth + 1, never 0, so the direct-input refusal reads the earlier entry; every caller builds pending and processed for the one call and reads neither after it: only the queue's length differs"
+   },
+   {
+    "mutant": "src/storage/sqlx/create_action/beef_walk.rs:307:69: replace == with != in beef_bfs_walk",
+    "verdict": "killed",
+    "targets": [
+     "lib"
+    ],
+    "tests": [
+     "storage::sqlx::create_action::beef_walk::beef_walk_ancestry::test_walk_queues_every_input_of_an_unproven_transaction"
+    ]
+   }
+  ],
+  "outputs": "/Volumes/Lanes/out/bsv-wallet-toolbox-rs/p5-601-beef-walk-survivors"
+ }
 }
