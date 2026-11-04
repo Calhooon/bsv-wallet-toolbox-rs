@@ -345,7 +345,8 @@ beside it so that tokens are still honoured.
 2026-11-04 13:5xZ: (P), the answer shape `grant_permission(request_id, ..)` and
 `deny_permission` beside the handler, the mint on a persistent grant
 (`src/managers/permission_grant.rs`, `:1104-1149`, `:3349-3392`), the grant rule as a
-fixtures corpus scene. Step 2b (renewal, coalescing, revocation, the lists and probes, the
+fixtures corpus scene; a spending grant is cached as before and mints nothing until step 2c
+(the captain's word on PR #808: its mint lands with its lookup). Step 2b (renewal, coalescing, revocation, the lists and probes, the
 token input signer) and step 2c (the spending token's labels, lookup and monthly tally) are
 open.
 

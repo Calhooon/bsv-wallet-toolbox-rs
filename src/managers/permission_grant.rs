@@ -211,12 +211,15 @@ impl WalletPermissionsManager {
 
     /// `grantPersistentPermission` (`:1104-1149`): the mint, skipped for
     /// a request whose grant is cached, inside its cover or minting, never
-    /// for spending or a renewal (`:1112-1124`), the in-flight mint awaited
-    /// before; a renewal to `renew_permission_on_chain` (`:1127-1128`), else
+    /// for a renewal (`:1112-1124`), the in-flight mint awaited before; a
+    /// renewal to `renew_permission_on_chain` (`:1127-1128`), else
     /// `create_permission_on_chain` (`:1129`), published in flight while it
-    /// runs (`:1133-1144`); then the five-minute cache entry (never for
-    /// spending, `:1147`) and the recent-grant mark (`:1148`). A failed mint
-    /// is returned, nothing cached.
+    /// runs (`:1133-1144`); then the five-minute cache entry (`:1147`) and
+    /// the recent-grant mark (`:1148`). A failed mint is returned, nothing
+    /// cached. A spending grant is cached and mints nothing until #751 lane
+    /// c: the port reads no spending token yet, so the reference's uncached
+    /// spending mint (`:1112-1115`, `:1147`) would prompt every spend and
+    /// leave a token nothing reads; its mint lands with its lookup.
     async fn grant_persistent_permission(
         &self,
         request: &PermissionRequest,
@@ -224,11 +227,13 @@ impl WalletPermissionsManager {
         amount: Option<u64>,
     ) -> Result<()> {
         let key = Self::request_key(request);
+        if request.request_type == PermissionType::Spending {
+            self.cache_permission(key, expiry).await;
+            return Ok(());
+        }
         let renewal = request.renewal == Some(true);
-        let spending = request.request_type == PermissionType::Spending;
         let in_flight = locked(&self.mints_in_flight).get(&key).cloned();
         let mut skip = !renewal
-            && !spending
             && (self.is_permission_cached(&key).await
                 || self.is_recently_granted(&key)
                 || in_flight.is_some());
@@ -253,10 +258,8 @@ impl WalletPermissionsManager {
             drop(minting);
             minted?;
         }
-        if !spending {
-            self.cache_permission(key.clone(), expiry).await;
-        }
-        self.mark_recent_grant(request, key);
+        self.cache_permission(key.clone(), expiry).await;
+        self.mark_recent_grant(key);
         Ok(())
     }
 
@@ -274,11 +277,8 @@ impl WalletPermissionsManager {
         self.is_permission_cached(key).await || self.is_recently_granted(key)
     }
 
-    /// `markRecentGrant` (`:5684-5690`): never for spending.
-    fn mark_recent_grant(&self, request: &PermissionRequest, key: String) {
-        if request.request_type == PermissionType::Spending {
-            return;
-        }
+    /// `markRecentGrant` (`:5684-5690`); no spending grant reaches it.
+    fn mark_recent_grant(&self, key: String) {
         locked(&self.recent_grants).insert(key, Instant::now() + RECENT_GRANT_COVER);
     }
 
@@ -420,7 +420,8 @@ fn kind_name(kind: PermissionType) -> &'static str {
 /// The admin basket a spending token is minted in (`BASKET_MAP`, `:422`).
 const SPENDING_TOKEN_BASKET: &str = "admin spending-authorization";
 
-/// The mint's basket, plaintext fields and stored tags for `request`.
+/// The mint's basket, plaintext fields and stored tags for `request`;
+/// spending's is held for #751 lane c, which mints it.
 fn mint_plan(
     request: &PermissionRequest,
     originator: &str,

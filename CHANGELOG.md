@@ -19,11 +19,11 @@
   (`:1104-1149`, `:3349-3392`): the kind's fields encrypted to the wallet
   under `[2, 'admin permission token encryption']`, the PushDrop lock with
   its signature, the kind's tags, one 1-satoshi output in `admin
-  protocol-permission`, `admin basket-access`, `admin certificate-access` or
-  `admin spending-authorization`, through the underlying wallet's
+  protocol-permission`, `admin basket-access` or `admin certificate-access`,
+  through the underlying wallet's
   `create_action` as the admin originator under `acceptDelayedBroadcast`;
   a duplicate mint is skipped while the grant is cached, inside its
-  15-second cover or in flight (never for spending), and the protocol,
+  15-second cover or in flight, and the protocol,
   basket and certificate checks read the cover and an in-flight mint beside
   the cache. So #751's case closes: a seek-false call is admitted from the
   token after the five-minute cache and across a restart. An underlying
@@ -32,7 +32,8 @@
   `renewal` and `previous_token`; `PermissionToken` gains `raw_originator`
   (a MAJOR change to `cargo semver-checks`: both are constructible public
   structs). Renewal, revocation, the lists and the token input signer are
-  lane b's; the spending token's lookup and monthly tally lane c's. Host
+  lane b's; the spending token, its lookup and monthly tally lane c's: until
+  then a spending grant is cached as before and mints nothing. Host
   note (bsv-wallet-cli#386): a persistent grant now spends from the
   wallet's balance, one transaction per grant (a 1-satoshi token output and
   its fee, under acceptDelayedBroadcast, sent by the monitor), and a grant

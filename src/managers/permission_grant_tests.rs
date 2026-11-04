@@ -354,7 +354,7 @@ async fn a_host_grant_by_request_id_mints_and_admits_the_caller() {
 }
 
 #[tokio::test]
-async fn every_spending_grant_mints_its_amount_and_is_never_covered() {
+async fn a_spending_grant_is_admitted_from_the_cache_and_mints_nothing_until_lane_c() {
     let scene = funded().await;
     let request = PermissionRequest {
         spending: Some(SpendingPermissionDetails {
@@ -363,14 +363,15 @@ async fn every_spending_grant_mints_its_amount_and_is_never_covered() {
         }),
         ..PermissionRequest::bare(PermissionType::Spending, APP)
     };
-    let flow = &scene.manager;
-    assert!(flow.request_permission_flow(request.clone()).await.unwrap());
-    assert!(flow.request_permission_flow(request).await.unwrap());
-    let minted = tokens(&scene, "admin spending-authorization").await;
-    assert_eq!(minted.len(), 2, "spending skips no mint (:1112-1115)");
-    assert_eq!(minted[0].1, strings(&["originator app.example.com"]));
-    let texts = plaintexts(&scene, &minted[0].0, 2).await;
-    assert_eq!(texts, strings(&[APP, "2500"]));
+    assert!(scene
+        .manager
+        .request_permission_flow(request)
+        .await
+        .unwrap());
+    let spend = scene.manager.ensure_spending_permission(APP, 2_500, None);
+    assert!(spend.await.unwrap(), "the cached grant admits the spend");
+    assert_eq!(scene.prompts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(minted(&scene).await, 0, "no spending token until lane c");
 }
 
 #[tokio::test]
