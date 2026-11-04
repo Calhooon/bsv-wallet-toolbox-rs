@@ -202,6 +202,18 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #332 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
+  certificate issuance posts to `<certifierUrl>/signCertificate`, as the
+  reference's door resolves ``new URL('signCertificate', `${certifierUrl}/`)``
+  (ts-stack@edf6e03 `Wallet.ts:772`, posted at `:782`) and Go posts to
+  `<certifierUrl>/signCertificate` (go-wallet-toolbox `pkg/wallet/wallet.go`).
+  The URL's path is kept and the segment appended after the validator's
+  trailing-slash trim (`https://c.example/api/` reaches
+  `https://c.example/api/signCertificate`). Served-path note (certifier
+  operators, bsv-wallet-cli#386): a certifier is now reached at
+  `<certifierUrl>/signCertificate` where it was reached at the URL as given,
+  so a certifier served at the bare URL answers on `/signCertificate` or
+  its users pass the URL above that path.
 - #757 (the keeper's 2026-11-03 22:0xZ reading, after #726): the permission
   modules' `on_request` and `on_response` on the five basket and label
   calls, as the reference's wrappers do (ts-stack@edf6e03
