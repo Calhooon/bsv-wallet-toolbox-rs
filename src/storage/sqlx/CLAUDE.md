@@ -878,6 +878,7 @@ items is refused by the bound, a bad item under it by the item's text.
 | Door | Array (reference line) | Place in the port |
 |------|------------------------|-------------------|
 | create (`src/wallet/create_args.rs`, at both doors, #416) | `inputs` (758), `outputs` (759), an output's `tags` (639), `labels` (762), `knownTxids` (662), `noSendChange` (667), `sendWith` (137, 1000) | after description, in that order |
+| sign (`Wallet::sign_action`, `create_args::validate_sign_action_send_with`, #324) | `sendWith` (823, its bound at 137, 1000) | after the reference, ahead of the session lookup; then its duplicates (140) |
 | internalize (`internalize_action.rs`) | `outputs` (1052), an insertion's `tags` (948), `labels` (1054) | step 0; tags after the same output's remittance exclusivity and `customInstructions` and every earlier output's |
 | listCertificates (`storage_sqlx/certificates.rs`) | `certifiers` (1195), `types` (1198) | after the auth check, ahead of any query |
 | listOutputs (`storage_sqlx/list_outputs.rs`) | `tags` (1637) | after the auth check, ahead of the basket lookup |
@@ -887,6 +888,12 @@ items is refused by the bound, a bad item under it by the item's text.
 through `WalletInterface` and one through the storage trait meet the same
 bound. Under the bound the finders bind one SQL placeholder per item: past
 SQLite's 32766 they answer `too many SQL variables` (a finding of #309).
+
+The 999 rule (#324): with `sendWith` at 1000 the create validator refuses
+when the new transaction joins the broadcast set (validationHelpers.ts:792-800,
+inputs or outputs present; after the duplicate input outpoints) and the sign
+door always (871-876), each `The sendWith parameter must be at most 999
+transaction IDs when the <new|signed> transaction joins the broadcast set`.
 
 ### BEEF Building (1:1 Parity with Go/TypeScript)
 - User inputBEEF merging, recursive ancestor lookup until proven transactions

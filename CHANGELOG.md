@@ -21,6 +21,24 @@
   changes for a host that whitelists nothing.
 
 ### Fixed
+- #324 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
+  `sendWith`'s bounds beyond the create door's 1000 (#309). `sign_action`
+  validates its `sendWith` ahead of the session lookup as
+  validateSignActionArgs does (ts-stack@edf6e03 `validationHelpers.ts:823`,
+  validateSendWith at `:136-144`, then `:871-876`): past 1000 IDs
+  `The sendWith parameter must be an array of at most 1000 items`, a
+  repeated ID `The sendWith parameter must be unique transaction IDs`, and
+  1000 IDs `The sendWith parameter must be at most 999 transaction IDs when
+  the signed transaction joins the broadcast set`. The create validator, at
+  both doors, refuses 1000 IDs when the new transaction joins the broadcast
+  set (`:792-800`: inputs or outputs present) with `The sendWith parameter
+  must be at most 999 transaction IDs when the new transaction joins the
+  broadcast set`; a `sendWith`-only create still takes 1000. Each is
+  `WalletRefusalClass::InvalidParameter`, its message prefixed
+  `Validation error: ` as every `ValidationError` is. Host note
+  (bsv-wallet-cli#386): the two 999 texts and the sign door's two others are
+  new, and a host sees them only past 999 IDs or with a repeated ID on
+  `signAction`.
 - #751 step 1 (the keeper's 2026-11-03 21:2xZ word): the permissions
   manager looks up a stored token before the seek-false refusal and before
   the prompt, as the reference's `findProtocolToken`, `findBasketToken` and
