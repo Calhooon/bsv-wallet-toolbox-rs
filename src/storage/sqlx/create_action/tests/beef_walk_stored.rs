@@ -473,9 +473,7 @@ async fn test_walk_keeps_the_closure_of_the_inputs_when_the_stored_beef_lacks_it
     // dead weight and does not reach the BEEF.
     use super::super::test_support::synth_tx;
 
-    let storage = StorageSqlx::in_memory().await.unwrap();
-    storage.migrate("test", "000000").await.unwrap();
-    storage.make_available().await.unwrap();
+    let storage = l2_23_storage().await;
 
     let (parent_raw, parent) = synth_tx(&"11".repeat(32), 0, 5_000);
     let (stray_raw, stray) = synth_tx(&"22".repeat(32), 0, 6_000);
@@ -488,21 +486,7 @@ async fn test_walk_keeps_the_closure_of_the_inputs_when_the_stored_beef_lacks_it
     stored.merge_raw_tx(stray_raw, Some(stray_bump));
     seed_unproven_tx(&storage, &subject, &subject_raw, Some(&stored.to_binary())).await;
 
-    let mut beef = Beef::new();
-    let mut pending = vec![(subject.clone(), 0usize)];
-    let mut processed = HashSet::new();
-    let mut conn = storage.pool().acquire().await.unwrap();
-    beef_bfs_walk(
-        &mut conn,
-        Some(storage.writer()),
-        &mut beef,
-        &mut pending,
-        &mut processed,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let beef = super::beef_walk_ancestry::walk_from(&storage, &subject, None).await;
 
     let kept = beef_txids(&beef);
     assert!(kept.contains(&subject), "the subject is carried whole");
