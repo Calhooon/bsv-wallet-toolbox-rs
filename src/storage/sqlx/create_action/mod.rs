@@ -71,10 +71,10 @@ mod test_support;
 use test_support::{
     backdate_tx, beef_txids, build_test_beef_with_bump, caller_complete_storage, covenant_input,
     create_spending_tx, fake_der_signature, l2_23_args, l2_23_assembly, l2_23_input, l2_23_storage,
-    p2pkh_output, p2pkh_unlock, seed_change_output, seed_change_output_with_status,
-    seed_custom_output, seed_proven_chain_tx, seed_proven_tx, seed_raw_tx,
-    seed_tagged_change_output, seed_tx_with_input_beef, seed_unproven_tx, synth_bump, synth_chain,
-    txid_of,
+    linked_in_memory_entry, p2pkh_output, p2pkh_unlock, seed_change_output,
+    seed_change_output_with_status, seed_custom_output, seed_proven_chain_tx, seed_proven_tx,
+    seed_raw_tx, seed_tagged_change_output, seed_tx_with_input_beef, seed_unproven_tx, synth_bump,
+    synth_chain, txid_of,
 };
 
 // =============================================================================

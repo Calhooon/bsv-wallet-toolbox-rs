@@ -81,7 +81,10 @@ fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<Str
         } else if let Some(raw) = tx.raw_tx() {
             kept.merge_raw_tx(raw.to_vec(), None);
         } else if let Some(t) = tx.tx() {
-            kept.merge_transaction(t.clone());
+            // The entry alone: since bsv-rs 0.9.0-beta.7 (#764)
+            // `merge_transaction` walks the sources an in-memory transaction
+            // links, which this split must not add.
+            kept.merge_raw_tx(t.to_binary(), None);
         }
     }
     (kept, from_storage)

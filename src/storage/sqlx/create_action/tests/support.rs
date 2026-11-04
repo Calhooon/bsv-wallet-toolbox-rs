@@ -655,3 +655,21 @@ pub(super) async fn backdate_tx(storage: &StorageSqlx, txid: &str, minutes: i64)
         .await
         .unwrap();
 }
+
+/// bsv-rs #764's shape: `c` held in memory alone (`BeefTx::from_tx`, no
+/// raw bytes), its input linked to its proven parent `b` (`b`'s path on the
+/// transaction), `b` itself not an entry, and an unrelated raw entry `u` so
+/// a rebuild runs. Since bsv-rs 0.9.0-beta.7 `merge_transaction` of `c`
+/// merges `b` and its path as well (`Beef.ts:849-901`).
+pub(super) fn linked_in_memory_entry() -> (Beef, [String; 3]) {
+    let chain = synth_chain(3); // a <- b <- c
+    let mut b = bsv_rs::transaction::Transaction::from_binary(&chain[1].0).unwrap();
+    b.merkle_path = Some(synth_bump(900_000, &chain[1].1));
+    let mut c = bsv_rs::transaction::Transaction::from_binary(&chain[2].0).unwrap();
+    c.inputs[0].source_transaction = Some(Box::new(b));
+    let u = synth_chain(1).pop().unwrap();
+    let mut beef = Beef::new();
+    beef.txs.push(bsv_rs::transaction::BeefTx::from_tx(c, None));
+    beef.merge_raw_tx(u.0, None);
+    (beef, [chain[1].1.clone(), chain[2].1.clone(), u.1])
+}
