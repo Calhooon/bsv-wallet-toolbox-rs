@@ -11,7 +11,8 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -221,6 +222,19 @@ pub struct PermissionRequest {
     /// The wallet operation being requested (e.g., "createAction", "signAction").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>,
+    /// The id the host answers with through
+    /// [`WalletPermissionsManager::grant_permission`] or
+    /// [`WalletPermissionsManager::deny_permission`]: the reference's event
+    /// `requestID` (ts-stack@edf6e03 `WalletPermissionsManager.ts:2671-2690`),
+    /// set by the manager on the request the handler receives.
+    #[serde(rename = "requestID", default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Whether the request renews an expired token (`:336`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal: Option<bool>,
+    /// The expired token a renewal replaces (`:337`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_token: Option<PermissionToken>,
 }
 
 /// Type of permission.
@@ -277,6 +291,10 @@ pub struct PermissionToken {
     pub satoshis: u64,
     /// Originator allowed to use this permission.
     pub originator: String,
+    /// The originator as captured when the token was minted, unnormalized
+    /// (ts-stack@edf6e03 `WalletPermissionsManager.ts:376-380`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_originator: Option<String>,
     /// Expiration time (UNIX epoch seconds).
     pub expiry: u64,
     /// Whether privileged access is granted.
@@ -509,6 +527,13 @@ pub struct WalletPermissionsManager {
     whitelisted_counterparties: HashMap<String, Vec<String>>,
     /// The stored tokens' locking key, read once (#751).
     permission_token_locking_key: OnceCell<String>,
+    /// The requests awaiting the host's answer, by request id
+    /// (`activeRequests`, ts-stack@edf6e03 `WalletPermissionsManager.ts:2652-2668`).
+    active_requests: StdMutex<HashMap<String, permission_grant::ActiveRequest>>,
+    /// The spending requests' sequence, one prompt per spend (`:710`, `:5830-5835`).
+    spending_request_sequence: AtomicU64,
+    /// The recent grants' cover ends, by request key (`recentGrants`, `:675`).
+    recent_grants: StdMutex<HashMap<String, Instant>>,
 }
 
 impl WalletPermissionsManager {
@@ -526,6 +551,9 @@ impl WalletPermissionsManager {
             permission_request_handler: RwLock::new(None),
             whitelisted_counterparties: HashMap::new(),
             permission_token_locking_key: OnceCell::new(),
+            active_requests: StdMutex::new(HashMap::new()),
+            spending_request_sequence: AtomicU64::new(0),
+            recent_grants: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -703,36 +731,8 @@ impl WalletPermissionsManager {
     // Permission Request Flow
     // =========================================================================
 
-    /// Invokes the permission request handler to get user consent.
-    ///
-    /// If no handler is registered, returns an error.
-    /// On success, caches the granted permission.
-    pub async fn request_permission_flow(&self, request: PermissionRequest) -> Result<bool> {
-        let handler_guard = self.permission_request_handler.read().await;
-        let handler = handler_guard.as_ref().ok_or_else(|| {
-            Error::AccessDenied(
-                "No permission request handler registered. Cannot request user consent."
-                    .to_string(),
-            )
-        })?;
-
-        let token = handler(request.clone()).await?;
-
-        // Cache the granted permission
-        let cache_key = Self::build_cache_key(
-            request.request_type,
-            &request.originator,
-            request.privileged,
-            request.protocol_id.as_ref(),
-            request.counterparty.as_deref(),
-            request.basket.as_deref(),
-            request.certificate.as_ref(),
-            request.spending.as_ref().map(|s| s.satoshis),
-        );
-        self.cache_permission(cache_key, token.expiry).await;
-
-        Ok(true)
-    }
+    // The request flow, `grant_permission` and `deny_permission` are in
+    // `permission_grant.rs`.
 
     // =========================================================================
     // Enforcement Methods
@@ -906,6 +906,9 @@ impl WalletPermissionsManager {
             spending: None,
             reason: reason.map(|s| s.to_string()),
             operation: None,
+            request_id: None,
+            renewal: None,
+            previous_token: None,
         })
         .await
     }
@@ -1018,6 +1021,9 @@ impl WalletPermissionsManager {
             spending: None,
             reason: reason.map(|s| s.to_string()),
             operation: None,
+            request_id: None,
+            renewal: None,
+            previous_token: None,
         })
         .await
     }
@@ -1105,6 +1111,9 @@ impl WalletPermissionsManager {
             spending: None,
             reason: reason.map(|s| s.to_string()),
             operation: None,
+            request_id: None,
+            renewal: None,
+            previous_token: None,
         })
         .await
     }
@@ -1163,6 +1172,9 @@ impl WalletPermissionsManager {
             }),
             reason: reason.map(|s| s.to_string()),
             operation: None,
+            request_id: None,
+            renewal: None,
+            previous_token: None,
         })
         .await
     }
@@ -2289,6 +2301,9 @@ module_call_serde!(InternalizeActionArgs => InternalizeActionResult, "internaliz
 // Tests
 // =============================================================================
 
+#[path = "permission_grant.rs"]
+mod permission_grant;
+
 #[cfg(all(test, feature = "sqlite"))]
 #[path = "permission_token_lookup_tests.rs"]
 mod permission_token_lookup_tests;
@@ -2505,6 +2520,7 @@ mod tests {
             output_script: "76a914...88ac".to_string(),
             satoshis: 1000,
             originator: originator.to_string(),
+            raw_originator: None,
             expiry,
             privileged: None,
             protocol: None,
@@ -2554,6 +2570,9 @@ mod tests {
             spending: None,
             reason: Some("Testing".to_string()),
             operation: Some("createAction".to_string()),
+            request_id: None,
+            renewal: None,
+            previous_token: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         let parsed: PermissionRequest = serde_json::from_str(&json).unwrap();
@@ -2896,6 +2915,7 @@ mod tests {
                     output_script: "76a914...88ac".to_string(),
                     satoshis: 0,
                     originator: "app.example.com".to_string(),
+                    raw_originator: None,
                     expiry,
                     privileged: None,
                     protocol: Some("test".to_string()),
@@ -3014,6 +3034,9 @@ mod tests {
             spending: None,
             reason: None,
             operation: Some("createAction".to_string()),
+            request_id: None,
+            renewal: None,
+            previous_token: None,
         };
         assert!(manager.check_permission(&req));
     }
@@ -3035,6 +3058,9 @@ mod tests {
             spending: None,
             reason: None,
             operation: Some("createAction".to_string()),
+            request_id: None,
+            renewal: None,
+            previous_token: None,
         };
         assert!(!manager.check_permission(&req));
     }
