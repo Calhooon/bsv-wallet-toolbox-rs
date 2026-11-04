@@ -10,7 +10,7 @@ half hours queued every other repository's CI behind them. The schedule returns
 when the run is shaped to finish: the three door files (861 mutants) nightly in
 fewer shards and the full inventory weekly, a cheaper per-mutant build, or both.
 It is informational and must not become a required branch protection context.
-Beside the sixteen shards, the `doors` job runs the four doors that judge under
+Beside the sixteen shards, the `doors` job runs the five files that judge under
 the node's word in two shards of their own, under a wider oracle (below, #535),
 and the `evidence` job runs the BEEF walk (`create_action/beef_walk.rs`) in one
 shard under its own reach targets (below, #601).
@@ -51,7 +51,7 @@ it to `main` with the files it reads: a `main` workflow that names
 ## Measurement
 
 `.cargo/mutants.toml` selects the three storage doors, the services orchestrator,
-all providers and all monitor tasks, less the four files of the door oracle
+all providers and all monitor tasks, less the five files of the door oracle
 below and the BEEF walk of the evidence oracle. Both mutation build and test phases use
 `--lib`, so the test command is `cargo test --lib`. The library exercises the
 storage doors with `MockWalletServices` and the providers with `mockito`.
