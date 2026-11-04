@@ -13,7 +13,7 @@
 //! answers the validator's refusal, with or without a manager. The seven key
 //! calls are judged by bsv-rs's public validators, one per reference site
 //! (`validationHelpers.ts:1717-1804`, bsv-rs #609); the two reveals, which
-//! have no public validator, by the everyday ProtoWallet's call.
+//! have no public validator, by the everyday `ProtoWallet`'s call.
 
 use super::*;
 use bsv_rs::wallet::{
@@ -54,7 +54,7 @@ fn argument_refusal<T>(everyday: bsv_rs::Result<T>) -> bsv_rs::Result<()> {
 }
 
 /// A key call's arguments judged by bsv-rs's public validator for its
-/// reference site (bsv-rs #609), the texts the ProtoWallet's own.
+/// reference site (bsv-rs #609), the texts the `ProtoWallet`'s own.
 trait KeyCallArgs {
     fn validate(&self) -> bsv_rs::Result<()>;
 }

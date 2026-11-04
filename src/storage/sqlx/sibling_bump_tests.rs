@@ -42,14 +42,26 @@ async fn walk_and_prune(
     roots: &[String],
     tracker: Option<&MockChainTracker>,
 ) -> Beef {
-    let mut conn = s.pool().acquire().await.unwrap();
     let mut beef = Beef::new();
+    walk_into(s, &mut beef, roots, tracker).await;
+    prune_beef_to_roots(&mut beef, roots);
+    beef
+}
+
+/// The walk from `roots` into `beef` as it stands.
+async fn walk_into(
+    s: &StorageSqlx,
+    beef: &mut Beef,
+    roots: &[String],
+    tracker: Option<&MockChainTracker>,
+) {
+    let mut conn = s.pool().acquire().await.unwrap();
     let mut pending: Vec<(String, usize)> = roots.iter().cloned().map(|t| (t, 0)).collect();
     let mut processed = HashSet::new();
     beef_bfs_walk(
         &mut conn,
         Some(s.writer()),
-        &mut beef,
+        beef,
         &mut pending,
         &mut processed,
         Some(s),
@@ -57,8 +69,6 @@ async fn walk_and_prune(
     )
     .await
     .unwrap();
-    prune_beef_to_roots(&mut beef, roots);
-    beef
 }
 
 fn describe_shape(beef: &Beef) -> String {
@@ -461,21 +471,10 @@ async fn the_walk_links_a_txid_two_bumps_hold_to_the_last_732() {
     beef.merge_bump(path_flagging(&x.a.1, &x.b.1, &x.a.1));
     beef.merge_bump(second_proof_of(&x.b.1));
     assert_eq!(beef.bumps.len(), 2, "two blocks, two BUMPs");
-    let mut conn = s.pool().acquire().await.unwrap();
-    let mut pending = vec![(x.b.1.clone(), 0)];
-    let mut processed = HashSet::new();
-    let walked = beef_bfs_walk(
-        &mut conn,
-        Some(s.writer()),
-        &mut beef,
-        &mut pending,
-        &mut processed,
-        Some(&s),
-        None,
-    )
-    .await;
-    walked.unwrap();
-    let linked = beef.find_txid(&x.b.1).and_then(|t| t.bump_index());
+    walk_into(&s, &mut beef, std::slice::from_ref(&x.b.1), None).await;
+    let linked = beef
+        .find_txid(&x.b.1)
+        .and_then(bsv_rs::transaction::BeefTx::bump_index);
     assert_eq!(linked, Some(1), "b's proof is the last BUMP holding it");
     assert_eq!(beef.find_bump(&x.b.1).unwrap().block_height, HEIGHT + 1);
 }
@@ -490,11 +489,11 @@ fn the_linker_takes_the_last_bump_holding_a_txid_765() {
     beef.merge_bump(path_flagging(&x.a.1, &x.b.1, &x.a.1));
     beef.merge_bump(second_proof_of(&x.b.1));
     beef.merge_raw_tx(x.b.0.clone(), None);
-    for tx in beef.txs.iter_mut() {
+    for tx in &mut beef.txs {
         tx.set_bump_index(None);
     }
-    for bump in beef.bumps.iter_mut() {
-        for leaf in bump.path[0].iter_mut() {
+    for bump in &mut beef.bumps {
+        for leaf in &mut bump.path[0] {
             leaf.txid = leaf.hash.as_deref() == Some(x.a.1.as_str());
         }
     }
