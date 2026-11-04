@@ -2,16 +2,18 @@
 
 The reference implementation is the TypeScript `@bsv/wallet-toolbox` and the
 `@bsv/sdk` beside it (`~/bsv/ts-stack` at edf6e03). This crate conforms to it
-wherever the reference decides something. This register holds the
-application-layer divergences from the reference that wait on or carry the
-owner's ruling, each with the why, its scenario and its witness; its rows are
-numbered AD1, AD2 and so on, a prefix of their own, so they never clash with
-the architecture's D rows. The code-versus-charter divergences, and the
-reference divergences filed beside them under the gate's filing format, are
-`docs/ARCHITECTURE.md` section 7 (D1 to D31); the reorg divergences are
-`docs/REORG-DIVERGENCES.md` (R rows), in the same shape as this one. A row is
-deleted only by re-converging on the reference, never by deleting the code; a
-row kept is the owner's ruling, and a row whose ruling is pending says so.
+wherever the reference decides something. The line between the registers:
+a divergence with a filing cell (the other SDK's issue, or the toolbox's
+reading with the charter line that rules it) is a row of `docs/ARCHITECTURE.md`
+section 7 (D1 to D31, the gate's filing format), whether against a charter or
+against the reference; a reorg divergence is a row of
+`docs/REORG-DIVERGENCES.md` (R rows); a divergence whose behaviour of record
+WAITS ON THE OWNER'S RULING, filed nowhere until he rules, is a row here, each
+with the why, its scenario and its witness, numbered AD1, AD2 and so on, a
+prefix of its own. When the owner rules, the row either goes (the code
+re-converges on the reference) or moves to section 7 with its filing cell. A
+row is deleted only by re-converging on the reference, never by deleting the
+code; a row whose ruling is pending says so.
 
 Conformed (no row needed): a merkle root a header service has at the proof's
 height and that differs from the proof's root is refused, the reference's
