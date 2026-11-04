@@ -247,7 +247,10 @@
   second word: the module's `on_request` gets the method's camelCase name,
   the arguments in the reference's JSON and the originator, and answers the
   arguments the key route runs with; its `on_response` answers the result
-  the caller gets. The protocol check (admin, level 0, the whitelist, the
+  the caller gets. A module sees getPublicKey's `identityKey` only when it is
+  true, as the reference's object has it (`identityKey?: true`,
+  `Wallet.interfaces.ts:683`), and an absent key reads back false. The
+  protocol check (admin, level 0, the whitelist, the
   seek flag, the prompt) is skipped for that call. `get_public_key`
   delegates only with a protocol id, ahead of the identity-key check; the
   two linkage reveals never delegate. `nosend` is the reference's built-in
