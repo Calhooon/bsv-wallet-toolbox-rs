@@ -267,6 +267,28 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- #763 (the owner's word of 2026-11-04 13:5xZ, api-break, in #751 step 2's
+  release): `PermissionRequest` carries the usage it asks for, as the
+  reference's request carries `usageType` (ts-stack@edf6e03
+  `WalletPermissionsManager.ts:311`), so a handler tells a signing prompt
+  from a linkage-revelation prompt for one protocol. The new field
+  `usage_type: Option<RequestUsageType>` (serde `usageType`, omitted when
+  none) is set by the manager on every protocol request (the seven
+  `PermissionUsageType` values, wire names `signing`, `encrypting`, `hmac`,
+  `publicKey`, `identityKey`, `linkageRevelation`, `generic`), every basket
+  request (`insertion`, `removal`, `listing`) and every certificate request
+  (`disclosure`), as the reference sets it at `:1540`, `:1599` and `:1687`;
+  a spending request carries none. The request id appends the usage name,
+  as `buildActiveRequestKey` does (`:5830-5840`): two usages of one
+  protocol, basket or certificate prompt apart, one usage asked twice
+  prompts once; the grant and its cache stay keyed without it
+  (`:5816-5828`). `PermissionUsageType`, `BasketUsageType` and
+  `CertificateUsageType` gain serde. A MAJOR change to `cargo
+  semver-checks`: `PermissionRequest` is a constructible public struct.
+  Host note (bsv-wallet-cli#386): a handler that matches on the request's
+  fields sees one more; a handler that constructs a `PermissionRequest`
+  literal names `usage_type`; a host that compares request ids sees the
+  usage name at their end.
 - #332 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
   certificate issuance posts to `<certifierUrl>/signCertificate`, as the
   reference's door resolves ``new URL('signCertificate', `${certifierUrl}/`)``
