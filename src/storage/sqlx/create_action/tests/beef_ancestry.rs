@@ -424,7 +424,7 @@ async fn test_input_beef_with_a_bump_carrying_its_txid_unflagged_is_linked_not_r
     for tx in user.txs.iter_mut().filter(|tx| tx.txid() == x.b.1) {
         tx.set_bump_index(None);
     }
-    for leaf in user.bumps[0].path[0].iter_mut() {
+    for leaf in &mut user.bumps[0].path[0] {
         leaf.txid = leaf.hash.as_deref() == Some(x.a.1.as_str());
     }
     let user_bytes = user.to_binary();
