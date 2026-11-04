@@ -134,7 +134,7 @@ async fn response_run_with(
     let captured = Arc::clone(&issued_response);
     let subject = PublicKey::from_hex(wallet.identity_key()).unwrap();
     let request = signing_certifier(&mut server).await
-        .general(&mut server, "/signCertificate", 200, super::peer_fixture::Answer::Signed, move |request| {
+        .general(&mut server, SIGN, 200, super::peer_fixture::Answer::Signed, move |request| {
             let request: ProtocolIssuanceRequest = serde_json::from_slice(request.body().unwrap()).unwrap();
             let private = PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap();
             let signer = ProtoWallet::new(Some(private.clone()));

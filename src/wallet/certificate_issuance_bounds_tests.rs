@@ -32,7 +32,7 @@ async fn refusal(case: &Case) -> (bsv_rs::Error, String) {
         "/.well-known/auth"
     } else {
         signing_certifier(&mut server).await;
-        "/signCertificate"
+        SIGN
     };
     let answer = served(&mut server, path, case).await;
     let wallet = wallet().await;
@@ -62,7 +62,7 @@ fn transport_message(name: &str, error: bsv_rs::Error) -> String {
 async fn refused(family: &str, name: &str) {
     let case = case(family, name);
     let (error, origin) = refusal(&case).await;
-    let text = case.refusal(&origin, "/signCertificate");
+    let text = case.refusal(&origin, SIGN);
     assert_eq!(transport_message(name, error), format!("{ENVELOPE}{text}"));
 }
 
