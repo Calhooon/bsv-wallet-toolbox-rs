@@ -1758,23 +1758,14 @@ where
                 // Update transaction status based on classified broadcast
                 // outcome. After the post a store fault is never the call's
                 // error: the transaction is on the network (bsv-wallet-cli #44).
-                if let Err(e) = self
-                    .storage
-                    .update_transaction_status_after_post(
-                        &txid,
-                        &broadcast_outcome,
-                        &post_words,
-                        post_fault.as_deref(),
-                    )
-                    .await
-                {
-                    crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
-                }
-                mark_send_with_result_after_broadcast(
-                    &mut process_result.send_with_results,
+                record_post(
+                    &*self.storage,
                     &txid,
                     &broadcast_outcome,
-                );
+                    (&post_words, post_fault.as_deref()),
+                    &mut process_result.send_with_results,
+                )
+                .await;
 
                 // A broadcaster's word is never an error to the caller
                 // (bsv-stack-lean #66): every outcome but a success leaves the
@@ -2561,23 +2552,14 @@ where
             // with the post note the door's post and the one-call composition
             // write (#330). After the post a store fault is never the call's
             // error.
-            if let Err(e) = self
-                .storage
-                .update_transaction_status_after_post(
-                    &txid,
-                    &broadcast_outcome,
-                    &post_words,
-                    post_fault.as_deref(),
-                )
-                .await
-            {
-                crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
-            }
-            mark_send_with_result_after_broadcast(
-                &mut process_result.send_with_results,
+            record_post(
+                &*self.storage,
                 &txid,
                 &broadcast_outcome,
-            );
+                (&post_words, post_fault.as_deref()),
+                &mut process_result.send_with_results,
+            )
+            .await;
 
             // A broadcaster's word is never an error to the caller
             // (bsv-stack-lean #66): every outcome but a success leaves the
@@ -3394,6 +3376,26 @@ fn mark_send_with_result_after_broadcast(
             r.status = "unproven".to_string();
         }
     }
+}
+
+/// A post's word recorded after the post (#187, #330): the `processActionPost`
+/// note and the statuses through `update_transaction_status_after_post`, a
+/// store fault logged and never the call's error (bsv-wallet-cli #44), then
+/// the sendWith result marked.
+async fn record_post<S: WalletStorageProvider>(
+    storage: &S,
+    txid: &str,
+    outcome: &BroadcastOutcome,
+    (words, fault): (&[crate::services::PostBeefResult], Option<&str>),
+    send_with_results: &mut Option<Vec<crate::storage::SendWithResult>>,
+) {
+    if let Err(e) = storage
+        .update_transaction_status_after_post(txid, outcome, words, fault)
+        .await
+    {
+        crate::storage::broadcast::post_broadcast_status_write_failed(txid, &e);
+    }
+    mark_send_with_result_after_broadcast(send_with_results, txid, outcome);
 }
 
 /// Builds an unsigned transaction from StorageCreateActionResult.
