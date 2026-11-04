@@ -229,8 +229,11 @@
   `isPublicNetworkAddress`'s (`:112-152`). Host note (bsv-wallet-cli#386): a
   host running a local certifier on purpose (regtest, the stack's local
   oracles under rule 10) uses the policy client (the test-time or
-  `bench-support` build), so nothing of the stack's local harness breaks;
-  the production client now refuses what the reference refuses.
+  `bench-support` build), which admits loopback alone, so nothing of the
+  stack's local harness breaks; a certifier on a LAN or docker address is
+  refused by both clients, as the reference refuses it (`Wallet.ts:773` has no
+  escape either); the production client now refuses what the reference
+  refuses.
 - #757 (the keeper's 2026-11-03 22:0xZ reading, after #726): the permission
   modules' `on_request` and `on_response` on the five basket and label
   calls, as the reference's wrappers do (ts-stack@edf6e03
