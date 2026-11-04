@@ -705,12 +705,40 @@ where
         args: &A,
         underlying: impl FnOnce(A) -> crate::managers::ModuleFuture<'a, A::Output> + Send,
     ) -> Option<bsv_rs::Result<A::Output>> {
+        self.module_name_answer(originator, &protocol.protocol_name, args, underlying)
+            .await
+    }
+
+    /// `module_answer` on a basket or protocol `name` as passed: the key
+    /// calls' protocol, `list_outputs`' and `relinquish_output`'s basket
+    /// (#757, `WalletPermissionsManager.ts:5080-5140`).
+    async fn module_name_answer<'a, A: crate::managers::ModuleCall>(
+        &'a self,
+        originator: Option<&'a str>,
+        name: &str,
+        args: &A,
+        underlying: impl FnOnce(A) -> crate::managers::ModuleFuture<'a, A::Output> + Send,
+    ) -> Option<bsv_rs::Result<A::Output>> {
         let manager = self.permissions_manager.as_ref()?;
-        let name = &protocol.protocol_name;
         let originator = originator.unwrap_or_default();
         manager
             .delegate_key_call(name, args, originator, underlying)
             .await
+    }
+
+    /// The modules a basket and label call chains (#757): empty with no
+    /// manager, else the manager's `module_chain` over the request's `p `
+    /// baskets and labels.
+    fn module_chain<'n>(
+        &self,
+        baskets: impl IntoIterator<Item = &'n str>,
+        labels: impl IntoIterator<Item = &'n str>,
+        nosend: crate::managers::NoSend,
+    ) -> bsv_rs::Result<crate::managers::ModuleChain> {
+        match self.permissions_manager {
+            Some(ref manager) => manager.module_chain(baskets, labels, nosend),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Checks basket access permission if a permissions manager is set.
@@ -1180,6 +1208,17 @@ where
         // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).
         let spend_guard = self.spend_lock.lock().await;
 
+        // The modules the outputs' `p <scheme>` baskets and the `p <scheme>`
+        // labels name, ahead of every check (#757,
+        // `WalletPermissionsManager.ts:4300-4302`); the door has refused
+        // `p nosend ` labels already, so `nosend` here is a basket.
+        let outputs = args.outputs.as_deref().unwrap_or_default();
+        let chain = self.module_chain(
+            outputs.iter().filter_map(|o| o.basket.as_deref()),
+            args.labels.iter().flatten().map(String::as_str),
+            crate::managers::NoSend::Refuse(crate::managers::BRC177_UNSUPPORTED),
+        )?;
+
         // BRC-98/99: Check spending permission based on total output satoshis
         if self.permissions_manager.is_some() {
             let total_satoshis: u64 = args
@@ -1193,10 +1232,14 @@ where
                     .await?;
             }
 
-            // Also check basket access for any outputs that target specific baskets
+            // Also check basket access for any outputs that target specific
+            // baskets; a `p <scheme>` basket is its module's (`:4305`).
             if let Some(ref outputs) = args.outputs {
                 for output in outputs {
                     if let Some(ref basket) = output.basket {
+                        if crate::managers::module_scheme(basket).is_some() {
+                            continue;
+                        }
                         self.check_basket_permission(
                             originator,
                             basket,
@@ -1208,6 +1251,59 @@ where
             }
         }
 
+        // `onRequest` in order, the call on the last arguments, validated
+        // again as the reference's underlying call validates its own,
+        // `onResponse` in reverse (`callCreateActionWithPModules`,
+        // `:4500-4520`).
+        let module_originator = originator.unwrap_or_default();
+        let args = crate::managers::chain_request(&chain, args, module_originator).await?;
+        if !chain.is_empty() {
+            super::create_args::validate_create_action_args(&args)?;
+        }
+        let result = self
+            .create_action_checked(args, offer, must_spend, spend_guard)
+            .await?;
+        crate::managers::chain_response::<CreateActionArgs>(&chain, result, module_originator).await
+    }
+
+    /// `list_outputs` past its basket check: the limit validated, then
+    /// storage, as for a module's arguments (#757).
+    async fn list_outputs_unchecked(
+        &self,
+        args: ListOutputsArgs,
+    ) -> bsv_rs::Result<ListOutputsResult> {
+        // validateListOutputsArgs, validationHelpers.ts:1647 (#226); its
+        // offset at 1648 carries no minimum (BRC-100's reverse paging).
+        validate_list_limit(args.limit)?;
+
+        let auth = self.auth();
+
+        let result = self.storage.list_outputs(&auth, args).await?;
+
+        Ok(result)
+    }
+
+    /// `relinquish_output` past its basket check, under the spend lock its
+    /// caller holds (#757).
+    async fn relinquish_output_unchecked(
+        &self,
+        args: RelinquishOutputArgs,
+    ) -> bsv_rs::Result<RelinquishOutputResult> {
+        let auth = self.auth();
+
+        let _result = self.storage.relinquish_output(&auth, args).await?;
+
+        Ok(RelinquishOutputResult { relinquished: true })
+    }
+
+    /// `create_action_at` past its permission checks and modules.
+    async fn create_action_checked(
+        &self,
+        args: CreateActionArgs,
+        offer: Option<&[i64]>,
+        must_spend: &[i64],
+        spend_guard: tokio::sync::MutexGuard<'_, ()>,
+    ) -> bsv_rs::Result<CreateActionResult> {
         let auth = self.auth();
         let args = with_trust_self_default(args, self.options.trust_self.as_deref());
 
@@ -2502,6 +2598,16 @@ where
         originator: Option<&str>,
     ) -> bsv_rs::Result<ListActionsResult> {
         validate_originator(originator)?;
+        // The modules the `p <scheme>` labels name, chained around the
+        // listing (#757, `WalletPermissionsManager.ts:4920-4961`); `nosend`
+        // is the reference's built-in module, whose transforms are identity.
+        let chain = self.module_chain(
+            [],
+            args.labels.iter().map(String::as_str),
+            crate::managers::NoSend::Skip,
+        )?;
+        let module_originator = originator.unwrap_or_default();
+        let args = crate::managers::chain_request(&chain, args, module_originator).await?;
         // validateListActionsArgs, validationHelpers.ts:1708 (#226).
         validate_list_limit(args.limit)?;
 
@@ -2509,7 +2615,7 @@ where
 
         let result = self.storage.list_actions(&auth, args).await?;
 
-        Ok(result)
+        crate::managers::chain_response::<ListActionsArgs>(&chain, result, module_originator).await
     }
 
     async fn internalize_action(
@@ -2521,6 +2627,28 @@ where
         // Validate arguments before the BRC-29 script comparison and storage;
         // each wallet payment's sender is the validated key (#453).
         let senders = super::internalize_args::validate_internalize_action_args(&args)?;
+        // The modules the insertions' `p <scheme>` baskets and the
+        // `p <scheme>` labels name (#757, `WalletPermissionsManager.ts:
+        // 5059-5078`); the door has refused `p nosend ` labels, and the
+        // built-in module refuses this method (`:799-801`). Their arguments
+        // validate again, as the reference's underlying call does.
+        let chain = self.module_chain(
+            args.outputs
+                .iter()
+                .filter(|o| o.protocol == "basket insertion")
+                .filter_map(|o| o.insertion_remittance.as_ref())
+                .map(|r| r.basket.as_str()),
+            args.labels.iter().flatten().map(String::as_str),
+            crate::managers::NoSend::Refuse(crate::managers::NOSEND_KEY_CALL),
+        )?;
+        let module_originator = originator.unwrap_or_default();
+        let (args, senders) = if chain.is_empty() {
+            (args, senders)
+        } else {
+            let args = crate::managers::chain_request(&chain, args, module_originator).await?;
+            let senders = super::internalize_args::validate_internalize_action_args(&args)?;
+            (args, senders)
+        };
 
         // Serialize spending operations (creates new spendable outputs).
         let _spend_guard = self.spend_lock.lock().await;
@@ -2600,9 +2728,11 @@ where
             );
         }
 
-        Ok(InternalizeActionResult {
+        let result = InternalizeActionResult {
             accepted: result.base.accepted,
-        })
+        };
+        crate::managers::chain_response::<InternalizeActionArgs>(&chain, result, module_originator)
+            .await
     }
 
     // =========================================================================
@@ -2616,6 +2746,19 @@ where
     ) -> bsv_rs::Result<ListOutputsResult> {
         validate_originator(originator)?;
 
+        // A `p <scheme>` basket: the module owns the call, the basket check
+        // skipped, the listing on its arguments (#757,
+        // `WalletPermissionsManager.ts:5086-5099`).
+        let underlying = |module_args| -> crate::managers::ModuleFuture<'_, _> {
+            Box::pin(async move { self.list_outputs_unchecked(module_args).await })
+        };
+        if let Some(answer) = self
+            .module_name_answer(originator, &args.basket, &args, underlying)
+            .await
+        {
+            return answer;
+        }
+
         // BRC-98/99: Check basket access permission for listing
         self.check_basket_permission(
             originator,
@@ -2623,15 +2766,7 @@ where
             crate::managers::BasketUsageType::Listing,
         )
         .await?;
-        // validateListOutputsArgs, validationHelpers.ts:1647 (#226); its
-        // offset at 1648 carries no minimum (BRC-100's reverse paging).
-        validate_list_limit(args.limit)?;
-
-        let auth = self.auth();
-
-        let result = self.storage.list_outputs(&auth, args).await?;
-
-        Ok(result)
+        self.list_outputs_unchecked(args).await
     }
 
     async fn relinquish_output(
@@ -2644,6 +2779,18 @@ where
         // Serialize spending operations (modifies UTXO state).
         let _spend_guard = self.spend_lock.lock().await;
 
+        // A `p <scheme>` basket: the module owns the call, the basket check
+        // skipped (#757, `WalletPermissionsManager.ts:5120-5131`).
+        let underlying = |module_args| -> crate::managers::ModuleFuture<'_, _> {
+            Box::pin(async move { self.relinquish_output_unchecked(module_args).await })
+        };
+        if let Some(answer) = self
+            .module_name_answer(originator, &args.basket, &args, underlying)
+            .await
+        {
+            return answer;
+        }
+
         // BRC-98/99: Check basket access permission for removal
         self.check_basket_permission(
             originator,
@@ -2651,12 +2798,7 @@ where
             crate::managers::BasketUsageType::Removal,
         )
         .await?;
-
-        let auth = self.auth();
-
-        let _result = self.storage.relinquish_output(&auth, args).await?;
-
-        Ok(RelinquishOutputResult { relinquished: true })
+        self.relinquish_output_unchecked(args).await
     }
 
     // =========================================================================
