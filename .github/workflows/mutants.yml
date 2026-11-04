@@ -225,9 +225,106 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  evidence:
+    # The BEEF walk over the stored BUMPs (create_action/beef_walk.rs, on the
+    # paths that judge the chain's evidence; #601): `.cargo/mutants-evidence.toml`,
+    # the lib and the six integration targets that enter `beef_bfs_walk`. 23
+    # mutants, serial in one shard. It waits on the doors shards so the run holds
+    # no more runners at its peak than the cap above allows.
+    name: Mutants evidence shard ${{ matrix.shard }}/1
+    needs: [doors]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The same sha as the mutants job, so the scores job reads one tree.
+          ref: ${{ github.sha }}
+
+      # The runner context is not available in workflow-level env.
+      - name: Keep build output and scratch in the runner temp
+        run: |
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/mutants-target" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+
+      - name: Cache tool and registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/mutants-tools
+          key: ${{ runner.os }}-mutants-27.1.0-${{ hashFiles('Cargo.toml') }}
+
+      - name: Install cargo-mutants
+        run: |
+          cargo install --root "$RUNNER_TEMP/mutants-tools" --version 27.1.0 --locked cargo-mutants
+          echo "$RUNNER_TEMP/mutants-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Inventory the evidence mutants
+        run: |
+          mkdir -p "$RUNNER_TEMP/mutation"
+          cargo mutants --config .cargo/mutants-evidence.toml --list --json > "$RUNNER_TEMP/mutation/catalog.json"
+
+      - name: Fetch and compile test dependencies
+        run: |
+          cargo test --features sqlite,remote,bench-support --no-run --lib \
+            --test arc_broadcast_body_tests --test caller_complete_funding_tests \
+            --test fixtures --test immediate_broadcast_hint_tests \
+            --test known_ancestor_tests --test monitor_tests
+
+      - name: Run evidence mutation shard
+        env:
+          # #513 and #540: this oracle runs the fixtures target, ladder scenes included
+          LADDER_FIXTURES_STALL_REPLAYS: "2"
+          SHARD: ${{ matrix.shard }}
+          CARGO_NET_OFFLINE: 'true'
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: localhost,127.0.0.1,::1
+        run: |
+          if cargo mutants --config .cargo/mutants-evidence.toml --in-place --shard "$SHARD/1" --sharding round-robin --output "$RUNNER_TEMP/mutation"; then
+            result=0
+          else
+            result=$?
+          fi
+          echo "cargo-mutants exit: $result" > "$RUNNER_TEMP/mutation/exit.txt"
+          # Misses and timeouts are measured here; the aggregate enforces floors.
+          case "$result" in
+            0|2|3) exit 0 ;;
+            *) exit "$result" ;;
+          esac
+
+      - name: Summarize shard
+        if: always()
+        run: |
+          python3 tools/mutants-score --report-only \
+            --catalog "$RUNNER_TEMP/mutation/catalog.json" \
+            "$RUNNER_TEMP/mutation/mutants.out/outcomes.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutants-evidence-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutation/
+          if-no-files-found: error
+          retention-days: 14
+
   scores:
     name: Mutation scores
-    needs: [mutants, doors]
+    needs: [mutants, doors, evidence]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -246,9 +343,9 @@ jobs:
           pattern: mutants-*
           path: ${{ runner.temp }}/mutants-results
 
-      # The two catalogues are disjoint (`.cargo/mutants.toml` excludes the doors),
-      # so together they are the whole inventory; the outcome glob reads both
-      # shard groups.
+      # The three catalogues are disjoint (`.cargo/mutants.toml` excludes the doors
+      # and the BEEF walk), so together they are the whole inventory; the outcome
+      # glob reads every shard group.
       - name: Enforce per-file floors and publish table
         shell: bash
         run: |
@@ -256,6 +353,7 @@ jobs:
           results="$RUNNER_TEMP/mutants-results"
           python3 -c 'import json, sys; json.dump([m for p in sys.argv[1:] for m in json.load(open(p))], sys.stdout)' \
             "$results/mutants-0/catalog.json" "$results/mutants-doors-0/catalog.json" \
+            "$results/mutants-evidence-0/catalog.json" \
             > "$RUNNER_TEMP/catalog.json"
           python3 tools/mutants-score \
             --catalog "$RUNNER_TEMP/catalog.json" \

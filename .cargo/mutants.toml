@@ -1,7 +1,8 @@
 # cargo-mutants 27.1.0. Run `cargo test --lib` in both build and test phases.
 # The four doors that judge under the node's word (three in create_action and
 # beef_verification/own_word.rs, #572) run under every test target instead, from
-# `.cargo/mutants-doors.toml` (#535); they are excluded here.
+# `.cargo/mutants-doors.toml` (#535); they are excluded here, as is the BEEF walk,
+# run under its own reach targets from `.cargo/mutants-evidence.toml` (#601).
 examine_globs = [
     "src/storage/sqlx/create_action/*.rs",
     "src/storage/sqlx/process_action.rs",
@@ -15,6 +16,7 @@ exclude_globs = [
     "src/storage/sqlx/create_action/must_spend.rs",
     "src/storage/sqlx/create_action/own_word.rs",
     "src/storage/sqlx/create_action/review_beef.rs",
+    "src/storage/sqlx/create_action/beef_walk.rs",
 ]
 additional_cargo_args = ["--lib"]
 timeout_multiplier = 3.0

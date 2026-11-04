@@ -1,0 +1,29 @@
+# cargo-mutants 27.1.0. The BEEF walk over the stored BUMPs, on the paths that
+# judge the chain's evidence (docs/ARCHITECTURE.md section 4, the row `the BEEF
+# walk skips a refuted stored BUMP and demotes nothing`; #601): its witnesses
+# live in the lib and in six integration targets that enter `beef_bfs_walk`
+# (docs/census/mutants-paths-widened-2026-11-02.md, the reach table), not the
+# doors catalogue's set, so the oracle is the lib and those targets, under the
+# CI integration step's features. A --lib-only oracle gave false survivors (the
+# mutation incident of 2026-11-02). `.cargo/mutants.toml` excludes this file;
+# the Mutants workflow runs this config as its own shard group (`--config`),
+# and the scores job reads every catalogue as one.
+examine_globs = [
+    "src/storage/sqlx/create_action/beef_walk.rs",
+]
+additional_cargo_args = [
+    "--lib",
+    "--test=arc_broadcast_body_tests",
+    "--test=caller_complete_funding_tests",
+    "--test=fixtures",
+    "--test=immediate_broadcast_hint_tests",
+    "--test=known_ancestor_tests",
+    "--test=monitor_tests",
+]
+features = ["sqlite", "remote", "bench-support"]
+timeout_multiplier = 3.0
+minimum_test_timeout = 20.0
+build_timeout_multiplier = 3.0
+
+# Mutations can introduce unused code. Such warnings must not count as kills.
+cap_lints = true

@@ -11,11 +11,13 @@ when the run is shaped to finish: the three door files (861 mutants) nightly in
 fewer shards and the full inventory weekly, a cheaper per-mutant build, or both.
 It is informational and must not become a required branch protection context.
 Beside the sixteen shards, the `doors` job runs the four doors that judge under
-the node's word in two shards of their own, under a wider oracle (below, #535).
+the node's word in two shards of their own, under a wider oracle (below, #535),
+and the `evidence` job runs the BEEF walk (`create_action/beef_walk.rs`) in one
+shard under its own reach targets (below, #601).
 Each shard uploads its `mutants.out`, inventory and exit code for 14 days, even
-on failure. `Mutation scores` combines disjoint outcomes of both shard groups against the
-two catalogues joined (they are disjoint: `.cargo/mutants.toml` excludes the
-doors) and prints the per-file table in the job summary. Missing shards, failed baselines, unfinished runs,
+on failure. `Mutation scores` combines disjoint outcomes of the three shard groups against the
+three catalogues joined (they are disjoint: `.cargo/mutants.toml` excludes the
+doors and the BEEF walk) and prints the per-file table in the job summary. Missing shards, failed baselines, unfinished runs,
 duplicate mutants, unsupported outcomes and missing floor entries fail the gate.
 
 `cargo-mutants` 27.1.0 is installed under a separate tool root. The workflow uses
@@ -37,26 +39,28 @@ only when nothing is landing: the shards take every runner slot the account
 has. A dispatch
 against `main` compares main's tree against the floors beta measured, since the
 tool reads `tools/mutants-floor.json` from the tree it checked out. The same
-six files on `beta` (this document, the workflow, `.cargo/mutants.toml`,
-`.cargo/mutants-doors.toml`, `tools/mutants-score` and `tools/mutants-floor.json`)
+seven files on `beta` (this document, the workflow, `.cargo/mutants.toml`,
+`.cargo/mutants-doors.toml`, `.cargo/mutants-evidence.toml`, `tools/mutants-score`
+and `tools/mutants-floor.json`)
 are the copy that moves with the programme; `main` carries them so the dispatch
 is registered. A change to the workflow lands on `beta` and the captain carries
 it to `main` with the files it reads: a `main` workflow that names
-`.cargo/mutants-doors.toml` needs that file on `main` too.
+`.cargo/mutants-doors.toml` or `.cargo/mutants-evidence.toml` needs that file on
+`main` too.
 
 ## Measurement
 
 `.cargo/mutants.toml` selects the three storage doors, the services orchestrator,
 all providers and all monitor tasks, less the three files of the door oracle
-below. Both mutation build and test phases use
+below and the BEEF walk of the evidence oracle. Both mutation build and test phases use
 `--lib`, so the test command is `cargo test --lib`. The library exercises the
 storage doors with `MockWalletServices` and the providers with `mockito`.
 Integration witnesses in `tests/` are not part of this score. In particular,
 monitor persistence/rollback, broadcaster HTTP bodies, and orchestrator failover
 have additional integration coverage. A miss here is a gap in this measured
 suite, not a claim that every integration witness misses it. Adding integration
-targets changes the measurement and needs a fresh baseline. The door oracle below
-is the one place the measurement includes them. Ignored tests that
+targets changes the measurement and needs a fresh baseline. The door and
+evidence oracles below are the places the measurement includes them. Ignored tests that
 require private wallet data or external services remain ignored.
 
 The test timeout is three times the baseline test duration with a 20 second
@@ -119,6 +123,45 @@ the 330 minute limit with room to spare. The rest of the inventory stays on
 `--lib` as ruled (the ratchet). Other create-door files are entered by
 integration targets as well (the record's second probe); widening them is not
 in the ruling.
+
+## The evidence oracle (#601, 2026-11-04)
+
+`create_action/beef_walk.rs` (`beef_bfs_walk`, the BEEF walk over the stored
+BUMPs; `docs/ARCHITECTURE.md` section 4, the row `the BEEF walk skips a refuted
+stored BUMP and demotes nothing`) is on the paths that judge the chain's
+evidence, and six integration targets enter it (`arc_broadcast_body_tests`,
+`caller_complete_funding_tests`, `fixtures`, `immediate_broadcast_hint_tests`,
+`known_ancestor_tests`, `monitor_tests`; the reach table of
+`docs/census/mutants-paths-widened-2026-11-02.md`). That set is not the door
+oracle's, so the file runs from its own catalogue, `.cargo/mutants-evidence.toml`:
+the lib and those six targets, features `sqlite,remote,bench-support`. The floor's
+oracle is the one whose targets enter the file, never `--lib` alone: a `--lib`-only
+oracle gave false survivors (the mutation incident of 2026-11-02). The workflow's
+`evidence` job runs its 23 mutants in one shard after the doors shards (the
+runner cap), and its compile step builds the same six targets; a new target that
+enters the walk joins both lists.
+
+Under that oracle (lane p5-601-beef-walk-survivors, 2026-11-04): 21 caught, 1
+missed, 1 unviable, 95.45% against the floor of 80. Five of the six `--lib`
+survivors are killed by lib tests from the walk's rules; the sixth is an
+equivalent mutant, counted as missed as cargo-mutants counts it:
+
+- `beef_walk.rs:307:29: replace && with || in beef_bfs_walk`, equivalent. The
+  rule: an input of an unproven transaction is queued unless it was already
+  walked or is already queued. Under `||` an input already walked, or already
+  queued, is queued again. Every entry the walk pops passes the
+  `processed_txids` check at the loop's head before anything else, and the
+  earlier entry of the same txid sits ahead of the copy (pushes append, pops take
+  the front), so the copy is popped after the txid is in `processed_txids` and
+  dropped with no read, no merge and no write. A copy carries `depth + 1`, never
+  0, so the direct-input refusal reads the earlier entry's depth. Every caller
+  builds `pending` and `processed` for the one call and reads neither after it
+  (an `Err` is returned or mapped without them). The BEEF, the refusals and the
+  stored rows agree; only the queue's length differs, bounded by the inputs of
+  the transactions walked.
+
+The record: `docs/census/mutants-paths-widened-2026-11-02.md`, the section
+after #601, and the complete record's json under `issue_601`.
 
 ## The floors from the complete figure (#534, 2026-11-02)
 
