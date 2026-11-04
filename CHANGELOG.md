@@ -293,6 +293,20 @@
   transaction, as its inputs' are. The file scores 100 percent (19 of 19);
   its floor is 100, the record in `docs/census/mutants-oracle-2026-11-01`
   (`issue_572` in its json).
+- #602 (tests and the catalogue; no code; the floors lane #534):
+  `services/providers/bhs.rs` (the header service's `current_height` and
+  `is_valid_root_for_height`, the chain's evidence the tracker's verdict
+  reads), at 66.67 percent under `--lib` and under the widened re-measure
+  against its floor of 80, joins `.cargo/mutants-doors.toml` (the lib and
+  the integration targets that enter it, `fixtures` among them) and leaves
+  the lib set. Its four survivors are killed by lib tests from the rules:
+  a failed status is the service's error, never its body read as a height
+  (`123:12: delete !`), and a root is valid for a height when it is the
+  merkle root of the header there and invalid otherwise (`165:9` with
+  `Ok(true)` and with `Ok(false)`, `166:31: replace == with !=`). The file
+  scores 100 percent (12 of 12, 5 unviable); the floor stays 80, the
+  record in `docs/census/mutants-complete-2026-11-02` (`issue_602` in its
+  json, and in the widened and door oracle records).
 - #601 (tests and the catalogue; no code; the floors lane #534):
   `create_action/beef_walk.rs` (`beef_bfs_walk`, the BEEF walk over the
   stored BUMPs), at 72.73 percent under `--lib` and under the widened
