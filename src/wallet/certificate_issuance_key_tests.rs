@@ -14,6 +14,9 @@ const ORIGINATOR: &str = "certificate.test";
 
 type TestWallet = Wallet<StorageSqlx, MockWalletServices>;
 
+/// The certifier's issuance path under its URL (#332, `Wallet.ts:772`).
+const SIGN: &str = "/signCertificate";
+
 fn certifier() -> String {
     PrivateKey::from_hex(&format!("{:064x}", 31))
         .unwrap()
@@ -76,11 +79,7 @@ fn assert_invalid_parameter(result: bsv_rs::Result<WalletCertificate>, expected:
 async fn assert_type_refusals(certifier: &str, cases: Vec<(String, &str)>) {
     let wallet = wallet().await;
     let mut server = mockito::Server::new_async().await;
-    let request = server
-        .mock("POST", "/signCertificate")
-        .expect(0)
-        .create_async()
-        .await;
+    let request = server.mock("POST", SIGN).expect(0).create_async().await;
     for (value, rule) in cases {
         let mut invalid = args(certifier.to_string(), server.url());
         invalid.certificate_type = value;
@@ -136,11 +135,7 @@ async fn test_issuance_bad_type_precedes_certifier() {
 async fn test_issuance_bad_certifier_refuses_before_protocol() {
     let wallet = wallet().await;
     let mut server = mockito::Server::new_async().await;
-    let request = server
-        .mock("POST", "/signCertificate")
-        .expect(0)
-        .create_async()
-        .await;
+    let request = server.mock("POST", SIGN).expect(0).create_async().await;
     // ts-stack@edf6e03 validationHelpers.ts:185-191,522-534 and
     // WERR_INVALID_PARAMETER.ts:14 supply the exact parameter and rule text.
     for (value, rule) in [
@@ -175,11 +170,7 @@ async fn test_issuance_bad_certifier_refuses_before_protocol() {
 async fn test_issuance_bad_certifier_precedes_identity() {
     let wallet = wallet().await;
     let mut server = mockito::Server::new_async().await;
-    let request = server
-        .mock("POST", "/signCertificate")
-        .expect(0)
-        .create_async()
-        .await;
+    let request = server.mock("POST", SIGN).expect(0).create_async().await;
     let invalid = args("gg".to_string(), server.url());
     // Poison the later identity parse so running it before the certifier
     // check changes the observed refusal. The type is left valid: the
@@ -233,39 +224,33 @@ async fn normalized_args_reach_response_checks(
     };
     let request = signing_certifier(&mut server)
         .await
-        .general(
-            &mut server,
-            "/signCertificate",
-            200,
-            Answer::Signed,
-            move |request| {
-                let request: ProtocolIssuanceRequest =
-                    serde_json::from_slice(request.body().unwrap()).unwrap();
-                let signer =
-                    ProtoWallet::new(Some(PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap()));
-                let mut response = response.clone();
-                let mut data = BASE64.decode(&request.client_nonce).unwrap();
-                data.extend(BASE64.decode(&response.server_nonce).unwrap());
-                let serial = signer
-                    .create_hmac(CreateHmacArgs {
-                        data,
-                        protocol_id: Protocol::new(
-                            SecurityLevel::Counterparty,
-                            CERTIFICATE_ISSUANCE_PROTOCOL,
-                        ),
-                        key_id: format!("{}{}", response.server_nonce, request.client_nonce),
-                        counterparty: Some(Counterparty::Other(
-                            PublicKey::from_hex(&response.certificate.as_ref().unwrap().subject)
-                                .unwrap(),
-                        )),
-                        ..Default::default()
-                    })
-                    .unwrap()
-                    .hmac;
-                response.certificate.as_mut().unwrap().serial_number = BASE64.encode(serial);
-                serde_json::to_vec(&response).unwrap()
-            },
-        )
+        .general(&mut server, SIGN, 200, Answer::Signed, move |request| {
+            let request: ProtocolIssuanceRequest =
+                serde_json::from_slice(request.body().unwrap()).unwrap();
+            let signer =
+                ProtoWallet::new(Some(PrivateKey::from_hex(&format!("{:064x}", 31)).unwrap()));
+            let mut response = response.clone();
+            let mut data = BASE64.decode(&request.client_nonce).unwrap();
+            data.extend(BASE64.decode(&response.server_nonce).unwrap());
+            let serial = signer
+                .create_hmac(CreateHmacArgs {
+                    data,
+                    protocol_id: Protocol::new(
+                        SecurityLevel::Counterparty,
+                        CERTIFICATE_ISSUANCE_PROTOCOL,
+                    ),
+                    key_id: format!("{}{}", response.server_nonce, request.client_nonce),
+                    counterparty: Some(Counterparty::Other(
+                        PublicKey::from_hex(&response.certificate.as_ref().unwrap().subject)
+                            .unwrap(),
+                    )),
+                    ..Default::default()
+                })
+                .unwrap()
+                .hmac;
+            response.certificate.as_mut().unwrap().serial_number = BASE64.encode(serial);
+            serde_json::to_vec(&response).unwrap()
+        })
         .match_body(mockito::Matcher::PartialJson(serde_json::json!({
             "type": expected_type,
         })))
@@ -322,61 +307,55 @@ async fn mismatched_response(field: Option<&str>) -> (bsv_rs::Result<WalletCerti
     let signer = ProtoWallet::new(Some(certifier_key));
     let request = signing_certifier(&mut server)
         .await
-        .general(
-            &mut server,
-            "/signCertificate",
-            200,
-            Answer::Signed,
-            move |request| {
-                let issued: ProtocolIssuanceRequest =
-                    serde_json::from_slice(request.body().unwrap()).unwrap();
-                let server_nonce = BASE64.encode([5; 32]);
-                let mut data = BASE64.decode(&issued.client_nonce).unwrap();
-                data.extend_from_slice(&[5; 32]);
-                let serial = signer
-                    .create_hmac(CreateHmacArgs {
-                        data,
-                        protocol_id: Protocol::new(
-                            SecurityLevel::Counterparty,
-                            CERTIFICATE_ISSUANCE_PROTOCOL,
-                        ),
-                        key_id: format!("{}{}", server_nonce, issued.client_nonce),
-                        counterparty: Some(Counterparty::Other(subject.clone())),
-                        ..Default::default()
-                    })
-                    .unwrap()
-                    .hmac;
-                let mut fields = issued.fields;
-                let revocation_outpoint = if let Some(field) = &field {
-                    let received = "dGFtcGVyZWQ=".to_string();
-                    let sent = fields.insert(field.clone(), received.clone()).unwrap();
-                    *response_expected.lock().unwrap() = format!(
-                        "Validation error: Invalid field! Expected: {sent}, Received: {received}"
-                    );
-                    format!("{}.0", "00".repeat(32))
-                } else {
-                    *response_expected.lock().unwrap() =
-                        "Validation error: Invalid revocationOutpoint!".to_string();
-                    String::new()
-                };
-                serde_json::to_vec(&ProtocolIssuanceResponse {
-                    protocol: "certificate issuance".to_string(),
-                    certificate: Some(CertificateResponse {
-                        cert_type: issued.cert_type,
-                        serial_number: BASE64.encode(serial),
-                        subject: subject.to_hex(),
-                        certifier: certifier(),
-                        revocation_outpoint,
-                        fields,
-                        signature: String::new(),
-                    }),
-                    server_nonce,
-                    timestamp: String::new(),
-                    version: "1.0".to_string(),
+        .general(&mut server, SIGN, 200, Answer::Signed, move |request| {
+            let issued: ProtocolIssuanceRequest =
+                serde_json::from_slice(request.body().unwrap()).unwrap();
+            let server_nonce = BASE64.encode([5; 32]);
+            let mut data = BASE64.decode(&issued.client_nonce).unwrap();
+            data.extend_from_slice(&[5; 32]);
+            let serial = signer
+                .create_hmac(CreateHmacArgs {
+                    data,
+                    protocol_id: Protocol::new(
+                        SecurityLevel::Counterparty,
+                        CERTIFICATE_ISSUANCE_PROTOCOL,
+                    ),
+                    key_id: format!("{}{}", server_nonce, issued.client_nonce),
+                    counterparty: Some(Counterparty::Other(subject.clone())),
+                    ..Default::default()
                 })
                 .unwrap()
-            },
-        )
+                .hmac;
+            let mut fields = issued.fields;
+            let revocation_outpoint = if let Some(field) = &field {
+                let received = "dGFtcGVyZWQ=".to_string();
+                let sent = fields.insert(field.clone(), received.clone()).unwrap();
+                *response_expected.lock().unwrap() = format!(
+                    "Validation error: Invalid field! Expected: {sent}, Received: {received}"
+                );
+                format!("{}.0", "00".repeat(32))
+            } else {
+                *response_expected.lock().unwrap() =
+                    "Validation error: Invalid revocationOutpoint!".to_string();
+                String::new()
+            };
+            serde_json::to_vec(&ProtocolIssuanceResponse {
+                protocol: "certificate issuance".to_string(),
+                certificate: Some(CertificateResponse {
+                    cert_type: issued.cert_type,
+                    serial_number: BASE64.encode(serial),
+                    subject: subject.to_hex(),
+                    certifier: certifier(),
+                    revocation_outpoint,
+                    fields,
+                    signature: String::new(),
+                }),
+                server_nonce,
+                timestamp: String::new(),
+                version: "1.0".to_string(),
+            })
+            .unwrap()
+        })
         .expect(1)
         .create_async()
         .await;
