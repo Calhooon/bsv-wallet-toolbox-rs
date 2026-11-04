@@ -206,7 +206,7 @@ impl WalletPermissionsManager {
     /// `grantPersistentPermission` (`:1104-1149`): the mint, skipped for
     /// a request whose grant is cached, inside its cover or minting, never
     /// for spending or a renewal (`:1112-1124`), the in-flight mint awaited
-    /// first; a renewal to `renew_permission_on_chain` (`:1127-1128`), else
+    /// before; a renewal to `renew_permission_on_chain` (`:1127-1128`), else
     /// `create_permission_on_chain` (`:1129`), published in flight while it
     /// runs (`:1133-1144`); then the five-minute cache entry (never for
     /// spending, `:1147`) and the recent-grant mark (`:1148`). A failed mint

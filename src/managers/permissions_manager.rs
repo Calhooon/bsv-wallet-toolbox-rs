@@ -2387,7 +2387,7 @@ mod tests {
             _args: EncryptArgs,
             _originator: Option<&str>,
         ) -> bsv_rs::Result<EncryptResult> {
-            // A grant's mint encrypts first; this wallet keeps no outputs.
+            // A grant's mint begins with encrypt; this wallet keeps no outputs.
             Err(bsv_rs::Error::WalletError("no mint here".to_string()))
         }
         async fn decrypt(
