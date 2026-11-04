@@ -235,8 +235,10 @@
   key-call validators, #610's `certificate_key_bytes`). The privileged key
   route judges the seven key calls with bsv-rs's public validators (#609)
   and the certificate key sites read `certificate_key_bytes` (#610), the
-  port's `internalize_args::compressed_key` retired; no text moves. Host
-  lines for bsv-wallet-cli#386 (the beta.7 pin intake):
+  port's `internalize_args::compressed_key` retired; no text moves at those
+  sites. The live internalize door's verdicts and texts move at #654, #660
+  and #657, and the create walk's proof at #732, #757, #765 (the host lines
+  below). Host lines for bsv-wallet-cli#386 (the beta.7 pin intake):
   - The live internalize door's script word builds a signature check's
     scriptCode from the bytes as the node does (bsv-rs #654). Old: under a
     post-Chronicle word, a version-2 spend whose unlocking script is
@@ -247,6 +249,35 @@
     spend signed over `ac6a0100` was accepted. New: the node-signed spend is
     admitted and the other refused in those words. A payment the node
     accepts is admitted where beta.6 refused it, and the reverse.
+  - The encoding check reads a key's length and prefix alone, as the node
+    does; a key of the right length and prefix that is no curve point (off
+    the curve, or x at or above p) is the signature check's false (bsv-rs
+    #660). Old: a spend of `<key> OP_CHECKSIG OP_NOT` with an empty
+    signature was refused (`The public key is in an unknown format.`), and
+    of `1 <key> 1 OP_CHECKMULTISIG OP_NOT` (`OP_CHECKMULTISIG requires
+    correct encoding for the public key and signature.`). New: both are
+    valid, in both eras, at versions 1 and 2. A payment the door refused at
+    beta.6 is admitted (`script_pin_tests/pubkey_encoding_660.rs`, the key
+    `02` with x = 5, at Genesis + 100 and at Chronicle).
+  - `OP_CHECKMULTISIG` and `OP_CHECKMULTISIGVERIFY` refuse a badly encoded
+    key or signature in the encoding check's own words, as `OP_CHECKSIG`
+    does (bsv-rs #657); the door's refusal carries the interpreter's text.
+    Old: `OP_CHECKMULTISIG requires correct encoding for the public key and
+    signature.` (`OP_CHECKMULTISIGVERIFY requires correct encoding for the
+    public key and signature.`), whatever the fault. New: the check's
+    sentence, for example `The signature format is invalid.` (a signature
+    that is no DER; the witness's text at both heights),
+    `The public key is in an unknown format.`, `The non-compressed public
+    key must be 65 bytes.`, `The compressed public key must be 33 bytes.`,
+    `The public key is too short, it must be at least 33 bytes.`,
+    `Public key is empty.`. No verdict moves. The CLI's source and tests
+    match neither old sentence.
+  - Of two BUMPs proving one txid, the last is its proof (bsv-rs #732,
+    #757, #765, #764): a BEEF carrying two proofs of one txid attaches the
+    last BUMP's path and asks the tracker about its root, where beta.6 took
+    the earliest; the create walk's shortcut and the carried-txid linker
+    follow (`sibling_bump_tests.rs`).
+
 - #332 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
   certificate issuance posts to `<certifierUrl>/signCertificate`, as the
   reference's door resolves ``new URL('signCertificate', `${certifierUrl}/`)``
