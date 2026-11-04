@@ -252,6 +252,9 @@ async fn test_raw_tx_stored_at_create_time() {
     );
 }
 #[cfg(test)]
+#[path = "door_steps.rs"]
+mod door_steps;
+#[cfg(test)]
 #[path = "trust_self_known/mod.rs"]
 mod trust_self_known;
 
