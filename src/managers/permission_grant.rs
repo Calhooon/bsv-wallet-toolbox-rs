@@ -7,6 +7,7 @@
 //! A handler that answers inline with a token is read as a persistent grant
 //! with the token's expiry and, for spending, its amount.
 
+use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -55,6 +56,40 @@ fn inline_grant(request_id: &str) -> Option<watch::Sender<()>> {
         })
     };
     ANSWERING.try_with(mark).ok().flatten()
+}
+
+/// The handler's own answer, raced against the host's (`Break`): the
+/// host's ends the race and drops the handler's future, save that a
+/// persistent grant inside that future (`inline_grant`) is polled to its
+/// end before it returns.
+async fn race_handler(
+    key: &str,
+    prompt: impl std::future::Future<Output = Result<PermissionToken>>,
+    waiting: &mut oneshot::Receiver<Result<bool>>,
+) -> ControlFlow<
+    std::result::Result<Result<bool>, oneshot::error::RecvError>,
+    Result<PermissionToken>,
+> {
+    let answering = Arc::new(Answering {
+        key: key.to_string(),
+        granting: StdMutex::new(None),
+    });
+    let prompt = ANSWERING.scope(Arc::clone(&answering), prompt);
+    let mut prompt = std::pin::pin!(prompt);
+    tokio::select! {
+        host = waiting => {
+            let granting = locked(&answering.granting).take();
+            if let Some(mut ended) = granting {
+                // The handler granted inline: its mint runs to its end.
+                tokio::select! {
+                    _ = &mut prompt => {}
+                    _ = ended.changed() => {}
+                }
+            }
+            ControlFlow::Break(host)
+        }
+        answered = &mut prompt => ControlFlow::Continue(answered),
+    }
 }
 
 /// The reference's denial (`:1198`).
@@ -166,26 +201,10 @@ impl WalletPermissionsManager {
         if joined {
             return answer(waiting).await;
         }
-        let answering = Arc::new(Answering {
-            key: key.clone(),
-            granting: StdMutex::new(None),
-        });
-        let handled = ANSWERING.scope(Arc::clone(&answering), handler(request));
-        let mut handled = std::pin::pin!(handled);
         let mut waiting = waiting;
-        let answered = tokio::select! {
-            answered = &mut waiting => {
-                let granting = locked(&answering.granting).take();
-                if let Some(mut ended) = granting {
-                    // The handler granted inline: its mint runs to its end.
-                    tokio::select! {
-                        _ = &mut handled => {}
-                        _ = ended.changed() => {}
-                    }
-                }
-                return answered.unwrap_or_else(|_| Err(denied()));
-            }
-            answered = &mut handled => answered,
+        let answered = match race_handler(&key, handler(request), &mut waiting).await {
+            ControlFlow::Break(host) => return host.unwrap_or_else(|_| Err(denied())),
+            ControlFlow::Continue(answered) => answered,
         };
         let unanswered = locked(&self.active_requests).contains_key(&key);
         if unanswered {
