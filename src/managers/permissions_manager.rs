@@ -2152,19 +2152,31 @@ fn module_field<T: ModuleField>(
     T::from_field(object.get(key)).map_err(|()| format!("P-module {key} for {method} is invalid"))
 }
 
+// One request field's JSON; `when_true` sends a flag the reference types as
+// `true` or absent (getPublicKey's `identityKey`) only when it is set.
+macro_rules! module_to_field {
+    ($value:expr) => {
+        $value.to_field()
+    };
+    ($value:expr, when_true) => {
+        $value.then_some(serde_json::Value::Bool(true))
+    };
+}
+
 // Each key call's mapping: its method name, its fields (the Rust field and
 // the reference's key) and its result's; the three permission fields every
 // key call ends with are appended.
 macro_rules! module_call {
     ($args:ident => $output:ident, $method:literal,
-        { $($field:ident: $key:literal),* $(,)? }, { $($out:ident: $out_key:literal),* $(,)? }) => {
+        { $($field:ident: $key:literal $($only:ident)?),* $(,)? },
+        { $($out:ident: $out_key:literal),* $(,)? }) => {
         impl ModuleCall for bsv_rs::wallet::$args {
             const METHOD: &'static str = $method;
             type Output = bsv_rs::wallet::$output;
             fn to_json(&self) -> serde_json::Map<String, serde_json::Value> {
                 let mut object = serde_json::Map::new();
                 let fields = [
-                    $(($key, self.$field.to_field()),)*
+                    $(($key, module_to_field!(self.$field $(, $only)?)),)*
                     ("privileged", self.privileged.to_field()),
                     ("privilegedReason", self.privileged_reason.to_field()),
                     ("seekPermission", self.seek_permission.to_field()),
@@ -2205,7 +2217,7 @@ macro_rules! module_call {
 }
 
 module_call!(GetPublicKeyArgs => GetPublicKeyResult, "getPublicKey", {
-    identity_key: "identityKey", protocol_id: "protocolID", key_id: "keyID",
+    identity_key: "identityKey" when_true, protocol_id: "protocolID", key_id: "keyID",
     counterparty: "counterparty", for_self: "forSelf",
 }, { public_key: "publicKey" });
 module_call!(EncryptArgs => EncryptResult, "encrypt", {
@@ -3098,9 +3110,19 @@ mod module_call_tests {
                 .extend(extra.as_object().unwrap().clone());
             object
         };
+        // `identityKey` is `true` or absent in the reference's type: a false
+        // flag leaves the key out, and an absent key reads back false.
         round_trip::<GetPublicKeyArgs>(
-            &keyed(json!({ "identityKey": false, "forSelf": true })),
+            &keyed(json!({ "identityKey": true, "forSelf": true })),
             &json!({ "publicKey": peer }),
+        );
+        let without = keyed(json!({ "forSelf": true }));
+        round_trip::<GetPublicKeyArgs>(&without, &json!({ "publicKey": peer }));
+        let read = GetPublicKeyArgs::from_json(&without).unwrap();
+        assert!(!read.identity_key);
+        assert_eq!(
+            serde_json::to_string(&Value::Object(read.to_json())).unwrap(),
+            serde_json::to_string(&without).unwrap(),
         );
         round_trip::<EncryptArgs>(
             &keyed(json!({ "plaintext": [1, 2] })),
