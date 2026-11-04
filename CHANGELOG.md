@@ -214,9 +214,11 @@
   then labels, `on_request` in order and `on_response` in reverse
   (`:4294-4338` with `:4500-4520`, `:4913-4961`, `:5059-5078`); a `p `
   label must be `p <scheme> <payload>` (`:920-958`); `create_action` skips
-  the insertion check on a `p ` basket, the spending check unchanged; the
-  modules' arguments are validated again, as the reference's underlying call
-  validates its own. The method names are `listOutputs`,
+  the insertion check on a `p ` basket, and its spending check runs on the
+  outputs the modules answered, after the chain, as the reference
+  authorises the spend of the action they built (`getExactActionSpend`,
+  `:4516`), so a module cannot lift the ceiling; the modules' arguments are
+  validated again, as the reference's underlying call validates its own. The method names are `listOutputs`,
   `relinquishOutput`, `createAction`, `listActions` and
   `internalizeAction`; the JSON is bsv-rs's camelCase serde of the
   arguments and results. A host's `nosend` module is never asked, and the
