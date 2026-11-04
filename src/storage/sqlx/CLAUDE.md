@@ -533,6 +533,16 @@ context could not answer Finality`, `... CoinbaseMaturity`). Witnesses:
 `no_tip_word.rs` (create's pre-check and the signAction route),
 `internalize_verifier_judges_at_the_latest_era_without_a_tip`.
 
+Since the bsv-rs 0.9.0-beta.7 re-pin (bsv-rs #654) a signature check's
+scriptCode is the node's bytes (bitcoin-sv v1.2.3 `interpreter.cpp:1470-1484`):
+under a post-Chronicle word a check in the unlocking script past a
+data-carrying top-level `OP_RETURN` keeps the locking script, so the door
+accepts the node-signed spend it refused at beta.6 and refuses the one signed
+over the scriptCode without the locking script, which it accepted
+(`script_pin_tests/scriptcode_654.rs`: U2 and M2 moved, U3 and P1 did not;
+P1's pre-Chronicle case is the transaction-level word's push-only refusal at
+both pins).
+
 The judge passes `memory_limit: Some(100_000_000)`
 (`spend_verifier::DOOR_STACK_MEMORY_BYTES`, #395): the SV mainnet node's stack
 memory policy on the node's count, one budget over both stacks with 32 bytes an

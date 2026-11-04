@@ -229,6 +229,24 @@
   as before. Found by the CLI's #198 review.
 
 ### Changed
+- Pin `bsv-rs =0.9.0-beta.7` (the tag at `22f03d84`) in `Cargo.toml` and
+  `fuzz/Cargo.toml`, retaining `full` and `http`; the build moves no
+  compile surface (bsv-rs: no api-break since beta.6; additive: #609's seven
+  key-call validators, #610's `certificate_key_bytes`). The privileged key
+  route judges the seven key calls with bsv-rs's public validators (#609)
+  and the certificate key sites read `certificate_key_bytes` (#610), the
+  port's `internalize_args::compressed_key` retired; no text moves. Host
+  lines for bsv-wallet-cli#386 (the beta.7 pin intake):
+  - The live internalize door's script word builds a signature check's
+    scriptCode from the bytes as the node does (bsv-rs #654). Old: under a
+    post-Chronicle word, a version-2 spend whose unlocking script is
+    `<sig> <P> OP_CODESEPARATOR OP_CHECKSIG OP_RETURN 01 00` (or the same
+    through `OP_CHECKMULTISIG`) over the locking script `OP_VERIFY OP_1`,
+    signed as the node signs it (over `ac6a01006951`), was refused
+    (`OP_VERIFY requires the top stack value to be truthy.`), and the same
+    spend signed over `ac6a0100` was accepted. New: the node-signed spend is
+    admitted and the other refused in those words. A payment the node
+    accepts is admitted where beta.6 refused it, and the reverse.
 - #332 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
   certificate issuance posts to `<certifierUrl>/signCertificate`, as the
   reference's door resolves ``new URL('signCertificate', `${certifierUrl}/`)``
