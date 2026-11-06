@@ -9,6 +9,11 @@ name: Mutants
 # inventory weekly, or a cheaper per-mutant build.
 on:
   workflow_dispatch:
+    inputs:
+      lib_parallel:
+        description: "Lib shards at once: 12 inside the toolbox's 20:00Z to 01:00Z window on the keeper's table (fourteen slots with the doors' two), 4 otherwise (six, the default)."
+        required: false
+        default: "4"
 
 permissions:
   contents: read
@@ -24,30 +29,37 @@ env:
 
 jobs:
   mutants:
-    name: Mutants shard ${{ matrix.shard }}/16
+    name: Mutants shard ${{ matrix.shard }}/24
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       fail-fast: false
-      # The fleet's runner cap, revised on the #638 occupancy read (the keeper's
-      # line of 2026-11-03 10:0xZ): the account's twenty runners are one pool
-      # across its repositories and sit at twenty in 22 of 24 hours, so a heavy
-      # run holds at most six of them until the next read shows the non-heavy
-      # p95 under ten concurrent jobs. The sixteen shards run four at a time, beside
-      # the two doors shards below makes the six at the peak. A dispatch takes
-      # the toolbox's slot, 16:00Z (a measured light hour), and never overlaps
-      # another repository's heavy run (bsv-rs 07:00Z, the CLI 17:30Z). The
-      # cap's cost and gain go in the census record at the next run; the
-      # occupancy read repeats every 48 hours and re-sets the number.
-      max-parallel: 4
+      # The fleet's runner cap, on the owner's word of 2026-11-04 17:1xZ (the
+      # keeper's reading): the account's twenty runners are one pool across its
+      # repositories (the #638 occupancy read, docs/census/ci-speed-loop-4.md),
+      # and a heavy run holds up to fourteen of them inside its own window of
+      # the keeper's table, six otherwise. The table: the CLI's night 17:00Z to
+      # 20:00Z, the toolbox's night 20:00Z to 01:00Z, bsv-rs's nightly and the
+      # pin chains 01:00Z to 09:00Z, the day 09:00Z to 17:00Z PR CI with any
+      # heavy dispatch at six. The dispatch is by the captain's hand at 20:00Z,
+      # never a schedule, with lib_parallel=12: twelve lib shards beside the two
+      # doors shards make the fourteen while the doors run (about 175 min); the
+      # evidence shard needs the doors, so it runs after them (thirteen); the
+      # twenty-four lib shards take two waves of about 2.5 hours, inside the
+      # five-hour window. The default, 4, makes six with the doors: outside the
+      # window or beside another heavy run. The run's cost and gain go in the
+      # census record.
+      max-parallel: ${{ fromJSON(inputs.lib_parallel || '4') }}
       matrix:
         # 2180 mutants (at beta 6db6a159; the count moves with the lib) at about
-        # 90 s each (build plus the whole lib suite) need 16
-        # shards to stay under the job limit. The four doors that judge under the
+        # 90 s each (build plus the whole lib suite): 24 shards of about 91
+        # mutants, about 2.5 hours each, so two waves at twelve fit the window
+        # (16 shards of 204 minutes took two waves of 3.4 hours). The four
+        # doors that judge under the
         # node's word (three in create_action and beef_verification/own_word.rs,
         # #572), services/providers/bhs.rs (#602) and create_action/mod.rs (#604)
         # are not in this set; the doors job measures them (#535).
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -101,7 +113,7 @@ jobs:
           ALL_PROXY: http://127.0.0.1:9
           NO_PROXY: localhost,127.0.0.1,::1
         run: |
-          if cargo mutants --in-place --shard "$SHARD/16" --sharding round-robin --output "$RUNNER_TEMP/mutation"; then
+          if cargo mutants --in-place --shard "$SHARD/24" --sharding round-robin --output "$RUNNER_TEMP/mutation"; then
             result=0
           else
             result=$?

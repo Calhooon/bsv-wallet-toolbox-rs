@@ -26,11 +26,11 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      # The fleet's runner cap (the keeper's revised line of 2026-11-03 10:0xZ on
-      # the #638 occupancy read): a heavy run holds at most six of the account's
-      # twenty runners, and a dispatch of thirteen targets is a heavy run by its
-      # job count whatever its length. Six at a time; a dispatch takes the
-      # toolbox's 16:00Z slot and never overlaps another repository's heavy run.
+      # The fleet's runner cap (the keeper's table of 2026-11-04 17:2xZ on the
+      # owner's word, docs/census/ci-speed-2026-11-02.md): a dispatch of thirteen
+      # targets is a heavy run by its job count whatever its length, so it runs
+      # at six, the day's cap, in the toolbox's own night window (20:00Z to
+      # 01:00Z) or the day (09:00Z to 17:00Z), never beside another heavy run.
       max-parallel: 6
       matrix:
         target:
