@@ -69,6 +69,16 @@ pub(crate) fn validate_internalize_action_args(
     for label in args.labels.iter().flatten() {
         validate_label(label)?;
     }
+    // validateInternalizeActionArgs refuses an empty outputs list once the
+    // arguments' fields are valid (ts-stack@4d0ea63c8 sdk
+    // `validationHelpers.ts:1061-1066`), ahead of the BRC-177 refusal
+    // (`Wallet.ts:1245-1252`): nothing is recorded or broadcast for it.
+    if args.outputs.is_empty() {
+        return Err(invalid_parameter(
+            "outputs",
+            "at least one output to internalize from the transaction",
+        ));
+    }
 
     // BRC-177 (#357): the reference refuses a `p nosend ` label on
     // internalizeAction once the arguments are valid (ts-stack@edf6e03
