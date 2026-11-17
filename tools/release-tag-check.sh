@@ -7,8 +7,11 @@
 # asks git; a test passes them by hand, so the decision needs no repository).
 #
 #   vX.Y.Z         main's: the commit must be on main.
-#   vX.Y.Z-beta.N  beta's: the commit must be on beta; a prerelease.
-#   anything else  refused (only -beta.N is a prerelease shape here).
+#   vX.Y.Z-beta.N    beta's: the commit must be on beta; a prerelease. N is
+#                    the number of the bsv-rs prerelease the line pins.
+#   vX.Y.Z-beta.N.M  beta's, the same: a later prerelease on that same pin.
+#   anything else    refused (only -beta.N and -beta.N.M are prerelease
+#                    shapes here).
 #
 # The tag without its `v` must equal the manifest version. On a pass it prints
 # `line=<main|beta>` and `prerelease=<true|false>` (lines for GITHUB_OUTPUT)
@@ -43,11 +46,11 @@ num='(0|[1-9][0-9]*)'
 if [[ "$tag" =~ ^v$num\.$num\.$num$ ]]; then
   line=main
   prerelease=false
-elif [[ "$tag" =~ ^v$num\.$num\.$num-beta\.$num$ ]]; then
+elif [[ "$tag" =~ ^v$num\.$num\.$num-beta\.$num(\.$num)?$ ]]; then
   line=beta
   prerelease=true
 else
-  refuse "tag ${tag} is neither vX.Y.Z (main's) nor vX.Y.Z-beta.N (beta's); only -beta.N is a prerelease shape here"
+  refuse "tag ${tag} is neither vX.Y.Z (main's) nor vX.Y.Z-beta.N or vX.Y.Z-beta.N.M (beta's); only -beta.N and -beta.N.M are prerelease shapes here"
 fi
 
 if [ "${tag#v}" != "$version" ]; then
@@ -56,10 +59,10 @@ fi
 
 if ! holds "$line"; then
   if [ "$line" = main ] && holds beta; then
-    refuse "tag ${tag} is a plain tag on a commit beta holds but main does not; a plain vX.Y.Z is main's, a beta commit takes vX.Y.Z-beta.N"
+    refuse "tag ${tag} is a plain tag on a commit beta holds but main does not; a plain vX.Y.Z is main's, a beta commit takes vX.Y.Z-beta.N or vX.Y.Z-beta.N.M"
   fi
   if [ "$line" = beta ] && holds main; then
-    refuse "tag ${tag} is a beta tag on a commit main holds but beta does not; vX.Y.Z-beta.N is beta's, a main commit takes a plain vX.Y.Z"
+    refuse "tag ${tag} is a beta tag on a commit main holds but beta does not; vX.Y.Z-beta.N and vX.Y.Z-beta.N.M are beta's, a main commit takes a plain vX.Y.Z"
   fi
   refuse "tag ${tag} is ${line}'s, and the tagged commit is not on ${line}; tag a commit that merged through a PR"
 fi
