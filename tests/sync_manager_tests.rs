@@ -343,19 +343,14 @@ async fn insert_proven_tx_req_with_timestamps(
     .unwrap();
 }
 
-/// Regression (2026-05-29, Codex review c815706c): the proven_tx_req
-/// UPDATE branch must refresh every mutable field on a newer-wins remote
-/// replacement, not just `status/attempts/history/notified/proven_tx_id`.
-/// Canonical `process_action` mutates `notify` / `raw_tx` / `input_beef` /
-/// `batch` post-creation (history append, post-broadcast metadata, multi-
-/// tx batch regrouping), so an existing local row that the chunk
-/// supersedes must absorb every newer mutable value. Pre-fix the UPDATE
-/// column list omitted `notify` / `raw_tx` / `input_beef` / `batch` and
-/// silently kept the older values.
+/// An existing proven_tx_req is merged as the reference's
+/// EntityProvenTxReq.mergeExisting merges it: a newer row from the reader
+/// does not replace the writer's status, attempts, bytes or proof link;
+/// the history and the notify ids are unioned and a batch is taken where
+/// the writer holds none.
 ///
-/// Setup: seed BOTH reader + writer with the same txid, but writer has the
-/// OLDER row (smaller updated_at) carrying old mutable values. After
-/// sync_to_writer, writer's row must take reader's newer mutable fields.
+/// Setup: seed BOTH reader + writer with the same txid, the writer's row
+/// OLDER (smaller updated_at) and carrying other values.
 //
 // The complex tuple type at line ~432 reflects the canonical sqlx
 // query_as pattern for verifying multiple columns from a single SELECT
@@ -367,7 +362,7 @@ async fn insert_proven_tx_req_with_timestamps(
 // CI.
 #[allow(clippy::type_complexity)]
 #[tokio::test]
-async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields() {
+async fn sync_to_writer_merges_an_existing_proven_tx_req_as_the_reference_does() {
     let identity = "d".repeat(66);
 
     let reader_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
@@ -461,30 +456,26 @@ async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields()
     .await
     .unwrap();
 
-    assert_eq!(status, "completed", "status must take reader's newer value");
-    assert_eq!(attempts, 1, "attempts must take reader's newer value");
+    // The reference's EntityProvenTxReq.mergeExisting: the status, the
+    // attempts, the bytes and the proof link stay as the writer holds them;
+    // the history and the notify ids are unioned (neither side here holds
+    // notes or transaction ids, so both stay as held); a batch is taken where
+    // the writer holds none.
+    assert_eq!(status, "unmined", "status stays the writer's");
+    assert_eq!(attempts, 0, "attempts stay the writer's");
     assert_eq!(
-        history, new_history,
-        "history must take reader's newer value"
+        history, r#"{"old":true}"#,
+        "history holds no notes to union"
     );
-    assert_eq!(notified, 1, "notified must take reader's newer value");
-    assert_eq!(
-        notify, new_notify,
-        "notify must take reader's newer value (was dropped pre-fix on UPDATE)"
-    );
-    assert_eq!(
-        raw_tx, new_raw_tx,
-        "raw_tx must take reader's newer value (was dropped pre-fix on UPDATE)"
-    );
-    assert_eq!(
-        input_beef.as_deref(),
-        Some(new_input_beef.as_slice()),
-        "input_beef must take reader's newer value (was dropped pre-fix on UPDATE)"
-    );
+    assert_eq!(notified, 0, "notified stays the writer's");
+    assert_eq!(notify, "", "notify holds no transaction ids to union");
+    assert_eq!(raw_tx, vec![0x01], "raw_tx stays the writer's");
+    assert_eq!(input_beef, None, "input_beef stays the writer's");
+    let _ = (new_raw_tx, new_input_beef, new_notify, new_history);
     assert_eq!(
         batch.as_deref(),
         Some(new_batch),
-        "batch must take reader's newer value (was dropped pre-fix on UPDATE)"
+        "a batch is taken where the writer holds none"
     );
 }
 
@@ -500,12 +491,9 @@ async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields()
 /// (which only picks up `unsent`/`sending`) and `TaskCheckForProofs` (which
 /// only handles `unmined`/`callback`/`unconfirmed`/`unfail`).
 ///
-/// This regression seeds writer + reader with a `sending`-status row,
-/// drives `sync_to_writer`, and asserts the writer's row keeps the
-/// `sending` status — NOT `pending`. The existing
-/// `sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields`
-/// test uses `completed`, which round-tripped pre-fix, so it didn't catch
-/// the truncation.
+/// This regression seeds the reader with a `sending`-status row, drives
+/// `sync_to_writer`, and asserts the writer's new row holds the `sending`
+/// status, NOT `pending`.
 #[tokio::test]
 async fn sync_to_writer_round_trips_non_completed_proven_tx_req_status() {
     let identity = "e".repeat(66);
@@ -534,23 +522,9 @@ async fn sync_to_writer_round_trips_non_completed_proven_tx_req_status() {
     let writer_old_ts = Utc::now();
     let reader_new_ts = writer_old_ts + chrono::Duration::seconds(1);
 
-    // Writer seeded with the OLDER row in an arbitrary terminal state
-    // (`completed`) so the reader's NEWER `sending` row must replace it.
-    insert_proven_tx_req_with_timestamps(
-        &writer_store,
-        &txid,
-        "completed",
-        0,
-        r#"{"writer":"old"}"#,
-        "",
-        false,
-        &[0x01],
-        None,
-        None,
-        writer_old_ts,
-        writer_old_ts,
-    )
-    .await;
+    // The writer holds no row of this txid: an existing row keeps its own
+    // status (the reference's mergeExisting), so the word round-trips on
+    // the insert.
 
     // Reader seeded with the NEWER row carrying `sending` status —
     // exactly the variant that pre-fix collapsed to `pending` on read.
