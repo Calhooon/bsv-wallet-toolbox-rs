@@ -903,29 +903,41 @@ impl WalletStorageManager {
         log.push_str(&self.update_backups().await?);
 
         // Update user records in all stores, each by that store's own row of
-        // the wallet's user: stores number their users independently.
+        // the wallet's user: stores number their users independently. The
+        // calls run under the stores read lock, as they did before; the
+        // cached rows of the stores whose call succeeded are written after,
+        // under the write lock, as the reference's setActive sets each
+        // store's cached row (the re-partition below reads them).
         let auth = self.get_auth(false).await?;
-        let mut stores = self.stores.write().await;
-
-        for store in stores.iter_mut() {
-            let user_id = store
-                .user
-                .as_ref()
-                .map(|u| u.user_id)
-                .ok_or(Error::StorageNotAvailable)?;
+        let stores = self.stores.read().await;
+        let mut done = Vec::with_capacity(stores.len());
+        let mut outcome = Ok(());
+        for (i, store) in stores.iter().enumerate() {
+            let Some(user_id) = store.user.as_ref().map(|u| u.user_id) else {
+                outcome = Err(Error::StorageNotAvailable);
+                break;
+            };
             let store_auth = AuthId::with_user_id(&auth.identity_key, user_id);
-            store
+            if let Err(e) = store
                 .storage
                 .set_active(&store_auth, storage_identity_key)
-                .await?;
-            // The re-partition below reads the cached rows, as the
-            // reference's setActive sets each store's cached row.
-            if let Some(user) = store.user.as_mut() {
+                .await
+            {
+                outcome = Err(e);
+                break;
+            }
+            done.push(i);
+        }
+        drop(stores);
+
+        let mut stores = self.stores.write().await;
+        for i in done {
+            if let Some(user) = stores.get_mut(i).and_then(|s| s.user.as_mut()) {
                 user.active_storage = Some(storage_identity_key.to_string());
             }
         }
-
         drop(stores);
+        outcome?;
 
         // Re-partition
         *self.is_available.write().await = false;
