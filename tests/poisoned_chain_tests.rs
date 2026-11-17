@@ -1082,7 +1082,7 @@ async fn migration_003_creates_the_locked_input_table_on_open() {
         .migrate("m003", &("02".to_string() + &"ab".repeat(32)))
         .await
         .unwrap();
-    assert_eq!(version, "005_proof_root_checks");
+    assert_eq!(version, "006_held_receipts");
     let table: Option<(String,)> = sqlx::query_as(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'locked_input_checks'",
     )
