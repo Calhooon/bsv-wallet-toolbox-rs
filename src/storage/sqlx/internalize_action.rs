@@ -1780,6 +1780,18 @@ mod tests {
         storage
     }
 
+    /// Test storage with mock services whose chain tracker confirms every
+    /// merkle root and no chain tracker of its own: the door verifies an
+    /// AtomicBEEF's roots with the services' tracker when the storage has
+    /// none, and stores a proof only with the storage's own.
+    async fn create_test_storage_with_services() -> StorageSqlx {
+        let storage = create_test_storage().await;
+        storage.set_services(std::sync::Arc::new(
+            crate::services::mock::MockWalletServices::new(),
+        ));
+        storage
+    }
+
     /// A row with every condition of `is_managed_change_output`: P2PKH,
     /// change, a non-empty derivation prefix and suffix; `provided_by` and
     /// `purpose` as a `createAction` output holds them.
@@ -1973,7 +1985,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_internalize_wallet_payment_happy_path() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
 
         let (beef_bytes, txid, satoshis) = create_test_atomic_beef();
@@ -2007,7 +2019,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_internalize_basket_insertion_happy_path() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
 
         let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
@@ -2156,7 +2168,7 @@ mod tests {
     /// the reference's depth of 12 and the middleware's former 128.
     #[tokio::test]
     async fn a_deep_valid_beef_is_internalized() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
 
         let (anchor, anchor_txid) = raw_tx_spending(&[(&"00".repeat(32), 0xffff_ffff)], 50_000);
@@ -2235,7 +2247,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_internalize_existing_transaction_merge() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
 
         let (beef_bytes, _txid, satoshis) = create_test_atomic_beef();
@@ -2298,7 +2310,7 @@ mod tests {
     /// `internalizeAction.ts`, `validateBasketMerges`, ts-stack 4d0ea63c8).
     #[tokio::test]
     async fn a_wallet_payment_named_again_as_a_basket_insertion_is_refused() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
 
         let (beef_bytes, _txid, satoshis) = create_test_atomic_beef();
@@ -2373,7 +2385,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_internalize_add_labels_during_merge() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
 
         let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
@@ -2447,7 +2459,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_internalize_multiple_outputs() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
 
         // Create a transaction with multiple outputs
@@ -2895,7 +2907,7 @@ mod tests {
     /// The merged coin becomes selectable.
     #[tokio::test]
     async fn test_merge_nosend_promotes_tx_and_advances_req() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
         let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
 
@@ -2924,7 +2936,7 @@ mod tests {
     /// externally-broadcast txid.
     #[tokio::test]
     async fn test_merge_nosend_without_req_creates_unmined_req() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
         let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
 
@@ -2961,7 +2973,7 @@ mod tests {
     /// (TS parity: the advance is gated on `wasNoSend`).
     #[tokio::test]
     async fn test_merge_sending_accepted_but_not_advanced() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
         let (beef_bytes, txid, _satoshis) = create_test_atomic_beef();
 
@@ -3120,7 +3132,7 @@ mod tests {
     /// never left in a state nothing can advance.
     #[tokio::test]
     async fn test_new_internalize_bump_not_trusted_without_chaintracker() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
         let (beef_bytes, txid, _satoshis, _bump, _tracker) = create_proven_atomic_beef();
         // Deliberately no set_chain_tracker.
@@ -3240,7 +3252,7 @@ mod tests {
     /// the req to a terminal 'completed' with nothing linked.
     #[tokio::test]
     async fn test_merge_nosend_unverifiable_bump_falls_back_to_unmined() {
-        let storage = create_test_storage().await;
+        let storage = create_test_storage_with_services().await;
         let user_id = create_test_user(&storage).await;
         let (beef_bytes, txid, _satoshis, _bump, _tracker) = create_proven_atomic_beef();
         // Deliberately no set_chain_tracker.
