@@ -286,6 +286,36 @@ async fn stored_link(s: &StorageSqlx, table: &str, txid: &str) -> Option<String>
     .unwrap()
 }
 
+fn output_row(id: i64, transaction_id: i64, txid: &str) -> TableOutput {
+    TableOutput {
+        output_id: id,
+        user_id: 1,
+        transaction_id,
+        basket_id: None,
+        spendable: true,
+        change: true,
+        output_description: None,
+        vout: 0,
+        satoshis: 1000,
+        provided_by: "you".to_string(),
+        purpose: Some("change".to_string()),
+        output_type: "P2PKH".to_string(),
+        txid: txid.to_string(),
+        sender_identity_key: None,
+        derivation_prefix: Some("pre".to_string()),
+        derivation_suffix: Some("suf".to_string()),
+        custom_instructions: None,
+        spent_by: None,
+        sequence_number: None,
+        spending_description: None,
+        script_length: 1,
+        script_offset: 0,
+        locking_script: Some(vec![0x51]),
+        created_at: at(0),
+        updated_at: at(0),
+    }
+}
+
 /// A transaction's and a request's proof link travel through the chunk's
 /// proof rows: a request names its proof by the source's id, a transaction by
 /// the proof's txid; a link that maps to no proof row is not stored.
@@ -758,33 +788,12 @@ async fn a_newer_output_row_keeps_the_coins_amount_and_derivation() {
     let t = "a".repeat(64);
     let tx = exec(&s, &format!("INSERT INTO transactions (user_id,status,reference,is_outgoing,satoshis,description,txid,created_at,updated_at) VALUES ({},'completed','r1',0,0,'held','{t}','2026-01-01 00:00:00','2026-01-01 00:00:00')", u.user_id)).await;
     exec(&s, &format!("INSERT INTO outputs (user_id,transaction_id,spendable,change,vout,satoshis,provided_by,purpose,type,txid,derivation_prefix,derivation_suffix,locking_script,created_at,updated_at) VALUES ({},{tx},1,1,0,1000,'you','change','P2PKH','{t}','pre','suf',X'51','2026-01-01 00:00:00','2026-01-01 00:00:00')", u.user_id)).await;
-    let out = TableOutput {
-        output_id: 9,
-        user_id: 1,
-        transaction_id: 5,
-        basket_id: None,
-        spendable: false,
-        change: true,
-        output_description: None,
-        vout: 0,
-        satoshis: 999_999,
-        provided_by: "you".to_string(),
-        purpose: Some("change".to_string()),
-        output_type: "P2PKH".to_string(),
-        txid: t.clone(),
-        sender_identity_key: None,
-        derivation_prefix: Some("other".to_string()),
-        derivation_suffix: Some("other".to_string()),
-        custom_instructions: None,
-        spent_by: None,
-        sequence_number: None,
-        spending_description: None,
-        script_length: 1,
-        script_offset: 0,
-        locking_script: Some(vec![0x51]),
-        created_at: at(0),
-        updated_at: at(9),
-    };
+    let mut out = output_row(9, 5, &t);
+    out.spendable = false;
+    out.satoshis = 999_999;
+    out.derivation_prefix = Some("other".to_string());
+    out.derivation_suffix = Some("other".to_string());
+    out.updated_at = at(9);
     let mut chunk = chunk_for(ALICE);
     chunk.outputs = Some(vec![out]);
     s.process_sync_chunk(args_for(ALICE), chunk).await.unwrap();
@@ -804,4 +813,26 @@ async fn a_newer_output_row_keeps_the_coins_amount_and_derivation() {
             false
         )
     );
+}
+
+/// An output naming a basket the chunk does not map refuses the chunk; none
+/// of the chunk is written.
+#[tokio::test]
+async fn an_output_naming_an_unmapped_basket_is_refused() {
+    let s = store(DST).await;
+    s.find_or_insert_user(ALICE).await.unwrap();
+    let t = "a".repeat(64);
+    let mut out = output_row(9, 5, &t);
+    out.basket_id = Some(77);
+    let mut chunk = chunk_for(ALICE);
+    chunk.transactions = Some(vec![transaction(5, "r1", Some(&t))]);
+    chunk.outputs = Some(vec![out]);
+    let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+    let rows = count(&s, "SELECT COUNT(*) FROM outputs").await;
+    println!(
+        "WITNESS B15 output in an unmapped basket: {:?}; outputs rows {rows}",
+        r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
+    );
+    assert!(r.is_err());
+    assert_eq!(rows, 0);
 }
