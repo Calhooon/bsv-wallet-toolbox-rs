@@ -251,13 +251,25 @@ async fn drain_sync_chunks(
             user.active_storage = local.clone();
         }
 
+        let mut carried = 0u32;
         for off in offsets.iter_mut() {
-            off.offset += entity_row_count(&chunk, &off.name);
+            let rows = entity_row_count(&chunk, &off.name);
+            off.offset += rows;
+            carried += rows;
         }
 
         let result = writer
             .process_sync_chunk_mapped(args, chunk, &mut sync_map)
             .await?;
+        // An unfinished answer must advance the offsets: a chunk that carried
+        // no row cannot be followed by another (the reference's
+        // assertSyncProgress).
+        if !result.done && carried == 0 {
+            return Err(Error::InvalidOperation(
+                "Sync provider reported an unfinished page without advancing its durable checkpoint."
+                    .to_string(),
+            ));
+        }
         inserts += result.inserts;
         updates += result.updates;
 
