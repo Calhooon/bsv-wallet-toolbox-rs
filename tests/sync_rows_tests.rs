@@ -145,6 +145,104 @@ async fn a_failing_chunk_leaves_none_of_its_rows() {
     assert_eq!((left, states), (0, 0));
 }
 
+/// One row of every entity for `uid`, every nullable column set (`set`) or
+/// unset, the transaction linked to its proof when `link`. `tag` is one hex
+/// digit: the user's txid is that digit 64 times.
+async fn seed_all(s: &StorageSqlx, uid: i64, tag: char, set: bool, link: bool) -> String {
+    let now = "'2026-01-01 00:00:00'";
+    let n = |v: &str| {
+        if set {
+            v.to_string()
+        } else {
+            "NULL".to_string()
+        }
+    };
+    let txid = tag.to_string().repeat(64);
+    let ptx = exec(s, &format!("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES ('{txid}',1,0,'{h}','{h}',X'00',X'00',{now},{now})", h = "e".repeat(64))).await;
+    exec(s, &format!("INSERT INTO proven_tx_reqs (proven_tx_id,txid,status,attempts,history,notified,notify,raw_tx,input_beef,batch,created_at,updated_at) VALUES ({},'{txid}','completed',0,'{{}}',0,'{{}}',X'00',{},{},{now},{now})", n(&ptx.to_string()), n("X'01'"), n("'b'"))).await;
+    let basket = exec(s, &format!("INSERT INTO output_baskets (user_id,name,number_of_desired_utxos,minimum_desired_utxo_value,created_at,updated_at) VALUES ({uid},'{tag}bk',6,1000,{now},{now})")).await;
+    let label = exec(s, &format!("INSERT INTO tx_labels (user_id,label,created_at,updated_at) VALUES ({uid},'{tag}lb',{now},{now})")).await;
+    let otag = exec(s, &format!("INSERT INTO output_tags (user_id,tag,created_at,updated_at) VALUES ({uid},'{tag}tg',{now},{now})")).await;
+    let link_col = if link {
+        ptx.to_string()
+    } else {
+        "NULL".to_string()
+    };
+    let tx = exec(s, &format!("INSERT INTO transactions (user_id,proven_tx_id,status,reference,is_outgoing,satoshis,version,lock_time,description,txid,input_beef,raw_tx,created_at,updated_at) VALUES ({uid},{link_col},'completed','{tag}ref',0,5,1,0,'desc','{txid}',{},{},{now},{now})", n("X'02'"), n("X'03'"))).await;
+    let out = exec(s, &format!("INSERT INTO outputs (user_id,transaction_id,basket_id,spendable,change,vout,satoshis,provided_by,purpose,type,output_description,txid,sender_identity_key,derivation_prefix,derivation_suffix,custom_instructions,spent_by,sequence_number,spending_description,script_length,script_offset,locking_script,created_at,updated_at) VALUES ({uid},{tx},{},1,1,0,1000,'you','change','P2PKH',{},'{txid}',{},{},{},{},{},{},{},{},{},{},{now},{now})",
+        n(&basket.to_string()), n("'od'"), n("'02ab'"), n("'pre'"), n("'suf'"), n("'ci'"), n(&tx.to_string()), n("7"), n("'sd'"), n("25"), n("0"), n("X'76a914000000000000000000000000000000000000000088ac'"))).await;
+    exec(s, &format!("INSERT INTO tx_labels_map (tx_label_id,transaction_id,created_at,updated_at) VALUES ({label},{tx},{now},{now})")).await;
+    exec(s, &format!("INSERT INTO output_tags_map (output_tag_id,output_id,created_at,updated_at) VALUES ({otag},{out},{now},{now})")).await;
+    let cert = exec(s, &format!("INSERT INTO certificates (user_id,type,serial_number,certifier,subject,verifier,revocation_outpoint,signature,created_at,updated_at) VALUES ({uid},'{tag}ty','sn','ce','su',{},'op.0','sig',{now},{now})", n("'ve'"))).await;
+    exec(s, &format!("INSERT INTO certificate_fields (certificate_id,user_id,field_name,field_value,master_key,created_at,updated_at) VALUES ({cert},{uid},'f','v','mk',{now},{now})")).await;
+    exec(s, &format!("INSERT INTO commissions (user_id,transaction_id,satoshis,key_offset,is_redeemed,locking_script,created_at,updated_at) VALUES ({uid},{tx},10,'ko',0,X'51',{now},{now})")).await;
+    txid
+}
+
+/// The reader answers every fetch for a store holding every entity, nullable
+/// columns set and unset, and a completed transaction linked to its proof;
+/// a backup of that store through the manager completes, twice, and the
+/// backup's transaction is linked to the backup's own row of that proof.
+#[tokio::test]
+async fn the_reader_answers_for_a_transaction_linked_to_its_proof() {
+    for (set, link) in [(true, false), (false, false), (true, true), (false, true)] {
+        let s = store(SRC).await;
+        let (u, _) = s.find_or_insert_user(ALICE).await.unwrap();
+        seed_all(&s, u.user_id, 'a', set, link).await;
+        for e in ENTITIES {
+            let mut a = args_for(ALICE);
+            a.offsets.retain(|o| o.name == e);
+            let s2 = s.clone();
+            let r = tokio::spawn(async move { s2.get_sync_chunk(a).await }).await;
+            let verdict = match r {
+                Ok(Ok(_)) => "ok".to_string(),
+                Ok(Err(e)) => format!("ERR {e}"),
+                Err(_) => "PANIC".to_string(),
+            };
+            if verdict != "ok" {
+                println!("WITNESS A1 set={set} link={link} {e}: {verdict}");
+            }
+            assert_eq!(verdict, "ok", "{e} set={set} link={link}");
+        }
+    }
+
+    let act = store(SRC).await;
+    let bak = store(DST).await;
+    let (u, _) = act.find_or_insert_user(ALICE).await.unwrap();
+    let txid = seed_all(&act, u.user_id, 'a', true, true).await;
+    let (bu, _) = bak.find_or_insert_user(ALICE).await.unwrap();
+    bak.update_user_active_storage(bu.user_id, SRC)
+        .await
+        .unwrap();
+    let mgr = Arc::new(bsv_wallet_toolbox_rs::managers::WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(act.clone() as Arc<dyn MonitorStorage>),
+        Some(vec![bak.clone() as Arc<dyn MonitorStorage>]),
+    ));
+    mgr.make_available().await.unwrap();
+    for round in 1..=2 {
+        let m = mgr.clone();
+        let r = tokio::spawn(async move { m.update_backups().await }).await;
+        let verdict = match &r {
+            Ok(Ok(_)) => "ok".to_string(),
+            Ok(Err(e)) => format!("ERR {e}"),
+            Err(_) => "PANIC".to_string(),
+        };
+        println!("WITNESS A1 update_backups round {round}: {verdict}");
+        assert_eq!(verdict, "ok");
+    }
+    let linked = count(
+        &bak,
+        &format!(
+            "SELECT COUNT(*) FROM transactions t JOIN proven_txs p ON p.proven_tx_id = t.proven_tx_id \
+             WHERE t.txid = '{txid}' AND p.txid = '{txid}'"
+        ),
+    )
+    .await;
+    println!("WITNESS A1 backup transaction linked to its own proof row: {linked}");
+    assert_eq!(linked, 1);
+}
+
 fn proof(id: i64, txid: &str) -> TableProvenTx {
     TableProvenTx {
         proven_tx_id: id,
