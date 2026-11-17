@@ -40,8 +40,9 @@ const BASKET_INSERTION_PROTOCOL: &str = "basket insertion";
 pub(crate) const NO_OUTPUTS_REFUSAL: &str =
     "The outputs parameter must be at least one output to internalize from the transaction";
 
-/// The refusal of one existing output named by both a wallet payment and a
-/// basket insertion on the merge path (the reference's `linkExistingOutputs`).
+/// The refusal of a request whose outputs name one output index more than
+/// once, whatever the protocols, on a new transaction and on the merge path
+/// (the reference's `linkExistingOutputs` sentence).
 pub(crate) const REPEATED_OUTPUT_INDEX_REFUSAL: &str =
     "The outputs parameter must be unique outputIndex values";
 
@@ -103,12 +104,22 @@ pub async fn internalize_action_internal(
     user_id: i64,
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
-    // Step 0: The arguments the reference's validator refuses before
-    // anything else: no output at all, a wallet payment with an empty
-    // derivation prefix or suffix (a change row nothing could sign), and a
-    // wallet payment whose sender is neither empty nor a compressed key.
+    // Step 0: The arguments refused before anything else: no output at all,
+    // one output index named more than once (the reference ends every such
+    // request without a write: `linkExistingOutputs` for a payment and an
+    // insertion of a held output, the outputs table's unique key for every
+    // other pair), a wallet payment with an empty derivation prefix or
+    // suffix (a change row nothing could sign), and a wallet payment whose
+    // sender is neither empty nor a compressed key. The request alone is
+    // read: no tracker, service or row is asked first.
     if args.outputs.is_empty() {
         return Err(Error::ValidationError(NO_OUTPUTS_REFUSAL.to_string()));
+    }
+    let mut named = HashSet::new();
+    if !args.outputs.iter().all(|o| named.insert(o.output_index)) {
+        return Err(Error::ValidationError(
+            REPEATED_OUTPUT_INDEX_REFUSAL.to_string(),
+        ));
     }
     for output in &args.outputs {
         if output.protocol != WALLET_PAYMENT_PROTOCOL {
@@ -315,22 +326,9 @@ pub async fn internalize_action_internal(
 
     // Step 5: If merging, load existing outputs
     if is_merge {
+        // Each output index is named once (Step 0), so each existing row
+        // takes at most one treatment.
         let existing_outputs = load_existing_outputs(&mut tx, user_id, &txid).await?;
-        // One existing output named by both a wallet payment and a basket
-        // insertion is refused before any row is written (the reference's
-        // `linkExistingOutputs`).
-        for eo in &existing_outputs {
-            let named_as = |protocol: &str| {
-                outputs_data
-                    .iter()
-                    .any(|od| od.vout as i32 == eo.vout && od.protocol == protocol)
-            };
-            if named_as(WALLET_PAYMENT_PROTOCOL) && named_as(BASKET_INSERTION_PROTOCOL) {
-                return Err(Error::ValidationError(
-                    REPEATED_OUTPUT_INDEX_REFUSAL.to_string(),
-                ));
-            }
-        }
         for od in &mut outputs_data {
             if let Some(eo) = existing_outputs.iter().find(|o| o.vout == od.vout as i32) {
                 od.existing_output_id = Some(eo.output_id);
