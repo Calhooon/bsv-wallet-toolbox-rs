@@ -210,6 +210,14 @@ async fn drain_sync_chunks(
 ) -> Result<(u32, u32)> {
     let reader_settings = reader.make_available().await?;
     let writer_settings = writer.make_available().await?;
+    // Stores of one chain alone, before the writer's user or any chunk (the
+    // reference's assertSyncNetwork).
+    if reader_settings.chain != writer_settings.chain {
+        return Err(Error::SyncError(
+            "Live sync requires matching declared network chains on both storage providers."
+                .to_string(),
+        ));
+    }
     // A chunk never creates its user on the writer: the manager makes the
     // writer's user before any chunk, as the reference's
     // loadSyncRequest does with findOrInsertUser.
