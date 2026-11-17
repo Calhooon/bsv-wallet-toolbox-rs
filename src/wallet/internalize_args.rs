@@ -90,7 +90,29 @@ pub(crate) fn validate_internalize_action_args(
         return Err(Error::ValidationError(BRC177_INCOMING_REFUSAL.to_string()));
     }
     validate_insertion_baskets(args)?;
+    validate_unique_output_indexes(args)?;
     Ok(senders)
+}
+
+/// A request naming one `outputIndex` more than once is refused, whatever
+/// the protocols, on a new transaction and on a merge alike, before anything
+/// is read, written or broadcast. The reference answers one existing output
+/// named by a payment and an insertion with this sentence (ts-stack@4d0ea63c8
+/// `storage/methods/internalizeAction.ts:345-359`); every other pair fails
+/// there when its second `outputs` row meets the table's unique key
+/// (`transactionId`, `vout`, `userId`; `KnexMigrations.ts:765`) inside the
+/// call's transaction (`:610`, `:764-792`, `:829-866`), so it writes nothing
+/// either. This port answers every pair with the one sentence.
+fn validate_unique_output_indexes(args: &InternalizeActionArgs) -> Result<()> {
+    let mut seen = std::collections::HashSet::with_capacity(args.outputs.len());
+    if args
+        .outputs
+        .iter()
+        .all(|output| seen.insert(output.output_index))
+    {
+        return Ok(());
+    }
+    Err(invalid_parameter("outputs", "unique outputIndex values"))
 }
 
 /// The name of the wallet's own change basket.
@@ -385,12 +407,15 @@ mod tests {
                 tags: None,
             }),
         };
-        let outputs = vec![
+        let mut outputs = vec![
             payment(&senders[0]),
             insertion.clone(),
             payment(&senders[1]),
             insertion,
         ];
+        for (index, output) in (0..).zip(outputs.iter_mut()) {
+            output.output_index = index;
+        }
         let args = InternalizeActionArgs {
             tx: Vec::new(),
             outputs,

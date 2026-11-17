@@ -225,7 +225,9 @@ fn validated_sender_is_the_trimmed_key() {
         "c3VmZml4",
         &format!(" \u{FEFF}{}\n", SENDER.to_uppercase()),
     );
-    let senders = validate_internalize_action_args(&args(vec![padded, valid_insertion()])).unwrap();
+    let mut insertion = valid_insertion();
+    insertion.output_index = 1;
+    let senders = validate_internalize_action_args(&args(vec![padded, insertion])).unwrap();
     let keys: Vec<_> = senders
         .iter()
         .map(|k| k.as_ref().map(|k| k.to_hex()))

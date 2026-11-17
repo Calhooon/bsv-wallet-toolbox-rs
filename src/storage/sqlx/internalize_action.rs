@@ -202,23 +202,8 @@ pub async fn internalize_action_internal(
     // Step 5: If merging, load existing outputs
     if is_merge {
         let existing_outputs = load_existing_outputs(&mut tx, user_id, &txid).await?;
-        // One existing output named by both a wallet payment and a basket
-        // insertion is refused before any row moves, as the reference's
-        // `linkExistingOutputs` refuses it (ts-stack@4d0ea63c8
-        // storage/methods/internalizeAction.ts:345-359). Two payments or two
-        // insertions of one output are not refused there, nor here.
-        for eo in &existing_outputs {
-            let named = |protocol: &str| {
-                outputs_data
-                    .iter()
-                    .any(|od| i64::from(od.vout) == i64::from(eo.vout) && od.protocol == protocol)
-            };
-            if named(WALLET_PAYMENT_PROTOCOL) && named(BASKET_INSERTION_PROTOCOL) {
-                return Err(Error::ValidationError(
-                    "The outputs parameter must be unique outputIndex values".to_string(),
-                ));
-            }
-        }
+        // Each output is named once (the validator at step 0 refuses a
+        // repeated `outputIndex`), so each existing row meets one entry.
         for od in &mut outputs_data {
             if let Some(eo) = existing_outputs.iter().find(|o| o.vout == od.vout as i32) {
                 od.existing_output_id = Some(eo.output_id);

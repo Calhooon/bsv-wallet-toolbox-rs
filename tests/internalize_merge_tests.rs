@@ -6,9 +6,15 @@
 //!   managed change and leaves its `spendable` as the row has it
 //!   (`mergeWalletPaymentForOutput`, :795-810): an unspent row joins the
 //!   balance, a spent one stays spent and out of it;
-//! - one existing output named by both a wallet payment and a basket
-//!   insertion is refused before any row moves, `The outputs parameter must
-//!   be unique outputIndex values` (`linkExistingOutputs`, :345-359).
+//! - a request naming one output more than once, whatever the protocols,
+//!   is refused before anything is written or broadcast, `The outputs
+//!   parameter must be unique outputIndex values`, on this path as on a new
+//!   transaction: the reference refuses one existing output named by a
+//!   payment and an insertion with that sentence (`linkExistingOutputs`,
+//!   :345-359), and every other pair fails there on the outputs table's
+//!   unique key (`transactionId`, `vout`, `userId`) inside the merge's
+//!   transaction (:610, `storeNew*ForOutput` :764-792, :829-866), so the
+//!   whole call writes nothing.
 //!
 //! Real SQLite storage, a mock broadcaster and tracker; nothing touches the
 //! network.
@@ -24,7 +30,7 @@ use bsv_rs::primitives::{PrivateKey, PublicKey};
 use bsv_rs::script::LockingScript;
 
 use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput};
-use bsv_wallet_toolbox_rs::WalletStorageWriter;
+use bsv_rs::WalletRefusalClass;
 use common::{args, beef_paying, p2pkh_bytes};
 use insertion::*;
 
@@ -107,93 +113,82 @@ fn outputs(tx: Vec<u8>, outputs: Vec<InternalizeOutput>) -> InternalizeActionArg
     a
 }
 
-/// The storage door's answer: whether it merged and the satoshis it
-/// reports, or the refusal's text.
-async fn at_store(wallet: &TestWallet, a: InternalizeActionArgs) -> Result<(bool, i64), String> {
-    let auth = storage_auth(wallet).await;
-    wallet
-        .storage()
-        .internalize_action(&auth, a)
-        .await
-        .map(|r| (r.is_merge, r.satoshis))
-        .map_err(|e| e.to_string())
-}
-
-/// The transaction row's satoshis and its output's basket, type and change.
-async fn held(wallet: &TestWallet, txid: &str) -> (i64, Option<String>, String, i64) {
-    let satoshis = sqlx::query_scalar("SELECT satoshis FROM transactions WHERE txid = ?")
-        .bind(txid)
-        .fetch_one(wallet.storage().writer())
-        .await
-        .unwrap();
-    let (basket, kind, change, ..) = row(wallet, txid, 0).await;
-    (satoshis, basket, kind, change)
-}
-
 const UNIQUE: &str = "Validation error: The outputs parameter must be unique outputIndex values";
 
-/// One existing output named by a payment and an insertion, in either
-/// order, at either door: refused, the row, the transaction's satoshis and
-/// the balance unmoved.
+/// Everything a refused call could have moved: every output and
+/// transaction row, every request and label, and the balance.
+async fn snapshot(wallet: &TestWallet) -> (String, u64, usize) {
+    let rows: String = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT group_concat(quote(output_id) || quote(basket_id) \
+         || quote(spendable) || quote(change) || quote(vout) || quote(satoshis) \
+         || quote(provided_by) || quote(purpose) || quote(type) || quote(txid) \
+         || quote(sender_identity_key) || quote(derivation_prefix) \
+         || quote(derivation_suffix) || quote(custom_instructions) || quote(spent_by) \
+         || quote(updated_at), ';') FROM outputs), '') || '#' || \
+         COALESCE((SELECT group_concat(quote(transaction_id) || quote(status) \
+         || quote(satoshis) || quote(txid) || quote(updated_at), ';') FROM transactions), '') \
+         || '#' || (SELECT COUNT(*) FROM proven_tx_reqs) || '#' || \
+         (SELECT COUNT(*) FROM tx_labels) || '#' || (SELECT COUNT(*) FROM output_baskets)",
+    )
+    .fetch_one(wallet.storage().writer())
+    .await
+    .unwrap();
+    let posted = wallet.services().call_count("post_beef");
+    (rows, balance(wallet).await, posted)
+}
+
+/// One output named twice by one request: every pair of protocols, in
+/// both orders, on a transaction the store does not hold and on one it
+/// holds, at both doors: refused with the sentence, the class through the
+/// wallet `InvalidParameter`, every row and the balance as before the call,
+/// nothing broadcast.
 #[tokio::test]
-async fn one_existing_output_named_by_a_payment_and_an_insertion_is_refused() {
+async fn one_output_named_twice_is_refused_whatever_the_protocols() {
     let root = PrivateKey::random();
-    for (order, door) in [
-        ("payment then insertion", "storage"),
-        ("insertion then payment", "storage"),
-        ("payment then insertion", "wallet"),
-        ("insertion then payment", "wallet"),
-    ] {
-        let (wallet, bytes, txid, sender) = held_as_custom(&root).await;
-        let before = held(&wallet, &txid).await;
-        let payment = common::payment(&sender, PREFIX, SUFFIX);
-        let named = match order {
-            "payment then insertion" => vec![payment, insertion(0, "tokens")],
-            _ => vec![insertion(0, "tokens"), payment],
-        };
-        let a = outputs(bytes, named);
-        let answer = match door {
-            "storage" => at_store(&wallet, a).await.map(|_| true),
-            _ => at_wallet(&wallet, a).await.map_err(|(_, text)| text),
-        };
-        assert_eq!(answer, Err(UNIQUE.to_string()), "{order} at {door}");
-        assert_eq!(held(&wallet, &txid).await, before, "{order} at {door}");
-        assert_eq!(balance(&wallet).await, 0, "{order} at {door}");
+    let pairs = [
+        "payment and payment",
+        "insertion and insertion",
+        "payment and insertion",
+        "insertion and payment",
+    ];
+    for held_before in [false, true] {
+        for pair in pairs {
+            for door in ["storage", "wallet"] {
+                let (wallet, bytes, sender) = if held_before {
+                    let (wallet, bytes, _, sender) = held_as_custom(&root).await;
+                    (wallet, bytes, sender)
+                } else {
+                    let (bytes, txid, sender) = paying(&root);
+                    (wallet(&root, &txid).await, bytes, sender)
+                };
+                let payment = common::payment(&sender, PREFIX, SUFFIX);
+                let named = match pair {
+                    "payment and payment" => vec![payment.clone(), payment],
+                    "insertion and insertion" => {
+                        vec![insertion(0, "tokens"), insertion(0, "tokens")]
+                    }
+                    "payment and insertion" => vec![payment, insertion(0, "tokens")],
+                    _ => vec![insertion(0, "tokens"), payment],
+                };
+                let before = snapshot(&wallet).await;
+                let a = outputs(bytes, named);
+                let answer = match door {
+                    "storage" => at_storage(&wallet, a)
+                        .await
+                        .map(|ok| format!("accepted {ok}")),
+                    _ => at_wallet(&wallet, a)
+                        .await
+                        .map(|ok| format!("accepted {ok}")),
+                };
+                let case = format!("{pair}, held {held_before}, at {door}");
+                println!("{case}: {answer:?}");
+                assert_eq!(
+                    answer,
+                    Err((WalletRefusalClass::InvalidParameter, UNIQUE.to_string())),
+                    "{case}"
+                );
+                assert_eq!(snapshot(&wallet).await, before, "{case}");
+            }
+        }
     }
-}
-
-/// What the reference does not refuse is not refused: two payments of one
-/// existing output are each counted in the reported satoshis (the
-/// reference's `computeWalletPaymentBalance`, :408-420), one row converted.
-#[tokio::test]
-async fn two_payments_of_one_existing_output_are_admitted() {
-    let root = PrivateKey::random();
-    let (wallet, bytes, txid, sender) = held_as_custom(&root).await;
-    let payment = common::payment(&sender, PREFIX, SUFFIX);
-    let answer = at_store(&wallet, outputs(bytes, vec![payment.clone(), payment])).await;
-    assert_eq!(answer, Ok((true, 9000)));
-    let (_, basket, kind, change) = held(&wallet, &txid).await;
-    assert_eq!(
-        (basket.as_deref(), kind.as_str(), change),
-        (Some("default"), "P2PKH", 1)
-    );
-    assert_eq!(balance(&wallet).await, 4500);
-}
-
-/// Two insertions of one existing output into its own basket are not
-/// refused either: the row stays in its basket.
-#[tokio::test]
-async fn two_insertions_of_one_existing_output_are_admitted() {
-    let root = PrivateKey::random();
-    let (wallet, bytes, txid, _) = held_as_custom(&root).await;
-    let named = vec![insertion(0, "tokens"), insertion(0, "tokens")];
-    assert_eq!(
-        at_store(&wallet, outputs(bytes, named)).await,
-        Ok((true, 0))
-    );
-    let (_, basket, kind, change) = held(&wallet, &txid).await;
-    assert_eq!(
-        (basket.as_deref(), kind.as_str(), change),
-        (Some("tokens"), "custom", 0)
-    );
 }
