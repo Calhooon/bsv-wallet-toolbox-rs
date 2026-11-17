@@ -309,6 +309,7 @@ async fn internalize_refused_by_every_instance_is_held_sending_and_not_in_the_ba
     println!("every instance refused: {s:?}");
     assert_eq!((s.tx.as_str(), s.req.as_str()), ("sending", "unsent"));
     assert_eq!(s.broadcast_seen, vec![], "nothing taken, nothing recorded");
+    assert_eq!((s.balance, s.listed_outputs), (0, 0), "not counted");
     assert_eq!(s.listed_action, "Sending", "listed as an action, sending");
     let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outputs WHERE txid = ?")
         .bind(&txid)
@@ -326,6 +327,7 @@ async fn internalize_with_no_answer_is_held_sending_and_not_offered_even_under_t
     let s = seen(&wallet, &txid).await;
     println!("no instance answered: {s:?}");
     assert_eq!((s.tx.as_str(), s.req.as_str()), ("sending", "unsent"));
+    assert_eq!((s.balance, s.listed_outputs), (0, 0));
 
     let no_label = offered(&wallet, false).await.unwrap_err();
     assert!(no_label.contains("Insufficient funds"), "{no_label}");
@@ -429,7 +431,7 @@ async fn held_receipt_taken_later_by_send_waiting_is_unproven_counted_and_offere
             .accepted
     );
     let before = seen(&wallet, &txid).await;
-    assert_eq!(before.tx, "sending");
+    assert_eq!((before.tx.as_str(), before.balance), ("sending", 0));
 
     due(&wallet, &txid).await;
     send_waiting(&wallet).run().await.expect("send_waiting");
