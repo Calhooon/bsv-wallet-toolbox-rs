@@ -142,8 +142,8 @@ pub(crate) async fn check_roots(
 
 /// Step 7: every input of the subject `subject` (display hex) of `bytes`
 /// run against the output it spends, under the word for that input on the
-/// network `network` with `tracker`'s mining tip (the tip asked first, the
-/// scripts run after, before any row is written). A subject the BEEF
+/// network `network` with `tracker`'s mining tip (the tip asked before the
+/// scripts run, both before any row is written). A subject the BEEF
 /// proves is not run.
 pub(crate) async fn check_input_scripts(
     bytes: &[u8],
