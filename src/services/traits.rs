@@ -1534,3 +1534,7 @@ pub fn convert_script_hash(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "nlock_time_reader_tests.rs"]
+mod nlock_time_reader_tests;
