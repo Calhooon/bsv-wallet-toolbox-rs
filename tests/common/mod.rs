@@ -141,12 +141,17 @@ fn input(txid: &str, vout: u32) -> TransactionInput {
 
 /// A proven parent of `outputs` outputs locked by `anyone_lock`.
 pub fn proven_parent(outputs: u32) -> Transaction {
+    proven_parent_locked(outputs, anyone_lock())
+}
+
+/// A proven parent of `outputs` outputs, each locked by `parent_lock`.
+pub fn proven_parent_locked(outputs: u32, parent_lock: LockingScript) -> Transaction {
     let mut parent = Transaction::new();
     parent.inputs.push(input(&"11".repeat(32), 0));
     for _ in 0..outputs {
         parent.outputs.push(TransactionOutput {
             satoshis: Some(1_000),
-            locking_script: anyone_lock(),
+            locking_script: parent_lock.clone(),
             change: false,
         });
     }
@@ -178,7 +183,22 @@ pub fn sweep_beef(lock: LockingScript) -> (Vec<u8>, String) {
 /// An AtomicBEEF of a proven parent of `outputs` outputs and a child
 /// sweeping every one of them into one output locked by `lock`.
 pub fn sweep_beef_of(outputs: u32, lock: LockingScript) -> (Vec<u8>, String) {
-    let parent = proven_parent(outputs);
+    sweep_beef_of_parent(proven_parent(outputs), outputs, lock)
+}
+
+/// `sweep_beef_of` with a parent of `outputs` P2PKH outputs (`other_lock`),
+/// the sweep the onset of bsv-rs's default link bounds is measured on
+/// (586 link, 587 are refused). It is only linked, never run: its
+/// unlocking scripts do not satisfy the P2PKH.
+pub fn p2pkh_sweep_beef_of(outputs: u32, lock: LockingScript) -> (Vec<u8>, String) {
+    sweep_beef_of_parent(proven_parent_locked(outputs, other_lock()), outputs, lock)
+}
+
+fn sweep_beef_of_parent(
+    parent: Transaction,
+    outputs: u32,
+    lock: LockingScript,
+) -> (Vec<u8>, String) {
     let parent_txid = parent.id();
     let child = child(&parent_txid, outputs, lock);
     let txid = child.id();
