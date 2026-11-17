@@ -19,6 +19,7 @@
 - The sync writer writes a chunk in one write transaction with its sync state row: a chunk refused or failing part way leaves none of its rows, and no other write of the store lands between two of them. Before, a failing chunk kept the rows written before its failure (`a_failing_chunk_leaves_none_of_its_rows`).
 - `WalletStorageManager`'s syncs (`sync_from_reader`, `sync_to_writer`, `update_backups` and the sync `set_active` runs) refuse a reader and a writer whose settings declare different chains, before the writer's user is made or any chunk is read: `Sync error: Live sync requires matching declared network chains on both storage providers.` Before, a store declaring another chain was synced as any other (`a_sync_between_stores_of_two_chains_is_refused`).
 - The manager's sync refuses a writer's answer that the sync is not done to a chunk that carried no row: `Invalid operation: Sync provider reported an unfinished page without advancing its durable checkpoint.` Before, the manager asked again for the same empty chunk without end, holding its sync lock, so every write of the wallet through it waited (`an_unfinished_answer_to_an_empty_chunk_is_refused`).
+- The manager's sync reads a writer's answer that carries an error as the sync's failure, `Sync error: <the error>`, ahead of its `done` and its counts. Before, the error was not read and the sync answered as the counts said (`an_answer_that_carries_an_error_is_a_failed_sync`).
 
 ### Hosts
 

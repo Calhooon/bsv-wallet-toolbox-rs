@@ -131,3 +131,38 @@ async fn an_unfinished_answer_to_an_empty_chunk_is_refused() {
     // The store's default basket, then the empty chunk that is refused.
     assert_eq!(writer.chunks.load(Ordering::SeqCst), 2);
 }
+
+/// A writer's answer that carries an error is a failed sync, whatever its
+/// `done` and its counts say.
+#[tokio::test]
+async fn an_answer_that_carries_an_error_is_a_failed_sync() {
+    let active = store(SRC).await;
+    active.find_or_insert_user(ALICE).await.unwrap();
+    let writer = Double::new((*store(DST).await).clone());
+    *writer.answer.lock().unwrap() = Some(ProcessSyncChunkResult {
+        done: true,
+        max_updated_at: None,
+        updates: 0,
+        inserts: 3,
+        error: Some("the writer refused the page".to_string()),
+    });
+    name_active(&[&*active, &writer.inner], SRC).await;
+    let writer = Arc::new(writer);
+    let mgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(active as Arc<dyn MonitorStorage>),
+        Some(vec![writer.clone() as Arc<dyn MonitorStorage>]),
+    );
+    let to_writer = mgr.sync_to_writer(ALICE, writer.clone()).await;
+    let backups = mgr.update_backups().await;
+    println!(
+        "WITNESS M3 done=true with an error: sync_to_writer {}; update_backups {}",
+        refusal(&to_writer),
+        refusal(&backups)
+    );
+    assert_eq!(
+        refusal(&to_writer),
+        "Sync error: the writer refused the page"
+    );
+    assert_eq!(refusal(&backups), "Sync error: the writer refused the page");
+}
