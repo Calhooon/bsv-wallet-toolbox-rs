@@ -17,6 +17,7 @@
 - `WalletStorageManager`'s `get_sync_chunk` and `process_sync_chunk` refuse an identity that is not the manager's. Before, they served any identity (`the_manager_sync_surface_refuses_another_identity`).
 - `WalletStorageManager::set_active` writes each store's row of the wallet's user by that store's own user id and sets each store's cached row before it partitions the stores again. Before, every store's row was written under the active store's user id (`set_active_writes_each_stores_own_user_row`).
 - The sync writer writes a chunk in one write transaction with its sync state row: a chunk refused or failing part way leaves none of its rows, and no other write of the store lands between two of them. Before, a failing chunk kept the rows written before its failure (`a_failing_chunk_leaves_none_of_its_rows`).
+- `WalletStorageManager`'s syncs (`sync_from_reader`, `sync_to_writer`, `update_backups` and the sync `set_active` runs) refuse a reader and a writer whose settings declare different chains, before the writer's user is made or any chunk is read: `Sync error: Live sync requires matching declared network chains on both storage providers.` Before, a store declaring another chain was synced as any other (`a_sync_between_stores_of_two_chains_is_refused`).
 
 ### Hosts
 
