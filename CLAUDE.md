@@ -24,7 +24,7 @@ cd fuzz && cargo +nightly fuzz run <target> -- -max_total_time=60 -timeout=10  #
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
 
-**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.9` on beta since the beta.9 re-pin (#533), which carries the stable line's 0.8.12 fix of GHSA-33fm-jcm5-4m3m; `=0.9.0-beta.8` from the beta.8 re-pin, which carries the stable line's 0.8.6 to 0.8.11 security fixes; `=0.9.0-beta.7` from #812, `=0.9.0-beta.6` from #566, `=0.9.0-beta.3` from #419, `=0.9.0-beta.1` from #184; main asks `0.8.0`, a caret range, until beta merges into it) with `full` and `http` features. The pin is the owner's word (epic #80).
+**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.9` on beta since the beta.9 re-pin (#533), which carries the stable line's 0.8.12 fix of GHSA-33fm-jcm5-4m3m; `=0.9.0-beta.8` from the beta.8 re-pin, which carries the stable line's 0.8.6 to 0.8.11 security fixes; `=0.9.0-beta.7` from #812, `=0.9.0-beta.6` from #566, `=0.9.0-beta.3` from #419, `=0.9.0-beta.1` from #184; main asks `0.8.12`, a caret range, until beta merges into it) with `full` and `http` features. The pin is the owner's word (epic #80).
 
 ## Architecture
 

@@ -6,10 +6,11 @@
 
 The version moves for the `bsv-rs` `=0.9.0-beta.9` pin, the 0.9.0
 prerelease that carries the fix of GHSA-33fm-jcm5-4m3m, the completion of
-GHSA-gvmh-f5gf-5vjj's fix: the published advisory names every `bsv-rs`
-prerelease through 0.9.0-beta.8, so 0.14.0-beta.8.1 and earlier pin an
-affected version. This prerelease carries the pin alone, and its number
-again says which `bsv-rs` prerelease the line sits on.
+GHSA-gvmh-f5gf-5vjj's fix: GHSA-33fm-jcm5-4m3m names every `bsv-rs`
+prerelease through 0.9.0-beta.8, so every 0.14.0 prerelease through
+0.14.0-beta.8.1 pins an affected version exactly. This prerelease carries
+the pin alone, and its number again says which `bsv-rs` prerelease the
+line sits on.
 
 ### Security
 - [GHSA-33fm-jcm5-4m3m](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-33fm-jcm5-4m3m)
@@ -32,17 +33,21 @@ again says which `bsv-rs` prerelease the line sits on.
   token reader moves.
 - A host that links BEEFs with `bsv-rs`'s default doors in its own code
   (`Transaction::from_beef`, `from_atomic_beef`,
-  `Beef::find_atomic_transaction`) meets a heap bound of 56 MiB beside the
-  16 MiB wire bound: a child spending every output of one proven parent of
-  P2PKH outputs links up to 586 outputs (702 at 0.9.0-beta.8) and is
-  refused from 587 with `Error::BeefResourceLimit`, `BEEF link resource
+  `Beef::find_atomic_transaction`, `Beef::find_transaction_for_signing`)
+  meets a heap bound of 56 MiB beside the 16 MiB wire bound (`bsv-rs`'s
+  figures). Measured here: a child spending every output of one proven
+  parent of P2PKH outputs links up to 586 outputs and is refused from 587
+  with `Error::BeefResourceLimit`,
+  `BEEF link resource
   limit: linking would hold more than 58720256 heap bytes of re-materialized
   shared-parent stubs and proofs at once (bsv-rs #749). Raise or disable the
   bound with Transaction::from_beef_with_limits /
   BeefLinkLimits::with_max_link_heap_bytes / BeefLinkLimits::unbounded.`
-  (`tests/beef_link_onset_tests.rs`). A host that trusts its source raises
-  the bound with `BeefLinkLimits::with_max_link_heap_bytes` or lifts both
-  with `BeefLinkLimits::unbounded`.
+  (`tests/beef_link_onset_tests.rs`); `bsv-rs`'s note gives 702 as the
+  figure at 0.9.0-beta.8. By that note the two `Beef::find_` doors answer
+  `None` past the bound, and a BEEF of hundreds of distinct proven
+  ancestors sharing one BUMP is refused by default as well. A host that
+  trusts its source uses the setters the text names.
 
 ## [0.14.0-beta.8.1] - 2026-11-17
 
