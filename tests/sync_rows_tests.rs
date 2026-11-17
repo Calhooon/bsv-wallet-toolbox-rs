@@ -460,3 +460,46 @@ async fn sync_from_a_reader_keeps_the_active_storage() {
     assert!(r.is_ok());
     assert_eq!(active, Some(SRC.to_string()));
 }
+
+/// A chunk never creates its user: a chunk for a user the store does not
+/// hold is refused and the store holds no user after it.
+#[tokio::test]
+async fn a_chunk_for_an_unknown_user_is_refused() {
+    let s = store(DST).await;
+    let r = s
+        .process_sync_chunk(args_for(ALICE), chunk_for(ALICE))
+        .await;
+    let users = count(&s, "SELECT COUNT(*) FROM users").await;
+    println!(
+        "WITNESS B2 empty chunk for an unknown user: {:?}; users rows {users}",
+        r.as_ref().map(|r| r.done).map_err(|e| e.to_string())
+    );
+    assert!(r.is_err());
+    assert_eq!(users, 0);
+}
+
+/// A backup of a wallet to a fresh store completes: the manager makes the
+/// store's user before any chunk.
+#[tokio::test]
+async fn a_backup_to_a_fresh_store_completes() {
+    let act = store(SRC).await;
+    let (u, _) = act.find_or_insert_user(ALICE).await.unwrap();
+    seed_all(&act, u.user_id, 'a', true, true).await;
+    let mgr = bsv_wallet_toolbox_rs::managers::WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(act.clone() as Arc<dyn MonitorStorage>),
+        None,
+    );
+    mgr.make_available().await.unwrap();
+    let fresh = store(DST).await;
+    let r = mgr.sync_to_writer(ALICE, fresh.clone()).await;
+    let rows = count(&fresh, "SELECT COUNT(*) FROM transactions").await;
+    println!(
+        "WITNESS B2 sync_to_writer to a fresh store: {:?}; transactions rows {rows}",
+        r.as_ref()
+            .map(|r| (r.inserts, r.updates))
+            .map_err(|e| e.to_string())
+    );
+    assert!(r.is_ok());
+    assert_eq!(rows, 1);
+}

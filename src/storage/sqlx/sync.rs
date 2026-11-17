@@ -404,8 +404,13 @@ pub async fn process_sync_chunk_internal(
         )));
     }
 
-    // Find or create the user
-    let (user, user_is_new) = storage.find_or_insert_user(&args.identity_key).await?;
+    // The user must exist: a chunk never creates one (the reference's
+    // processSyncChunk). The manager brings a store's user into being before
+    // it syncs to that store.
+    let user = storage
+        .find_user(&args.identity_key)
+        .await?
+        .ok_or_else(|| Error::UserNotFound(args.identity_key.clone()))?;
 
     // One chunk, one write transaction (the reference's processSyncChunk runs
     // a page in one transaction): a chunk refused or failing part way leaves
@@ -414,16 +419,7 @@ pub async fn process_sync_chunk_internal(
     // parent this one never wrote.
     let saved_map = sync_map.clone();
     let mut db_tx = storage.write_tx().await?;
-    match apply_chunk(
-        &mut db_tx,
-        user.user_id,
-        user_is_new,
-        &args,
-        &chunk,
-        sync_map,
-    )
-    .await
-    {
+    match apply_chunk(&mut db_tx, user.user_id, &args, &chunk, sync_map).await {
         Ok(result) => {
             super::storage_sqlx::commit(db_tx).await?;
             Ok(result)
@@ -454,7 +450,6 @@ fn remap(map: &mut HashMap<i64, i64>, entity: &str, from: i64, to: i64) -> Resul
 async fn apply_chunk(
     conn: &mut SqliteConnection,
     user_id: i64,
-    user_is_new: bool,
     args: &RequestSyncChunkArgs,
     chunk: &SyncChunk,
     sync_map: &mut crate::storage::SyncMap,
@@ -466,10 +461,6 @@ async fn apply_chunk(
         inserts: 0,
         error: None,
     };
-
-    if user_is_new {
-        result.inserts += 1;
-    }
 
     // Find or create sync state for tracking
     ensure_sync_state(conn, user_id, &args.from_storage_identity_key).await?;
@@ -2721,6 +2712,8 @@ mod tests {
         storage.make_available().await.unwrap();
 
         let identity_key = "b".repeat(66);
+        // A chunk never creates its user: the store holds it already.
+        storage.find_or_insert_user(&identity_key).await.unwrap();
 
         let args = RequestSyncChunkArgs {
             from_storage_identity_key: "a".repeat(66),
@@ -2744,7 +2737,7 @@ mod tests {
             .unwrap();
 
         assert!(result.done); // Empty chunk = sync complete
-        assert_eq!(result.inserts, 1); // User was created
+        assert_eq!(result.inserts, 0); // The user already existed
         assert_eq!(result.updates, 0);
     }
 
@@ -2758,6 +2751,8 @@ mod tests {
         storage.make_available().await.unwrap();
 
         let identity_key = "b".repeat(66);
+        // A chunk never creates its user: the store holds it already.
+        storage.find_or_insert_user(&identity_key).await.unwrap();
         let now = Utc::now();
 
         let args = RequestSyncChunkArgs {
@@ -2791,7 +2786,7 @@ mod tests {
             .unwrap();
 
         assert!(!result.done); // Not empty chunk
-        assert_eq!(result.inserts, 2); // User + basket
+        assert_eq!(result.inserts, 1); // The basket (the user existed)
         assert_eq!(result.updates, 0);
     }
 
@@ -2877,6 +2872,8 @@ mod tests {
         storage.make_available().await.unwrap();
 
         let identity_key = "b".repeat(66);
+        // A chunk never creates its user: the store holds it already.
+        storage.find_or_insert_user(&identity_key).await.unwrap();
         let now = Utc::now();
 
         let args = RequestSyncChunkArgs {
@@ -2945,8 +2942,8 @@ mod tests {
             .await
             .unwrap();
 
-        // User + transaction + output = 3 inserts
-        assert_eq!(result.inserts, 3);
+        // Transaction + output = 2 inserts (the user existed)
+        assert_eq!(result.inserts, 2);
 
         // Verify output was created with correct local transaction_id
         let auth = AuthId::with_user_id(&identity_key, 1);
@@ -2998,6 +2995,8 @@ mod tests {
         storage.make_available().await.unwrap();
 
         let identity_key = "b".repeat(66);
+        // A chunk never creates its user: the store holds it already.
+        storage.find_or_insert_user(&identity_key).await.unwrap();
         let now = Utc::now();
         let later = now + chrono::Duration::seconds(10);
         let txid_hex = "a".repeat(64);
@@ -3221,6 +3220,8 @@ mod tests {
         let dest = StorageSqlx::in_memory().await.unwrap();
         dest.migrate("dest-storage", &"c".repeat(66)).await.unwrap();
         dest.make_available().await.unwrap();
+        // A chunk never creates its user: the store holds it already.
+        dest.find_or_insert_user(&identity_key).await.unwrap();
 
         // Process chunk on destination
         let process_args = RequestSyncChunkArgs {
@@ -3238,11 +3239,11 @@ mod tests {
                 .await
                 .unwrap();
 
-        // Should have synced user + baskets (inserts + updates)
+        // Should have synced the user row and the baskets (the user existed)
         let total_changes = result.inserts + result.updates;
         assert!(
-            total_changes >= 3,
-            "Expected at least 3 changes (user + 2 baskets), got {} inserts + {} updates",
+            total_changes >= 2,
+            "Expected at least 2 changes (user row + baskets), got {} inserts + {} updates",
             result.inserts,
             result.updates
         );
