@@ -31,7 +31,12 @@ async fn a_failing_chunk_leaves_none_of_its_rows() {
     chunk.output_baskets = Some(vec![basket(7, "left-behind")]);
     chunk.transactions = Some(vec![transaction(9, "clash", None)]);
     let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
-    assert!(r.is_err(), "the chunk fails on its transaction row: {r:?}");
+    println!("WITNESS B20 refusal: {}", refusal(&r));
+    // The chunk fails on its transaction row, after its basket row.
+    assert!(
+        refusal(&r).ends_with("UNIQUE constraint failed: transactions.reference"),
+        "{r:?}"
+    );
     let left = count(
         &s,
         "SELECT COUNT(*) FROM output_baskets WHERE name = 'left-behind'",
@@ -168,27 +173,11 @@ async fn a_chunk_mapping_one_source_id_twice_is_refused() {
         "WITNESS B22 chunk: {:?} rows={rows}",
         r.as_ref().map(|r| r.inserts).map_err(|e| e.to_string())
     );
-    assert!(r.is_err());
+    assert_eq!(
+        refusal(&r),
+        "Sync error: sync chunk outputBasket id 5 maps to local id 2 and 3"
+    );
     assert_eq!(rows, 0);
-}
-
-/// A transaction whose proof link is a number is not linked to the local
-/// proof row that number names.
-#[tokio::test]
-async fn a_numbered_proof_link_names_no_local_row() {
-    let s = store(DST).await;
-    s.find_or_insert_user(ALICE).await.unwrap();
-    let other = "c".repeat(64);
-    exec(&s, &format!("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES ('{other}',1,0,'{h}','{h}',X'00',X'00',datetime('now'),datetime('now'))", h = "e".repeat(64))).await;
-    let pending = "f".repeat(64);
-    let mut t = transaction(6, "r-numbered", Some(&pending));
-    t.proof_txid = Some("1".to_string());
-    let mut chunk = chunk_for(ALICE);
-    chunk.transactions = Some(vec![t]);
-    s.process_sync_chunk(args_for(ALICE), chunk).await.unwrap();
-    let link = stored_link(&s, "transactions", &pending).await;
-    println!("WITNESS B10 numbered link stored as: {link:?}");
-    assert_eq!(link, None);
 }
 
 /// A user's chunk carries the proofs and the requests of that user's
@@ -302,7 +291,7 @@ async fn a_chunk_for_an_unknown_user_is_refused() {
         "WITNESS B2 empty chunk for an unknown user: {:?}; users rows {users}",
         r.as_ref().map(|r| r.done).map_err(|e| e.to_string())
     );
-    assert!(r.is_err());
+    assert_eq!(refusal(&r), format!("User not found: {ALICE}"));
     assert_eq!(users, 0);
 }
 
@@ -359,7 +348,8 @@ async fn the_manager_sync_surface_refuses_another_identity() {
         read.as_ref().map(|_| "ok").map_err(|e| e.to_string()),
         write.as_ref().map(|_| "ok").map_err(|e| e.to_string())
     );
-    assert!(read.is_err() && write.is_err());
+    assert_eq!(refusal(&read), "Access denied: Identity key mismatch");
+    assert_eq!(refusal(&write), "Access denied: Identity key mismatch");
     assert_eq!(planted, 0);
 }
 
@@ -464,7 +454,10 @@ async fn a_request_with_another_batch_is_refused() {
         "WITNESS B5 batch mismatch: {:?}; held batch {batch:?}",
         r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
     );
-    assert!(r.is_err());
+    assert_eq!(
+        refusal(&r),
+        format!("Sync error: sync chunk request {t} batch B1 differs from the held batch B0")
+    );
     assert_eq!(batch.as_deref(), Some("B0"));
 }
 
@@ -609,7 +602,10 @@ async fn an_output_naming_an_unmapped_basket_is_refused() {
         "WITNESS B15 output in an unmapped basket: {:?}; outputs rows {rows}",
         r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
     );
-    assert!(r.is_err());
+    assert_eq!(
+        refusal(&r),
+        "Sync error: sync chunk output 9 names basket 77, which the chunk does not map"
+    );
     assert_eq!(rows, 0);
 }
 

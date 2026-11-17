@@ -245,3 +245,11 @@ pub async fn req_row(
     .await
     .unwrap()
 }
+
+/// A call's refusal text, or `ok`.
+pub fn refusal<T>(r: &bsv_wallet_toolbox_rs::Result<T>) -> String {
+    match r {
+        Ok(_) => "ok".to_string(),
+        Err(e) => e.to_string(),
+    }
+}

@@ -99,7 +99,10 @@ async fn a_replacement_proof_that_fails_validation_is_refused() {
         before.0,
         after.0
     );
-    assert!(r.is_err());
+    assert_eq!(
+        verdict(&r),
+        format!("Sync error: sync chunk proof {} is refused: transaction, Merkle path, or active header could not be validated", mined_at(200).0.txid)
+    );
     assert_eq!(after, before);
 }
 
@@ -136,10 +139,17 @@ async fn a_replacement_proof_is_taken_only_under_the_tracker_and_header() {
 
     println!("WITNESS B4 stale root: {refused:?}; active root: {taken:?}; header not that block: {headerless:?}");
     assert_eq!(refused.1, 100);
-    assert!(refused.0 != "ok");
+    let txid = good.txid.clone();
+    assert_eq!(
+        refused.0,
+        format!("Sync error: sync chunk proof {txid} is refused: Merkle root is not active at the recorded height")
+    );
     assert_eq!(taken, ("ok".to_string(), (200, header.hash.clone())));
     assert_eq!(headerless.1, 100);
-    assert!(headerless.0 != "ok");
+    assert_eq!(
+        headerless.0,
+        format!("Sync error: sync chunk proof {txid} is refused: block metadata does not match the active header")
+    );
 }
 
 /// Every proof row's identifiers are checked: a new proof row whose txid is
@@ -156,7 +166,10 @@ async fn a_proof_row_with_a_malformed_txid_is_refused() {
         "WITNESS B4 malformed txid: {}; proof rows {rows}",
         verdict(&r)
     );
-    assert!(r.is_err());
+    assert_eq!(
+        verdict(&r),
+        "Sync error: sync chunk proof not-hex is refused: txid must be 32-byte hexadecimal"
+    );
     assert_eq!(rows, 0);
 }
 
