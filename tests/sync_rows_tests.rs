@@ -221,9 +221,9 @@ async fn a_chunk_carries_only_its_users_proofs_and_requests() {
     assert_eq!((proofs, reqs), (vec![alice_txid.clone()], vec![alice_txid]));
 }
 
-/// A chunk's user row is merged only for the user the chunk is for: a row
-/// naming another user of the store is refused, and that user's row and the
-/// chunk's user's row are unchanged.
+/// The chunk's user row is merged for the chunk's user alone: a row naming
+/// another user of the store, or an identity the store does not hold,
+/// refuses the chunk, and no user row is written or made.
 #[tokio::test]
 async fn a_chunk_user_row_naming_another_user_is_refused() {
     let s = store(DST).await;
@@ -233,20 +233,32 @@ async fn a_chunk_user_row_naming_another_user_is_refused() {
     alice_row.active_storage = Some("f".repeat(64));
     alice_row.updated_at = Utc::now() + Duration::days(1);
     let mut chunk = chunk_for(BOB);
-    chunk.user = Some(alice_row);
-    let r = s.process_sync_chunk(args_for(BOB), chunk).await;
+    chunk.user = Some(alice_row.clone());
+    let named = s.process_sync_chunk(args_for(BOB), chunk).await;
+    let mut stranger = alice_row;
+    stranger.identity_key = format!("03{}", "c".repeat(64));
+    let mut chunk = chunk_for(BOB);
+    chunk.user = Some(stranger);
+    let unknown = s.process_sync_chunk(args_for(BOB), chunk).await;
     let actives = (
         active_storage_of(&s, ALICE).await,
         active_storage_of(&s, BOB).await,
     );
+    let users = count(&s, "SELECT COUNT(*) FROM users").await;
+    let text = |r: &bsv_wallet_toolbox_rs::Result<ProcessSyncChunkResult>| match r {
+        Ok(r) => format!("Ok({}, {})", r.inserts, r.updates),
+        Err(e) => e.to_string(),
+    };
     println!(
-        "WITNESS B1 chunk for bob naming alice: {:?}; active storage (alice, bob) = {actives:?}",
-        r.as_ref()
-            .map(|r| (r.inserts, r.updates))
-            .map_err(|e| e.to_string())
+        "WITNESS B1 chunk for bob naming alice: {}; naming an unknown identity: {}; active storage (alice, bob) = {actives:?}; users {users}",
+        text(&named),
+        text(&unknown)
     );
-    assert!(r.is_err());
+    let refusal = "Sync error: sync chunk user row names an identity other than the chunk's";
+    assert_eq!(text(&named), refusal);
+    assert_eq!(text(&unknown), refusal);
     assert_eq!(actives, (Some(DST.to_string()), Some(DST.to_string())));
+    assert_eq!(users, 2);
 }
 
 /// Syncing from a reader keeps the wallet's active storage as the wallet
