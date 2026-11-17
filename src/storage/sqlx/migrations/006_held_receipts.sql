@@ -6,15 +6,19 @@
 -- and no allocator offers them. A store written by 0.14.0-beta.8 or
 -- 0.14.0-beta.8.1 holds such a receipt as 'unproven'. This statement moves
 -- it to 'sending': a received transaction (is_outgoing = 0), 'unproven',
--- with no proof row linked, that has a request, and that was not taken.
+-- with no proof row linked, that has a request, under the rule below.
 --
--- Taken is the door's one fact (held_receipts.rs, TAKEN_REQUEST_WORDS and
--- TAKEN_SEEN_WORDS, a unit test holds the lists equal): the txid's request
--- is 'unmined', 'callback', 'unconfirmed' or 'completed', or broadcast_seen
--- holds 'accepted', 'seen' or 'mined' for it. Every other request word
--- ('unsent', 'sending', another user's 'nosend', 'invalid', ...) is held. A
--- row with no request at all is the proof path's adoption to take up, not
--- this statement's.
+-- The migration's own rule, apart from the door's. The door reads a
+-- recorded take (broadcast_seen 'accepted', 'seen' or 'mined') or a stored
+-- proof, never a request's word (held_receipts.rs). Rows this statement
+-- reads were written when no record was kept of every take, so it keeps
+-- the request's word for them: a row whose request is 'unmined',
+-- 'callback', 'unconfirmed' or 'completed' is left as it is, and so is a
+-- row with a record of a take (the same broadcast_seen words the door
+-- reads; a unit test holds them equal); a row whose request carries any
+-- other word ('unsent', 'sending', another user's 'nosend', 'invalid', ...)
+-- and no record moves. A row with no request at all is the proof path's
+-- adoption to take up, not this statement's.
 --
 -- Only the transaction's status moves: its outputs, its request and a coin
 -- the wallet's own action already spent stay as they are.

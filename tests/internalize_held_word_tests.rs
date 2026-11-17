@@ -3,10 +3,12 @@
 //! output a held transaction gives the wallet, the wallet's own `sending`
 //! action, and the repeat call's answer as this piece leaves it.
 //!
-//! Taken is one fact, read by the door and by migration 006: the txid's
-//! request is `unmined`, `callback`, `unconfirmed` or `completed`, or
-//! `broadcast_seen` holds `accepted`, `seen` or `mined`. A received
-//! transaction with no checked proof that was not taken is `sending`.
+//! Taken at the door is a recorded take or a stored proof: the door's own
+//! post drew an acceptance, `broadcast_seen` holds `accepted`, `seen` or
+//! `mined` for the txid, or a `proven_txs` row is stored for it; a
+//! request's word alone is not read. A received transaction with no checked
+//! proof that was not taken is `sending`. Migration 006 keeps its own rule
+//! for rows written before (`internalize_taken_record_tests.rs`).
 //!
 //! Real SQLite storage, a mock broadcaster and tracker; nothing is sent.
 
@@ -250,17 +252,18 @@ async fn receipt_beside_another_users_invalid_request_is_held() {
     receipt_beside_a_foreign_request("invalid").await;
 }
 
-/// The taken words still make the new row `unproven`: a foreign request
-/// `unmined`, or no request and `broadcast_seen` `accepted`.
+/// A foreign request `unmined` with no record of a take leaves the new row
+/// held (a request's word is not evidence); no request and
+/// `broadcast_seen` `accepted` makes it `unproven`.
 #[tokio::test]
-async fn receipt_beside_a_taken_request_or_a_recorded_take_is_unproven() {
+async fn receipt_beside_an_unmined_request_is_held_a_recorded_take_is_unproven() {
     let root = PrivateKey::random();
     let (beef, _, output, txid) = paying(&root, "dGFrZW4=");
     let wallet = common::wallet_posting("held-word", &root, no_answer()).await;
     foreign_request(&wallet, &txid, "unmined").await;
     internalize(&wallet, args(beef, output)).await;
-    assert_eq!(tx_status(&wallet, &txid).await, "unproven");
-    assert_eq!(wallet.balance().await.unwrap().total, PAID);
+    assert_eq!(tx_status(&wallet, &txid).await, "sending");
+    assert_eq!(wallet.balance().await.unwrap().total, 0);
 
     let (beef, _, output, txid) = paying(&root, "c2Vlbg==");
     sql(
