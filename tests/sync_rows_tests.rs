@@ -574,3 +574,131 @@ async fn set_active_writes_each_stores_own_user_row() {
         (Some(DST.to_string()), Some(nine), Some(DST.to_string()))
     );
 }
+
+async fn req_row(
+    s: &StorageSqlx,
+    txid: &str,
+) -> (
+    String,
+    i64,
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Option<i64>,
+    String,
+    String,
+    Option<String>,
+) {
+    ::sqlx::query_as(
+        "SELECT status, attempts, raw_tx, input_beef, proven_tx_id, history, notify, batch FROM proven_tx_reqs WHERE txid = ?",
+    )
+    .bind(txid)
+    .fetch_one(s.pool())
+    .await
+    .unwrap()
+}
+
+/// An existing request is merged as the reference merges one: its status,
+/// attempts, proof link and bytes stay as held; the history and the notify
+/// ids are unioned; a batch is taken where none is held.
+#[tokio::test]
+async fn an_existing_request_is_merged_not_replaced() {
+    let s = store(DST).await;
+    let (u, _) = s.find_or_insert_user(ALICE).await.unwrap();
+    let t = "a".repeat(64);
+    let held_tx = exec(&s, &format!("INSERT INTO transactions (user_id,status,reference,is_outgoing,satoshis,description,txid,created_at,updated_at) VALUES ({},'unproven','held',0,0,'held','{t}','2026-01-01 00:00:00','2026-01-01 00:00:00')", u.user_id)).await;
+    exec(&s, &format!("INSERT INTO proven_tx_reqs (txid,status,attempts,history,notified,notify,raw_tx,input_beef,created_at,updated_at) VALUES ('{t}','unmined',2,'{{\"notes\":[{{\"what\":\"a\",\"when\":\"2026-01-01T00:00:00Z\"}}]}}',1,'{{\"transactionIds\":[{held_tx}]}}',X'aa',X'bb','2026-01-01 00:00:00','2026-01-01 00:00:00')")).await;
+    let other = "b".repeat(64);
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_txs = Some(vec![proof(7, &t)]);
+    chunk.transactions = Some(vec![transaction(50, "theirs", Some(&other))]);
+    let mut theirs = request(3, &t, Some(7));
+    theirs.status = ProvenTxReqStatus::Invalid;
+    theirs.attempts = 99;
+    theirs.raw_tx = Some(vec![]);
+    theirs.input_beef = None;
+    theirs.history = r#"{"notes":[{"what":"b","when":"2026-01-02T00:00:00Z"}]}"#.to_string();
+    theirs.notify = r#"{"transactionIds":[50]}"#.to_string();
+    theirs.batch = Some("B1".to_string());
+    theirs.updated_at = at(30);
+    chunk.proven_tx_reqs = Some(vec![theirs]);
+    let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+    assert!(r.is_ok(), "{r:?}");
+    let row = req_row(&s, &t).await;
+    println!("WITNESS B5 merged request (status, attempts, raw, beef, link, history, notify, batch): {row:?}");
+    let theirs_local = held_tx + 1;
+    assert_eq!(
+        row,
+        (
+            "unmined".to_string(),
+            2,
+            vec![0xaa],
+            Some(vec![0xbb]),
+            None,
+            r#"{"notes":[{"what":"a","when":"2026-01-01T00:00:00Z"},{"what":"b","when":"2026-01-02T00:00:00Z"}]}"#.to_string(),
+            format!(r#"{{"transactionIds":[{held_tx},{theirs_local}]}}"#),
+            Some("B1".to_string()),
+        )
+    );
+}
+
+/// A request whose batch differs from the held one refuses the chunk.
+#[tokio::test]
+async fn a_request_with_another_batch_is_refused() {
+    let s = store(DST).await;
+    s.find_or_insert_user(ALICE).await.unwrap();
+    let t = "a".repeat(64);
+    exec(&s, &format!("INSERT INTO proven_tx_reqs (txid,status,attempts,history,notified,notify,raw_tx,batch,created_at,updated_at) VALUES ('{t}','unsent',0,'{{}}',0,'{{}}',X'aa','B0','2026-01-01 00:00:00','2026-01-01 00:00:00')")).await;
+    let mut theirs = request(3, &t, None);
+    theirs.batch = Some("B1".to_string());
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_tx_reqs = Some(vec![theirs]);
+    let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+    let batch = req_row(&s, &t).await.7;
+    println!(
+        "WITNESS B5 batch mismatch: {:?}; held batch {batch:?}",
+        r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
+    );
+    assert!(r.is_err());
+    assert_eq!(batch.as_deref(), Some("B0"));
+}
+
+/// A new request's status is stored in the reference's own words.
+#[tokio::test]
+async fn a_new_requests_status_is_stored_in_the_references_words() {
+    let s = store(DST).await;
+    s.find_or_insert_user(ALICE).await.unwrap();
+    let mut reqs = vec![];
+    for (i, st) in [
+        ProvenTxReqStatus::DoubleSpend,
+        ProvenTxReqStatus::InProgress,
+        ProvenTxReqStatus::NotFound,
+        ProvenTxReqStatus::NoSend,
+        ProvenTxReqStatus::NonFinal,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut r = request(i as i64 + 1, &format!("{i}").repeat(64), None);
+        r.status = st;
+        reqs.push(r);
+    }
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_tx_reqs = Some(reqs);
+    s.process_sync_chunk(args_for(ALICE), chunk).await.unwrap();
+    let words: Vec<String> =
+        ::sqlx::query_scalar("SELECT status FROM proven_tx_reqs ORDER BY txid")
+            .fetch_all(s.pool())
+            .await
+            .unwrap();
+    println!("WITNESS B6 stored statuses: {words:?}");
+    assert_eq!(
+        words,
+        [
+            "doubleSpend",
+            "inProgress",
+            "notFound",
+            "nosend",
+            "nonfinal"
+        ]
+    );
+}

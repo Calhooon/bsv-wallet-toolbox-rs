@@ -750,7 +750,8 @@ async fn apply_chunk(
     // Process proven tx reqs last, as the reference does
     if let Some(reqs) = &chunk.proven_tx_reqs {
         for req in reqs {
-            let upsert_result = upsert_proven_tx_req(&mut *conn, req, &proof_id_map).await?;
+            let upsert_result =
+                upsert_proven_tx_req(&mut *conn, req, &proof_id_map, transaction_id_map).await?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -1684,78 +1685,179 @@ async fn upsert_proven_tx(
     }
 }
 
+/// A request status in the reference's own words (`doubleSpend`,
+/// `inProgress`, `notFound`, ...): the entity's serde name.
+fn req_status_word(status: &ProvenTxReqStatus) -> Result<String> {
+    match serde_json::to_value(status)? {
+        serde_json::Value::String(word) => Ok(word),
+        other => Err(Error::SyncError(format!("request status {other}"))),
+    }
+}
+
+/// The reference's `addHistoryNote` over a request's `history` JSON: a note
+/// equal in every property to a held note is not added; notes are kept in
+/// `when what` order. A history that is not the `{ notes: [...] }` shape
+/// adds nothing and is left as stored.
+fn merge_history(local: &str, incoming: &str) -> String {
+    let Ok(mut held) = serde_json::from_str::<serde_json::Value>(local) else {
+        return local.to_string();
+    };
+    let Ok(theirs) = serde_json::from_str::<serde_json::Value>(incoming) else {
+        return local.to_string();
+    };
+    let Some(new_notes) = theirs.get("notes").and_then(|n| n.as_array()).cloned() else {
+        return local.to_string();
+    };
+    let Some(obj) = held.as_object_mut() else {
+        return local.to_string();
+    };
+    let notes = obj
+        .entry("notes")
+        .or_insert_with(|| serde_json::Value::Array(vec![]));
+    let Some(notes) = notes.as_array_mut() else {
+        return local.to_string();
+    };
+    let mut added = false;
+    for mut note in new_notes {
+        let Some(n) = note.as_object_mut() else {
+            continue;
+        };
+        n.entry("when")
+            .or_insert_with(|| serde_json::Value::String(Utc::now().to_rfc3339()));
+        let equal = notes.iter().any(|h| {
+            h.as_object()
+                .is_some_and(|h| h.iter().all(|(k, v)| n.get(k) == Some(v)))
+        });
+        if !equal {
+            notes.push(note);
+            added = true;
+        }
+    }
+    if !added {
+        return local.to_string();
+    }
+    let key = |n: &serde_json::Value| {
+        let s = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        format!("{} {}", s("when"), s("what"))
+    };
+    notes.sort_by_key(key);
+    held.to_string()
+}
+
+/// The `transactionIds` of a request's `notify` JSON, mapped through the
+/// transaction id map; an id the map does not hold is dropped.
+fn mapped_notify_ids(notify: &str, transaction_id_map: &HashMap<i64, i64>) -> Option<Vec<i64>> {
+    let v: serde_json::Value = serde_json::from_str(notify).ok()?;
+    let ids = v.get("transactionIds")?.as_array()?;
+    Some(
+        ids.iter()
+            .filter_map(|id| id.as_i64())
+            .filter_map(|id| transaction_id_map.get(&id).copied())
+            .collect(),
+    )
+}
+
+/// `notify` with `ids` added to its `transactionIds` (a sorted set). A
+/// `notify` that is not a JSON object is replaced by one holding `ids`.
+fn notify_with_ids(notify: &str, ids: &[i64], keep_held: bool) -> String {
+    let mut v: serde_json::Value =
+        serde_json::from_str(notify).unwrap_or_else(|_| serde_json::json!({}));
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    let mut set: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    if keep_held {
+        if let Some(held) = v.get("transactionIds").and_then(|t| t.as_array()) {
+            set.extend(held.iter().filter_map(|id| id.as_i64()));
+        }
+    }
+    set.extend(ids.iter().copied());
+    v["transactionIds"] = serde_json::json!(set.into_iter().collect::<Vec<_>>());
+    v.to_string()
+}
+
 async fn upsert_proven_tx_req(
     conn: &mut SqliteConnection,
     req: &TableProvenTxReq,
     proof_id_map: &HashMap<i64, i64>,
+    transaction_id_map: &HashMap<i64, i64>,
 ) -> Result<UpsertResult> {
-    // The source's proof id, mapped through the chunk's proof rows; a link
-    // the chunk does not map is not stored (the reference's mergeNew).
-    let proven_tx_id = req
-        .proven_tx_id
-        .and_then(|id| proof_id_map.get(&id).copied());
-    // Check if exists by txid
     let existing = sqlx::query(
         r#"
-        SELECT proven_tx_req_id, updated_at FROM proven_tx_reqs
-        WHERE txid = ?
+        SELECT proven_tx_req_id, history, notify, notified, batch, updated_at
+        FROM proven_tx_reqs WHERE txid = ?
         "#,
     )
     .bind(&req.txid)
     .fetch_optional(&mut *conn)
     .await?;
-
-    let status_str = format!("{:?}", req.status).to_lowercase();
+    let incoming_notify_ids = mapped_notify_ids(&req.notify, transaction_id_map);
 
     if let Some(row) = existing {
+        // The reference's EntityProvenTxReq.mergeExisting: the status, the
+        // attempts, the proof link, the bytes and the broadcast flag stay as
+        // this store holds them; the history and the notify ids are unioned;
+        // a batch is taken only where none is held, and two batches that
+        // differ refuse the chunk.
         let local_id: i64 = row.get("proven_tx_req_id");
         let local_updated: DateTime<Utc> = row.get("updated_at");
-
-        // Update if chunk is newer. Mirror the INSERT column set: canonical
-        // process_action can mutate notify / raw_tx / input_beef / batch
-        // post-creation (attempts append, post-broadcast metadata, multi-tx
-        // batch regroup), so the UPDATE must refresh those alongside
-        // status/attempts/history/notified/proven_tx_id or a newer-wins
-        // replacement on an existing local row silently keeps the older
-        // mutable state. raw_tx is BLOB NOT NULL — coalesce to empty if
-        // the chunk's req carries None (real reqs always carry it).
-        if req.updated_at > local_updated {
-            sqlx::query(
-                r#"
-                UPDATE proven_tx_reqs
-                SET status = ?, attempts = ?, history = ?, notified = ?,
-                    notify = ?, raw_tx = ?, input_beef = ?, proven_tx_id = ?,
-                    batch = ?, updated_at = ?
-                WHERE proven_tx_req_id = ?
-                "#,
-            )
-            .bind(&status_str)
-            .bind(req.attempts)
-            .bind(&req.history)
-            .bind(req.notified as i32)
-            .bind(&req.notify)
-            .bind(req.raw_tx.clone().unwrap_or_default())
-            .bind(&req.input_beef)
-            .bind(proven_tx_id)
-            .bind(&req.batch)
-            .bind(req.updated_at)
-            .bind(local_id)
-            .execute(&mut *conn)
-            .await?;
-        }
+        let local_history: String = row.get("history");
+        let local_notify: String = row.get("notify");
+        let mut notified: bool = row.get::<i64, _>("notified") != 0;
+        let local_batch: Option<String> = row.get("batch");
+        let batch = match (&local_batch, &req.batch) {
+            (None, Some(theirs)) => Some(theirs.clone()),
+            (Some(held), Some(theirs)) if held != theirs => {
+                return Err(Error::SyncError(format!(
+                    "sync chunk request {} batch {theirs} differs from the held batch {held}",
+                    req.txid
+                )));
+            }
+            _ => local_batch.clone(),
+        };
+        let history = merge_history(&local_history, &req.history);
+        let notify = match incoming_notify_ids {
+            Some(ids) if !ids.is_empty() => {
+                notified = false;
+                notify_with_ids(&local_notify, &ids, true)
+            }
+            _ => local_notify,
+        };
+        sqlx::query(
+            r#"
+            UPDATE proven_tx_reqs
+            SET history = ?, notify = ?, notified = ?, batch = ?, updated_at = ?
+            WHERE proven_tx_req_id = ?
+            "#,
+        )
+        .bind(&history)
+        .bind(&notify)
+        .bind(notified as i32)
+        .bind(&batch)
+        .bind(req.updated_at.max(local_updated))
+        .bind(local_id)
+        .execute(&mut *conn)
+        .await?;
 
         Ok(UpsertResult {
             local_id,
             is_new: false,
         })
     } else {
-        // Insert new. raw_tx is BLOB NOT NULL (no default) — it MUST be in the
-        // INSERT or applying a pulled chunk carrying a proven_tx_req fails the
-        // NOT NULL constraint (sqlite rc=19), aborting the sync. Also carry
-        // input_beef/notify/batch for re-broadcast fidelity (notify drives the
-        // monitor's notification state; batch groups multi-tx broadcasts in
-        // send_waiting). Coalesce a missing raw_tx to an empty blob (real reqs
-        // always carry it).
+        // Insert new, as the reference's mergeNew: the proof link mapped
+        // through the chunk's proof rows (a link the chunk does not map is
+        // not stored), the notify ids through the transaction map, the
+        // status in the reference's own words. raw_tx is BLOB NOT NULL:
+        // a missing raw_tx is stored empty (real reqs always carry it).
+        let proven_tx_id = req
+            .proven_tx_id
+            .and_then(|id| proof_id_map.get(&id).copied());
+        let (notify, notified) = match incoming_notify_ids {
+            Some(ids) if !ids.is_empty() => (notify_with_ids(&req.notify, &ids, false), false),
+            Some(ids) => (notify_with_ids(&req.notify, &ids, false), req.notified),
+            None => (req.notify.clone(), req.notified),
+        };
+        let status = req_status_word(&req.status)?;
         let result = sqlx::query(
             r#"
             INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, input_beef, proven_tx_id, batch, created_at, updated_at)
@@ -1763,11 +1865,11 @@ async fn upsert_proven_tx_req(
             "#,
         )
         .bind(&req.txid)
-        .bind(&status_str)
+        .bind(&status)
         .bind(req.attempts)
         .bind(&req.history)
-        .bind(req.notified as i32)
-        .bind(&req.notify)
+        .bind(notified as i32)
+        .bind(&notify)
         .bind(req.raw_tx.clone().unwrap_or_default())
         .bind(&req.input_beef)
         .bind(proven_tx_id)
