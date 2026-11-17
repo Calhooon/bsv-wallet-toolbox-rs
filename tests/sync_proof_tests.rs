@@ -279,3 +279,37 @@ async fn a_replacement_without_block_hash_stores_the_headers_hash() {
     assert_eq!(verdict(&r), "ok");
     assert_eq!(held, (200, header.hash.clone()));
 }
+
+/// A proof row of a txid the store did not hold when the chunk's proofs
+/// were decided, which another writer stores before the chunk's write
+/// transaction with other fields, refuses the chunk; that row stays.
+#[tokio::test]
+async fn a_proof_row_that_appears_meanwhile_refuses_the_chunk() {
+    let s = store(DST).await;
+    s.find_or_insert_user(ALICE).await.unwrap();
+    let (incoming, _) = mined_at(200);
+    let txid = incoming.txid.clone();
+    let mut held = s.writer().acquire().await.unwrap();
+    let s2 = s.clone();
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_txs = Some(vec![incoming]);
+    let task = tokio::spawn(async move { s2.process_sync_chunk(args_for(ALICE), chunk).await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ::sqlx::query("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES (?,7,0,'','',X'00',X'00',datetime('now'),datetime('now'))")
+        .bind(&txid)
+        .execute(&mut *held)
+        .await
+        .unwrap();
+    drop(held);
+    let r = task.await.unwrap();
+    let after = held_height(&s).await.0;
+    println!(
+        "WITNESS 8a proof row appearing meanwhile: {}; held height {after}",
+        verdict(&r)
+    );
+    assert_eq!(
+        verdict(&r),
+        format!("Sync error: sync chunk proof {txid} is refused: a concurrent proof row appeared; retry synchronization")
+    );
+    assert_eq!(after, 7);
+}
