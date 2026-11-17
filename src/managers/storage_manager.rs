@@ -210,6 +210,10 @@ async fn drain_sync_chunks(
 ) -> Result<(u32, u32)> {
     let reader_settings = reader.make_available().await?;
     let writer_settings = writer.make_available().await?;
+    // A chunk never creates its user on the writer: the manager makes the
+    // writer's user before any chunk, as the reference's
+    // loadSyncRequest does with findOrInsertUser.
+    writer.find_or_insert_user(identity_key).await?;
 
     let mut offsets: Vec<SyncOffset> = ENTITY_NAMES
         .iter()
