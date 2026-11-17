@@ -193,10 +193,20 @@ fn entity_row_count(chunk: &SyncChunk, entity: &str) -> u32 {
     .unwrap_or(0)
 }
 
+/// Which `active_storage` a drained chunk's user row carries to the writer.
+enum UserActiveStorage {
+    /// The reader's: a push from the active store (backups, set_active).
+    FromReader,
+    /// The writer's own: merging state from a reader cannot change which
+    /// store the wallet treats as active (the reference's syncFromReader).
+    Keep(Option<String>),
+}
+
 async fn drain_sync_chunks(
     reader: Arc<dyn MonitorStorage>,
     writer: Arc<dyn MonitorStorage>,
     identity_key: &str,
+    user_active: UserActiveStorage,
 ) -> Result<(u32, u32)> {
     let reader_settings = reader.make_available().await?;
     let writer_settings = writer.make_available().await?;
@@ -224,7 +234,10 @@ async fn drain_sync_chunks(
             offsets: offsets.clone(),
         };
 
-        let chunk = reader.get_sync_chunk(args.clone()).await?;
+        let mut chunk = reader.get_sync_chunk(args.clone()).await?;
+        if let (UserActiveStorage::Keep(local), Some(user)) = (&user_active, chunk.user.as_mut()) {
+            user.active_storage = local.clone();
+        }
 
         for off in offsets.iter_mut() {
             off.offset += entity_row_count(&chunk, &off.name);
@@ -724,6 +737,13 @@ impl WalletStorageManager {
             .collect()
     }
 
+    /// The active store's user row's `active_storage`, as this manager holds it.
+    async fn active_user_active_storage(&self) -> Option<String> {
+        let idx = (*self.active_index.read().await)?;
+        let stores = self.stores.read().await;
+        stores.get(idx)?.user.as_ref()?.active_storage.clone()
+    }
+
     /// Synchronizes from a reader storage to the active storage.
     pub async fn sync_from_reader(
         &self,
@@ -737,6 +757,7 @@ impl WalletStorageManager {
 
         let reader_settings = reader.make_available().await?;
         let mut log = String::new();
+        let local_active = self.active_user_active_storage().await;
 
         self.run_as_sync(|active| async move {
             let writer_settings = active.get_settings();
@@ -745,8 +766,13 @@ impl WalletStorageManager {
                 reader_settings.storage_name, writer_settings.storage_name
             ));
 
-            let (inserts, updates) =
-                drain_sync_chunks(reader.clone(), active, identity_key).await?;
+            let (inserts, updates) = drain_sync_chunks(
+                reader.clone(),
+                active,
+                identity_key,
+                UserActiveStorage::Keep(local_active),
+            )
+            .await?;
 
             log.push_str(&format!(
                 "syncFromReader complete: {} inserts, {} updates\n",
@@ -803,8 +829,13 @@ impl WalletStorageManager {
                 reader_settings.storage_name, writer_settings.storage_name
             ));
 
-            let (inserts, updates) =
-                drain_sync_chunks(active, writer.clone(), identity_key).await?;
+            let (inserts, updates) = drain_sync_chunks(
+                active,
+                writer.clone(),
+                identity_key,
+                UserActiveStorage::FromReader,
+            )
+            .await?;
 
             log.push_str(&format!(
                 "syncToWriter complete: {} inserts, {} updates\n",

@@ -506,7 +506,8 @@ async fn apply_chunk(
         result.done = true;
         // Merge user if provided
         if let Some(ref chunk_user) = chunk.user {
-            let merge_result = merge_user(&mut *conn, user_id, chunk_user).await?;
+            let merge_result =
+                merge_user(&mut *conn, user_id, &args.identity_key, chunk_user).await?;
             if merge_result.updated {
                 result.updates += 1;
             }
@@ -517,7 +518,7 @@ async fn apply_chunk(
 
     // Process user if included
     if let Some(ref chunk_user) = chunk.user {
-        let merge_result = merge_user(&mut *conn, user_id, chunk_user).await?;
+        let merge_result = merge_user(&mut *conn, user_id, &args.identity_key, chunk_user).await?;
         if merge_result.updated {
             result.updates += 1;
         }
@@ -1477,8 +1478,26 @@ struct MergeResult {
 async fn merge_user(
     conn: &mut SqliteConnection,
     user_id: i64,
+    identity_key: &str,
     chunk_user: &TableUser,
 ) -> Result<MergeResult> {
+    // The user row is merged for the user the chunk is for. A row naming
+    // another user this store holds is refused, as the reference's
+    // EntityUser.mergeFind refuses it; a row naming a user this store does
+    // not hold is not merged.
+    if chunk_user.identity_key != identity_key {
+        let other: Option<i64> =
+            sqlx::query_scalar("SELECT user_id FROM users WHERE identity_key = ?")
+                .bind(&chunk_user.identity_key)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if other.is_some() {
+            return Err(Error::SyncError(
+                "sync chunk user row names another user of this store".to_string(),
+            ));
+        }
+        return Ok(MergeResult { updated: false });
+    }
     // Get current user
     let current: DateTime<Utc> =
         sqlx::query_scalar("SELECT updated_at FROM users WHERE user_id = ?")
