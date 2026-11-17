@@ -45,6 +45,11 @@ pub(crate) const NO_OUTPUTS_REFUSAL: &str =
 pub(crate) const REPEATED_OUTPUT_INDEX_REFUSAL: &str =
     "The outputs parameter must be unique outputIndex values";
 
+/// The refusal of a wallet payment whose derivation prefix or suffix is
+/// empty: the wallet door's text, at the storage door.
+pub(crate) const EMPTY_DERIVATION_REFUSAL: &str =
+    "Wallet payment outputs require non-empty derivation_prefix and derivation_suffix";
+
 /// The refusal of an AtomicBEEF when neither the storage nor its services
 /// has a chain tracker to verify its merkle roots.
 pub(crate) const NO_CHAIN_TRACKER_REFUSAL: &str =
@@ -94,9 +99,20 @@ pub async fn internalize_action_internal(
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
     // Step 0: The arguments the reference's validator refuses before
-    // anything else: no output at all.
+    // anything else: no output at all, and a wallet payment with an empty
+    // derivation prefix or suffix (a change row nothing could sign).
     if args.outputs.is_empty() {
         return Err(Error::ValidationError(NO_OUTPUTS_REFUSAL.to_string()));
+    }
+    for output in &args.outputs {
+        if output.protocol != WALLET_PAYMENT_PROTOCOL {
+            continue;
+        }
+        if let Some(ref payment) = output.payment_remittance {
+            if payment.derivation_prefix.is_empty() || payment.derivation_suffix.is_empty() {
+                return Err(Error::ValidationError(EMPTY_DERIVATION_REFUSAL.to_string()));
+            }
+        }
     }
 
     // Step 1: Read the AtomicBEEF through the streaming reader first: a
