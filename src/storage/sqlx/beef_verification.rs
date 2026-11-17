@@ -3,39 +3,15 @@
 //! This module provides functions for verifying BEEF (Background Evaluation
 //! Extended Format) merkle proofs against a ChainTracker.
 
-use bsv_rs::transaction::{Beef, BeefStream, ChainTracker};
+use bsv_rs::transaction::{Beef, ChainTracker};
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
 use crate::storage::traits::BeefVerificationMode;
 
-/// Reads a stranger's BEEF through bsv-rs's streaming reader, one element at
-/// a time, and refuses it only for invalid bytes: [`Error::InvalidBeef`] with
-/// the offset of the byte and the kind (a bad varint, a cut field, a tree
-/// height over 64, a transaction with no input, trailing bytes, and the rest
-/// of the reader's twenty-four). Nothing is refused for its size or its counts.
-///
-/// The frame and each element are checked; the graph (an input naming an
-/// earlier transaction) and the roots against the headers are not: those
-/// stay with the caller's own verification.
-pub fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
-    let mut stream = BeefStream::new(bytes);
-    loop {
-        match stream.next_element() {
-            Ok(Some(_)) => {}
-            Ok(None) => return Ok(()),
-            Err(bsv_rs::transaction::beef_stream::StreamError::Refused(r)) => {
-                return Err(Error::InvalidBeef {
-                    offset: r.offset,
-                    kind: r.kind(),
-                })
-            }
-            Err(bsv_rs::transaction::beef_stream::StreamError::Io(e)) => {
-                return Err(Error::IoError(e))
-            }
-        }
-    }
-}
+/// The streaming reader's refusal of invalid bytes, the received-BEEF
+/// check's step 1 (`crate::storage::received_beef`, kept at this path).
+pub use crate::storage::received_beef::refuse_invalid_beef_bytes;
 
 /// Verifies BEEF merkle proofs against a ChainTracker.
 ///
@@ -96,29 +72,9 @@ pub async fn verify_beef_merkle_proofs(
         return Ok(false);
     }
 
-    // Verify each merkle root against the chain
-    for (height, root) in &roots {
-        // In TrustKnown mode, we could skip verification for known txids
-        // However, the roots don't directly map to txids, so we verify all roots
-        // The TrustKnown mode is more useful at the transaction level
-
-        let is_valid = chain_tracker
-            .is_valid_root_for_height(root, *height)
-            .await
-            .map_err(|e| {
-                Error::ValidationError(format!(
-                    "ChainTracker verification failed at height {}: {}",
-                    height, e
-                ))
-            })?;
-
-        if !is_valid {
-            return Err(Error::ValidationError(format!(
-                "Invalid merkle root {} at height {}",
-                root, height
-            )));
-        }
-    }
+    // Verify each merkle root against the chain (every mode but `Disabled`
+    // checks every root: the roots do not map to txids).
+    crate::storage::received_beef::check_roots(&roots, chain_tracker).await?;
 
     Ok(true)
 }

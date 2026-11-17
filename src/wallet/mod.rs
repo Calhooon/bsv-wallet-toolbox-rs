@@ -91,7 +91,6 @@
 
 mod certificate_issuance;
 pub mod lookup;
-pub(crate) mod received_beef;
 mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;

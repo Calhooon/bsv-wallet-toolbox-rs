@@ -2293,23 +2293,6 @@ where
             }
         }
 
-        // The received BEEF's merkle roots are checked once, by something
-        // this process holds. A storage that says its own door checks in
-        // this process (`checks_received_beef_in_process`: a local store,
-        // a manager whose active store is one) checks them there with its
-        // tracker, else its services'; for any other storage (a storage
-        // client, a manager over one, a host's own type by default) the
-        // wallet checks them here with its own services' chain tracker
-        // before storage is called (the reference's wallet
-        // `validateAtomicBeef`). With no tracker on the services the
-        // request is refused here, with the storage door's sentence.
-        if !self.storage.checks_received_beef_in_process().await {
-            let tracker = self.services.get_chain_tracker().await.map_err(|_| {
-                Error::ValidationError(super::received_beef::NO_CHAIN_TRACKER_REFUSAL.to_string())
-            })?;
-            super::received_beef::verify_received_beef_roots(&args.tx, tracker).await?;
-        }
-
         // Serialize spending operations (creates new spendable outputs).
         let _spend_guard = self.spend_lock.lock().await;
 
@@ -2420,6 +2403,36 @@ where
                     }
                 }
             }
+        }
+
+        // The received BEEF's merkle roots are checked once, by something
+        // this process holds. A storage that says its own door checks in
+        // this process (`checks_received_beef_in_process`: a local store,
+        // a manager whose active store is one) checks them there with its
+        // tracker, else its services'; for any other storage (a storage
+        // client, a manager over one, a host's own type by default) the
+        // wallet checks them here with its own services' chain tracker
+        // before storage is called (the reference's wallet
+        // `validateAtomicBeef`). With no tracker on the services the
+        // request is refused here, with the storage door's sentence. It
+        // runs where a local store's door would: after the wallet's own
+        // checks of the request, just before storage is called.
+        if !self.storage.checks_received_beef_in_process().await {
+            // The received-BEEF check, the storage door's steps in its
+            // order: the bytes, the subject and the structure; then the
+            // tracker; then every transaction whole and every root.
+            use crate::storage::received_beef::{
+                check_roots, read_received_beef, NO_CHAIN_TRACKER_REFUSAL,
+            };
+            let received = read_received_beef(&args.tx)?;
+            let tracker = self
+                .services
+                .get_chain_tracker()
+                .await
+                .map_err(|_| Error::ValidationError(NO_CHAIN_TRACKER_REFUSAL.to_string()))?;
+            let roots = received.whole_roots()?;
+            drop(received);
+            check_roots(&roots, tracker).await?;
         }
 
         let auth = self.auth();

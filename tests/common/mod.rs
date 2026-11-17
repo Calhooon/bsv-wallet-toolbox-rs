@@ -9,6 +9,8 @@
 
 #![allow(dead_code)]
 
+pub mod forwarding;
+
 use bsv_rs::primitives::bsv::{parse_transaction, TxInput, TxOutput};
 use bsv_rs::primitives::{hash160, PrivateKey, PublicKey};
 use bsv_rs::script::{LockingScript, Spend, SpendParams, UnlockingScript};
@@ -158,6 +160,13 @@ pub fn sweep_beef(lock: LockingScript) -> (Vec<u8>, String) {
 /// An AtomicBEEF of a child with one output locked by `lock`, spending a
 /// parent the BEEF carries whole with its BUMP.
 pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
+    beef_paying_with(lock, true)
+}
+
+/// An AtomicBEEF of one output locked by `lock`, spending a parent the BEEF
+/// proves with a BUMP at height 100_003, and its txid: the parent carried
+/// whole when `whole`, else by its txid alone beside its BUMP.
+pub fn beef_paying_with(lock: LockingScript, whole: bool) -> (Vec<u8>, String) {
     let mut parent = Transaction::new();
     let mut parent_input = TransactionInput::new("22".repeat(32), 0);
     parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
@@ -181,7 +190,11 @@ pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
     let txid = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_003));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    if whole {
+        beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    } else {
+        beef.merge_txid_only(parent_txid);
+    }
     beef.merge_raw_tx(child.to_binary(), None);
     (beef.to_binary_atomic(&txid).unwrap(), txid)
 }
