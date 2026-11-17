@@ -147,9 +147,15 @@ pub fn child(parent_txid: &str, spent: u32, lock: LockingScript) -> Transaction 
 /// An AtomicBEEF of a proven parent of `SWEPT` outputs and a child sweeping
 /// every one of them into one output locked by `lock`.
 pub fn sweep_beef(lock: LockingScript) -> (Vec<u8>, String) {
-    let parent = proven_parent(SWEPT);
+    sweep_beef_of(SWEPT, lock)
+}
+
+/// An AtomicBEEF of a proven parent of `outputs` outputs and a child
+/// sweeping every one of them into one output locked by `lock`.
+pub fn sweep_beef_of(outputs: u32, lock: LockingScript) -> (Vec<u8>, String) {
+    let parent = proven_parent(outputs);
     let parent_txid = parent.id();
-    let child = child(&parent_txid, SWEPT, lock);
+    let child = child(&parent_txid, outputs, lock);
     let txid = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
