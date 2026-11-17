@@ -11,6 +11,8 @@ This module provides the storage layer for the wallet toolbox, defining traits f
 |------|---------|
 | `mod.rs` | Module root; exports traits and conditionally compiles storage backends |
 | `traits.rs` | Core trait definitions, associated types, and `TrxToken` (921 lines) |
+| `received_beef.rs` | The one check of a received AtomicBEEF both `internalizeAction` doors call (the wallet's when its storage is not local, `checks_received_beef_in_process`; else the local store's): 1 the bytes, 2 the parse and the subject, 3 the structure, 4 the caller's tracker, 5 every transaction whole, 6 every root, 7 every input of the subject run against the output it spends (`received_beef/input_scripts.rs`) |
+| `received_beef/input_scripts.rs` | Step 7: a subject the BEEF proves is not run; any other input runs under the node's mempool word (`ScriptFlags::standard` of the spend's era, the block after the tracker's mining tip or with none the latest activation, with the UTXO bits of the coin's era, its parent's BUMP height or an unproven parent's the spend's), each input under 2^31 units of work and 100,000,000 bytes of stack, the inputs together under 2^31 units; a spend or coin below the network's Genesis height is not judged; every refusal `spend refused at offset <n>, input <i> of <txid>: <why>` (a `ValidationError`), before the writer is taken. The rule is the 0.14 line's (#422) |
 
 ## Submodules
 
