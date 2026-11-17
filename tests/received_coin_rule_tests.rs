@@ -21,8 +21,9 @@
 //!   the source's columns when the source row is newer; a newer chunk that
 //!   carries no purpose leaves both columns as stored, and a row inserted
 //!   from one is stored with purpose `''` and selected as change;
-//! - an input the caller names by outpoint is the caller's word and answers
-//!   as before.
+//! - a received coin the caller names by outpoint is refused as change
+//!   (`cannot spend change output <txid>:0 directly`), with the label or
+//!   without, as before.
 //!
 //! Real SQLite storage, a mock broadcaster; nothing touches the network.
 
@@ -32,9 +33,8 @@ mod common;
 
 use std::collections::HashMap;
 
-use bsv_rs::primitives::bsv::{parse_transaction, TxInput, TxOutput};
 use bsv_rs::primitives::{PrivateKey, PublicKey};
-use bsv_rs::script::{LockingScript, Spend, SpendParams, UnlockingScript};
+use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{
     Beef, MerklePath, MockChainTracker, Transaction, TransactionInput, TransactionOutput,
 };
@@ -48,7 +48,7 @@ use bsv_wallet_toolbox_rs::storage::{
 };
 use bsv_wallet_toolbox_rs::{StorageSqlx, Wallet, WalletStorageProvider, WalletStorageWriter};
 
-use common::{derived_key, other_lock, p2pkh_bytes, paying_derived, payment};
+use common::{derived_key, other_lock, p2pkh_bytes, paying_derived, payment, spends};
 
 type TestWallet = Wallet<StorageSqlx, MockWalletServices>;
 
@@ -199,56 +199,6 @@ async fn spend(wallet: &TestWallet, args: CreateActionArgs) -> Result<Vec<u8>, S
     Ok(beef.find_txid(&txid).unwrap().raw_tx().unwrap().to_vec())
 }
 
-/// Whether `raw` spends `txid`.`vout` with an unlocking script that runs
-/// clean against `lock` holding `satoshis`; `None` when it does not spend it.
-fn spends(raw: &[u8], txid: &str, vout: u32, satoshis: u64, lock: &[u8]) -> Option<bool> {
-    let parsed = parse_transaction(raw).expect("a transaction");
-    let mut outpoint: [u8; 32] = hex::decode(txid).unwrap().try_into().unwrap();
-    outpoint.reverse();
-    let index = parsed
-        .inputs
-        .iter()
-        .position(|i| i.txid == outpoint && i.output_index == vout)?;
-    let ours = &parsed.inputs[index];
-    let other_inputs: Vec<TxInput> = parsed
-        .inputs
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != index)
-        .map(|(_, i)| i.clone())
-        .collect();
-    let outputs: Vec<TxOutput> = parsed.outputs.clone();
-    let mut spend = Spend::new(SpendParams {
-        source_txid: ours.txid,
-        source_output_index: vout,
-        source_satoshis: satoshis,
-        locking_script: LockingScript::from_binary(lock).unwrap(),
-        transaction_version: parsed.version,
-        other_inputs,
-        outputs,
-        input_index: index,
-        unlocking_script: UnlockingScript::from_binary(&ours.script).unwrap(),
-        input_sequence: ours.sequence,
-        lock_time: parsed.locktime,
-        memory_limit: None,
-        work_limit: None,
-    });
-    Some(matches!(spend.validate(), Ok(true)))
-}
-
-/// The coin's transaction status, purpose, spendable flag and spender.
-async fn coin(wallet: &TestWallet, txid: &str) -> (String, String, bool, Option<i64>) {
-    sqlx::query_as(
-        "SELECT t.status, o.purpose, o.spendable, o.spent_by FROM outputs o \
-         JOIN transactions t ON t.transaction_id = o.transaction_id \
-         WHERE o.txid = ? AND o.vout = 0",
-    )
-    .bind(txid)
-    .fetch_one(wallet.storage().writer())
-    .await
-    .unwrap()
-}
-
 /// The number of actions the wallet created.
 async fn actions(wallet: &TestWallet) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE is_outgoing = 1")
@@ -288,7 +238,7 @@ async fn an_unproven_received_coin_is_not_taken_without_the_label() {
         let root = PrivateKey::random();
         let (tx, txid, _, sender) = received(&root, false, 1);
         let wallet = funded(&root, tx, &txid, &sender).await;
-        let before = coin(&wallet, &txid).await;
+        let before = coin_at(&wallet, &txid, 0).await;
         assert_eq!(before, ("unproven".into(), "receive".into(), true, None));
         let answer = spend(&wallet, action(1_000, &[], deferred)).await;
         let err = wallet
@@ -297,13 +247,17 @@ async fn an_unproven_received_coin_is_not_taken_without_the_label() {
             .unwrap_err();
         println!(
             "unproven received, no label, deferred={deferred}: {answer:?}; class {err:?}; coin {:?}; actions {}",
-            coin(&wallet, &txid).await,
+            coin_at(&wallet, &txid, 0).await,
             actions(&wallet).await
         );
         assert_eq!(answer.map(|_| ()), Err(HELD.to_string()));
         assert!(matches!(err, bsv_rs::Error::WalletError(ref m)
             if m == "Insufficient funds: need 1005, have 0"));
-        assert_eq!(coin(&wallet, &txid).await, before, "the coin is untouched");
+        assert_eq!(
+            coin_at(&wallet, &txid, 0).await,
+            before,
+            "the coin is untouched"
+        );
         assert_eq!(actions(&wallet).await, 0, "nothing is recorded");
         assert_eq!(wallet.balance().await.unwrap().total, 9_500);
     }
@@ -371,7 +325,7 @@ async fn a_completed_received_coin_is_taken_without_the_label() {
         let root = PrivateKey::random();
         let (tx, txid, lock, sender) = received(&root, true, 3);
         let wallet = funded(&root, tx, &txid, &sender).await;
-        let row = coin(&wallet, &txid).await;
+        let row = coin_at(&wallet, &txid, 0).await;
         println!("received, the row: {row:?}");
         assert_eq!(row, ("completed".into(), "receive".into(), true, None));
         let signed = spend(&wallet, action(1_000, &[], deferred)).await;
@@ -421,7 +375,7 @@ async fn with_both_held_the_own_change_is_taken_and_the_received_coin_passed_ove
         .internalize_action(internalize_args(pending, &pending_sender), "test.local")
         .await
         .expect("the pending payment");
-    let held = coin(&wallet, &pending_txid).await;
+    let held = coin_at(&wallet, &pending_txid, 0).await;
     assert_eq!(held, ("unproven".into(), "receive".into(), true, None));
     println!("own change {change}, received 9500 pending");
 
@@ -432,7 +386,7 @@ async fn with_both_held_the_own_change_is_taken_and_the_received_coin_passed_ove
         Some(true)
     );
     assert_eq!(spends(&signed, &pending_txid, 0, 9_500, &lock), None);
-    assert_eq!(coin(&wallet, &pending_txid).await, held);
+    assert_eq!(coin_at(&wallet, &pending_txid, 0).await, held);
 
     // Past what the change holds: the refusal without the label, the
     // received coin untouched.
@@ -449,7 +403,7 @@ async fn with_both_held_the_own_change_is_taken_and_the_received_coin_passed_ove
         ))
     );
     assert_eq!(actions(&wallet).await, made, "nothing is recorded");
-    assert_eq!(coin(&wallet, &pending_txid).await, held);
+    assert_eq!(coin_at(&wallet, &pending_txid, 0).await, held);
 }
 
 #[tokio::test]
@@ -508,7 +462,8 @@ async fn own_change_restored_by_internalizing_it_again_is_a_received_coin() {
     );
 }
 
-/// `coin` for output `vout`.
+/// The transaction status, purpose, spendable flag and spender of output
+/// `txid`.`vout`.
 async fn coin_at(
     wallet: &TestWallet,
     txid: &str,
@@ -608,7 +563,7 @@ async fn a_received_coin_that_came_by_sync_is_a_received_coin_there() {
     let source = funded(&root, tx, &txid, &sender).await;
     let target = common::wallet("received-coin-rule-tests", &root, &txid).await;
     sync_into(&source, &target, &root).await;
-    let row = coin(&target, &txid).await;
+    let row = coin_at(&target, &txid, 0).await;
     println!(
         "synced received coin: {row:?}; source {:?}; target {:?}",
         origin(&source, &txid, 0).await,
@@ -688,12 +643,12 @@ async fn a_row_an_earlier_sync_stored_as_change_is_left_so_by_a_second_sync() {
         origin(&target, &txid, 0).await
     );
     let again = sync_into(&source, &target, &root).await;
-    let row = coin(&target, &txid).await;
+    let row = coin_at(&target, &txid, 0).await;
     println!("a second sync (inserts, updates) {again:?}: {row:?}");
     assert_eq!(row, ("unproven".into(), "change".into(), true, None));
     let fresh = common::wallet("received-coin-rule-tests", &root, &txid).await;
     sync_into(&source, &fresh, &root).await;
-    let row = coin(&fresh, &txid).await;
+    let row = coin_at(&fresh, &txid, 0).await;
     println!("a store synced afresh: {row:?}");
     assert_eq!(row, ("unproven".into(), "receive".into(), true, None));
 }
@@ -736,7 +691,7 @@ async fn a_newer_received_coin_synced_over_a_change_row_is_a_received_coin_there
         origin(&source, &txid, 0).await
     );
     assert_eq!(
-        coin(&target, &txid).await,
+        coin_at(&target, &txid, 0).await,
         ("unproven".into(), "receive".into(), true, None)
     );
     let answer = spend(&target, action(1_000, &[], false)).await.map(|_| ());
@@ -772,7 +727,7 @@ async fn a_newer_row_whose_chunk_carries_no_purpose_keeps_the_stored_purpose() {
     println!("a newer row, no purpose (inserts, updates) {again:?}: {row:?}");
     assert_eq!((row.0.as_str(), row.1.as_str()), ("storage", "receive"));
     assert_eq!(
-        coin(&target, &txid).await,
+        coin_at(&target, &txid, 0).await,
         ("unproven".into(), "receive".into(), true, None)
     );
     let answer = spend(&target, action(1_000, &[], false)).await.map(|_| ());
@@ -798,7 +753,7 @@ async fn a_row_inserted_from_a_chunk_without_purpose_is_selected_as_change() {
 }
 
 #[tokio::test]
-async fn an_input_the_caller_names_answers_as_before() {
+async fn a_received_coin_named_by_outpoint_is_refused_as_change() {
     // A received wallet payment is wallet-managed change: the caller cannot
     // name it, with the label or without, whatever its transaction's status.
     for proven in [false, true] {

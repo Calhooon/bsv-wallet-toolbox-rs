@@ -463,6 +463,7 @@ pub async fn create_action_at_door_internal(
         change_basket: &change_basket,
         then: door_with.sign_and_process.as_ref(),
         offer: door_with.offer,
+        allow_received: names_received_rule(&args),
     };
 
     // This call's pre-check picks, reserved until it returns (review 2 F1):
@@ -520,6 +521,9 @@ struct Door<'a> {
     then: Option<&'a SignAndProcess<'a>>,
     /// The host's offered change coins: nothing outside them is picked.
     offer: Option<&'a [i64]>,
+    /// The action names the received rule (`names_received_rule`), read
+    /// once from its labels.
+    allow_received: bool,
 }
 
 /// What the write-locked step did.
@@ -553,11 +557,6 @@ impl std::fmt::Display for Again {
 }
 
 impl Door<'_> {
-    /// The received-coin rule (R1 (d)), read from the action's labels.
-    fn allows_received(&self) -> bool {
-        names_received_rule(self.args)
-    }
-
     fn options(&self) -> Option<&bsv_rs::wallet::CreateActionOptions> {
         self.args.options.as_ref()
     }
@@ -609,7 +608,7 @@ impl Door<'_> {
             self.user_id,
             self.change_basket.basket_id,
             !self.is_delayed(),
-            self.allows_received(),
+            self.allow_received,
         )
         .await?;
         let caller = chain_tracker.map(|inner| RecordingTracker {
@@ -646,7 +645,7 @@ impl Door<'_> {
                     reserved: &mut *reserved,
                     skip: &skip,
                     offer: self.offer,
-                    allow_received: self.allows_received(),
+                    allow_received: self.allow_received,
                 },
             )
             .await;
@@ -673,7 +672,7 @@ impl Door<'_> {
                         reserved: &mut own_only,
                         skip: &skip,
                         offer: self.offer,
-                        allow_received: self.allows_received(),
+                        allow_received: self.allow_received,
                     },
                 )
                 .await
@@ -780,7 +779,7 @@ impl Door<'_> {
             user_id,
             change_basket.basket_id,
             !is_delayed,
-            self.allows_received(),
+            self.allow_received,
         )
         .await?;
 
@@ -810,7 +809,7 @@ impl Door<'_> {
             is_delayed,
             &mut ChangePick::Within {
                 allowed: &allowed,
-                allow_received: self.allows_received(),
+                allow_received: self.allow_received,
             },
         )
         .await
@@ -1601,17 +1600,6 @@ async fn validate_and_extend_inputs(
     }
 
     Ok(extended)
-}
-
-/// Counts available change inputs with the received rule off.
-#[cfg(test)]
-async fn count_change_inputs(
-    conn: &mut SqliteConnection,
-    user_id: i64,
-    basket_id: i64,
-    require_spendable: bool,
-) -> Result<usize> {
-    count_change_inputs_under_rule(conn, user_id, basket_id, require_spendable, false).await
 }
 
 /// Counts the change inputs in the default basket eligible under this
@@ -2569,42 +2557,17 @@ pub(super) const RECEIVED_COIN_CLAUSE: &str =
     "AND (t.status = 'completed' OR COALESCE(o.purpose, '') <> 'receive' OR ?)";
 
 /// The label an action names to take received coins whose transaction is
-/// not yet `completed`, as `normalize_label` leaves it.
+/// not yet `completed`, trimmed and lowercased.
 const RECEIVED_RULE_LABEL: &str = "underreceivedrule";
 
-/// ECMAScript's `WhiteSpace` and `LineTerminator`, the set the SDK's
-/// `validateLabel` trims.
-fn is_ecmascript_whitespace(c: char) -> bool {
-    matches!(
-        c,
-        '\u{0009}'
-            | '\u{000B}'
-            | '\u{000C}'
-            | '\u{FEFF}'
-            | '\u{000A}'
-            | '\u{000D}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{0020}'
-            | '\u{00A0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
-    )
-}
-
-/// A label as the SDK's `validateLabel` leaves it: ECMAScript's trim, then
-/// lowercase. The store keeps a label as the caller gave it; the received
-/// rule reads every label in this form.
-fn normalize_label(label: &str) -> String {
-    label.trim_matches(is_ecmascript_whitespace).to_lowercase()
-}
-
-/// Whether the action's labels name the received rule.
+/// Whether the action's labels name the received rule: a label read as the
+/// SDK's `validateLabel` leaves it (JavaScript's `trim`, then lowercase) is
+/// `underreceivedrule`. The store keeps a label as the caller gave it.
 fn names_received_rule(args: &bsv_rs::wallet::CreateActionArgs) -> bool {
     args.labels
         .iter()
         .flatten()
-        .any(|label| normalize_label(label) == RECEIVED_RULE_LABEL)
+        .any(|label| crate::insertion_basket::js_trim(label).to_lowercase() == RECEIVED_RULE_LABEL)
 }
 
 /// The change coins `createAction` pre-checks in this process have picked
@@ -7128,9 +7091,10 @@ mod tests {
         let mut conn = storage.pool().acquire().await.unwrap();
 
         // count_change_inputs should see 0 available outputs
-        let count = count_change_inputs(&mut conn, user.user_id, basket.basket_id, true)
-            .await
-            .unwrap();
+        let count =
+            count_change_inputs_under_rule(&mut conn, user.user_id, basket.basket_id, true, false)
+                .await
+                .unwrap();
         assert_eq!(count, 0, "nosend outputs must not be counted as available");
 
         // allocate_change_input should return None
@@ -7191,9 +7155,10 @@ mod tests {
         let mut conn = storage.writer().acquire().await.unwrap();
 
         // count_change_inputs should see 1 available output
-        let count = count_change_inputs(&mut conn, user.user_id, basket.basket_id, true)
-            .await
-            .unwrap();
+        let count =
+            count_change_inputs_under_rule(&mut conn, user.user_id, basket.basket_id, true, false)
+                .await
+                .unwrap();
         assert_eq!(count, 1, "completed outputs must be counted as available");
 
         // allocate_change_input should return Some
