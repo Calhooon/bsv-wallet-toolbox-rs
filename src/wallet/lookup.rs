@@ -108,6 +108,12 @@ impl OverlayCertificate {
 /// untrusted, and the door reads the identity token from the transaction
 /// the BEEF carries and drops an output that fails.
 /// The HTTP implementation returns empty results on network failures.
+///
+/// Each output's `txid` member ([`OutputListItem::txid`], bsv-rs #735) is a
+/// hint: the overlay host's word as it sent it, unchecked by this crate. No
+/// output is attributed by it; the door names an output by the txid of the
+/// BEEF's own subject (the Atomic subject, or else the last transaction). A
+/// host that reads the hint compares it with that subject's txid.
 #[async_trait]
 pub trait OverlayLookupResolver: Send + Sync {
     /// Look up the identity outputs whose subject matches `identity_key`.
@@ -151,6 +157,8 @@ const OVERLAY_TIMEOUT_SECS: u64 = 10;
 /// 2. Query those hosts for the actual identity/attribute lookup
 ///
 /// The answer is the overlay's outputs, each with its BEEF, for the door.
+/// An output's `txid` hint is the overlay host's, carried as sent and
+/// unchecked here (see [`OverlayLookupResolver`]).
 pub struct HttpLookupResolver {
     /// SLAP tracker URLs used to discover competent hosts.
     slap_trackers: Vec<String>,
