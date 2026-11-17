@@ -395,8 +395,8 @@ async fn sync_to_writer_merges_an_existing_proven_tx_req_as_the_reference_does()
         &txid,
         "unmined",
         0,
-        r#"{"old":true}"#,
-        "", // empty notify
+        r#"{"notes":[{"what":"held","when":"2026-01-01T00:00:00Z"}]}"#,
+        r#"{"transactionIds":[]}"#,
         false,
         &[0x01], // placeholder raw_tx
         None,    // no input_beef
@@ -412,18 +412,18 @@ async fn sync_to_writer_merges_an_existing_proven_tx_req_as_the_reference_does()
     // (both "unmined" and unrecognized strings normalize to Pending).
     let new_raw_tx: Vec<u8> = vec![0xFE, 0xED, 0xFA, 0xCE];
     let new_input_beef: Vec<u8> = vec![0xBE, 0xEF];
-    let new_notify = r#"{"subscribers":["app://wallet"]}"#;
-    let new_history = r#"[{"attempt":1,"err":"timeout"}]"#;
+    let new_history = r#"{"notes":[{"what":"sent","when":"2026-01-02T00:00:00Z"}]}"#;
     let new_batch = "batch-after-regroup";
     // The request is the reader user's: one of the user's transactions has its txid.
-    insert_transaction(&reader_store, ruser.user_id, &txid).await;
+    let reader_tx = insert_transaction(&reader_store, ruser.user_id, &txid).await;
+    let new_notify = format!(r#"{{"transactionIds":[{reader_tx}]}}"#);
     insert_proven_tx_req_with_timestamps(
         &reader_store,
         &txid,
         "completed",
         1,
         new_history,
-        new_notify,
+        &new_notify,
         true,
         &new_raw_tx,
         Some(&new_input_beef),
@@ -458,20 +458,31 @@ async fn sync_to_writer_merges_an_existing_proven_tx_req_as_the_reference_does()
 
     // The reference's EntityProvenTxReq.mergeExisting: the status, the
     // attempts, the bytes and the proof link stay as the writer holds them;
-    // the history and the notify ids are unioned (neither side here holds
-    // notes or transaction ids, so both stay as held); a batch is taken where
-    // the writer holds none.
+    // the history notes and the notify ids are unioned (the reader's id
+    // mapped to the writer's row of that transaction); a batch is taken
+    // where the writer holds none.
+    let writer_tx: i64 =
+        ::sqlx::query_scalar("SELECT transaction_id FROM transactions WHERE txid = ?")
+            .bind(&txid)
+            .fetch_one(writer_store.pool())
+            .await
+            .unwrap();
     assert_eq!(status, "unmined", "status stays the writer's");
     assert_eq!(attempts, 0, "attempts stay the writer's");
     assert_eq!(
-        history, r#"{"old":true}"#,
-        "history holds no notes to union"
+        history,
+        r#"{"notes":[{"what":"held","when":"2026-01-01T00:00:00Z"},{"what":"sent","when":"2026-01-02T00:00:00Z"}]}"#,
+        "the history notes are unioned"
     );
-    assert_eq!(notified, 0, "notified stays the writer's");
-    assert_eq!(notify, "", "notify holds no transaction ids to union");
+    assert_eq!(notified, 0, "an added notify id resets notified");
+    assert_eq!(
+        notify,
+        format!(r#"{{"transactionIds":[{writer_tx}]}}"#),
+        "the notify ids are unioned"
+    );
+    assert_ne!(raw_tx, new_raw_tx);
     assert_eq!(raw_tx, vec![0x01], "raw_tx stays the writer's");
     assert_eq!(input_beef, None, "input_beef stays the writer's");
-    let _ = (new_raw_tx, new_input_beef, new_notify, new_history);
     assert_eq!(
         batch.as_deref(),
         Some(new_batch),
