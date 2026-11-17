@@ -2,6 +2,59 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `internalizeAction` holds a received transaction that carries no
+  checked proof and that no broadcaster took (the owner's ruling of
+  2026-11-17): the door writes its transaction `sending` (it wrote
+  `unproven`), its request `unsent` as before, and keeps the transaction,
+  its request and its output rows. Held, its received outputs are not
+  counted and not offered by any rule. When an instance takes it (the
+  door's own post, the send-waiting task's post, an Arcade SEEN frame, a
+  status source holding it) it is `unproven`, counted, and offered under
+  the action's `underReceivedRule` label as before; a proof makes it
+  `completed`. One instance taking the door's post makes it `unproven` at
+  once. A proof the door checked and the proof gate deferred is
+  `unproven` with an `unmined` request as before. How often and to whom
+  the monitor posts a held transaction is unchanged (one post at the door,
+  one per due send-waiting tick).
+- Migration 006 (`006_held_receipts`, one data statement, no schema
+  change), applied on `migrate()` and on `make_available()`: a received
+  transaction a store holds as `unproven` with no proof, its request
+  `unsent` or `sending` and no broadcaster recorded as having taken or seen
+  it, moves to `sending`. `migrate()` reports `006_held_receipts`.
+
+### Hosts
+
+Each read from a run (`tests/internalize_held_receipt_tests.rs`), at this
+change and at 0.14.0-beta.8.1:
+- `Wallet::balance`, `balance_and_utxos` and `listOutputs` no longer count
+  or list a received payment no broadcaster has taken: a 4500-satoshi
+  payment every instance refused, or that no instance answered, read 4500
+  and one output before and 0 and no output now. The balance falls by
+  every held receipt.
+- `listActions` lists the held payment's action with status `sending`
+  (before, `unproven`).
+- A held coin is offered by no rule: `createAction` with or without the
+  `underReceivedRule` label answers `Insufficient funds` when it is the
+  only coin (before, the label took it), and `Wallet::create_action_offering`
+  naming it as a must-spend answers `mustSpend[0]: output <txid>.0 is not
+  spendable: its transaction is sending` (before, taken).
+- Once an instance takes it or a proof arrives, the payment is counted
+  (4500) and offered under the action's `underReceivedRule` label, as
+  before.
+- A store written by 0.14.0-beta.8 or 0.14.0-beta.8.1 moves each held
+  receipt from `unproven` to `sending` on open, and the balance falls by
+  it; a receipt an instance took is not touched; opening again changes
+  nothing.
+- A coin already spent by the wallet's own action stays spent, and that
+  action keeps its status: a store from 0.14.0-beta.8 may hold such a
+  spend of a held receipt made under the label, and the migration moves
+  only the receipt's word.
+- The call's answer is unchanged in this change: `internalizeAction`
+  answers `accepted: true` for a held payment, as before.
+- The wallet's own outgoing change under `sending` is counted as before.
+
 ## [0.14.0-beta.9] - 2026-11-17
 
 The version moves for the `bsv-rs` `=0.9.0-beta.9` pin, the 0.9.0
