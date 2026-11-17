@@ -342,8 +342,8 @@ async fn kept_under(output: OutputListItem, limit: u64) -> usize {
 #[tokio::test]
 async fn an_output_past_the_transaction_work_budget_is_dropped() {
     let mut parent = transaction(LockingScript::from_hex("87").unwrap());
-    let first = parent.outputs()[0].clone();
-    parent.outputs_mut().push(first);
+    let lone = parent.outputs()[0].clone();
+    parent.outputs_mut().push(lone);
     let fits = {
         let mut limit = 0;
         while kept_under(spending(&parent, 1).await, limit).await == 0 {
