@@ -5,7 +5,7 @@
 The CI badge is the required set on `main`, the gate every pull request and push runs; the others are dispatched measurements (run once before a tag, never on a push), each its own workflow. Bench, Dependents and Fuzz are registered here so they can be dispatched; they measure the programme's beta line (`--ref beta`).
 
 Storage, signing, services and monitoring for BSV wallets. The stable line is
-**0.13.x** on crates.io; this tree is **0.13.3**, and it requires
+**0.13.x** on crates.io; this tree is **0.13.4**, and it requires
 **bsv-rs "0.8.11"** by caret (at least 0.8.11, below 0.9.0), the Rust SDK published by this project. The toolbox
 implements wallet operations over local SQLite storage or a remote
 JSON-RPC storage service.
