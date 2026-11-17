@@ -2420,7 +2420,8 @@ where
         if !self.storage.checks_received_beef_in_process().await {
             // The received-BEEF check, the storage door's steps in its
             // order: the bytes, the subject and the structure; then the
-            // tracker; then every transaction whole and every root.
+            // tracker; then every transaction whole, every root, and every
+            // input of the subject run against the output it spends.
             use crate::storage::received_beef::{
                 check_roots, read_received_beef, NO_CHAIN_TRACKER_REFUSAL,
             };
@@ -2431,8 +2432,16 @@ where
                 .await
                 .map_err(|_| Error::ValidationError(NO_CHAIN_TRACKER_REFUSAL.to_string()))?;
             let roots = received.whole_roots()?;
+            let subject = received.txid.clone();
             drop(received);
             check_roots(&roots, tracker).await?;
+            crate::storage::received_beef::check_input_scripts(
+                &args.tx,
+                &subject,
+                self.chain.as_str(),
+                tracker,
+            )
+            .await?;
         }
 
         let auth = self.auth();

@@ -171,6 +171,16 @@ pub async fn internalize_action_internal(
     // before any row is written.
     let roots = received.whole_roots()?;
     crate::storage::received_beef::check_roots(&roots, chain_tracker).await?;
+    // Step 7: every input of the subject run against the output it spends
+    // (a subject the BEEF proves is not run), the tracker's tip asked and
+    // the scripts run before the writer is taken.
+    crate::storage::received_beef::check_input_scripts(
+        &args.tx,
+        &txid,
+        &storage.get_settings().chain,
+        chain_tracker,
+    )
+    .await?;
     let beef = received.beef;
 
     // Find the target transaction

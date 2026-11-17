@@ -13,7 +13,11 @@
 //!    when it has none);
 //! 5. every transaction whole ([`ReceivedBeef::whole_roots`]: an entry the
 //!    BEEF names by its id without its bytes is refused);
-//! 6. every root against the tracker ([`check_roots`]).
+//! 6. every root against the tracker ([`check_roots`]);
+//! 7. every input of the subject run against the output it spends
+//!    ([`check_input_scripts`], `input_scripts.rs`): a subject the BEEF
+//!    proves is not run; any other input that does not pass is refused,
+//!    `spend refused at offset <n>, input <i> of <txid>: <why>`.
 //!
 //! The reference's wallet and storage each verify a received BEEF
 //! (`ab.verify(chainTracker, false)`); here it is checked once, at the
@@ -25,6 +29,8 @@ use std::collections::HashMap;
 use bsv_rs::transaction::{Beef, BeefStream, ChainTracker};
 
 use crate::error::{Error, Result};
+
+mod input_scripts;
 
 /// The refusal of an AtomicBEEF when nothing at hand has a chain tracker to
 /// verify its merkle roots (one sentence at both doors).
@@ -64,8 +70,7 @@ pub fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
 pub(crate) struct ReceivedBeef {
     /// The BEEF as read (its structure checked).
     pub(crate) beef: Beef,
-    /// The AtomicBEEF's subject txid (the storage door reads it).
-    #[cfg_attr(not(any(feature = "sqlite", feature = "mysql")), allow(dead_code))]
+    /// The AtomicBEEF's subject txid.
     pub(crate) txid: String,
     roots: HashMap<u32, String>,
 }
@@ -133,4 +138,19 @@ pub(crate) async fn check_roots(
         }
     }
     Ok(())
+}
+
+/// Step 7: every input of the subject `subject` (display hex) of `bytes`
+/// run against the output it spends, under the word for that input on the
+/// network `network` with `tracker`'s mining tip (the tip asked first, the
+/// scripts run after, before any row is written). A subject the BEEF
+/// proves is not run.
+pub(crate) async fn check_input_scripts(
+    bytes: &[u8],
+    subject: &str,
+    network: &str,
+    tracker: &dyn ChainTracker,
+) -> Result<()> {
+    let tip = input_scripts::mining_tip(tracker).await;
+    input_scripts::verify_subject_inputs(bytes, subject, network, tip)
 }
