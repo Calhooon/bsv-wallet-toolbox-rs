@@ -13,9 +13,11 @@
 //!   of the wallet's own unconfirmed actions still builds;
 //! - with both held, the wallet's own change is taken and the received coin
 //!   passed over; past the change, the refusal without the label;
-//! - the rows earlier releases wrote: the wallet's own change restored by
-//!   internalizing it again is a received coin; a row that came by sync is
-//!   stored as change and is selected as before;
+//! - the wallet's own change restored by internalizing it again is a
+//!   received coin;
+//! - a row that came by sync is stored as its source row is: a received coin
+//!   is held there as here, the wallet's own change is taken; a row an
+//!   earlier sync stored as change is left so by a second sync;
 //! - an input the caller names by outpoint is the caller's word and answers
 //!   as before.
 //!
@@ -519,17 +521,13 @@ async fn coin_at(
     .unwrap()
 }
 
-#[tokio::test]
-async fn a_received_coin_that_came_by_sync_is_stored_as_change_and_selected_as_before() {
-    let root = PrivateKey::random();
-    let identity = root.public_key().to_hex();
-    let (tx, txid, lock, sender) = received(&root, false, 1);
-    let source = funded(&root, tx, &txid, &sender).await;
-    let target = common::wallet("received-coin-rule-tests", &root, &txid).await;
+/// Every row of `source`'s user synced into `target` in one chunk; the
+/// number of outputs the chunk inserted and updated.
+async fn sync_into(source: &TestWallet, target: &TestWallet, root: &PrivateKey) -> (u32, u32) {
     let args = RequestSyncChunkArgs {
         from_storage_identity_key: source.storage().storage_identity_key().to_string(),
         to_storage_identity_key: target.storage().storage_identity_key().to_string(),
-        identity_key: identity.clone(),
+        identity_key: root.public_key().to_hex(),
         since: None,
         max_rough_size: 10_000_000,
         max_items: 1_000,
@@ -556,20 +554,132 @@ async fn a_received_coin_that_came_by_sync_is_stored_as_change_and_selected_as_b
         .get_sync_chunk(args.clone())
         .await
         .expect("chunk");
-    target
+    let done = target
         .storage()
         .process_sync_chunk(args, chunk)
         .await
         .expect("processed");
+    (done.inserts, done.updates)
+}
+
+/// The columns of output `txid`.`vout` that tell who made it: `provided_by`,
+/// `purpose`, `change`, the sender's key, the derivation.
+type Origin = (
+    String,
+    String,
+    bool,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+async fn origin(wallet: &TestWallet, txid: &str, vout: u32) -> Origin {
+    sqlx::query_as(
+        "SELECT provided_by, purpose, change, sender_identity_key, derivation_prefix, \
+         derivation_suffix FROM outputs WHERE txid = ? AND vout = ?",
+    )
+    .bind(txid)
+    .bind(vout)
+    .fetch_one(wallet.storage().writer())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_received_coin_that_came_by_sync_is_a_received_coin_there() {
+    let root = PrivateKey::random();
+    let (tx, txid, lock, sender) = received(&root, false, 1);
+    let source = funded(&root, tx, &txid, &sender).await;
+    let target = common::wallet("received-coin-rule-tests", &root, &txid).await;
+    sync_into(&source, &target, &root).await;
     let row = coin(&target, &txid).await;
-    println!("synced received coin, the row: {row:?}");
-    assert_eq!(row, ("unproven".into(), "change".into(), true, None));
-    let answer = spend(&target, action(1_000, &[], false)).await;
     println!(
-        "synced received coin, no label: {:?}",
-        answer.as_ref().map(|_| "signed")
+        "synced received coin: {row:?}; source {:?}; target {:?}",
+        origin(&source, &txid, 0).await,
+        origin(&target, &txid, 0).await
     );
-    assert_eq!(spends(&answer.unwrap(), &txid, 0, 9_500, &lock), Some(true));
+    assert_eq!(row, ("unproven".into(), "receive".into(), true, None));
+    assert_eq!(
+        origin(&target, &txid, 0).await,
+        origin(&source, &txid, 0).await
+    );
+    for deferred in [false, true] {
+        let answer = spend(&target, action(1_000, &[], deferred))
+            .await
+            .map(|_| ());
+        println!("synced received coin, no label, deferred={deferred}: {answer:?}");
+        assert_eq!(answer, Err(HELD.to_string()));
+        assert_eq!(actions(&target).await, 0, "nothing is recorded");
+    }
+    let signed = spend(&target, action(1_000, &[RULE], true)).await;
+    println!(
+        "synced received coin, the label: {:?}",
+        signed.as_ref().map(|_| "signed")
+    );
+    assert_eq!(spends(&signed.unwrap(), &txid, 0, 9_500, &lock), Some(true));
+}
+
+#[tokio::test]
+async fn the_wallets_own_change_that_came_by_sync_is_change_there() {
+    let root = PrivateKey::random();
+    // Funded by an unproven payment under the label, so no row of the
+    // source carries a proof.
+    let (tx, txid, _, sender) = received(&root, false, 1);
+    let source = funded(&root, tx, &txid, &sender).await;
+    let parent = txid_of(&spend(&source, action(1_000, &[RULE], false)).await.unwrap());
+    let (vout, satoshis, lock) = sent(&source, &parent).await;
+    let target = common::wallet("received-coin-rule-tests", &root, &txid).await;
+    sync_into(&source, &target, &root).await;
+    let row = coin_at(&target, &parent, vout).await;
+    println!(
+        "synced own change: {row:?}; source {:?}; target {:?}",
+        origin(&source, &parent, vout).await,
+        origin(&target, &parent, vout).await
+    );
+    assert_eq!(row, ("unproven".into(), "change".into(), true, None));
+    assert_eq!(
+        origin(&target, &parent, vout).await,
+        origin(&source, &parent, vout).await
+    );
+    let signed = spend(&target, action(1_000, &[], false)).await;
+    println!(
+        "synced own change, no label: {:?}",
+        signed.as_ref().map(|_| "signed")
+    );
+    assert_eq!(
+        spends(&signed.unwrap(), &parent, vout, satoshis, &lock),
+        Some(true)
+    );
+}
+
+/// A row an earlier sync stored (`provided_by` `you`, `purpose` `change`)
+/// is left as it is by a second sync of the same unchanged source row; a
+/// store synced afresh holds it as a received coin.
+#[tokio::test]
+async fn a_row_an_earlier_sync_stored_as_change_is_left_so_by_a_second_sync() {
+    let root = PrivateKey::random();
+    let (tx, txid, _, sender) = received(&root, false, 1);
+    let source = funded(&root, tx, &txid, &sender).await;
+    let target = common::wallet("received-coin-rule-tests", &root, &txid).await;
+    sync_into(&source, &target, &root).await;
+    sqlx::query("UPDATE outputs SET provided_by = 'you', purpose = 'change' WHERE txid = ?")
+        .bind(&txid)
+        .execute(target.storage().writer())
+        .await
+        .unwrap();
+    println!(
+        "as an earlier sync stored it: {:?}",
+        origin(&target, &txid, 0).await
+    );
+    let again = sync_into(&source, &target, &root).await;
+    let row = coin(&target, &txid).await;
+    println!("a second sync (inserts, updates) {again:?}: {row:?}");
+    assert_eq!(row, ("unproven".into(), "change".into(), true, None));
+    let fresh = common::wallet("received-coin-rule-tests", &root, &txid).await;
+    sync_into(&source, &fresh, &root).await;
+    let row = coin(&fresh, &txid).await;
+    println!("a store synced afresh: {row:?}");
+    assert_eq!(row, ("unproven".into(), "receive".into(), true, None));
 }
 
 #[tokio::test]
