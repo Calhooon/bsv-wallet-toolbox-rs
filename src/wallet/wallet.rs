@@ -1295,6 +1295,45 @@ where
         Ok(())
     }
 
+    /// `internalize_action`'s basket and label checks, ahead of its
+    /// validation and its module chain, as the reference's manager asks
+    /// before the underlying call (ts-stack@4d0ea63c8
+    /// `WalletPermissionsManager.ts:5056-5072`): each basket insertion's
+    /// basket that is not a `p ` basket at insertion usage, then each label
+    /// that is not a `p ` label at apply usage, the request's description
+    /// the reason for both (`authorizeInternalizeActionBaskets`,
+    /// `authorizeInternalizeActionLabels`, `:4991-5021`). Nothing with no
+    /// manager.
+    async fn check_internalize_baskets_and_labels(
+        &self,
+        args: &InternalizeActionArgs,
+        originator: Option<&str>,
+    ) -> Result<()> {
+        let Some(ref pm) = self.permissions_manager else {
+            return Ok(());
+        };
+        let originator = originator.unwrap_or_default();
+        let reason = Some(args.description.as_str());
+        let baskets = args
+            .outputs
+            .iter()
+            .filter(|o| o.protocol == "basket insertion")
+            .filter_map(|o| o.insertion_remittance.as_ref())
+            .map(|r| r.basket.as_str())
+            .filter(|basket| !basket.starts_with("p "));
+        for basket in baskets {
+            let insertion = crate::managers::BasketUsageType::Insertion;
+            pm.ensure_basket_access(originator, basket, reason, insertion)
+                .await?;
+        }
+        let labels = args.labels.iter().flatten().map(String::as_str);
+        for label in labels.filter(|label| !label.starts_with("p ")) {
+            pm.ensure_label_apply_access(originator, label, reason)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// `create_action`'s spending check (BRC-98/99) on the total output
     /// satoshis.
     async fn check_create_spending(
@@ -2725,6 +2764,8 @@ where
                 .map(|r| r.basket.as_str()),
             args.labels.iter().flatten().map(String::as_str),
         )?;
+        self.check_internalize_baskets_and_labels(&args, originator)
+            .await?;
         // Validate arguments before the BRC-29 script comparison and storage;
         // each wallet payment's sender is the validated key (#453).
         let senders = super::internalize_args::validate_internalize_action_args(&args)?;
