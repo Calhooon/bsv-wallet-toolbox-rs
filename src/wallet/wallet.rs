@@ -2259,7 +2259,23 @@ where
 
         // Validate derivation metadata matches locking scripts (death spiral prevention).
         // If the derived key doesn't match the script, this UTXO can never be signed.
-        if let Ok(tx) = bsv_rs::transaction::Transaction::from_beef(&args.tx, None) {
+        //
+        // The check needs the subject's outputs and nothing of its ancestry,
+        // so the subject is read without linking (`from_beef_subject`: the
+        // parse alone, then the atomic txid's own entry, the entry the
+        // storage door reads). A linking read can refuse a BEEF the storage
+        // door accepts (an ancestry past bsv-rs's link budget), and the
+        // check must run for it all the same. A BEEF whose subject cannot be
+        // read is refused here, before anything is stored.
+        if args.outputs.iter().any(|o| o.payment_remittance.is_some()) {
+            let tx = bsv_rs::transaction::Transaction::from_beef_subject(&args.tx, None).map_err(
+                |e| {
+                    bsv_rs::Error::WalletError(format!(
+                        "Cannot read the BEEF's subject transaction to check payment outputs: {}",
+                        e
+                    ))
+                },
+            )?;
             for output in &args.outputs {
                 if let Some(ref payment) = output.payment_remittance {
                     let vout = output.output_index as usize;

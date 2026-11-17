@@ -10,7 +10,7 @@ A security patch on the stable line. The bsv-rs requirement moves from "0.8.0" t
 
 - [GHSA-cwxv-4866-5gq2](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-cwxv-4866-5gq2) (critical): Shamir backup share recovery. This crate does not call it.
 - [GHSA-j8hr-pjhm-6h27](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-j8hr-pjhm-6h27) (high): transaction readers that kept trailing bytes, and BEEF verdicts on a raw entry that is not a transaction. This crate reads provider and caller transaction bytes with `Transaction::from_binary` and judges BEEFs with `verify_valid`; the provider readers already refused a raw transaction whose bytes do not hash to the asked txid, and the BEEFs it judges come off the wire reader, so no answer moves for a host.
-- [GHSA-gvmh-f5gf-5vjj](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-gvmh-f5gf-5vjj) (high): memory exhaustion while linking a BEEF. This crate links an overlay host's answer (the SLAP host and certificate lookups) and a caller's AtomicBEEF at `internalizeAction`'s pre-check; 0.8.11 bounds that work at 16 MiB. The storage doors that read a BEEF (`internalizeAction`, `createAction`) do not link, so the bound refuses none of the wallet's own work (`tests/beef_link_budget_tests.rs`).
+- [GHSA-gvmh-f5gf-5vjj](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-gvmh-f5gf-5vjj) (high): memory exhaustion while linking a BEEF. This crate links an overlay host's answer (the SLAP host and certificate lookups); 0.8.11 bounds that work at 16 MiB. `internalizeAction`'s payment derivation check reads the AtomicBEEF's subject without linking (Fixed, below), and the storage doors that read a BEEF (`internalizeAction`, `createAction`) do not link, so the bound refuses none of the wallet's own work (`tests/beef_link_budget_tests.rs`, `tests/internalize_payment_subject_tests.rs`).
 - [GHSA-h4m7-c6p8-725m](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-h4m7-c6p8-725m) (high): script verdicts on coins created before Genesis. This crate runs no script verdict door.
 - [GHSA-w6jf-m9c7-6599](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-w6jf-m9c7-6599) (high): registry resolves returned unsigned definitions. This crate does not call them.
 - [GHSA-89w7-x33x-6m9c](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-89w7-x33x-6m9c) (high): the KVStore interpreter returned unsigned tokens. This crate does not call it.
@@ -28,6 +28,10 @@ A security patch on the stable line. The bsv-rs requirement moves from "0.8.0" t
 - [GHSA-crr5-gh8p-q2h2](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-crr5-gh8p-q2h2) (low): `LivePolicy::refresh` panicked on a zero fee-policy size. This crate does not call it.
 - [GHSA-4mcm-g5xq-jv3r](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-4mcm-g5xq-jv3r) (low): KVStore token signatures did not bind the key. This crate does not call the KVStore.
 
+### Fixed
+
+- `Wallet::internalize_action`'s BRC-29 derivation check on a wallet payment output reads the AtomicBEEF's subject transaction with `Transaction::from_beef_subject`, which parses the BEEF and links none of its ancestry, so the check runs whatever the ancestry's size or shape: a subject sweeping more outputs of one parent than bsv-rs 0.8.11's link budget takes, or a parent carried as a txid-only entry, is checked like any other, and a payment output whose script does not pay the derived key is refused with the `Derivation mismatch` text. A BEEF carrying a payment output whose subject cannot be read is refused before anything is stored (`tests/internalize_payment_subject_tests.rs`).
+
 ### Hosts
 
 Each answer below was an acceptance on bsv-rs 0.8.3 (the version the 0.13.1 crate file's lock holds) and is a refusal on 0.8.11, read from a run:
@@ -38,7 +42,12 @@ Each answer below was an acceptance on bsv-rs 0.8.3 (the version the 0.13.1 crat
 
 One more, by reading and by the linking door's own run (`tests/beef_link_budget_tests.rs`), not driven through the lookup: an overlay SLAP host or certificate whose BEEF re-materializes more than 16 MiB while linking is skipped, as an unparseable answer was; an honest answer of that size sweeps more than about 702 P2PKH outputs of one parent.
 
-No other answer of this crate moves: the full suite, unit and integration, answers as on 0.13.1.
+`Wallet::internalize_action` with a wallet payment output answers two refusals in new words, read from a run on 0.13.2 and on the tree before it; both were refusals before and stay refusals:
+
+- bytes that are not a BEEF (`deadbeef`): `Cannot read the BEEF's subject transaction to check payment outputs: BEEF error: Invalid BEEF version: 0xEFBEADDE` (was `Invalid BEEF at byte 0: BadVersion`).
+- an AtomicBEEF naming a subject it does not carry: `Cannot read the BEEF's subject transaction to check payment outputs: transaction error: Transaction <txid> not found in BEEF` (was `Validation error: BEEF structure is invalid`).
+
+The same door now refuses, with `Derivation mismatch for output <n>: derived <hash> != script <hash>`, a payment output in a subject that sweeps more outputs of one parent than the link budget takes when the output's script does not pay the derived key; on the tree before it, that output was stored. A payment output that does pay the derived key is stored as before. No other answer of this crate moves: the full suite, unit and integration, answers as on 0.13.1.
 
 ### CI
 
