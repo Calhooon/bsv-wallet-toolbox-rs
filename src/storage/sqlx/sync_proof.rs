@@ -72,23 +72,59 @@ pub(super) fn canonicalize(proof: &mut TableProvenTx) -> Result<()> {
     Ok(())
 }
 
+/// The proof row this store holds for a txid: its id and its authority
+/// fields.
+pub(super) struct HeldProof {
+    pub proven_tx_id: i64,
+    txid: String,
+    height: i64,
+    index: i64,
+    merkle_path: Vec<u8>,
+    raw_tx: Vec<u8>,
+    block_hash: String,
+    merkle_root: String,
+}
+
+/// The held proof row of `txid` (proof rows are global by txid, as the
+/// reference's EntityProvenTx.mergeFind finds them).
+pub(super) async fn held_proof<'e, E>(executor: E, txid: &str) -> Result<Option<HeldProof>>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let row = sqlx::query(
+        r#"
+        SELECT proven_tx_id, txid, height, idx, merkle_path, raw_tx, block_hash, merkle_root
+        FROM proven_txs WHERE txid = ?
+        "#,
+    )
+    .bind(txid)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.map(|row| HeldProof {
+        proven_tx_id: row.get("proven_tx_id"),
+        txid: row.get("txid"),
+        height: row.get("height"),
+        index: row.get("idx"),
+        merkle_path: row.get("merkle_path"),
+        raw_tx: row.get("raw_tx"),
+        block_hash: row.get("block_hash"),
+        merkle_root: row.get("merkle_root"),
+    }))
+}
+
 /// The reference's `sameSyncProof`: the proof's authority fields, not its
 /// ids or timestamps. A block hash that is empty on either side matches the
 /// other's.
-pub(super) fn same_proof(
-    held: (&str, i64, i64, &[u8], &[u8], &str, &str),
-    p: &TableProvenTx,
-) -> bool {
-    let (txid, height, index, path, raw, block_hash, root) = held;
-    txid.eq_ignore_ascii_case(&p.txid)
-        && height == p.height
-        && index == p.index
-        && path == p.merkle_path.as_slice()
-        && raw == p.raw_tx.as_slice()
-        && (block_hash.is_empty()
+pub(super) fn same_proof(held: &HeldProof, p: &TableProvenTx) -> bool {
+    held.txid.eq_ignore_ascii_case(&p.txid)
+        && held.height == p.height
+        && held.index == p.index
+        && held.merkle_path == p.merkle_path
+        && held.raw_tx == p.raw_tx
+        && (held.block_hash.is_empty()
             || p.block_hash.is_empty()
-            || block_hash.eq_ignore_ascii_case(&p.block_hash))
-        && root.eq_ignore_ascii_case(&p.merkle_root)
+            || held.block_hash.eq_ignore_ascii_case(&p.block_hash))
+        && held.merkle_root.eq_ignore_ascii_case(&p.merkle_root)
 }
 
 fn hash_hex(bytes: &[u8]) -> String {
@@ -197,38 +233,12 @@ pub(super) async fn preflight(
         canonicalize(p)?;
     }
     for p in proofs.iter() {
-        let held = sqlx::query(
-            r#"
-            SELECT txid, height, idx, merkle_path, raw_tx, block_hash, merkle_root
-            FROM proven_txs WHERE txid = ?
-            "#,
-        )
-        .bind(&p.txid)
-        .fetch_optional(storage.pool())
-        .await?;
-        match held {
+        match held_proof(storage.pool(), &p.txid).await? {
             None => {
                 decisions.insert_only.insert(p.txid.clone());
             }
-            Some(row) => {
-                let path: Vec<u8> = row.get("merkle_path");
-                let raw: Vec<u8> = row.get("raw_tx");
-                let held_txid: String = row.get("txid");
-                let block_hash: String = row.get("block_hash");
-                let root: String = row.get("merkle_root");
-                let same = same_proof(
-                    (
-                        &held_txid,
-                        row.get("height"),
-                        row.get("idx"),
-                        &path,
-                        &raw,
-                        &block_hash,
-                        &root,
-                    ),
-                    p,
-                );
-                if !same {
+            Some(held) => {
+                if !same_proof(&held, p) {
                     let block_hash = validate(storage, p).await?;
                     decisions
                         .replacement_authorized

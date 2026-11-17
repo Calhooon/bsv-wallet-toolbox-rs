@@ -1637,35 +1637,11 @@ async fn upsert_proven_tx(
     decisions: &super::sync_proof::ProofDecisions,
 ) -> Result<UpsertResult> {
     // Global by txid, as the reference's EntityProvenTx.mergeFind.
-    let existing = sqlx::query(
-        r#"
-        SELECT proven_tx_id, txid, height, idx, merkle_path, raw_tx, block_hash, merkle_root
-        FROM proven_txs WHERE txid = ?
-        "#,
-    )
-    .bind(&ptx.txid)
-    .fetch_optional(&mut *conn)
-    .await?;
+    let existing = super::sync_proof::held_proof(&mut *conn, &ptx.txid).await?;
 
-    if let Some(row) = existing {
-        let local_id: i64 = row.get("proven_tx_id");
-        let path: Vec<u8> = row.get("merkle_path");
-        let raw: Vec<u8> = row.get("raw_tx");
-        let held_txid: String = row.get("txid");
-        let block_hash: String = row.get("block_hash");
-        let root: String = row.get("merkle_root");
-        let same = super::sync_proof::same_proof(
-            (
-                &held_txid,
-                row.get("height"),
-                row.get("idx"),
-                &path,
-                &raw,
-                &block_hash,
-                &root,
-            ),
-            ptx,
-        );
+    if let Some(held) = existing {
+        let local_id = held.proven_tx_id;
+        let same = super::sync_proof::same_proof(&held, ptx);
         // The reference's EntityProvenTx.mergeExisting: the same proof is
         // not written; a different one replaces the held row only when the
         // preflight validated it.
