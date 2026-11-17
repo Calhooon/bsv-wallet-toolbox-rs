@@ -103,7 +103,7 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 - `bsv-rs` is required at `"0.8.11"`: do not lower it (every earlier 0.8 release is named by a published bsv-rs advisory)
 - `StorageSqlx::pool()` is the READER pool (`query_only`): writes go to `writer()` (one connection) or `write_tx()` (`BEGIN IMMEDIATE`); never await a service or tracker while holding either. `clippy.toml` bans every other `begin` (bsv-wallet-cli #44)
 - One store per file per process: give a `Wallet` and a `Monitor` clones of ONE `StorageSqlx` (`impl Clone` shares the pools and every field); never open the same file twice in one process (two writer pools meet on SQLite's busy handler)
-- `ChainTrackerError` must be imported separately: `use bsv_sdk::transaction::ChainTrackerError;`
+- `ChainTrackerError` must be imported separately: `use bsv_rs::transaction::ChainTrackerError;` (the crate is `bsv-rs`, imported as `bsv_rs`)
 - `target >= u128::MAX` triggers clippy `absurd_extreme_comparisons` - use `==` instead
 - `WalletPermissionsManager` provides full BRC-98/99 permission enforcement (1978 lines)
 - `WalletAuthenticationManager` provides WAB integration (58 lines)
