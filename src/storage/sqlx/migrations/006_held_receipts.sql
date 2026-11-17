@@ -3,10 +3,11 @@
 -- A received transaction with no checked proof that no broadcaster took is
 -- HELD: the internalize door writes it transactions.status = 'sending', so
 -- the balance and listOutputs leave every output it gives the wallet out
--- and no allocator offers them. A store written by 0.14.0-beta.8 or
--- 0.14.0-beta.8.1 holds such a receipt as 'unproven'. This statement moves
--- it to 'sending': a received transaction (is_outgoing = 0), 'unproven',
--- with no proof row linked, that has a request, under the rule below.
+-- and no allocator offers them. A store written by 0.14.0-beta.8,
+-- 0.14.0-beta.8.1 or 0.14.0-beta.9 holds such a receipt as 'unproven'. This
+-- statement moves it to 'sending': a received transaction
+-- (is_outgoing = 0), 'unproven', with no proof row linked, that has a
+-- request, under the rule below.
 --
 -- The migration's own rule, apart from the door's. The door reads a
 -- recorded take (broadcast_seen 'accepted', 'seen' or 'mined') or a stored
