@@ -1,7 +1,8 @@
 //! Helpers shared by the internalize and BEEF link budget integration tests:
 //! a broadcaster's acceptance, a wallet over in-memory SQLite, the count of
 //! stored outputs, the P2PKH of a key, the BRC-29 key a recipient derives,
-//! and a sweep of one parent past bsv-rs 0.8.11's default link budget.
+//! an AtomicBEEF of one output, and a sweep of one parent past bsv-rs
+//! 0.8.11's default link budget.
 //!
 //! Each test file uses part of this module, hence `dead_code` allowed.
 
@@ -145,6 +146,37 @@ pub fn sweep_beef(lock: LockingScript) -> (Vec<u8>, String) {
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    beef.merge_raw_tx(child.to_binary(), None);
+    (beef.to_binary_atomic(&txid).unwrap(), txid)
+}
+
+/// An AtomicBEEF of a child with one output locked by `lock`, spending a
+/// txid-only parent proven by a BUMP the BEEF carries.
+pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
+    let mut parent = Transaction::new();
+    let mut parent_input = TransactionInput::new("22".repeat(32), 0);
+    parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    parent.inputs.push(parent_input);
+    parent.outputs.push(TransactionOutput {
+        satoshis: Some(10_000),
+        locking_script: LockingScript::from_hex(&format!("76a914{OTHER_HASH}88ac")).unwrap(),
+        change: false,
+    });
+    let parent_txid = parent.id();
+    let mut child = Transaction::new();
+    child.version = 1;
+    let mut input = TransactionInput::new(parent_txid.clone(), 0);
+    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+    child.inputs.push(input);
+    child.outputs.push(TransactionOutput {
+        satoshis: Some(9_500),
+        locking_script: lock,
+        change: false,
+    });
+    let txid = child.id();
+    let mut beef = Beef::new();
+    beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_003));
+    beef.merge_txid_only(parent_txid);
     beef.merge_raw_tx(child.to_binary(), None);
     (beef.to_binary_atomic(&txid).unwrap(), txid)
 }
