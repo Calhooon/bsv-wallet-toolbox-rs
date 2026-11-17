@@ -4,6 +4,10 @@
 //! `validateSyncProof` (`storage/methods/validateSyncProof.ts` 93-142).
 //!
 //! Every identifier of every incoming proof row is checked and lowercased.
+//! A block hash may be empty: this line's own stores hold proof rows without
+//! one (a proof stored with no header service to read it from), so an empty
+//! block hash is admitted and left empty, and two rows that differ only in
+//! that one of their block hashes is empty are the same proof.
 //! A proof row whose txid this store does not hold is taken as given (a new
 //! proof row keeps the trust a direct sync gives it). A proof row that
 //! differs from the one this store holds replaces it only once it is
@@ -14,7 +18,7 @@
 //! here, before the writer is taken (the write lock rule: never await a
 //! service or a tracker while holding the writer).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bsv_rs::primitives::{sha256d, to_hex};
 use bsv_rs::transaction::{MerklePath, Transaction};
@@ -31,8 +35,9 @@ use super::StorageSqlx;
 pub(super) struct ProofDecisions {
     /// No row of this txid was held: insert only.
     pub insert_only: HashSet<String>,
-    /// A held row differs and the incoming row was validated: replace.
-    pub replacement_authorized: HashSet<String>,
+    /// A held row differs and the incoming row was validated: replace,
+    /// with the block hash of the active header the validation read.
+    pub replacement_authorized: HashMap<String, String>,
 }
 
 fn refused(txid: &str, why: &str) -> Error {
@@ -43,12 +48,13 @@ fn is_hex32(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The reference's `canonicalizeSyncProofIdentifiers`.
+/// The reference's `canonicalizeSyncProofIdentifiers`, but for an empty
+/// block hash, which this line's own stores hold and which is left empty.
 pub(super) fn canonicalize(proof: &mut TableProvenTx) -> Result<()> {
     if !is_hex32(&proof.txid) {
         return Err(refused(&proof.txid, "txid must be 32-byte hexadecimal"));
     }
-    if !is_hex32(&proof.block_hash) {
+    if !proof.block_hash.is_empty() && !is_hex32(&proof.block_hash) {
         return Err(refused(
             &proof.txid,
             "block hash must be 32-byte hexadecimal",
@@ -67,7 +73,8 @@ pub(super) fn canonicalize(proof: &mut TableProvenTx) -> Result<()> {
 }
 
 /// The reference's `sameSyncProof`: the proof's authority fields, not its
-/// ids or timestamps.
+/// ids or timestamps. A block hash that is empty on either side matches the
+/// other's.
 pub(super) fn same_proof(
     held: (&str, i64, i64, &[u8], &[u8], &str, &str),
     p: &TableProvenTx,
@@ -78,7 +85,9 @@ pub(super) fn same_proof(
         && index == p.index
         && path == p.merkle_path.as_slice()
         && raw == p.raw_tx.as_slice()
-        && block_hash.eq_ignore_ascii_case(&p.block_hash)
+        && (block_hash.is_empty()
+            || p.block_hash.is_empty()
+            || block_hash.eq_ignore_ascii_case(&p.block_hash))
         && root.eq_ignore_ascii_case(&p.merkle_root)
 }
 
@@ -89,7 +98,9 @@ fn hash_hex(bytes: &[u8]) -> String {
 }
 
 /// The reference's `validateSyncProof` for a row that replaces a held one.
-async fn validate(storage: &StorageSqlx, p: &TableProvenTx) -> Result<()> {
+/// Answers the block hash of the active header at the row's height: the
+/// row's own when it carries one (it must match), else the header's.
+async fn validate(storage: &StorageSqlx, p: &TableProvenTx) -> Result<String> {
     let txid = p.txid.as_str();
     if p.height < 0 || p.height > u32::MAX as i64 {
         return Err(refused(txid, "height must be a non-negative integer"));
@@ -164,13 +175,14 @@ async fn validate(storage: &StorageSqlx, p: &TableProvenTx) -> Result<()> {
     }
     let mut header_root = header[36..68].to_vec();
     header_root.reverse();
-    if hash_hex(&header) != p.block_hash || to_hex(&header_root) != root {
+    let header_hash = hash_hex(&header);
+    if (!p.block_hash.is_empty() && header_hash != p.block_hash) || to_hex(&header_root) != root {
         return Err(refused(
             txid,
             "block metadata does not match the active header",
         ));
     }
-    Ok(())
+    Ok(header_hash)
 }
 
 /// The preflight over the chunk's proof rows, on the reader pool and the
@@ -217,8 +229,10 @@ pub(super) async fn preflight(
                     p,
                 );
                 if !same {
-                    validate(storage, p).await?;
-                    decisions.replacement_authorized.insert(p.txid.clone());
+                    let block_hash = validate(storage, p).await?;
+                    decisions
+                        .replacement_authorized
+                        .insert(p.txid.clone(), block_hash);
                 }
             }
         }
