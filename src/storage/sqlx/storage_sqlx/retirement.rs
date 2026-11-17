@@ -1,7 +1,6 @@
 use super::{
     Result, Row, StorageSqlx, WalletServices, LOCKED_VERDICT_SPENT_PROVEN, LOCKED_VERDICT_UNKNOWN,
 };
-use crate::services::broadcast_memory::{BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_SEEN};
 
 /// Outcome of `StorageSqlx::retire_undeliverable_tx`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,13 +263,7 @@ impl StorageSqlx {
             .execute(&mut *tx)
             .await?;
         // The status source's word, recorded in the same write.
-        super::super::held_receipts::record_take_on(
-            &mut tx,
-            txid,
-            BROADCAST_PROVIDER_CHAIN,
-            BROADCAST_STATUS_SEEN,
-        )
-        .await?;
+        super::super::held_receipts::record_chain_seen_on(&mut tx, txid).await?;
         super::commit(tx).await?;
         Ok(true)
     }
