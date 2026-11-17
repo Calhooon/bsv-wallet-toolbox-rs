@@ -78,9 +78,9 @@ pub(crate) fn read_received_beef(bytes: &[u8]) -> Result<ReceivedBeef> {
     let txid = beef.atomic_txid.clone().ok_or_else(|| {
         Error::ValidationError("BEEF is not AtomicBEEF (missing atomic_txid)".to_string())
     })?;
-    // bsv-rs 0.8.11's `verify_valid` reads the structure alone (its flag
-    // decides nothing): a txid-only entry no BUMP proves is refused here,
-    // one a BUMP proves passes to step 5.
+    // bsv-rs's `verify_valid` (0.8.11, unchanged in 0.8.12) reads the
+    // structure alone (its flag decides nothing): a txid-only entry no BUMP
+    // proves is refused here, one a BUMP proves passes to step 5.
     let validation = beef.verify_valid(true);
     if !validation.valid {
         return Err(Error::ValidationError(

@@ -1,8 +1,8 @@
 //! Helpers shared by the internalize and BEEF link budget integration tests:
 //! a broadcaster's acceptance, a wallet over in-memory SQLite, the count of
 //! stored outputs, the P2PKH of a key, the BRC-29 key a recipient derives,
-//! an AtomicBEEF of one output, and a sweep of one parent past bsv-rs
-//! 0.8.11's default link budget; a wallet payment, an AtomicBEEF paying a
+//! an AtomicBEEF of one output, and a sweep of one parent past bsv-rs's
+//! default link bounds; a wallet payment, an AtomicBEEF paying a
 //! derived key, and an internalization at the wallet or the storage door.
 //!
 //! Each test file uses part of this module, hence `dead_code` allowed.
@@ -24,8 +24,9 @@ use bsv_wallet_toolbox_rs::{
     AuthId, PostBeefResult, PostTxResultForTxid, StorageSqlx, Wallet, WalletStorageWriter,
 };
 
-/// Outputs of the one parent the sweep spends: past the 702 P2PKH outputs
-/// bsv-rs 0.8.11 states as the default link budget's single-sweep reach.
+/// Outputs of the one parent the sweep spends: past the 586 P2PKH outputs
+/// bsv-rs 0.8.12's default link bounds take in a single sweep (702 at
+/// 0.8.11, now the reach of the wire budget alone).
 pub const SWEPT: u32 = 800;
 
 /// A 25-byte P2PKH paying neither party of the tests.
