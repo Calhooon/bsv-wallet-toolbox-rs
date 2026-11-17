@@ -30,7 +30,24 @@ use bsv_rs::wallet::{
 
 use super::create_action::{
     beef_bfs_walk, parse_input_txids, prune_beef_to_roots, rebuild_beef_for_broadcast,
+    RECEIVED_COIN_CLAUSE,
 };
+
+/// The received rule the public allocator and its count bind: off. Their
+/// signatures name no rule, so a received coin whose transaction is not
+/// `completed` is held, as the create door holds it for an action without
+/// the label.
+const PUBLIC_PICK_ALLOWS_RECEIVED: bool = false;
+
+/// The transaction statuses whose change the public allocator and its count
+/// take: the create door's, and `sending` unless `exclude_sending`.
+fn public_pick_statuses(exclude_sending: bool) -> &'static str {
+    if exclude_sending {
+        "('completed', 'unproven')"
+    } else {
+        "('completed', 'unproven', 'sending')"
+    }
+}
 
 /// Every schema migration, in order. Each statement is `IF NOT EXISTS`, so
 /// the whole list is idempotent on a database at any earlier schema.
@@ -6691,8 +6708,12 @@ impl StorageSqlx {
 
     /// Find a spendable change output suitable for use as input.
     ///
-    /// Looks for change outputs that are spendable and belong to the specified basket.
-    /// Optionally excludes outputs from transactions currently in 'sending' status.
+    /// Looks for change outputs that are spendable and belong to the
+    /// specified basket, their transaction `completed` or `unproven`, or
+    /// `sending` too unless `exclude_sending`. A received coin (`purpose`
+    /// `receive`) is taken only once its transaction is `completed`: the
+    /// received rule with no label, as the create door applies it to an
+    /// action that does not name `underReceivedRule`.
     ///
     /// The claim is the guarded `UPDATE` (`spendable = 1 AND spent_by IS
     /// NULL`), not the read: two callers never allocate the same coin. A
@@ -6713,54 +6734,37 @@ impl StorageSqlx {
         exclude_sending: bool,
         transaction_id: i64,
     ) -> Result<Option<TableOutput>> {
-        // Find a spendable change output suitable for use as a transaction input.
         // Strategy: select the smallest output >= target_satoshis to minimize change,
         // or the largest output if none meet the target.
-        // Find a spendable change output suitable for use as a transaction input.
-        // Strategy: select the smallest output >= target_satoshis to minimize change,
-        // or the largest output if none meet the target.
-        let base_query = if exclude_sending {
+        let base_query = format!(
             r#"
-            SELECT output_id, satoshis, vout, txid, locking_script
-            FROM outputs
-            WHERE user_id = ?
-              AND basket_id = ?
-              AND change = 1
-              AND spendable = 1
-              AND spent_by IS NULL
-              AND transaction_id != ?
-              AND transaction_id NOT IN (
-                SELECT transaction_id FROM transactions WHERE status = 'sending'
-              )
+            SELECT o.output_id, o.satoshis, o.vout, o.txid, o.locking_script
+            FROM outputs o
+            JOIN transactions t ON o.transaction_id = t.transaction_id
+            WHERE o.user_id = ?
+              AND o.basket_id = ?
+              AND o.change = 1
+              AND o.spendable = 1
+              AND o.spent_by IS NULL
+              AND o.transaction_id != ?
+              AND t.status IN {}
+              {RECEIVED_COIN_CLAUSE}
             ORDER BY
-              CASE WHEN satoshis >= ? THEN 0 ELSE 1 END,
-              CASE WHEN satoshis >= ? THEN satoshis ELSE -satoshis END
+              CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
+              CASE WHEN o.satoshis >= ? THEN o.satoshis ELSE -o.satoshis END
             LIMIT 1
-            "#
-        } else {
-            r#"
-            SELECT output_id, satoshis, vout, txid, locking_script
-            FROM outputs
-            WHERE user_id = ?
-              AND basket_id = ?
-              AND change = 1
-              AND spendable = 1
-              AND spent_by IS NULL
-              AND transaction_id != ?
-            ORDER BY
-              CASE WHEN satoshis >= ? THEN 0 ELSE 1 END,
-              CASE WHEN satoshis >= ? THEN satoshis ELSE -satoshis END
-            LIMIT 1
-            "#
-        };
+            "#,
+            public_pick_statuses(exclude_sending)
+        );
 
         loop {
             #[allow(clippy::type_complexity)]
             let row: Option<(i64, i64, i64, Option<String>, Option<Vec<u8>>)> =
-                sqlx::query_as(base_query)
+                sqlx::query_as(&base_query)
                     .bind(user_id)
                     .bind(basket_id)
                     .bind(transaction_id)
+                    .bind(PUBLIC_PICK_ALLOWS_RECEIVED)
                     .bind(target_satoshis)
                     .bind(target_satoshis)
                     .fetch_optional(&self.reader)
@@ -6868,7 +6872,9 @@ impl StorageSqlx {
         Ok(tags.into_iter().map(|(t,)| t).collect())
     }
 
-    /// Count spendable change outputs for a user in a basket.
+    /// Count the change outputs `allocate_change_input` would take for a
+    /// user in a basket: the same transaction statuses and the same received
+    /// rule with no label.
     ///
     /// # Arguments
     /// * `_user_id` - The user who owns the outputs
@@ -6880,42 +6886,26 @@ impl StorageSqlx {
         basket_id: i64,
         exclude_sending: bool,
     ) -> Result<i64> {
-        let count: (i64,) = if exclude_sending {
-            sqlx::query_as(
-                r#"
-                SELECT COUNT(*)
-                FROM outputs o
-                WHERE o.user_id = ?
-                  AND o.basket_id = ?
-                  AND o.change = 1
-                  AND o.spendable = 1
-                  AND o.spent_by IS NULL
-                  AND o.transaction_id NOT IN (
-                    SELECT transaction_id FROM transactions WHERE status = 'sending'
-                  )
-                "#,
-            )
-            .bind(user_id)
-            .bind(basket_id)
-            .fetch_one(self.pool())
-            .await?
-        } else {
-            sqlx::query_as(
-                r#"
-                SELECT COUNT(*)
-                FROM outputs o
-                WHERE o.user_id = ?
-                  AND o.basket_id = ?
-                  AND o.change = 1
-                  AND o.spendable = 1
-                  AND o.spent_by IS NULL
-                "#,
-            )
-            .bind(user_id)
-            .bind(basket_id)
-            .fetch_one(self.pool())
-            .await?
-        };
+        let count: (i64,) = sqlx::query_as(&format!(
+            r#"
+            SELECT COUNT(*)
+            FROM outputs o
+            JOIN transactions t ON o.transaction_id = t.transaction_id
+            WHERE o.user_id = ?
+              AND o.basket_id = ?
+              AND o.change = 1
+              AND o.spendable = 1
+              AND o.spent_by IS NULL
+              AND t.status IN {}
+              {RECEIVED_COIN_CLAUSE}
+            "#,
+            public_pick_statuses(exclude_sending)
+        ))
+        .bind(user_id)
+        .bind(basket_id)
+        .bind(PUBLIC_PICK_ALLOWS_RECEIVED)
+        .fetch_one(self.pool())
+        .await?;
 
         Ok(count.0)
     }
@@ -10244,3 +10234,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "public_received_rule_tests.rs"]
+mod public_received_rule_tests;
