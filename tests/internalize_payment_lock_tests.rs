@@ -21,8 +21,7 @@
 mod common;
 
 use bsv_rs::primitives::{hash160, PrivateKey, PublicKey};
-use bsv_rs::script::{LockingScript, UnlockingScript};
-use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
+use bsv_rs::script::LockingScript;
 use bsv_rs::wallet::{
     AbortActionArgs, BasketInsertion, CreateActionArgs, CreateActionOptions, CreateActionOutput,
     InternalizeActionArgs, InternalizeOutput, ListOutputsArgs, Outpoint, RelinquishOutputArgs,
@@ -31,7 +30,7 @@ use bsv_rs::wallet::{
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, Wallet, WalletStorageWriter};
 
-use common::{p2pkh_bytes, stored_outputs, OTHER_HASH};
+use common::{beef_paying, p2pkh_bytes, stored_outputs, OTHER_HASH};
 
 const PREFIX: &str = "bG9jay1wcmVmaXg=";
 const SUFFIX: &str = "bG9jay1zdWZmaXg=";
@@ -47,37 +46,6 @@ fn lock(bytes: &[u8]) -> LockingScript {
 /// The key the recipient `root` derives for the remittance from `sender`.
 fn derived_key(root: &PrivateKey, sender: &PublicKey) -> PublicKey {
     common::derived_key(root, sender, PREFIX, SUFFIX)
-}
-
-/// An AtomicBEEF of a child with one output locked by `lock`, spending a
-/// txid-only parent proven by a BUMP the BEEF carries.
-fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
-    let mut parent = Transaction::new();
-    let mut parent_input = TransactionInput::new("22".repeat(32), 0);
-    parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(parent_input);
-    parent.outputs.push(TransactionOutput {
-        satoshis: Some(10_000),
-        locking_script: LockingScript::from_hex(&format!("76a914{OTHER_HASH}88ac")).unwrap(),
-        change: false,
-    });
-    let parent_txid = parent.id();
-    let mut child = Transaction::new();
-    child.version = 1;
-    let mut input = TransactionInput::new(parent_txid.clone(), 0);
-    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    child.inputs.push(input);
-    child.outputs.push(TransactionOutput {
-        satoshis: Some(9_500),
-        locking_script: lock,
-        change: false,
-    });
-    let txid = child.id();
-    let mut beef = Beef::new();
-    beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_003));
-    beef.merge_txid_only(parent_txid);
-    beef.merge_raw_tx(child.to_binary(), None);
-    (beef.to_binary_atomic(&txid).unwrap(), txid)
 }
 
 async fn wallet(root: &PrivateKey, txid: &str) -> Wallet<StorageSqlx, MockWalletServices> {
