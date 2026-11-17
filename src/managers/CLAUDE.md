@@ -171,7 +171,8 @@ set_services(services) / get_services() -> Result<Arc<dyn WalletServices>>
 - Every drain (`sync_from_reader`, `sync_to_writer`, `update_backups`) makes the writer's user (`find_or_insert_user`) before any chunk: a chunk never creates its user. Drive several chunks through `process_sync_chunk_mapped` with one `SyncMap`, as the drain does.
 - `sync_from_reader` writes the wallet's own active storage (the active store's cached user row) into the chunk's user row: a reader does not choose the active store. A push (`sync_to_writer`) carries the reader's.
 - The `WalletStorageSync` surface (`get_sync_chunk`, `process_sync_chunk`) refuses an identity that is not the manager's: `Access denied: Identity key mismatch`.
-- `set_active` writes each store's row by that store's own user id (`AuthId::with_user_id(identity, store.user.user_id)`) and sets each store's cached user row before `make_available` partitions again (it reads the cached rows).
+- `set_active` writes each store's row by that store's own user id (`AuthId::with_user_id(identity, store.user.user_id)`), the calls under the stores read lock, then sets the cached user row of each store whose call succeeded under the write lock, before `make_available` partitions again (it reads the cached rows). It refuses while the stores are in conflict (`update_backups` needs an enabled active).
+- A backup's request keeps the status it was given when the backup received it (the reference's request merge), so a wallet made active on that backup asks or sends again. Replacing a held proof needs the backup store's services.
 
 ### SyncResult
 
