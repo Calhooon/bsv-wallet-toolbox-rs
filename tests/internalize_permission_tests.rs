@@ -1,8 +1,8 @@
 //! `Wallet::internalize_action` with a permissions manager asks it before
 //! anything is stored: each basket insertion's basket for insertion (as
-//! `create_action` asks for its output baskets), and an admin-reserved
-//! basket or action label is refused to every originator but the admin
-//! originator. With no manager nothing is asked.
+//! `create_action` asks for its output baskets), and a basket or action
+//! label whose name starts with `admin` or `p ` is refused to every
+//! originator but the admin originator. With no manager nothing is asked.
 //!
 //! Real SQLite storage, a mock broadcaster; nothing touches the network.
 
@@ -18,8 +18,8 @@ use bsv_rs::wallet::{
     InternalizeActionArgs, InternalizeOutput, WalletInterface,
 };
 use bsv_wallet_toolbox_rs::managers::{
-    PermissionRequest, PermissionRequestHandler, PermissionToken, WalletPermissionsManager,
-    WalletPermissionsManagerConfig,
+    PermissionRequest, PermissionRequestHandler, PermissionToken, PermissionsModule,
+    WalletPermissionsManager, WalletPermissionsManagerConfig,
 };
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{Error, StorageSqlx, Wallet};
@@ -56,16 +56,46 @@ fn token(originator: &str) -> PermissionToken {
 /// A wallet paid by `tx`; with `manager`, a permissions manager whose
 /// handler grants `GRANTED` and refuses every other originator.
 async fn wallet(txid: &str, manager: bool) -> W {
+    wallet_with(txid, manager, &[]).await
+}
+
+/// A permission module that passes every request and response through.
+struct PassThrough;
+
+#[async_trait::async_trait]
+impl PermissionsModule for PassThrough {
+    async fn on_request(
+        &self,
+        _method: &str,
+        args: serde_json::Value,
+        _originator: &str,
+    ) -> Result<serde_json::Value, String> {
+        Ok(args)
+    }
+
+    async fn on_response(
+        &self,
+        res: serde_json::Value,
+        _method: &str,
+        _originator: &str,
+    ) -> Result<serde_json::Value, String> {
+        Ok(res)
+    }
+}
+
+/// As `wallet`, the manager holding a module for each of `schemes`.
+async fn wallet_with(txid: &str, manager: bool, schemes: &[&str]) -> W {
     let root = PrivateKey::random();
     let mut wallet = common::wallet("internalize-permission-tests", &root, txid).await;
     if manager {
         let under = common::wallet("underlying", &PrivateKey::random(), txid).await;
         let under: Arc<dyn WalletInterface + Send + Sync> = Arc::new(under);
-        let pm = Arc::new(WalletPermissionsManager::new(
-            under,
-            ADMIN.into(),
-            WalletPermissionsManagerConfig::all_enabled(),
-        ));
+        let mut config = WalletPermissionsManagerConfig::all_enabled();
+        for scheme in schemes {
+            let module: Arc<dyn PermissionsModule> = Arc::new(PassThrough);
+            config.permission_modules.insert(scheme.to_string(), module);
+        }
+        let pm = Arc::new(WalletPermissionsManager::new(under, ADMIN.into(), config));
         let handler: PermissionRequestHandler = Arc::new(move |r: PermissionRequest| {
             let originator = r.originator.clone();
             Box::pin(async move {
@@ -111,8 +141,19 @@ async fn internalize(
     basket: &str,
     labels: Option<Vec<String>>,
 ) -> (Result<bool, String>, i64) {
+    internalize_with(&[], manager, originator, basket, labels).await
+}
+
+/// As `internalize`, the manager holding a module for each of `schemes`.
+async fn internalize_with(
+    schemes: &[&str],
+    manager: bool,
+    originator: &str,
+    basket: &str,
+    labels: Option<Vec<String>>,
+) -> (Result<bool, String>, i64) {
     let (tx, txid) = beef_paying(other_lock());
-    let wallet = wallet(&txid, manager).await;
+    let wallet = wallet_with(&txid, manager, schemes).await;
     let answer = wallet
         .internalize_action(insertion_args(tx, basket, labels), originator)
         .await
@@ -182,6 +223,88 @@ async fn an_admin_label_is_refused_to_an_application() {
         Err("wallet error: Access denied: Label \"admin secret\" is admin-only.".into())
     );
     assert_eq!(stored, 0);
+}
+
+/// A basket or a label whose name starts with `p ` is refused to an
+/// originator the handler grants: with the reference's text when no module
+/// of its scheme is registered, as admin-only when one is (this line has no
+/// module path for these names); nothing is stored.
+#[tokio::test]
+async fn a_p_basket_and_a_p_label_are_refused_to_an_application() {
+    let p_label = || Some(vec!["p btms token1".to_string()]);
+    let cases = [
+        (
+            &[][..],
+            "p btms",
+            None,
+            "Unsupported P-basket scheme: p btms",
+        ),
+        (
+            &[][..],
+            "tokens",
+            p_label(),
+            "Unsupported P-label scheme: p btms",
+        ),
+        (
+            &["btms"][..],
+            "p btms",
+            None,
+            "Basket \"p btms\" is admin-only.",
+        ),
+        (
+            &["btms"][..],
+            "tokens",
+            p_label(),
+            "Label \"p btms token1\" is admin-only.",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (schemes, basket, labels, text) in cases {
+        let (answer, stored) =
+            internalize_with(schemes, true, GRANTED, basket, labels.clone()).await;
+        println!(
+            "modules {schemes:?}, basket {basket}, labels {labels:?}: {answer:?}, stored {stored}"
+        );
+        if (answer, stored) != (Err(format!("wallet error: Access denied: {text}")), 0) {
+            wrong.push(format!(
+                "modules {schemes:?}, basket {basket}, labels {labels:?}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "admitted or answered otherwise: {wrong:?}"
+    );
+}
+
+/// A label starting with `p ` with no scheme or no payload is refused with
+/// the reference's text.
+#[tokio::test]
+async fn a_p_label_with_no_payload_is_refused() {
+    for label in ["p btms", "p btms ", "p  btms"] {
+        let labels = Some(vec![label.to_string()]);
+        let (answer, stored) = internalize_with(&["btms"], true, GRANTED, "tokens", labels).await;
+        assert_eq!(
+            (answer, stored),
+            (
+                Err(format!(
+                    "wallet error: Access denied: Invalid P-label format: {label}"
+                )),
+                0
+            )
+        );
+    }
+}
+
+/// The admin originator, and a wallet with no manager, are admitted with a
+/// `p ` basket and a `p ` label as before.
+#[tokio::test]
+async fn a_p_basket_and_label_are_admitted_to_the_admin_and_with_no_manager() {
+    let labels = || Some(vec!["p btms token1".to_string()]);
+    let (answer, stored) = internalize(true, ADMIN, "p btms", labels()).await;
+    assert_eq!((answer, stored), (Ok(true), 1));
+    let (answer, stored) = internalize(false, APP, "p btms", labels()).await;
+    assert_eq!((answer, stored), (Ok(true), 1));
 }
 
 #[tokio::test]

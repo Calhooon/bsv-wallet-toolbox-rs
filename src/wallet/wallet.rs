@@ -2255,12 +2255,25 @@ where
             ));
         }
 
-        // BRC-98/99: with a permissions manager, each basket insertion's
-        // basket is asked for insertion as createAction's output baskets are,
-        // and an admin-reserved action label is refused (the reference's
-        // `authorizeInternalizeActionBaskets` and
+        // BRC-98/99: with a permissions manager, a basket or an action label
+        // whose name starts with `p ` is refused (the reference's
+        // `collectInternalizeActionBaskets` and
+        // `splitLabelsByPermissionModule`; this line has no module path for
+        // them), each other basket insertion's basket is asked for insertion
+        // as createAction's output baskets are, and an admin-reserved action
+        // label is refused (`authorizeInternalizeActionBaskets` and
         // `authorizeInternalizeActionLabels`), before anything is stored.
         if let Some(ref pm) = self.permissions_manager {
+            for output in &args.outputs {
+                if let Some(ref insertion) = output.insertion_remittance {
+                    if output.protocol == "basket insertion" {
+                        pm.refuse_p_name(originator, false, &insertion.basket)?;
+                    }
+                }
+            }
+            for label in args.labels.iter().flatten() {
+                pm.refuse_p_name(originator, true, label)?;
+            }
             for output in &args.outputs {
                 if let Some(ref insertion) = output.insertion_remittance {
                     if output.protocol == "basket insertion" {
