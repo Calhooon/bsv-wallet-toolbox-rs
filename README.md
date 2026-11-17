@@ -4,10 +4,9 @@
 
 The CI badge is the required set on `main`, the gate every pull request and push runs; the others are dispatched measurements (run once before a tag, never on a push), each its own workflow. Bench, Dependents and Fuzz are registered here so they can be dispatched; they measure the programme's beta line (`--ref beta`).
 
-Storage, signing, services and monitoring for BSV wallets. The release of record
-is the tag **v0.9.0**, published on crates.io as **0.9.0** (the same version);
-the repository's Releases page carries a Release per tag. It declares
-**bsv-rs 0.8.11** by caret (at least 0.8.11, below 0.9.0), the Rust SDK published by this project. The toolbox
+Storage, signing, services and monitoring for BSV wallets. The stable line is
+**0.13.x** on crates.io; this tree is **0.13.2**, and it requires
+**bsv-rs "0.8.11"** by caret (at least 0.8.11, below 0.9.0), the Rust SDK published by this project. The toolbox
 implements wallet operations over local SQLite storage or a remote
 JSON-RPC storage service.
 
@@ -15,7 +14,7 @@ JSON-RPC storage service.
 
 ```toml
 [dependencies]
-bsv-wallet-toolbox-rs = { version = "0.9.0", features = ["sqlite"] }
+bsv-wallet-toolbox-rs = { version = "0.13", features = ["sqlite"] }
 ```
 
 [Cargo.toml](Cargo.toml) declares features and dependencies: `sqlite`
