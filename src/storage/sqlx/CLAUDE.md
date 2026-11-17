@@ -388,7 +388,11 @@ pub async fn internalize_action_internal(
 | New wallet payment | +satoshis |
 | Existing change output -> wallet payment | 0 (ignored) |
 | Existing non-change -> wallet payment | +satoshis |
-| Change output -> basket insertion | -satoshis |
+| Wallet-managed change -> basket insertion | refused (`output <vout> is wallet-managed change ...`), nothing written |
+| Output in another basket -> basket insertion | refused (`output <vout> is already assigned to a different basket ...`), no basket created; the same basket: 0 |
+| Output in no basket, or in the default basket and not wallet-managed change -> basket insertion | 0, swept into the requested basket |
+
+Basket insertion rules (ts-stack@4d0ea63c8 `storage/methods/internalizeAction.ts:282-307, 360-406`): at step 0 the shared validator refuses `default` as the insertion basket in every spelling validateBasket maps to it (trimmed with ECMAScript's whitespace, lowercased), `Error::ValidationError("The insertionRemittance.basket parameter must be a non-default basket")`, before any read or write. At step 5, before any row is written, `validate_basket_merge` refuses an existing output that is wallet-managed change (`is_managed_change_output`, the reference's `isManagedChangeOutput`, `managedChange.ts:27-34`, with `receive` read beside `change` as `MANAGED_CHANGE_CLAUSE` reads it) and an existing output in a basket other than the default basket unless the requested basket, looked up without being created (the user, the name as given, not deleted), is that basket. A basket insertion moves no balance. Witnesses: `tests/internalize_insertion_tests.rs`.
 
 ## Sync Implementation
 

@@ -41,6 +41,32 @@
   is refused by the argument validator, as before
   (`tests/internalize_payment_lock_tests.rs`). The texts of both entries
   are under Hosts.
+- `internalizeAction` refuses a basket insertion into the default basket,
+  at the wallet door and at the storage door, before any row is written or
+  any basket created, in every spelling the reference's basket validator
+  maps to `default` (trimmed, lowercased): `default`, `DEFAULT`,
+  ` Default ` among them (ts-stack@4d0ea63c8
+  `signer/methods/internalizeAction.ts:93-99`,
+  `storage/methods/internalizeAction.ts:282-307`). Before, the exact name
+  `default` stored the output in the wallet's default basket as a custom
+  output, whatever its script, and any other spelling created a basket of
+  that name.
+- On the merge path (the transaction already in the wallet) a basket
+  insertion naming an output that is wallet-managed change (the wallet's
+  own change, or a received wallet payment) is refused before any row is
+  written (`validateBasketMerges`, `storage/methods/internalizeAction.ts:
+  379-390`; `isManagedChangeOutput`, `managedChange.ts:27-34`). Before, the
+  row became `custom`, `change = 0`, its derivation prefix, suffix and
+  sender cleared, and the answer's `satoshis` was the output's value
+  negated. A basket insertion no longer moves the answer's `satoshis` in any
+  case.
+- On the merge path a basket insertion naming an output already in another
+  application basket is refused, and the requested basket is not created;
+  the same basket named again is admitted, and an output in no basket or in
+  the default basket without being wallet-managed change is swept into the
+  requested basket, as the reference has it (`storage/methods/
+  internalizeAction.ts:360-406`). Before, the output moved into the
+  requested basket (`tests/internalize_insertion_tests.rs` for all three).
 
 ### Hosts
 Host lines for bsv-wallet-cli#386 (the beta.8 pin intake).
@@ -133,6 +159,54 @@ not select it (`tests/internalize_payment_lock_tests.rs`,
 before the relinquish the storage `createAction` selects that outpoint as its
 one input; after it, the same call answers `Insufficient funds: need 1005,
 have 0`).
+
+Answers of `internalizeAction` with a basket insertion that move with this
+tree, each read from a run here and at the base; through the
+`WalletInterface` each is a `WalletRefusal` of class `InvalidParameter`
+with the message below, and the storage door's `Error::ValidationError`
+displays the same text:
+- the insertion basket `default` in any spelling the reference maps to it:
+  `Validation error: The insertionRemittance.basket parameter must be a
+  non-default basket`. Before, `default` stored the output (a custom output
+  in the default basket) and ` Default ` created a basket ` Default `.
+- an existing output that is wallet-managed change: `Validation error: The
+  outputs parameter must be output <vout> is wallet-managed change and
+  cannot be reclassified as a basket insertion`. Before, admitted.
+- an existing output in another basket: `Validation error: The outputs
+  parameter must be output <vout> is already assigned to a different basket
+  and cannot be reclassified as a basket insertion into <basket>`. Before,
+  admitted.
+
+The basket of the third is matched by its name as given, as this port
+stores and finds basket names; the reference matches the trimmed,
+lowercased name, so a request naming the output's own basket in another
+spelling (` Tokens ` for `tokens`) is refused here and admitted there.
+
+What a host holds from before. An output a basket insertion put into the
+default basket (the name `default` exactly; any other spelling made a
+basket of its own) sits there beside the wallet's change, counted by
+`Wallet::balance`, which sums the default basket; `createAction` never
+selects it as change (its `type` is `custom`, `change = 0`). `listOutputs`
+on `default` lists it with no field that sets it apart; the storage reader
+does: `find_outputs` with the default basket's `basket_id` returns it with
+`type` `custom` and `change` false. `relinquishOutput` with `basket:
+"default"` and its outpoint takes it out of the basket and the balance
+(`a_host_finds_and_relinquishes_a_custom_output_in_the_default_basket`:
+4500 before, 0 after). A change output reclassified by a basket insertion
+now sits in that basket as `custom`, `change = 0`, its derivation prefix,
+suffix and sender NULL: the wallet no longer selects it as change and holds
+nothing to sign for it with. Internalizing the same transaction again as a
+wallet payment of that output restores it (a run at the base: the row back
+in `default`, `P2PKH`, `change = 1`, purpose `receive`, the sender the
+remittance's, the balance back to its value), but only with the remittance
+the output was derived with: for a received payment that is the sender's
+remittance, which a host may keep; for the wallet's own change it is the
+prefix and suffix the reclassification erased, and the same call with any
+other answers `Derivation mismatch for output <vout>: derived <hash> !=
+script <hash>`. A host that holds neither (a copy of the row taken before,
+or a backup store that synced the row before the reclassification, unrun
+here) cannot restore the row, and the coin is lost to the wallet's own
+signing.
 
 ## [0.14.0-beta.7] - 2026-11-04
 
