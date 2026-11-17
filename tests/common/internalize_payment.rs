@@ -1,7 +1,7 @@
 //! Helpers shared by the internalize payment integration tests: a wallet
 //! over in-memory SQLite whose mock broadcaster accepts, the count of stored
 //! outputs, the P2PKH of a key, the BRC-29 key a recipient derives, a
-//! wallet payment's arguments, and AtomicBEEFs paying one output: a single
+//! wallet payment's arguments, and atomic BEEFs paying one output: a single
 //! spend of one proven parent, and a sweep of one parent past bsv-rs's
 //! default link budget.
 //!
@@ -75,7 +75,7 @@ pub fn payment(sender: &PublicKey, prefix: &str, suffix: &str) -> InternalizeOut
     }
 }
 
-/// The arguments internalizing `output` of the AtomicBEEF `tx`.
+/// The arguments internalizing `output` of the atomic BEEF `tx`.
 pub fn args(tx: Vec<u8>, output: InternalizeOutput) -> InternalizeActionArgs {
     InternalizeActionArgs {
         tx,
@@ -173,7 +173,7 @@ fn proven_parent(outputs: u32) -> (Transaction, MerklePath) {
     (parent, bump)
 }
 
-/// An AtomicBEEF of a proven parent of `spent` outputs and a child
+/// An atomic BEEF of a proven parent of `spent` outputs and a child
 /// spending every one of them into one output locked by `lock`.
 pub fn spend_beef(spent: u32, lock: LockingScript) -> (Vec<u8>, String) {
     let (parent, bump) = proven_parent(spent);

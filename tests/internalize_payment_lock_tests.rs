@@ -74,12 +74,12 @@ fn payment(sender: &PublicKey) -> InternalizeOutput {
     common::payment(sender, PREFIX, SUFFIX)
 }
 
-fn insertion() -> Option<BasketInsertion> {
-    Some(BasketInsertion {
+fn insertion() -> BasketInsertion {
+    BasketInsertion {
         basket: "tokens".to_string(),
         custom_instructions: None,
         tags: None,
-    })
+    }
 }
 
 /// The answer, the outputs stored before and after, and the derived key.
@@ -106,7 +106,7 @@ async fn internalize(
 }
 
 /// A wallet payment output in each shape that is not the derived key's
-/// P2PKH: a P2PK lock of the derived key, an OP_RETURN script, the derived
+/// P2PKH: a P2PK lock of the derived key, an `OP_RETURN` script, the derived
 /// key's P2PKH with one byte more, an empty script. Each is refused with the
 /// reference's sentence and nothing is stored.
 #[tokio::test]
@@ -166,7 +166,7 @@ async fn a_basket_insertion_of_a_script_that_is_not_p2pkh_is_stored() {
         output_index: 0,
         protocol: "basket insertion".to_string(),
         payment_remittance: None,
-        insertion_remittance: insertion(),
+        insertion_remittance: Some(insertion()),
     })
     .await;
     assert!(answer.expect("the insertion is internalized"));
@@ -179,7 +179,7 @@ async fn a_basket_insertion_of_a_script_that_is_not_p2pkh_is_stored() {
 #[tokio::test]
 async fn a_basket_insertion_carrying_a_payment_remittance_is_held_to_the_rule() {
     let (answer, before, after, _) = internalize(op_return, |sender| InternalizeOutput {
-        insertion_remittance: insertion(),
+        insertion_remittance: Some(insertion()),
         protocol: "basket insertion".to_string(),
         ..payment(sender)
     })
