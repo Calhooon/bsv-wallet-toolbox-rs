@@ -2168,8 +2168,12 @@ mod tests {
         assert_eq!(result2.satoshis, 0);
     }
 
+    /// A wallet payment is wallet-managed change: a basket insertion naming
+    /// it again is refused with the reference's sentence and the row keeps
+    /// its change, type and derivation (wallet-toolbox storage
+    /// `internalizeAction.ts`, `validateBasketMerges`, ts-stack 4d0ea63c8).
     #[tokio::test]
-    async fn test_internalize_switch_from_change_to_custom_basket() {
+    async fn a_wallet_payment_named_again_as_a_basket_insertion_is_refused() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
 
@@ -2200,7 +2204,7 @@ mod tests {
         assert!(!result1.is_merge);
         assert_eq!(result1.satoshis, satoshis as i64);
 
-        // Second - switch to custom basket
+        // Second - the same output named by a basket insertion
         let args2 = InternalizeActionArgs {
             tx: beef_bytes,
             outputs: vec![InternalizeOutput {
@@ -2218,13 +2222,29 @@ mod tests {
             seek_permission: None,
         };
 
-        let result2 = internalize_action_internal(&storage, user_id, args2)
-            .await
-            .unwrap();
+        let row = |storage: &StorageSqlx| {
+            let pool = storage.writer().clone();
+            async move {
+                sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>, Option<i64>)>(
+                    "SELECT change, type, derivation_prefix, derivation_suffix, sender_identity_key, basket_id FROM outputs WHERE vout = 0",
+                )
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let before = row(&storage).await;
 
-        assert!(result2.is_merge);
-        // Switching from change to custom removes from balance
-        assert_eq!(result2.satoshis, -(satoshis as i64));
+        let refused = internalize_action_internal(&storage, user_id, args2).await;
+        match refused {
+            Err(e @ Error::ValidationError(_)) => assert_eq!(
+                e.to_string(),
+                "Validation error: The outputs parameter must be output 0 is wallet-managed change and cannot be reclassified as a basket insertion"
+            ),
+            other => panic!("not refused: {:?}", other.map(|r| r.satoshis)),
+        }
+        assert_eq!(row(&storage).await, before, "the row is untouched");
+        assert_eq!(before.0, 1, "still change");
     }
 
     #[tokio::test]
