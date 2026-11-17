@@ -837,7 +837,7 @@ async fn fetch_baskets_for_sync(
 
 async fn fetch_proven_txs_for_sync(
     storage: &StorageSqlx,
-    _user_id: i64,
+    user_id: i64,
     since: Option<DateTime<Utc>>,
     offset: u32,
     limit: u32,
@@ -847,7 +847,10 @@ async fn fetch_proven_txs_for_sync(
         SELECT proven_tx_id, txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx,
                created_at, updated_at
         FROM proven_txs
-        WHERE 1=1
+        WHERE EXISTS (
+            SELECT 1 FROM transactions t
+            WHERE t.proven_tx_id = proven_txs.proven_tx_id AND t.user_id = ?
+        )
         "#,
     );
 
@@ -857,7 +860,7 @@ async fn fetch_proven_txs_for_sync(
 
     sql.push_str(" ORDER BY updated_at ASC LIMIT ? OFFSET ?");
 
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(&sql).bind(user_id);
     if let Some(s) = since {
         query = query.bind(s);
     }
@@ -886,7 +889,7 @@ async fn fetch_proven_txs_for_sync(
 
 async fn fetch_proven_tx_reqs_for_sync(
     storage: &StorageSqlx,
-    _user_id: i64,
+    user_id: i64,
     since: Option<DateTime<Utc>>,
     offset: u32,
     limit: u32,
@@ -896,7 +899,10 @@ async fn fetch_proven_tx_reqs_for_sync(
         SELECT proven_tx_req_id, proven_tx_id, txid, status, attempts, history, notified,
                notify, batch, raw_tx, input_beef, created_at, updated_at
         FROM proven_tx_reqs
-        WHERE 1=1
+        WHERE EXISTS (
+            SELECT 1 FROM transactions t
+            WHERE t.txid = proven_tx_reqs.txid AND t.user_id = ?
+        )
         "#,
     );
 
@@ -906,7 +912,7 @@ async fn fetch_proven_tx_reqs_for_sync(
 
     sql.push_str(" ORDER BY updated_at ASC LIMIT ? OFFSET ?");
 
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(&sql).bind(user_id);
     if let Some(s) = since {
         query = query.bind(s);
     }

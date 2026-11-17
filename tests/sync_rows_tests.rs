@@ -370,3 +370,33 @@ async fn a_numbered_proof_link_names_no_local_row() {
     println!("WITNESS B10 numbered link stored as: {link:?}");
     assert_eq!(link, None);
 }
+
+/// A user's chunk carries the proofs and the requests of that user's
+/// transactions alone (the reference reads them through the user's
+/// transactions).
+#[tokio::test]
+async fn a_chunk_carries_only_its_users_proofs_and_requests() {
+    let s = store(SRC).await;
+    let (a, _) = s.find_or_insert_user(ALICE).await.unwrap();
+    let (b, _) = s.find_or_insert_user(BOB).await.unwrap();
+    let alice_txid = seed_all(&s, a.user_id, 'a', true, true).await;
+    seed_all(&s, b.user_id, 'b', true, true).await;
+    let mut args = args_for(ALICE);
+    args.offsets
+        .retain(|o| o.name == "provenTx" || o.name == "provenTxReq");
+    let chunk = s.get_sync_chunk(args).await.unwrap();
+    let proofs: Vec<String> = chunk
+        .proven_txs
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.txid)
+        .collect();
+    let reqs: Vec<String> = chunk
+        .proven_tx_reqs
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| r.txid)
+        .collect();
+    println!("WITNESS A2/A3 alice's chunk: proofs={proofs:?} requests={reqs:?}");
+    assert_eq!((proofs, reqs), (vec![alice_txid.clone()], vec![alice_txid]));
+}
