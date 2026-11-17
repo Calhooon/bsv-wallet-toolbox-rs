@@ -27,9 +27,8 @@ mod common;
 
 use std::collections::HashMap;
 
-use bsv_rs::primitives::bsv::{parse_transaction, TxInput, TxOutput};
 use bsv_rs::primitives::{PrivateKey, PublicKey};
-use bsv_rs::script::{LockingScript, Spend, SpendParams, UnlockingScript};
+use bsv_rs::script::LockingScript;
 use bsv_rs::wallet::{
     Counterparty, CreateActionArgs, CreateActionOptions, CreateActionOutput, InternalizeActionArgs,
     KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel, SignActionArgs, WalletInterface,
@@ -37,7 +36,7 @@ use bsv_rs::wallet::{
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{StorageSqlx, Wallet};
 
-use common::{beef_paying, other_lock, p2pkh_bytes, paying_derived, payment};
+use common::{beef_paying, other_lock, p2pkh_bytes, paying_derived, payment, spends};
 
 type TestWallet = Wallet<StorageSqlx, MockWalletServices>;
 
@@ -129,44 +128,6 @@ async fn spend(wallet: &TestWallet, deferred: bool) -> Result<Vec<u8>, String> {
         .to_vec())
 }
 
-/// Runs the input of `raw` spending `txid`.`vout` against `lock` holding
-/// `satoshis` in bsv-rs's script interpreter: whether it verifies.
-fn verify_spend(raw: &[u8], txid: &str, vout: u32, satoshis: u64, lock: &[u8]) -> bool {
-    let parsed = parse_transaction(raw).expect("a transaction");
-    let mut outpoint: [u8; 32] = hex::decode(txid).unwrap().try_into().unwrap();
-    outpoint.reverse();
-    let index = parsed
-        .inputs
-        .iter()
-        .position(|i| i.txid == outpoint && i.output_index == vout)
-        .expect("the spend selects the coin");
-    let ours = &parsed.inputs[index];
-    let other_inputs: Vec<TxInput> = parsed
-        .inputs
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != index)
-        .map(|(_, i)| i.clone())
-        .collect();
-    let outputs: Vec<TxOutput> = parsed.outputs.clone();
-    let mut spend = Spend::new(SpendParams {
-        source_txid: ours.txid,
-        source_output_index: vout,
-        source_satoshis: satoshis,
-        locking_script: LockingScript::from_binary(lock).unwrap(),
-        transaction_version: parsed.version,
-        other_inputs,
-        outputs,
-        input_index: index,
-        unlocking_script: UnlockingScript::from_binary(&ours.script).unwrap(),
-        input_sequence: ours.sequence,
-        lock_time: parsed.locktime,
-        memory_limit: None,
-        work_limit: None,
-    });
-    matches!(spend.validate(), Ok(true))
-}
-
 /// The row's sender identity key, spendable flag and spender.
 async fn held(wallet: &TestWallet, txid: &str, vout: u32) -> (Option<String>, bool, Option<i64>) {
     sqlx::query_as(
@@ -207,17 +168,14 @@ async fn a_self_payment_with_an_empty_sender_is_stored_with_no_sender_and_signs(
             signed.as_ref().map(|_| "signed")
         );
         let signed = signed.unwrap();
-        assert!(verify_spend(&signed, &txid, 0, 9_500, &lock));
+        assert_eq!(spends(&signed, &txid, 0, 9_500, &lock), Some(true));
         // The interpreter refuses the same unlocking script against another
         // lock and another amount.
-        assert!(!verify_spend(
-            &signed,
-            &txid,
-            0,
-            9_500,
-            &other_lock().to_binary()
-        ));
-        assert!(!verify_spend(&signed, &txid, 0, 9_499, &lock));
+        assert_eq!(
+            spends(&signed, &txid, 0, 9_500, &other_lock().to_binary()),
+            Some(false)
+        );
+        assert_eq!(spends(&signed, &txid, 0, 9_499, &lock), Some(false));
     }
 }
 
@@ -238,7 +196,7 @@ async fn a_row_holding_an_empty_sender_signs() {
             "stored empty sender, deferred={deferred}: {:?}",
             signed.as_ref().map(|_| "signed")
         );
-        assert!(verify_spend(&signed.unwrap(), &txid, 0, 9_500, &lock));
+        assert_eq!(spends(&signed.unwrap(), &txid, 0, 9_500, &lock), Some(true));
     }
 }
 
@@ -358,13 +316,10 @@ async fn own_change_restored_with_the_wallets_identity_key_signs() {
         "own change, identity sender: {:?}",
         signed.as_ref().map(|_| "signed")
     );
-    assert!(verify_spend(
-        &signed.unwrap(),
-        &r.txid,
-        r.vout,
-        r.satoshis,
-        &r.lock
-    ));
+    assert_eq!(
+        spends(&signed.unwrap(), &r.txid, r.vout, r.satoshis, &r.lock),
+        Some(true)
+    );
 }
 
 #[tokio::test]
@@ -388,13 +343,10 @@ async fn own_change_restored_with_an_empty_sender_signs() {
             "own change, empty sender, deferred={deferred}: {:?}",
             signed.as_ref().map(|_| "signed")
         );
-        assert!(verify_spend(
-            &signed.unwrap(),
-            &r.txid,
-            r.vout,
-            r.satoshis,
-            &r.lock
-        ));
+        assert_eq!(
+            spends(&signed.unwrap(), &r.txid, r.vout, r.satoshis, &r.lock),
+            Some(true)
+        );
     }
 }
 
@@ -436,7 +388,7 @@ async fn a_reclassified_received_payment_restored_with_its_sender_signs() {
         "received payment, its sender: {:?}",
         signed.as_ref().map(|_| "signed")
     );
-    assert!(verify_spend(&signed.unwrap(), &txid, 0, 9_500, &lock));
+    assert_eq!(spends(&signed.unwrap(), &txid, 0, 9_500, &lock), Some(true));
 }
 
 const INVALID_SENDER: &str =

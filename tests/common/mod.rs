@@ -9,8 +9,9 @@
 
 #![allow(dead_code)]
 
+use bsv_rs::primitives::bsv::{parse_transaction, TxInput, TxOutput};
 use bsv_rs::primitives::{hash160, PrivateKey, PublicKey};
-use bsv_rs::script::{LockingScript, UnlockingScript};
+use bsv_rs::script::{LockingScript, Spend, SpendParams, UnlockingScript};
 use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
 use bsv_rs::wallet::{
     Counterparty, InternalizeActionArgs, InternalizeOutput, KeyDeriverApi, ProtoWallet, Protocol,
@@ -245,4 +246,41 @@ pub async fn internalize_at(
             .map(|r| r.base.accepted)
             .map_err(|e| e.to_string())
     }
+}
+
+/// Whether `raw` spends `txid`.`vout` with an unlocking script that runs
+/// clean against `lock` holding `satoshis`; `None` when it does not spend it.
+pub fn spends(raw: &[u8], txid: &str, vout: u32, satoshis: u64, lock: &[u8]) -> Option<bool> {
+    let parsed = parse_transaction(raw).expect("a transaction");
+    let mut outpoint: [u8; 32] = hex::decode(txid).unwrap().try_into().unwrap();
+    outpoint.reverse();
+    let index = parsed
+        .inputs
+        .iter()
+        .position(|i| i.txid == outpoint && i.output_index == vout)?;
+    let ours = &parsed.inputs[index];
+    let other_inputs: Vec<TxInput> = parsed
+        .inputs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != index)
+        .map(|(_, i)| i.clone())
+        .collect();
+    let outputs: Vec<TxOutput> = parsed.outputs.clone();
+    let mut spend = Spend::new(SpendParams {
+        source_txid: ours.txid,
+        source_output_index: vout,
+        source_satoshis: satoshis,
+        locking_script: LockingScript::from_binary(lock).unwrap(),
+        transaction_version: parsed.version,
+        other_inputs,
+        outputs,
+        input_index: index,
+        unlocking_script: UnlockingScript::from_binary(&ours.script).unwrap(),
+        input_sequence: ours.sequence,
+        lock_time: parsed.locktime,
+        memory_limit: None,
+        work_limit: None,
+    });
+    Some(matches!(spend.validate(), Ok(true)))
 }

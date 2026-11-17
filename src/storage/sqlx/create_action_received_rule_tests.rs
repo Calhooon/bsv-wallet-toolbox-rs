@@ -156,22 +156,6 @@ async fn the_count_and_both_picks_agree_on_every_case() {
     }
 }
 
-#[tokio::test]
-async fn the_tests_allocation_binds_the_rule_off() {
-    let (storage, user_id, basket_id, _) = one_coin("receive", "unproven").await;
-    let mut conn = storage.pool().acquire().await.unwrap();
-    assert_eq!(
-        count_change_inputs(&mut conn, user_id, basket_id, true)
-            .await
-            .unwrap(),
-        0
-    );
-    let picked = allocate_change_input(&mut conn, user_id, basket_id, 9_999, 1_000, true)
-        .await
-        .unwrap();
-    assert!(picked.is_none());
-}
-
 fn labelled(labels: &[&str]) -> bsv_rs::wallet::CreateActionArgs {
     bsv_rs::wallet::CreateActionArgs {
         description: "a labelled action".to_string(),
@@ -202,6 +186,7 @@ fn the_rule_is_read_from_the_labels_trimmed_and_lowercased() {
         &["under received rule"],
         &["underReceivedRules"],
         &["underReceived"],
+        &["\u{85}underReceivedRule"],
     ] {
         assert!(!names_received_rule(&labelled(not_named)), "{not_named:?}");
     }

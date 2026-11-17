@@ -13,11 +13,17 @@ pub(crate) const DEFAULT_BASKET_INSERTION_REFUSAL: &str =
 /// `@bsv/sdk`'s `validationHelpers.ts`) trims the name with JavaScript's
 /// `trim` and lowercases it before the comparison with `default`, so every
 /// spelling that trims and lowercases to `default` is the default basket.
-/// JavaScript's `trim` strips U+FEFF and keeps U+0085, where Rust's
-/// `char::is_whitespace` does the reverse.
 pub(crate) fn names_default_basket(basket: &str) -> bool {
-    let js_space = |c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{FEFF}';
-    basket.trim_matches(js_space).to_lowercase() == "default"
+    js_trim(basket).to_lowercase() == "default"
+}
+
+/// `s` trimmed as JavaScript's `trim` trims it (ECMAScript's `WhiteSpace`
+/// and `LineTerminator`), the trim the SDK's validators apply to a basket
+/// name and to a label. JavaScript's `trim` strips U+FEFF and keeps U+0085,
+/// where Rust's `char::is_whitespace` does the reverse; that difference is
+/// why this exists, and both readers use this one set.
+pub(crate) fn js_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{FEFF}')
 }
 
 /// Whether any basket insertion of `outputs` names the default basket. Only
