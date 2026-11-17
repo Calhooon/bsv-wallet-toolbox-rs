@@ -6,113 +6,10 @@ use std::sync::Arc;
 
 use bsv_wallet_toolbox_rs::storage::entities::*;
 use bsv_wallet_toolbox_rs::storage::*;
-use bsv_wallet_toolbox_rs::StorageSqlx;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 
-const ALICE: &str = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const BOB: &str = "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const SRC: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-const DST: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-
-const ENTITIES: [&str; 12] = [
-    "outputBasket",
-    "provenTx",
-    "provenTxReq",
-    "txLabel",
-    "outputTag",
-    "transaction",
-    "output",
-    "txLabelMap",
-    "outputTagMap",
-    "certificate",
-    "certificateField",
-    "commission",
-];
-
-async fn store(sik: &str) -> Arc<StorageSqlx> {
-    let s = Arc::new(StorageSqlx::in_memory().await.unwrap());
-    s.migrate("rows", sik).await.unwrap();
-    s.make_available().await.unwrap();
-    s
-}
-
-fn args_for(identity: &str) -> RequestSyncChunkArgs {
-    RequestSyncChunkArgs {
-        from_storage_identity_key: SRC.to_string(),
-        to_storage_identity_key: DST.to_string(),
-        identity_key: identity.to_string(),
-        since: None,
-        max_rough_size: 10_000_000,
-        max_items: 1000,
-        offsets: ENTITIES
-            .iter()
-            .map(|n| SyncOffset {
-                name: n.to_string(),
-                offset: 0,
-            })
-            .collect(),
-    }
-}
-
-fn chunk_for(identity: &str) -> SyncChunk {
-    SyncChunk {
-        from_storage_identity_key: SRC.to_string(),
-        to_storage_identity_key: DST.to_string(),
-        user_identity_key: identity.to_string(),
-        ..Default::default()
-    }
-}
-
-async fn exec(s: &StorageSqlx, sql: &str) -> i64 {
-    ::sqlx::query(sql)
-        .execute(s.writer())
-        .await
-        .unwrap()
-        .last_insert_rowid()
-}
-
-async fn count(s: &StorageSqlx, sql: &str) -> i64 {
-    ::sqlx::query_scalar(sql).fetch_one(s.pool()).await.unwrap()
-}
-
-fn at(days: i64) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
-        .unwrap()
-        .with_timezone(&Utc)
-        + Duration::days(days)
-}
-
-fn basket(id: i64, name: &str) -> TableOutputBasket {
-    TableOutputBasket {
-        basket_id: id,
-        user_id: 1,
-        name: name.to_string(),
-        number_of_desired_utxos: 6,
-        minimum_desired_utxo_value: 1000,
-        created_at: at(0),
-        updated_at: at(0),
-    }
-}
-
-fn transaction(id: i64, reference: &str, txid: Option<&str>) -> TableTransaction {
-    TableTransaction {
-        transaction_id: id,
-        user_id: 1,
-        txid: txid.map(str::to_string),
-        status: TransactionStatus::Unproven,
-        reference: reference.to_string(),
-        description: "synced".to_string(),
-        satoshis: 0,
-        version: 1,
-        lock_time: 0,
-        raw_tx: None,
-        input_beef: None,
-        is_outgoing: false,
-        proof_txid: None,
-        created_at: at(0),
-        updated_at: at(0),
-    }
-}
+mod sync_support;
+use sync_support::*;
 
 /// One chunk, one transaction: a chunk whose transaction row fails leaves none
 /// of the rows it wrote before it.
@@ -143,40 +40,6 @@ async fn a_failing_chunk_leaves_none_of_its_rows() {
     let states = count(&s, "SELECT COUNT(*) FROM sync_states").await;
     println!("WITNESS B20 rows left by the failed chunk: baskets={left} sync_states={states}");
     assert_eq!((left, states), (0, 0));
-}
-
-/// One row of every entity for `uid`, every nullable column set (`set`) or
-/// unset, the transaction linked to its proof when `link`. `tag` is one hex
-/// digit: the user's txid is that digit 64 times.
-async fn seed_all(s: &StorageSqlx, uid: i64, tag: char, set: bool, link: bool) -> String {
-    let now = "'2026-01-01 00:00:00'";
-    let n = |v: &str| {
-        if set {
-            v.to_string()
-        } else {
-            "NULL".to_string()
-        }
-    };
-    let txid = tag.to_string().repeat(64);
-    let ptx = exec(s, &format!("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES ('{txid}',1,0,'{h}','{h}',X'00',X'00',{now},{now})", h = "e".repeat(64))).await;
-    exec(s, &format!("INSERT INTO proven_tx_reqs (proven_tx_id,txid,status,attempts,history,notified,notify,raw_tx,input_beef,batch,created_at,updated_at) VALUES ({},'{txid}','completed',0,'{{}}',0,'{{}}',X'00',{},{},{now},{now})", n(&ptx.to_string()), n("X'01'"), n("'b'"))).await;
-    let basket = exec(s, &format!("INSERT INTO output_baskets (user_id,name,number_of_desired_utxos,minimum_desired_utxo_value,created_at,updated_at) VALUES ({uid},'{tag}bk',6,1000,{now},{now})")).await;
-    let label = exec(s, &format!("INSERT INTO tx_labels (user_id,label,created_at,updated_at) VALUES ({uid},'{tag}lb',{now},{now})")).await;
-    let otag = exec(s, &format!("INSERT INTO output_tags (user_id,tag,created_at,updated_at) VALUES ({uid},'{tag}tg',{now},{now})")).await;
-    let link_col = if link {
-        ptx.to_string()
-    } else {
-        "NULL".to_string()
-    };
-    let tx = exec(s, &format!("INSERT INTO transactions (user_id,proven_tx_id,status,reference,is_outgoing,satoshis,version,lock_time,description,txid,input_beef,raw_tx,created_at,updated_at) VALUES ({uid},{link_col},'completed','{tag}ref',0,5,1,0,'desc','{txid}',{},{},{now},{now})", n("X'02'"), n("X'03'"))).await;
-    let out = exec(s, &format!("INSERT INTO outputs (user_id,transaction_id,basket_id,spendable,change,vout,satoshis,provided_by,purpose,type,output_description,txid,sender_identity_key,derivation_prefix,derivation_suffix,custom_instructions,spent_by,sequence_number,spending_description,script_length,script_offset,locking_script,created_at,updated_at) VALUES ({uid},{tx},{},1,1,0,1000,'you','change','P2PKH',{},'{txid}',{},{},{},{},{},{},{},{},{},{},{now},{now})",
-        n(&basket.to_string()), n("'od'"), n("'02ab'"), n("'pre'"), n("'suf'"), n("'ci'"), n(&tx.to_string()), n("7"), n("'sd'"), n("25"), n("0"), n("X'76a914000000000000000000000000000000000000000088ac'"))).await;
-    exec(s, &format!("INSERT INTO tx_labels_map (tx_label_id,transaction_id,created_at,updated_at) VALUES ({label},{tx},{now},{now})")).await;
-    exec(s, &format!("INSERT INTO output_tags_map (output_tag_id,output_id,created_at,updated_at) VALUES ({otag},{out},{now},{now})")).await;
-    let cert = exec(s, &format!("INSERT INTO certificates (user_id,type,serial_number,certifier,subject,verifier,revocation_outpoint,signature,created_at,updated_at) VALUES ({uid},'{tag}ty','sn','ce','su',{},'op.0','sig',{now},{now})", n("'ve'"))).await;
-    exec(s, &format!("INSERT INTO certificate_fields (certificate_id,user_id,field_name,field_value,master_key,created_at,updated_at) VALUES ({cert},{uid},'f','v','mk',{now},{now})")).await;
-    exec(s, &format!("INSERT INTO commissions (user_id,transaction_id,satoshis,key_offset,is_redeemed,locking_script,created_at,updated_at) VALUES ({uid},{tx},10,'ko',0,X'51',{now},{now})")).await;
-    txid
 }
 
 /// The reader answers every fetch for a store holding every entity, nullable
@@ -241,79 +104,6 @@ async fn the_reader_answers_for_a_transaction_linked_to_its_proof() {
     .await;
     println!("WITNESS A1 backup transaction linked to its own proof row: {linked}");
     assert_eq!(linked, 1);
-}
-
-fn proof(id: i64, txid: &str) -> TableProvenTx {
-    TableProvenTx {
-        proven_tx_id: id,
-        txid: txid.to_string(),
-        height: 1,
-        index: 0,
-        block_hash: "e".repeat(64),
-        merkle_root: "e".repeat(64),
-        merkle_path: vec![0],
-        raw_tx: vec![0],
-        created_at: at(0),
-        updated_at: at(0),
-    }
-}
-
-fn request(id: i64, txid: &str, proof_id: Option<i64>) -> TableProvenTxReq {
-    TableProvenTxReq {
-        proven_tx_req_id: id,
-        txid: txid.to_string(),
-        status: ProvenTxReqStatus::Unmined,
-        attempts: 0,
-        history: "{}".to_string(),
-        notified: false,
-        notify: "{}".to_string(),
-        raw_tx: Some(vec![1]),
-        input_beef: None,
-        proven_tx_id: proof_id,
-        batch: None,
-        created_at: at(0),
-        updated_at: at(0),
-    }
-}
-
-async fn stored_link(s: &StorageSqlx, table: &str, txid: &str) -> Option<String> {
-    ::sqlx::query_scalar::<_, Option<String>>(&format!(
-        "SELECT p.txid FROM {table} r LEFT JOIN proven_txs p ON p.proven_tx_id = r.proven_tx_id WHERE r.txid = ?"
-    ))
-    .bind(txid)
-    .fetch_one(s.pool())
-    .await
-    .unwrap()
-}
-
-fn output_row(id: i64, transaction_id: i64, txid: &str) -> TableOutput {
-    TableOutput {
-        output_id: id,
-        user_id: 1,
-        transaction_id,
-        basket_id: None,
-        spendable: true,
-        change: true,
-        output_description: None,
-        vout: 0,
-        satoshis: 1000,
-        provided_by: "you".to_string(),
-        purpose: Some("change".to_string()),
-        output_type: "P2PKH".to_string(),
-        txid: txid.to_string(),
-        sender_identity_key: None,
-        derivation_prefix: Some("pre".to_string()),
-        derivation_suffix: Some("suf".to_string()),
-        custom_instructions: None,
-        spent_by: None,
-        sequence_number: None,
-        spending_description: None,
-        script_length: 1,
-        script_offset: 0,
-        locking_script: Some(vec![0x51]),
-        created_at: at(0),
-        updated_at: at(0),
-    }
 }
 
 /// A transaction's and a request's proof link travel through the chunk's
@@ -429,10 +219,6 @@ async fn a_chunk_carries_only_its_users_proofs_and_requests() {
         .collect();
     println!("WITNESS A2/A3 alice's chunk: proofs={proofs:?} requests={reqs:?}");
     assert_eq!((proofs, reqs), (vec![alice_txid.clone()], vec![alice_txid]));
-}
-
-async fn active_storage_of(s: &StorageSqlx, identity: &str) -> Option<String> {
-    s.find_user(identity).await.unwrap().unwrap().active_storage
 }
 
 /// A chunk's user row is merged only for the user the chunk is for: a row
@@ -603,28 +389,6 @@ async fn set_active_writes_each_stores_own_user_row() {
         rows,
         (Some(DST.to_string()), Some(nine), Some(DST.to_string()))
     );
-}
-
-async fn req_row(
-    s: &StorageSqlx,
-    txid: &str,
-) -> (
-    String,
-    i64,
-    Vec<u8>,
-    Option<Vec<u8>>,
-    Option<i64>,
-    String,
-    String,
-    Option<String>,
-) {
-    ::sqlx::query_as(
-        "SELECT status, attempts, raw_tx, input_beef, proven_tx_id, history, notify, batch FROM proven_tx_reqs WHERE txid = ?",
-    )
-    .bind(txid)
-    .fetch_one(s.pool())
-    .await
-    .unwrap()
 }
 
 /// An existing request is merged as the reference merges one: its status,
