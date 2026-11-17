@@ -66,8 +66,10 @@ fn output(txid: &str) -> WalletOutput {
     }
 }
 
+/// The witness: 800 outputs of one parent re-materialize past the default link
+/// budget, so a linking reader refuses this token's BEEF at the pin.
 #[test]
-fn a_token_whose_transaction_sweeps_one_parent_is_read_749() {
+fn witness_a_token_past_the_link_budget_is_read_749() {
     let (beef, txid) = fanned_token(800, 2);
     assert!(
         token_source(&beef, &output(&txid), 2).is_some(),
@@ -75,8 +77,10 @@ fn a_token_whose_transaction_sweeps_one_parent_is_read_749() {
     );
 }
 
+/// The control: 2 outputs of one parent are within the default link budget, so
+/// this passes at either pin and with either reader.
 #[test]
-fn a_token_of_a_small_transaction_is_read_as_before_749() {
+fn control_a_token_within_the_link_budget_is_read_749() {
     let (beef, txid) = fanned_token(2, 2);
     assert!(token_source(&beef, &output(&txid), 2).is_some());
     assert!(
