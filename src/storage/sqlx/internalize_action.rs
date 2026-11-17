@@ -861,7 +861,7 @@ async fn load_existing_outputs(
 /// payment merged over an existing output kept that output's `provided_by`
 /// and `purpose` before 0.13.3, so a change row with a full derivation is
 /// managed change here whatever those two columns hold.
-pub(crate) fn is_managed_change_output(output: &TableOutput) -> bool {
+fn is_managed_change_output(output: &TableOutput) -> bool {
     let non_empty = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
     output.output_type == "P2PKH"
         && output.change
@@ -1778,6 +1778,94 @@ mod tests {
             .await
             .unwrap();
         storage
+    }
+
+    /// A row with every condition of `is_managed_change_output`: P2PKH,
+    /// change, a non-empty derivation prefix and suffix; `provided_by` and
+    /// `purpose` as a `createAction` output holds them.
+    fn managed_row() -> TableOutput {
+        TableOutput {
+            output_id: 1,
+            user_id: 1,
+            transaction_id: 1,
+            basket_id: Some(1),
+            txid: "00".repeat(32),
+            vout: 0,
+            satoshis: 1_000,
+            locking_script: None,
+            script_length: 25,
+            script_offset: 0,
+            output_type: "P2PKH".to_string(),
+            provided_by: "you".to_string(),
+            purpose: Some(String::new()),
+            output_description: None,
+            spent_by: None,
+            sequence_number: None,
+            spending_description: None,
+            spendable: true,
+            change: true,
+            derivation_prefix: Some("prefix".to_string()),
+            derivation_suffix: Some("suffix".to_string()),
+            sender_identity_key: None,
+            custom_instructions: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    /// The row with every condition is managed change (refused as a basket
+    /// insertion), whatever its `provided_by` and `purpose`.
+    #[test]
+    fn change_with_a_full_derivation_is_managed_whatever_its_provider_and_purpose() {
+        assert!(is_managed_change_output(&managed_row()));
+        for (provided_by, purpose) in [
+            ("storage", Some("change")),
+            ("storage", Some("receive")),
+            ("you", None),
+        ] {
+            let mut row = managed_row();
+            row.provided_by = provided_by.to_string();
+            row.purpose = purpose.map(str::to_string);
+            assert!(is_managed_change_output(&row), "{provided_by} {purpose:?}");
+        }
+    }
+
+    /// A row that is not `P2PKH`, and only that, is not managed change.
+    #[test]
+    fn a_row_not_p2pkh_is_not_managed_change() {
+        let mut row = managed_row();
+        row.output_type = "custom".to_string();
+        assert!(!is_managed_change_output(&row));
+    }
+
+    /// A row that is not change, and only that, is not managed change.
+    #[test]
+    fn a_row_not_change_is_not_managed_change() {
+        let mut row = managed_row();
+        row.change = false;
+        assert!(!is_managed_change_output(&row));
+    }
+
+    /// A row with no derivation prefix (none or empty), and only that, is
+    /// not managed change.
+    #[test]
+    fn a_row_without_a_derivation_prefix_is_not_managed_change() {
+        for prefix in [None, Some(String::new())] {
+            let mut row = managed_row();
+            row.derivation_prefix = prefix.clone();
+            assert!(!is_managed_change_output(&row), "{prefix:?}");
+        }
+    }
+
+    /// A row with no derivation suffix (none or empty), and only that, is
+    /// not managed change.
+    #[test]
+    fn a_row_without_a_derivation_suffix_is_not_managed_change() {
+        for suffix in [None, Some(String::new())] {
+            let mut row = managed_row();
+            row.derivation_suffix = suffix.clone();
+            assert!(!is_managed_change_output(&row), "{suffix:?}");
+        }
     }
 
     /// Helper to create a test user.
