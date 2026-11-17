@@ -126,7 +126,10 @@ async fn with_no_tracker_anywhere_the_storage_door_refuses() {
         seek_permission: None,
     };
     let answer = storage.internalize_action(&auth, args).await;
-    let text = answer.err().expect("refused").to_string();
+    let text = match answer {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("admitted with no tracker anywhere"),
+    };
     println!("no tracker anywhere: {text}");
     assert!(text.contains("No chain tracker is available to verify the BEEF"));
     let outputs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outputs")
