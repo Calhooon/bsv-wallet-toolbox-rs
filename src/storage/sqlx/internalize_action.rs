@@ -50,6 +50,11 @@ pub(crate) const REPEATED_OUTPUT_INDEX_REFUSAL: &str =
 pub(crate) const EMPTY_DERIVATION_REFUSAL: &str =
     "Wallet payment outputs require non-empty derivation_prefix and derivation_suffix";
 
+/// The refusal of a wallet payment whose sender identity key is neither
+/// empty (the wallet itself) nor a compressed public key.
+pub(crate) const INVALID_SENDER_REFUSAL: &str =
+    "Wallet payment outputs require a sender_identity_key that is empty or a compressed public key";
+
 /// The refusal of an AtomicBEEF when neither the storage nor its services
 /// has a chain tracker to verify its merkle roots.
 pub(crate) const NO_CHAIN_TRACKER_REFUSAL: &str =
@@ -99,8 +104,9 @@ pub async fn internalize_action_internal(
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
     // Step 0: The arguments the reference's validator refuses before
-    // anything else: no output at all, and a wallet payment with an empty
-    // derivation prefix or suffix (a change row nothing could sign).
+    // anything else: no output at all, a wallet payment with an empty
+    // derivation prefix or suffix (a change row nothing could sign), and a
+    // wallet payment whose sender is neither empty nor a compressed key.
     if args.outputs.is_empty() {
         return Err(Error::ValidationError(NO_OUTPUTS_REFUSAL.to_string()));
     }
@@ -111,6 +117,9 @@ pub async fn internalize_action_internal(
         if let Some(ref payment) = output.payment_remittance {
             if payment.derivation_prefix.is_empty() || payment.derivation_suffix.is_empty() {
                 return Err(Error::ValidationError(EMPTY_DERIVATION_REFUSAL.to_string()));
+            }
+            if !sender_is_empty_or_a_key(&payment.sender_identity_key) {
+                return Err(Error::ValidationError(INVALID_SENDER_REFUSAL.to_string()));
             }
         }
     }
@@ -783,6 +792,15 @@ pub async fn internalize_action_internal(
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// Whether a wallet payment's sender identity key is empty (the wallet
+/// itself) or a compressed public key in hex.
+fn sender_is_empty_or_a_key(sender_identity_key: &str) -> bool {
+    sender_identity_key.is_empty()
+        || (sender_identity_key.len() == 66
+            && (sender_identity_key.starts_with("02") || sender_identity_key.starts_with("03"))
+            && bsv_rs::primitives::PublicKey::from_hex(sender_identity_key).is_ok())
+}
 
 /// The sender identity key a wallet payment's row holds: none for an empty
 /// sender (the wallet itself), as the wallet's own change rows hold none,

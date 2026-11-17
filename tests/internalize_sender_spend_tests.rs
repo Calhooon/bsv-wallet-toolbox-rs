@@ -436,3 +436,44 @@ async fn a_reclassified_received_payment_restored_with_its_sender_signs() {
     );
     assert!(verify_spend(&signed.unwrap(), &txid, 0, 9_500, &lock));
 }
+#[tokio::test]
+async fn the_storage_door_refuses_a_sender_that_is_not_a_key() {
+    let root = PrivateKey::random();
+    let lock = p2pkh_bytes(&self_key(&root, PREFIX, SUFFIX));
+    let (tx, txid) = beef_paying(LockingScript::from_binary(&lock).unwrap());
+    let wallet = common::wallet("internalize-sender-spend-tests", &root, &txid).await;
+    let off_curve = format!("02{}", "00".repeat(32));
+    let uncompressed = hex::encode(root.public_key().to_uncompressed());
+    for sender in ["not a key", "02", off_curve.as_str(), uncompressed.as_str()] {
+        let storage = common::internalize_at(
+            "storage",
+            &wallet,
+            &root,
+            args(tx.clone(), 0, PREFIX, SUFFIX, sender),
+        )
+        .await;
+        println!("storage door, sender {sender:?}: {storage:?}");
+        assert_eq!(
+            storage,
+            Err(format!("Validation error: {}", INVALID_SENDER)),
+            "{sender:?}"
+        );
+        assert_eq!(common::stored_outputs(&wallet).await, 0);
+    }
+    for sender in ["not a key", off_curve.as_str()] {
+        let at_wallet = common::internalize_at(
+            "wallet",
+            &wallet,
+            &root,
+            args(tx.clone(), 0, PREFIX, SUFFIX, sender),
+        )
+        .await;
+        println!("wallet door, sender {sender:?}: {at_wallet:?}");
+        assert!(at_wallet
+            .as_ref()
+            .is_err_and(|e| e.starts_with("wallet error: Invalid sender_identity_key")));
+    }
+}
+
+const INVALID_SENDER: &str =
+    "Wallet payment outputs require a sender_identity_key that is empty or a compressed public key";
