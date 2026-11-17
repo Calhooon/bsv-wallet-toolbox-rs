@@ -233,9 +233,11 @@ async fn module_arguments_reach_the_underlying_call() {
 }
 
 /// A module whose arguments rewrite the insertion basket to the default
-/// basket (any spelling validateBasket maps to `default`): the door
-/// validates the chain's arguments again and refuses with the default
-/// basket's sentence, nothing stored.
+/// basket (any spelling validateBasket maps to `default`): the call is
+/// refused with the default basket's sentence and no output is stored. The
+/// wallet door validates the chain's arguments again and the storage door
+/// refuses the same request at its own validation with the same sentence, so
+/// this test shows the refusal, not which of the two doors made it.
 #[tokio::test]
 async fn module_arguments_naming_the_default_basket_are_refused() {
     for spelling in ["default", " Default ", "\u{FEFF}DEFAULT"] {
