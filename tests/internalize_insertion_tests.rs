@@ -28,11 +28,15 @@ use bsv_rs::primitives::PrivateKey;
 use bsv_rs::transaction::Beef;
 use bsv_rs::wallet::{
     BasketInsertion, CreateActionArgs, CreateActionOptions, CreateActionOutput,
-    InternalizeActionArgs, InternalizeOutput, WalletInterface,
+    InternalizeActionArgs, InternalizeOutput, RelinquishOutputArgs, WalletInterface,
 };
 use bsv_rs::WalletRefusalClass;
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
-use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, Wallet, WalletStorageWriter};
+use bsv_wallet_toolbox_rs::{
+    AuthId, StorageSqlx, Wallet, WalletStorageReader, WalletStorageWriter,
+};
+
+use bsv_wallet_toolbox_rs::storage::FindOutputsArgs;
 
 use common::{args, beef_paying, other_lock, p2pkh_bytes, refusal};
 
@@ -413,4 +417,65 @@ async fn an_output_in_the_default_basket_that_is_not_change_is_swept_into_a_bask
             "{door}"
         );
     }
+}
+
+/// What a host does about an output an earlier basket insertion put in the
+/// default basket: the storage reader finds it there as `custom`, not
+/// change; `relinquishOutput` on "default" takes it out of the basket the
+/// balance sums.
+#[tokio::test]
+async fn a_host_finds_and_relinquishes_a_custom_output_in_the_default_basket() {
+    let (bytes, txid) = beef_paying(other_lock());
+    let wallet = wallet(&PrivateKey::random(), &txid).await;
+    assert_eq!(
+        at_storage(&wallet, args(bytes, insertion(0, "staging"))).await,
+        Ok(true)
+    );
+    let default_id: i64 =
+        sqlx::query_scalar("SELECT basket_id FROM output_baskets WHERE name = 'default'")
+            .fetch_one(wallet.storage().writer())
+            .await
+            .unwrap();
+    sqlx::query("UPDATE outputs SET basket_id = ? WHERE txid = ?")
+        .bind(default_id)
+        .bind(&txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+    assert_eq!(balance(&wallet).await, 4500, "the default basket sums it");
+
+    let auth = storage_auth(&wallet).await;
+    let found: Vec<String> = wallet
+        .storage()
+        .find_outputs(
+            &auth,
+            FindOutputsArgs {
+                basket_id: Some(default_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|o| o.output_type == "custom" && !o.change)
+        .map(|o| format!("{}.{}", o.txid, o.vout))
+        .collect();
+    assert_eq!(found, vec![format!("{txid}.0")]);
+
+    let relinquished = wallet
+        .relinquish_output(
+            RelinquishOutputArgs {
+                basket: "default".to_string(),
+                output: bsv_rs::wallet::Outpoint::from_string(&found[0]).unwrap(),
+            },
+            Some("test.local"),
+        )
+        .await
+        .unwrap();
+    assert!(relinquished.relinquished);
+    assert_eq!(
+        balance(&wallet).await,
+        0,
+        "the default basket no longer sums it"
+    );
 }
