@@ -105,8 +105,7 @@ pub(crate) fn validate_internalize_action_args(
 /// transaction (`:610`), so nothing is written; on a new transaction only
 /// after the reference recorded the transaction (with its proven-transaction
 /// row where the BEEF carried a proof and its proof request where it did
-/// not, and the inputs it spends marked spent; `:663-692`) and, where that
-/// proof request was new, broadcast it (`:697-721`), in the outputs
+/// not, and the inputs it spends marked spent; `:663-692`), in the outputs
 /// transaction (`:728-739`).
 /// This port answers every pair with the one sentence, before any of that.
 fn validate_unique_output_indexes(args: &InternalizeActionArgs) -> Result<()> {

@@ -51,6 +51,7 @@ expect refused "only -beta.N and -beta.N.M are prerelease shapes" "v0.14.0-beta.
 expect refused "only -beta.N and -beta.N.M are prerelease shapes" "v0.14.0-beta.8.x refused" -- v0.14.0-beta.8.x 0.14.0-beta.8.x beta
 expect refused "only -beta.N and -beta.N.M are prerelease shapes" "v0.14.0-beta.08.1 refused" -- v0.14.0-beta.08.1 0.14.0-beta.08.1 beta
 expect refused "only -beta.N and -beta.N.M are prerelease shapes" "v0.14.0-beta.8.01 refused" -- v0.14.0-beta.8.01 0.14.0-beta.8.01 beta
+expect refused "only -beta.N and -beta.N.M are prerelease shapes" "v0.14.0-beta.8.0 refused (M counts from 1)" -- v0.14.0-beta.8.0 0.14.0-beta.8.0 beta
 expect refused "only -beta.N and -beta.N.M are prerelease shapes" "v0.14.0-rc.1.1 refused" -- v0.14.0-rc.1.1 0.14.0-rc.1.1 main beta
 
 echo "${pass} passed, ${fail} failed"

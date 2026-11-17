@@ -43,9 +43,8 @@ wallet's own. A host of the beta line moves to it from 0.14.0-beta.8.
   transaction it meets the outputs table's unique key only after it
   recorded the transaction (with its proven-transaction row where the
   BEEF carried a proof and its proof request where it did not, and the
-  inputs it spends marked spent) and, where that proof request was new,
-  broadcast it. The one sentence for every pair, ahead of any
-  record or broadcast, is this port's choice.
+  inputs it spends marked spent). The one sentence for every pair,
+  ahead of any record or broadcast, is this port's choice.
   The check reads the request alone, before the BEEF is read, so a
   request that repeats an index answers this sentence ahead of the
   door's refusals that need the BEEF (an index out of range, a BEEF that

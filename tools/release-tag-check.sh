@@ -9,7 +9,7 @@
 #   vX.Y.Z         main's: the commit must be on main.
 #   vX.Y.Z-beta.N    beta's: the commit must be on beta; a prerelease. N is
 #                    the number of the bsv-rs prerelease the line pins.
-#   vX.Y.Z-beta.N.M  beta's, the same: a later prerelease on that same pin.
+#   vX.Y.Z-beta.N.M  beta's, the same: a later prerelease on that same pin (M counts from 1).
 #   anything else    refused (only -beta.N and -beta.N.M are prerelease
 #                    shapes here).
 #
@@ -46,7 +46,7 @@ num='(0|[1-9][0-9]*)'
 if [[ "$tag" =~ ^v$num\.$num\.$num$ ]]; then
   line=main
   prerelease=false
-elif [[ "$tag" =~ ^v$num\.$num\.$num-beta\.$num(\.$num)?$ ]]; then
+elif [[ "$tag" =~ ^v$num\.$num\.$num-beta\.$num(\.[1-9][0-9]*)?$ ]]; then
   line=beta
   prerelease=true
 else
