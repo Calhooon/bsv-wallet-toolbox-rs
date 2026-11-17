@@ -14,11 +14,11 @@
 ## The two lines
 
 - `main` is the stable line, for quick fixes another project can take while the programme runs; its tags are plain `vX.Y.Z`.
-- `beta` is the programme's line (epic #80); its tags are `vX.Y.Z-beta.N`, published as prereleases on crates.io (semver) and on GitHub.
+- `beta` is the programme's line (epic #80); its tags are `vX.Y.Z-beta.N` or `vX.Y.Z-beta.N.M`, published as prereleases on crates.io (semver) and on GitHub. `beta.N` carries the number of the bsv-rs prerelease the line pins; `beta.N.M` is a later prerelease on that same pin, which semver orders after `beta.N` and before `beta.N+1`.
 - Both are protected with the same rules; each requires the checks its own `ci.yml` runs (step 2), and `main` takes beta's five when beta merges into it. `ci.yml` runs on pull requests and pushes into either, and on beta's merge-queue groups (`merge_group`).
 - `main` merges into `beta` after every stable patch, so beta never lacks a fix main shipped.
 - `beta` merges into `main` only at the fleet's gate (the owner's word of 2026-10-27, verbatim on the stack's rulings page: "no merge to main until god tier and 110% confidence nothing breaks and we in conformance with other SDKs and all other sdk issues are logged on their repos"): every scoreboard row in `docs/NORTH-STAR.md` at its target with recorded evidence and all six phases exited; the gates and the production reads green; conformance with the other SDKs proven, the divergence table in `docs/ARCHITECTURE.md` empty or every row carrying a filing number on the other SDK's repository (ts-stack, go-sdk, py-sdk, the BRCs) or the word `ours` with its reading, nothing on it an unfiled finding against another SDK; then as the next minor, after the CLI's gate passes on a `vX.Y.0-beta.N` prerelease and a day of canary. Until then `beta` ships prereleases and `main` takes its own quick fixes. The word binds every crate's `main`, not this one alone.
-- The release check refuses a plain tag on a commit beta holds but main does not, a beta tag on a commit beta does not hold, a tag that differs from `Cargo.toml`, and any other prerelease shape (`-rc.N` and the like).
+- The release check refuses a plain tag on a commit beta holds but main does not, a beta tag on a commit beta does not hold, a tag that differs from `Cargo.toml`, and any other prerelease shape (`-rc.N`, a third part after `-beta.N.M`, a part with a leading zero, and the like); it takes `-beta.N` and `-beta.N.M` alike as beta's.
 - A tag of any kind is the owner's word.
 
 The canary order at that merge:
