@@ -58,7 +58,7 @@ fn beef(txs: &[&[u8]]) -> Vec<u8> {
     bytes
 }
 
-/// A SLAP advertisement of `host` for `ls_identity`, as a PushDrop.
+/// A SLAP advertisement of `host` for the identity service, as a `PushDrop`.
 fn slap(host: &str) -> String {
     let key = PrivateKey::from_hex(&format!("{:064x}", 9))
         .unwrap()
@@ -82,7 +82,7 @@ fn advertisement(host: &str, fan: u32) -> Vec<u8> {
     beef(&[&parent, &child])
 }
 
-fn output_list(outputs: serde_json::Value) -> String {
+fn output_list(outputs: &serde_json::Value) -> String {
     serde_json::json!({"type": "output-list", "outputs": outputs}).to_string()
 }
 
@@ -118,7 +118,7 @@ async fn identity_lookup(
         .await
         .unwrap();
     drop(slap_mock);
-    let asked = if identity.matched_async().await { 1 } else { 0 };
+    let asked = usize::from(identity.matched_async().await);
     (outputs.len(), asked)
 }
 
@@ -134,7 +134,7 @@ fn slap_answer_at(host: &str, fan: u32, hint: Option<serde_json::Value>) -> Stri
     if let Some(hint) = hint {
         output["txid"] = hint;
     }
-    output_list(serde_json::json!([output]))
+    output_list(&serde_json::json!([output]))
 }
 
 fn identity_answer(hint: Option<serde_json::Value>) -> String {
@@ -142,7 +142,7 @@ fn identity_answer(hint: Option<serde_json::Value>) -> String {
     if let Some(hint) = hint {
         output["txid"] = hint;
     }
-    output_list(serde_json::json!([output]))
+    output_list(&serde_json::json!([output]))
 }
 
 #[tokio::test]

@@ -37,7 +37,7 @@ fn fanned_token(fan: u32, fields: usize) -> (Beef, String) {
     let key = PrivateKey::from_hex(&format!("{:064x}", 7))
         .unwrap()
         .public_key();
-    let mut data: Vec<Vec<u8>> = (0..fields).map(|i| vec![b'a' + i as u8; 4]).collect();
+    let mut data: Vec<Vec<u8>> = (b'a'..).take(fields).map(|b| vec![b; 4]).collect();
     data.push(vec![0x30; 8]);
     child.outputs_mut().push(TransactionOutput {
         satoshis: Some(1),
