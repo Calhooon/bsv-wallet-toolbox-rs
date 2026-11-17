@@ -8,17 +8,25 @@
 //! one (a proof stored with no header service to read it from), so an empty
 //! block hash is admitted and left empty, and two rows that differ only in
 //! that one of their block hashes is empty are the same proof.
-//! A proof row whose txid this store does not hold is taken as given (a new
-//! proof row keeps the trust a direct sync gives it). A proof row that
-//! differs from the one this store holds replaces it only once it is
-//! validated: its bytes hash to its txid, its path is at its height with the
+//! A proof row whose txid this store does not hold is taken as given when
+//! the sync's reader is a local store (a new proof row keeps the trust a
+//! direct sync gives it), and validated when it is not (a storage client:
+//! the manager marks the drain, `crate::storage::remote_sync`), as the
+//! reference's storage server validates every proof row of a chunk it
+//! receives (ts-stack 11faa7d16 `storage/remoting/validateRpcSyncProofs.ts`
+//! 7-38). A proof row that differs from the one this store holds replaces
+//! it only once it is validated: its bytes hash to its txid, its path is at its height with the
 //! transaction at its index, the path's root is its root, the tracker holds
 //! that root at that height, and the header at that height hashes to its
-//! block hash and carries that root. Every tracker and header read happens
-//! here, before the writer is taken (the write lock rule: never await a
+//! block hash and carries that root. The tracker and the header are asked
+//! once per height in a sync, up to eight heights at once, with no retry.
+//! Every tracker and header read happens here, before the writer is taken (the write lock rule: never await a
 //! service or a tracker while holding the writer).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+
+use futures::StreamExt;
 
 use bsv_rs::primitives::{sha256d, to_hex};
 use bsv_rs::transaction::{MerklePath, Transaction};
@@ -157,10 +165,10 @@ fn hash_hex(bytes: &[u8]) -> String {
     to_hex(&h)
 }
 
-/// The reference's `validateSyncProof` for a row that replaces a held one.
-/// Answers the block hash of the active header at the row's height: the
-/// row's own when it carries one (it must match), else the header's.
-async fn validate(storage: &StorageSqlx, p: &TableProvenTx) -> Result<String> {
+/// The reference's `validateSyncProof` checks that need no network: the
+/// row's fields, its bytes, its path at its height with the transaction at
+/// its index, and the path's root as the row's root.
+fn check_row(p: &TableProvenTx) -> Result<()> {
     let txid = p.txid.as_str();
     if p.height < 0 || p.height > u32::MAX as i64 {
         return Err(refused(txid, "height must be a non-negative integer"));
@@ -174,18 +182,12 @@ async fn validate(storage: &StorageSqlx, p: &TableProvenTx) -> Result<String> {
     if p.merkle_path.is_empty() {
         return Err(refused(txid, "Merkle path is required"));
     }
-    let unreadable = || {
-        refused(
-            txid,
-            "transaction, Merkle path, or active header could not be validated",
-        )
-    };
-    let parsed = Transaction::from_binary(&p.raw_tx).map_err(|_| unreadable())?;
+    let parsed = Transaction::from_binary(&p.raw_tx).map_err(|_| unreadable(txid))?;
     let raw_txid = hash_hex(&p.raw_tx);
     if parsed.id() != raw_txid || raw_txid != txid {
         return Err(refused(txid, "raw transaction hash does not match txid"));
     }
-    let path = MerklePath::from_binary(&p.merkle_path).map_err(|_| unreadable())?;
+    let path = MerklePath::from_binary(&p.merkle_path).map_err(|_| unreadable(txid))?;
     if path.block_height as i64 != p.height {
         return Err(refused(
             txid,
@@ -203,20 +205,41 @@ async fn validate(storage: &StorageSqlx, p: &TableProvenTx) -> Result<String> {
             "Merkle path does not contain the transaction at the recorded index",
         ));
     }
-    let root = path.compute_root(Some(txid)).map_err(|_| unreadable())?;
+    let root = path
+        .compute_root(Some(txid))
+        .map_err(|_| unreadable(txid))?;
     if root != p.merkle_root {
         return Err(refused(
             txid,
             "computed Merkle root does not match the record",
         ));
     }
-    let services = storage.get_services().map_err(|_| unreadable())?;
+    Ok(())
+}
+
+fn unreadable(txid: &str) -> Error {
+    refused(
+        txid,
+        "transaction, Merkle path, or active header could not be validated",
+    )
+}
+
+/// The network half of `validateSyncProof` for one height, asked once: the
+/// tracker holds `root` at `height`, and the active header there is 80
+/// bytes and carries that root. Answers the header's hash. `txid` names the
+/// first row at that height in a refusal.
+async fn chain_answer(
+    services: &dyn crate::services::WalletServices,
+    height: i64,
+    root: &str,
+    txid: &str,
+) -> Result<String> {
     let tracker = services
         .get_chain_tracker()
         .await
-        .map_err(|_| unreadable())?;
+        .map_err(|_| unreadable(txid))?;
     if tracker
-        .is_valid_root_for_height(&root, p.height as u32)
+        .is_valid_root_for_height(root, height as u32)
         .await
         .ok()
         != Some(true)
@@ -227,27 +250,104 @@ async fn validate(storage: &StorageSqlx, p: &TableProvenTx) -> Result<String> {
         ));
     }
     let header = services
-        .get_header_for_height(p.height as u32)
+        .get_header_for_height(height as u32)
         .await
-        .map_err(|_| unreadable())?;
+        .map_err(|_| unreadable(txid))?;
     if header.len() != 80 {
         return Err(refused(txid, "active block header must be 80 bytes"));
     }
     let mut header_root = header[36..68].to_vec();
     header_root.reverse();
-    let header_hash = hash_hex(&header);
-    if (!p.block_hash.is_empty() && header_hash != p.block_hash) || to_hex(&header_root) != root {
+    if to_hex(&header_root) != root {
         return Err(refused(
             txid,
             "block metadata does not match the active header",
         ));
     }
-    Ok(header_hash)
+    Ok(hash_hex(&header))
+}
+
+/// How many heights are asked of the network at once.
+const IN_FLIGHT: usize = 8;
+
+/// The reference's `validateSyncProof` for the rows `which` of `proofs`.
+/// Every row's own checks run first; then each distinct height not yet
+/// answered in this sync is asked once (one root check, one header read),
+/// up to eight heights at once, with no retry. A row whose root is not the
+/// one its height was confirmed with is refused. Answers, for each row, the
+/// hash of the active header at its height.
+async fn validate_rows(
+    storage: &StorageSqlx,
+    proofs: &[TableProvenTx],
+    which: &[usize],
+    answered: &Mutex<HashMap<i64, (String, String)>>,
+) -> Result<Vec<String>> {
+    for &i in which {
+        check_row(&proofs[i])?;
+    }
+    let mut asks: Vec<(i64, String, String)> = Vec::new();
+    {
+        let held = answered
+            .lock()
+            .map_err(|_| unreadable(&proofs[which[0]].txid))?;
+        for &i in which {
+            let p = &proofs[i];
+            if held.contains_key(&p.height) || asks.iter().any(|(h, _, _)| *h == p.height) {
+                continue;
+            }
+            asks.push((p.height, p.merkle_root.clone(), p.txid.clone()));
+        }
+    }
+    if !asks.is_empty() {
+        let services = storage.get_services().map_err(|_| unreadable(&asks[0].2))?;
+        let services = services.as_ref();
+        let results: Vec<Result<(i64, String, String)>> = futures::stream::iter(asks)
+            .map(|(height, root, txid)| async move {
+                let hash = chain_answer(services, height, &root, &txid).await?;
+                Ok((height, root, hash))
+            })
+            .buffer_unordered(IN_FLIGHT)
+            .collect()
+            .await;
+        let mut held = answered
+            .lock()
+            .map_err(|_| unreadable(&proofs[which[0]].txid))?;
+        for r in results {
+            let (height, root, hash) = r?;
+            held.insert(height, (root, hash));
+        }
+    }
+    let held = answered
+        .lock()
+        .map_err(|_| unreadable(&proofs[which[0]].txid))?;
+    let mut hashes = Vec::with_capacity(which.len());
+    for &i in which {
+        let p = &proofs[i];
+        let Some((root, hash)) = held.get(&p.height) else {
+            return Err(unreadable(&p.txid));
+        };
+        if *root != p.merkle_root {
+            return Err(refused(
+                &p.txid,
+                "Merkle root is not active at the recorded height",
+            ));
+        }
+        if !p.block_hash.is_empty() && *hash != p.block_hash {
+            return Err(refused(
+                &p.txid,
+                "block metadata does not match the active header",
+            ));
+        }
+        hashes.push(hash.clone());
+    }
+    Ok(hashes)
 }
 
 /// The preflight over the chunk's proof rows, on the reader pool and the
 /// network, before any write: canonicalize every row, then validate every
-/// row that would replace a held row that differs.
+/// row that would replace a held row that differs and, in a sync whose
+/// reader is not local (`crate::storage::remote_sync`), every new row too.
+/// A validated new row without a block hash takes the active header's.
 pub(super) async fn preflight(
     storage: &StorageSqlx,
     proofs: &mut [TableProvenTx],
@@ -256,17 +356,45 @@ pub(super) async fn preflight(
     for p in proofs.iter_mut() {
         canonicalize(p)?;
     }
-    for p in proofs.iter() {
+    let remote = crate::storage::remote_sync::current();
+    let mut which = Vec::new();
+    let mut helds = Vec::new();
+    for (i, p) in proofs.iter().enumerate() {
         match held_proof(storage.pool(), &p.txid).await? {
             None => {
                 decisions.insert_only.insert(p.txid.clone());
+                if remote.is_some() {
+                    which.push(i);
+                    helds.push(None);
+                }
             }
             Some(held) => {
                 if !same_proof(&held, p) {
-                    let block_hash = validate(storage, p).await?;
-                    decisions
-                        .replacement_authorized
-                        .insert(p.txid.clone(), Authorized { block_hash, held });
+                    which.push(i);
+                    helds.push(Some(held));
+                }
+            }
+        }
+    }
+    if which.is_empty() {
+        return Ok(decisions);
+    }
+    let local = Mutex::new(HashMap::new());
+    let answered = match &remote {
+        Some(r) => &r.answers,
+        None => &local,
+    };
+    let hashes = validate_rows(storage, proofs, &which, answered).await?;
+    for ((i, held), block_hash) in which.into_iter().zip(helds).zip(hashes) {
+        match held {
+            Some(held) => {
+                decisions
+                    .replacement_authorized
+                    .insert(proofs[i].txid.clone(), Authorized { block_hash, held });
+            }
+            None => {
+                if proofs[i].block_hash.is_empty() {
+                    proofs[i].block_hash = block_hash;
                 }
             }
         }

@@ -211,6 +211,24 @@ async fn drain_sync_chunks(
     identity_key: &str,
     user_active: UserActiveStorage,
 ) -> Result<(u32, u32)> {
+    // A reader that is not a local store (a storage client) is another
+    // party: a local writer validates every proof row of its chunks that it
+    // does not hold as the same proof (crate::storage::remote_sync).
+    let local = reader.checks_received_beef_in_process().await;
+    let drain = drain_chunks(reader, writer, identity_key, user_active);
+    if local {
+        drain.await
+    } else {
+        crate::storage::remote_sync::scope(drain).await
+    }
+}
+
+async fn drain_chunks(
+    reader: Arc<dyn MonitorStorage>,
+    writer: Arc<dyn MonitorStorage>,
+    identity_key: &str,
+    user_active: UserActiveStorage,
+) -> Result<(u32, u32)> {
     let reader_settings = reader.make_available().await?;
     let writer_settings = writer.make_available().await?;
     // Stores of one chain alone, before the writer's user or any chunk (the
