@@ -600,3 +600,41 @@ async fn an_output_naming_an_unmapped_basket_is_refused() {
     assert!(r.is_err());
     assert_eq!(rows, 0);
 }
+
+/// A transaction's proof is the proof of its own txid: a chunk transaction
+/// row whose proof link names another transaction's proof the store holds
+/// is stored with no link, new or held, and a held row keeps its status.
+#[tokio::test]
+async fn a_proof_link_naming_another_txid_is_not_stored() {
+    let s = store(DST).await;
+    let (u, _) = s.find_or_insert_user(ALICE).await.unwrap();
+    let other = "c".repeat(64);
+    exec(&s, &format!("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES ('{other}',1,0,'{h}','{h}',X'00',X'00',datetime('now'),datetime('now'))", h = "e".repeat(64))).await;
+    let held = "d".repeat(64);
+    exec(&s, &format!("INSERT INTO transactions (user_id,txid,status,reference,is_outgoing,satoshis,description,created_at,updated_at) VALUES ({},'{held}','unproven','r-held',0,0,'held','2026-06-01 00:00:00','2026-06-01 00:00:00')", u.user_id)).await;
+    let fresh = "f".repeat(64);
+    let mut t_held = transaction(5, "r-held", Some(&held));
+    t_held.status = TransactionStatus::Completed;
+    t_held.proof_txid = Some(other.clone());
+    let mut t_new = transaction(6, "r-new", Some(&fresh));
+    t_new.proof_txid = Some(other.clone());
+    let mut chunk = chunk_for(ALICE);
+    chunk.transactions = Some(vec![t_held, t_new]);
+    let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+    let status: String =
+        ::sqlx::query_scalar("SELECT status FROM transactions WHERE reference = 'r-held'")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+    let links = (
+        stored_link(&s, "transactions", &held).await,
+        stored_link(&s, "transactions", &fresh).await,
+    );
+    println!(
+        "WITNESS 1 link to another txid's proof: {:?}; links (held, new) {links:?}; held status {status}",
+        r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
+    );
+    assert!(r.is_ok());
+    assert_eq!(links, (None, None));
+    assert_eq!(status, "unproven");
+}

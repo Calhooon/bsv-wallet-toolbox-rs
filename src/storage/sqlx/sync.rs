@@ -2062,16 +2062,21 @@ async fn upsert_output_tag(
     }
 }
 
-/// The local proof row a synced transaction's proof link names: the link is
-/// the proof's txid, and a proof row is global by txid. A link that names no
-/// proof row of this store is not stored.
+/// The local proof row a synced row's proof link names: the link is the
+/// proof's txid, a proof row is global by txid, and a row's proof is the
+/// proof of its own txid. A link naming another txid, or a proof row this
+/// store does not hold, is not stored.
 async fn local_proof_id(
     conn: &mut SqliteConnection,
+    own_txid: Option<&str>,
     proof_txid: Option<&str>,
 ) -> Result<Option<i64>> {
-    let Some(txid) = proof_txid else {
+    let (Some(txid), Some(own)) = (proof_txid, own_txid) else {
         return Ok(None);
     };
+    if txid != own {
+        return Ok(None);
+    }
     Ok(
         sqlx::query_scalar("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
             .bind(txid)
@@ -2085,7 +2090,8 @@ async fn upsert_transaction(
     user_id: i64,
     tx: &TableTransaction,
 ) -> Result<UpsertResult> {
-    let proven_tx_id = local_proof_id(&mut *conn, tx.proof_txid.as_deref()).await?;
+    let proven_tx_id =
+        local_proof_id(&mut *conn, tx.txid.as_deref(), tx.proof_txid.as_deref()).await?;
     // Check if exists by reference (unique per user)
     let existing = sqlx::query(
         r#"
@@ -2111,8 +2117,7 @@ async fn upsert_transaction(
         // that carries a proof link where this store holds none merges its
         // proof evidence alone (status, the link, the bytes where none are
         // held). The reference is never updated.
-        let incoming_carries_proof = tx.proof_txid.is_some();
-        let adds_proof_evidence = incoming_carries_proof && local_proof.is_none();
+        let adds_proof_evidence = proven_tx_id.is_some() && local_proof.is_none();
         let incoming_is_newer = tx.updated_at > local_updated;
         if incoming_is_newer {
             sqlx::query(
