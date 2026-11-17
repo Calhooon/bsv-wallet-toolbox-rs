@@ -123,9 +123,10 @@ fn carried_by_txid_alone(txid: &str) -> String {
     )
 }
 
-/// A parent from outside the wallet: one input, one output to no party.
+/// A parent from outside the wallet: one input, one output to no party
+/// (`anyone_lock`, which the input `00` spends).
 fn foreign_parent() -> Transaction {
-    spending(&"44".repeat(32), 10_000, common::other_lock())
+    spending(&"44".repeat(32), 10_000, common::anyone_lock())
 }
 
 #[tokio::test]
@@ -138,7 +139,11 @@ async fn a_parent_unknown_to_the_store_carried_by_txid_alone_is_refused() {
     let before = (rows(&wallet).await, wallet.balance().await.unwrap().total);
     let answer = internalize(
         &wallet,
-        args(beef_of(&child, &parent, 100_003, false), ONE, &sender),
+        args(
+            beef_of(&child, &parent, common::after_genesis(3), false),
+            ONE,
+            &sender,
+        ),
     )
     .await;
     let after = (rows(&wallet).await, wallet.balance().await.unwrap().total);
@@ -159,7 +164,11 @@ async fn a_parent_the_store_holds_carried_by_txid_alone_is_refused() {
     let parent = spending(&grandparent.id(), 9_800, lock(&root, &sender, ONE));
     let held = internalize(
         &wallet,
-        args(beef_of(&parent, &grandparent, 100_004, true), ONE, &sender),
+        args(
+            beef_of(&parent, &grandparent, common::after_genesis(4), true),
+            ONE,
+            &sender,
+        ),
     )
     .await;
     assert_eq!(held, Ok(true), "the parent is held");
@@ -167,7 +176,11 @@ async fn a_parent_the_store_holds_carried_by_txid_alone_is_refused() {
     let before = (rows(&wallet).await, wallet.balance().await.unwrap().total);
     let answer = internalize(
         &wallet,
-        args(beef_of(&child, &parent, 100_005, false), SECOND, &sender),
+        args(
+            beef_of(&child, &parent, common::after_genesis(5), false),
+            SECOND,
+            &sender,
+        ),
     )
     .await;
     let after = (rows(&wallet).await, wallet.balance().await.unwrap().total);
@@ -187,7 +200,11 @@ async fn a_beef_with_every_ancestor_whole_is_admitted() {
     let child = spending(&parent.id(), 9_500, lock(&root, &sender, ONE));
     let answer = internalize(
         &wallet,
-        args(beef_of(&child, &parent, 100_003, true), ONE, &sender),
+        args(
+            beef_of(&child, &parent, common::after_genesis(3), true),
+            ONE,
+            &sender,
+        ),
     )
     .await;
     let after = (rows(&wallet).await, wallet.balance().await.unwrap().total);

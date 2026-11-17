@@ -39,7 +39,7 @@ const SUFFIX: &str = "cm9vdHM=";
 const NO_TRACKER: &str = "wallet error: Validation error: No chain tracker is available to verify the BEEF: install one on the storage or configure the services' chain tracker";
 
 /// An AtomicBEEF paying the key `root` derives for `sender`, whose parent
-/// is carried whole with a BUMP at height 100_003.
+/// is carried whole with a BUMP at `common::PAYING_PROOF_HEIGHT`.
 fn paying_with_whole_parent(root: &PrivateKey, sender: &bsv_rs::primitives::PublicKey) -> Vec<u8> {
     beef_paying_with(lock(root, sender), true).0
 }
@@ -119,7 +119,7 @@ async fn a_forwarding_storage_with_a_refuting_tracker_is_refused_at_the_wallet_d
     assert!(
         answer.as_ref().is_err_and(|e| e
             .starts_with("wallet error: Validation error: Invalid merkle root ")
-            && e.ends_with(" at height 100003")),
+            && e.ends_with(&format!(" at height {}", common::PAYING_PROOF_HEIGHT))),
         "{answer:?}"
     );
     assert_eq!(calls, 0, "storage is never called");

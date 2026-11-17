@@ -529,15 +529,18 @@ async fn sign_action_answered_465_is_a_hint_not_an_error() {
 }
 
 /// An unmined transaction paying 10,000 sats to an unrelated P2PKH,
-/// carrying its full funding parent and the parent's single-leaf proof.
+/// carrying its full funding parent and the parent's single-leaf proof
+/// after Genesis.
 fn incoming_atomic_beef() -> (Vec<u8>, String) {
     let mut parent = Transaction::new();
     let mut parent_input = TransactionInput::new("11".repeat(32), 0);
     parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
     parent.inputs.push(parent_input);
+    // Locked by a script the input `00` spends under the node's word: push
+    // 20 bytes, drop them, drop the empty push, push one.
     parent.outputs.push(TransactionOutput {
         satoshis: Some(20_000),
-        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        locking_script: LockingScript::from_hex(&format!("14{}757551", "00".repeat(20))).unwrap(),
         change: false,
     });
     let parent_txid = parent.id();
@@ -555,7 +558,7 @@ fn incoming_atomic_beef() -> (Vec<u8>, String) {
     let mut beef = Beef::new();
     let bump_index = beef.merge_bump(bsv_rs::transaction::MerklePath::from_coinbase_txid(
         &parent_txid,
-        100_001,
+        bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT + 1,
     ));
     beef.merge_raw_tx(parent.to_binary(), Some(bump_index));
     beef.merge_transaction(tx);
