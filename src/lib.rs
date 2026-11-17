@@ -64,6 +64,7 @@
 //! ```
 
 pub mod error;
+mod insertion_basket;
 pub mod lock_utils;
 pub mod managers;
 pub mod monitor;

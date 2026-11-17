@@ -2236,6 +2236,19 @@ where
     ) -> bsv_rs::Result<InternalizeActionResult> {
         validate_originator(originator)?;
 
+        // The default basket is never a basket insertion's basket, in any
+        // spelling the reference's validator trims and lowercases to
+        // `default` (the reference's `setupBasketInsertionForOutput`).
+        for output in &args.outputs {
+            if let Some(ref insertion) = output.insertion_remittance {
+                if crate::insertion_basket::names_default_basket(&insertion.basket) {
+                    return Err(bsv_rs::Error::WalletError(
+                        crate::insertion_basket::DEFAULT_BASKET_INSERTION_REFUSAL.to_string(),
+                    ));
+                }
+            }
+        }
+
         // Serialize spending operations (creates new spendable outputs).
         let _spend_guard = self.spend_lock.lock().await;
 
