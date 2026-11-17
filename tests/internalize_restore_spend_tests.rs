@@ -46,32 +46,6 @@ async fn unproven(wallet: &TestWallet, txid: &str) {
         .unwrap();
 }
 
-/// The row as a basket insertion into "tokens" left it before the rules:
-/// `custom`, `change = 0`, its derivation prefix, suffix and sender NULL.
-async fn reclassify(wallet: &TestWallet, txid: &str, vout: u32) {
-    let user_id = storage_auth(wallet).await.user_id.unwrap();
-    let tokens = sqlx::query(
-        "INSERT INTO output_baskets (user_id, name, number_of_desired_utxos, \
-         minimum_desired_utxo_value) VALUES (?, 'tokens', 6, 10000)",
-    )
-    .bind(user_id)
-    .execute(wallet.storage().writer())
-    .await
-    .unwrap()
-    .last_insert_rowid();
-    sqlx::query(
-        "UPDATE outputs SET basket_id = ?, type = 'custom', change = 0, \
-         custom_instructions = NULL, derivation_prefix = NULL, derivation_suffix = NULL, \
-         sender_identity_key = NULL WHERE txid = ? AND vout = ?",
-    )
-    .bind(tokens)
-    .bind(txid)
-    .bind(vout)
-    .execute(wallet.storage().writer())
-    .await
-    .unwrap();
-}
-
 /// The coin's spendable flag, spender and satoshis.
 async fn coin(wallet: &TestWallet, txid: &str, vout: u32) -> (i64, Option<i64>, i64) {
     sqlx::query_as("SELECT spendable, spent_by, satoshis FROM outputs WHERE txid = ? AND vout = ?")
@@ -186,10 +160,6 @@ async fn spends_the_coin(wallet: &TestWallet, tx: &Transaction, txid: &str, vout
     .unwrap();
     check.set_flags(ScriptFlags::standard(ProtocolEra::PostChronicle));
     assert_eq!(check.validate().map_err(|e| e.message), Ok(true));
-    println!(
-        "signed spend {} of {txid}.{vout}: unlocking script verified against its P2PKH",
-        tx.id()
-    );
 }
 
 /// A wallet whose only spendable coin is the change of an action it made,
@@ -213,16 +183,7 @@ async fn empty_sender_row(deferred: bool) {
         .execute(wallet.storage().writer())
         .await
         .unwrap();
-    let held = coin(&wallet, &txid, vout).await;
     let answer = spend(&wallet, deferred).await;
-    println!(
-        "empty sender, {}: {:?}; coin (spendable, spent_by, satoshis) before {held:?}, after {:?}; \
-         spend actions recorded {}",
-        if deferred { "signAction" } else { "createAction" },
-        answer.as_ref().map(|tx| tx.id()),
-        coin(&wallet, &txid, vout).await,
-        spends_recorded(&wallet).await
-    );
     let tx = answer.expect("the empty sender's row signs");
     spends_the_coin(&wallet, &tx, &txid, vout).await;
 }
@@ -262,8 +223,14 @@ async fn a_restored_change_row_with_the_wallets_identity_key_is_spent() {
     let refused = at_wallet(&wallet, args(bytes.clone(), empty))
         .await
         .unwrap_err();
-    println!("restored with an empty sender: {refused:?}");
-    assert_eq!(refused.0, bsv_rs::WalletRefusalClass::InvalidParameter);
+    assert_eq!(
+        refused,
+        (
+            bsv_rs::WalletRefusalClass::InvalidParameter,
+            "Validation error: The senderIdentityKey parameter must be hexadecimal string."
+                .to_string()
+        )
+    );
     assert_eq!(row(&wallet, &txid, vout).await.1, "custom");
 
     let me = root.public_key();
@@ -273,7 +240,6 @@ async fn a_restored_change_row_with_the_wallets_identity_key_is_spent() {
     assert_eq!(at_wallet(&wallet, args(bytes, payment)).await, Ok(true));
     let restored = row(&wallet, &txid, vout).await;
     assert_eq!(restored.5, Some(me.to_hex()), "the stored sender");
-    println!("restored with the wallet's identity key: row {restored:?}");
     assert_eq!(origin(&wallet, &txid, vout).await.1, "receive");
 
     // The restored row's purpose is `receive`: while its transaction is
@@ -338,7 +304,6 @@ async fn a_restored_received_payment_with_its_sender_is_spent() {
     let restored = row(&wallet, &txid, 0).await;
     assert_eq!(restored.5, Some(sender.to_hex()), "the stored sender");
     assert_eq!(balance(&wallet).await, 4500);
-    println!("restored with the sender the row held: row {restored:?}");
 
     let tx = spend(&wallet, false)
         .await

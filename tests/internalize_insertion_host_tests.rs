@@ -181,28 +181,7 @@ async fn a_reclassified_change_row_is_restored_only_with_its_own_derivation() {
     let (prefix, suffix) = (prefix.unwrap(), suffix.unwrap());
     let with_change = balance(&wallet).await;
 
-    // The row as a basket insertion into "tokens" left it before the rules.
-    let user_id = storage_auth(&wallet).await.user_id.unwrap();
-    let tokens = sqlx::query(
-        "INSERT INTO output_baskets (user_id, name, number_of_desired_utxos, \
-         minimum_desired_utxo_value) VALUES (?, 'tokens', 6, 10000)",
-    )
-    .bind(user_id)
-    .execute(wallet.storage().writer())
-    .await
-    .unwrap()
-    .last_insert_rowid();
-    sqlx::query(
-        "UPDATE outputs SET basket_id = ?, type = 'custom', change = 0, \
-         custom_instructions = NULL, derivation_prefix = NULL, derivation_suffix = NULL, \
-         sender_identity_key = NULL WHERE txid = ? AND vout = ?",
-    )
-    .bind(tokens)
-    .bind(&txid)
-    .bind(vout)
-    .execute(wallet.storage().writer())
-    .await
-    .unwrap();
+    reclassify(&wallet, &txid, vout).await;
     let reclassified = row(&wallet, &txid, vout).await;
     assert_eq!(
         reclassified,
@@ -255,72 +234,6 @@ async fn a_reclassified_change_row_is_restored_only_with_its_own_derivation() {
         ("storage".to_string(), "receive".to_string())
     );
     assert_eq!(balance(&wallet).await, with_change);
-}
-
-/// What a host holds of a received payment an earlier basket insertion
-/// reclassified (the row as the base wrote it): the wallet payment that
-/// restores it needs the sender identity key the row held as well as its
-/// prefix and suffix, since the door derives with the remittance's sender as
-/// the counterparty; the same prefix and suffix under the wallet's own key
-/// is refused.
-#[tokio::test]
-async fn a_reclassified_received_payment_is_restored_only_with_its_sender() {
-    let root = PrivateKey::random();
-    let sender = PrivateKey::random().public_key();
-    let derived = common::derived_key(&root, &sender, PREFIX, SUFFIX);
-    let lock = bsv_rs::script::LockingScript::from_binary(&common::p2pkh_bytes(&derived)).unwrap();
-    let (bytes, txid) = beef_paying(lock);
-    let wallet = wallet(&root, &txid).await;
-    let payment = common::payment(&sender, PREFIX, SUFFIX);
-    assert_eq!(
-        at_wallet(&wallet, args(bytes.clone(), payment.clone())).await,
-        Ok(true)
-    );
-    assert_eq!(balance(&wallet).await, 4500);
-
-    // The row as a basket insertion into "tokens" left it before the rules.
-    let user_id = storage_auth(&wallet).await.user_id.unwrap();
-    let tokens = sqlx::query(
-        "INSERT INTO output_baskets (user_id, name, number_of_desired_utxos, \
-         minimum_desired_utxo_value) VALUES (?, 'tokens', 6, 10000)",
-    )
-    .bind(user_id)
-    .execute(wallet.storage().writer())
-    .await
-    .unwrap()
-    .last_insert_rowid();
-    sqlx::query(
-        "UPDATE outputs SET basket_id = ?, type = 'custom', change = 0, \
-         derivation_prefix = NULL, derivation_suffix = NULL, sender_identity_key = NULL \
-         WHERE txid = ?",
-    )
-    .bind(tokens)
-    .bind(&txid)
-    .execute(wallet.storage().writer())
-    .await
-    .unwrap();
-    assert_eq!(balance(&wallet).await, 0);
-
-    let under_own_key = common::payment(&root.public_key(), PREFIX, SUFFIX);
-    let refused = at_wallet(&wallet, args(bytes.clone(), under_own_key))
-        .await
-        .unwrap_err();
-    assert!(
-        refused
-            .1
-            .starts_with("Derivation mismatch for output 0: derived "),
-        "{}",
-        refused.1
-    );
-    assert_eq!(balance(&wallet).await, 0);
-
-    assert_eq!(at_wallet(&wallet, args(bytes, payment)).await, Ok(true));
-    let (basket, kind, change, _, _, held_sender) = row(&wallet, &txid, 0).await;
-    assert_eq!(
-        (basket.as_deref(), kind.as_str(), change, held_sender),
-        (Some("default"), "P2PKH", 1, Some(sender.to_hex()))
-    );
-    assert_eq!(balance(&wallet).await, 4500);
 }
 
 /// What a host holds of a spent output an earlier wallet payment merge made

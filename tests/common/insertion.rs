@@ -245,3 +245,30 @@ pub fn managed_change_refusal(vout: u32) -> String {
          change and cannot be reclassified as a basket insertion"
     )
 }
+
+/// The row `txid.vout` as a basket insertion into "tokens" left it before
+/// the rules: `custom`, `change = 0`, its custom instructions, derivation
+/// prefix, suffix and sender NULL.
+pub async fn reclassify(wallet: &TestWallet, txid: &str, vout: u32) {
+    let user_id = storage_auth(wallet).await.user_id.unwrap();
+    let tokens = sqlx::query(
+        "INSERT INTO output_baskets (user_id, name, number_of_desired_utxos, \
+         minimum_desired_utxo_value) VALUES (?, 'tokens', 6, 10000)",
+    )
+    .bind(user_id)
+    .execute(wallet.storage().writer())
+    .await
+    .unwrap()
+    .last_insert_rowid();
+    sqlx::query(
+        "UPDATE outputs SET basket_id = ?, type = 'custom', change = 0, \
+         custom_instructions = NULL, derivation_prefix = NULL, derivation_suffix = NULL, \
+         sender_identity_key = NULL WHERE txid = ? AND vout = ?",
+    )
+    .bind(tokens)
+    .bind(txid)
+    .bind(vout)
+    .execute(wallet.storage().writer())
+    .await
+    .unwrap();
+}
