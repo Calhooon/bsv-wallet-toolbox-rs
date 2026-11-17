@@ -403,12 +403,13 @@ pub async fn internalize_action_internal(
         // `sending`, the word the wallet's own untaken transaction carries:
         // the balance and `listOutputs` leave its received outputs out and
         // no allocator offers them. Taken is a recorded take or a stored
-        // proof (`held_receipts::was_taken`): `broadcast_seen` holds
-        // `accepted`, `seen` or `mined` for the txid, or a `proven_txs` row
-        // is stored for it; a request's word alone is not read. The door's
-        // own post records its take when it draws one (below). The paths
-        // that move `sending` to `unproven` are listed in
-        // `src/storage/sqlx/CLAUDE.md`. A proof the LAG gate deferred
+        // proof whose root was checked (`held_receipts::was_taken`):
+        // `broadcast_seen` holds `accepted`, `seen` or `mined` for the txid,
+        // or a `proven_txs` row is stored for it that `proof_root_checks`
+        // records (`checked_proof_condition`); a request's word alone is
+        // not read. The door's own post records its take when it draws one
+        // (below). The paths that move `sending` to `unproven` are listed
+        // in `src/storage/sqlx/CLAUDE.md`. A proof the LAG gate deferred
         // (`has_proof`, request `unmined`) stays `unproven`.
         let status = if proof_stored {
             "completed"
