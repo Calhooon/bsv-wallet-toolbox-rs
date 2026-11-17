@@ -2222,7 +2222,9 @@ async fn upsert_output(
         let local_id: i64 = row.get("output_id");
         let local_updated: DateTime<Utc> = row.get("updated_at");
 
-        // Update if chunk is newer. `provided_by` and `purpose` are the
+        // Update if chunk is newer, the columns the reference's
+        // EntityOutput.mergeExisting copies: never the transaction, vout,
+        // satoshis or key derivation of a held coin. `provided_by` and `purpose` are the
         // source row's, as EntityOutput.mergeExisting assigns them (ts-stack
         // 4d0ea63c8): the received-coin rule reads `purpose`. A chunk that
         // carries no `purpose` says nothing of either column, so the row
@@ -2232,25 +2234,21 @@ async fn upsert_output(
             sqlx::query(
                 r#"
                 UPDATE outputs
-                SET transaction_id = ?, basket_id = ?, satoshis = ?, locking_script = ?,
+                SET basket_id = ?, locking_script = ?,
                     script_length = ?, script_offset = ?, type = ?, spendable = ?, change = ?,
-                    derivation_prefix = ?, derivation_suffix = ?, sender_identity_key = ?,
+                    sender_identity_key = ?,
                     custom_instructions = ?, provided_by = COALESCE(?, provided_by),
                     purpose = COALESCE(?, purpose), updated_at = ?
                 WHERE output_id = ?
                 "#,
             )
-            .bind(tx_id)
             .bind(local_basket_id)
-            .bind(output.satoshis)
             .bind(&output.locking_script)
             .bind(output.script_length)
             .bind(output.script_offset)
             .bind(&output.output_type)
             .bind(output.spendable)
             .bind(output.change)
-            .bind(&output.derivation_prefix)
-            .bind(&output.derivation_suffix)
             .bind(&output.sender_identity_key)
             .bind(&output.custom_instructions)
             .bind(said.then_some(output.provided_by.as_str()))
