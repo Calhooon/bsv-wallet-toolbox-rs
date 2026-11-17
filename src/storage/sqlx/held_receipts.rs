@@ -27,19 +27,36 @@ use crate::Result;
 /// The one list the door and migration 006 both read.
 pub(crate) const TAKEN_SEEN_WORDS: &str = "'accepted', 'seen', 'mined'";
 
-/// The SQL condition "`txid_expr` was taken": a record of a take
-/// ([`TAKEN_SEEN_WORDS`]) or a stored proof (a `proven_txs` row; a request
-/// `completed` links one). Read by the door ([`was_taken`]) and the per-user
-/// `review_status` heal.
-pub(crate) fn taken_condition(txid_expr: &str) -> String {
+/// The SQL condition "`txid_expr` has a stored proof whose root was
+/// checked": a `proven_txs` row of the txid that `proof_root_checks`
+/// records at that row's height with that row's root. The definition of a
+/// checked row is `proof_root_checks.rs`'s (migration 005), the one
+/// `root_checked_on` reads, with the row's `merkle_root` column standing for
+/// the root its stored path computes (SQL cannot compute it). A record is
+/// written only by the store funnel and the read check, each after a chain
+/// tracker confirmed the root; a row a sync chunk wrote has none.
+pub(crate) fn checked_proof_condition(txid_expr: &str) -> String {
     format!(
-        "(EXISTS (SELECT 1 FROM broadcast_seen WHERE txid = {txid_expr} AND status IN ({TAKEN_SEEN_WORDS})) \
-         OR EXISTS (SELECT 1 FROM proven_txs WHERE txid = {txid_expr}))"
+        "EXISTS (SELECT 1 FROM proven_txs p JOIN proof_root_checks c \
+         ON c.txid = p.txid AND c.height = p.height AND c.merkle_root = lower(p.merkle_root) \
+         WHERE p.txid = {txid_expr})"
     )
 }
 
-/// Was `txid` taken: a record of a take or a stored proof
-/// ([`taken_condition`])? A received transaction with no checked proof that
+/// The SQL condition "`txid_expr` was taken": a record of a take
+/// ([`TAKEN_SEEN_WORDS`]) or a stored proof whose root was checked
+/// ([`checked_proof_condition`]). Read by the door ([`was_taken`]) and the
+/// per-user `review_status` heal.
+pub(crate) fn taken_condition(txid_expr: &str) -> String {
+    format!(
+        "(EXISTS (SELECT 1 FROM broadcast_seen WHERE txid = {txid_expr} AND status IN ({TAKEN_SEEN_WORDS})) \
+         OR {})",
+        checked_proof_condition(txid_expr)
+    )
+}
+
+/// Was `txid` taken: a record of a take or a stored proof whose root was
+/// checked ([`taken_condition`])? A received transaction with no checked proof that
 /// was not taken is held (`sending`).
 pub(crate) async fn was_taken(conn: &mut SqliteConnection, txid: &str) -> Result<bool> {
     let sql = format!("SELECT {}", taken_condition("?1"));
