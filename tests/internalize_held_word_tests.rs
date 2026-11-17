@@ -226,7 +226,11 @@ async fn receipt_beside_a_foreign_request(word: &str) {
         wallet.services().call_count("post_beef"),
     );
     assert_eq!(tx_status(&wallet, &txid).await, "sending", "{word}");
-    assert_eq!((balance, listed(&wallet, "default").await), (0, 0), "{word}");
+    assert_eq!(
+        (balance, listed(&wallet, "default").await),
+        (0, 0),
+        "{word}"
+    );
     assert!(label.unwrap_err().contains("Insufficient funds"), "{word}");
     let req: String = sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
         .bind(&txid)
@@ -352,7 +356,11 @@ async fn migration_takes_a_held_basket_insertion_out_of_its_basket() {
         &txid,
     )
     .await;
-    assert_eq!(listed(&wallet, BASKET).await, 1, "as 0.14.0-beta.8 lists it");
+    assert_eq!(
+        listed(&wallet, BASKET).await,
+        1,
+        "as 0.14.0-beta.8 lists it"
+    );
     wallet.storage().make_available().await.expect("open");
     assert_eq!(tx_status(&wallet, &txid).await, "sending");
     assert_eq!(listed(&wallet, BASKET).await, 0);
@@ -379,7 +387,10 @@ async fn own_sending_action_with_a_merged_payment_is_listed_and_counted() {
     let suffix = "b3du";
     let own_key = common::derived_key(&root, &sender, PREFIX, suffix);
     let made = wallet
-        .create_action(spend(Some(common::p2pkh_bytes(&own_key)), false), Some(ORIGIN))
+        .create_action(
+            spend(Some(common::p2pkh_bytes(&own_key)), false),
+            Some(ORIGIN),
+        )
         .await
         .expect("a post no instance answered is not an error");
     let own = hex::encode(made.txid.expect("txid"));

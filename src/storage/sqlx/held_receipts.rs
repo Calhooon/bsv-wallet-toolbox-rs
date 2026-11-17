@@ -74,11 +74,15 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            sql.contains(&format!("proven_tx_reqs WHERE status IN ({TAKEN_REQUEST_WORDS})")),
+            sql.contains(&format!(
+                "proven_tx_reqs WHERE status IN ({TAKEN_REQUEST_WORDS})"
+            )),
             "{sql}"
         );
         assert!(
-            sql.contains(&format!("broadcast_seen WHERE status IN ({TAKEN_SEEN_WORDS})")),
+            sql.contains(&format!(
+                "broadcast_seen WHERE status IN ({TAKEN_SEEN_WORDS})"
+            )),
             "{sql}"
         );
     }
