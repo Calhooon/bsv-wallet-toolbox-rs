@@ -22,7 +22,8 @@ use bsv_wallet_toolbox_rs::{
 };
 
 /// Outputs of the one parent the sweep spends: past the reach of bsv-rs's
-/// default link budget (16 MiB re-materialized) for this parent's size.
+/// default link budget (16 MiB of wire and 56 MiB of heap re-materialized)
+/// for this parent's size.
 pub const SWEPT: u32 = 800;
 
 /// A 25-byte P2PKH paying neither party of the tests.
