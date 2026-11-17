@@ -1950,8 +1950,7 @@ where
         };
         beef.merge_raw_tx(unsigned_tx.clone(), None).map_err(|e| {
             internal_fault(format!(
-                "create_action: failed to merge the unsigned transaction into input_beef: {}",
-                e
+                "create_action: failed to merge the unsigned transaction into input_beef: {e}"
             ))
         })?;
         let unsigned_txid = compute_txid(&unsigned_tx);
@@ -2474,8 +2473,7 @@ where
                     Ok(mut broadcast_beef) => 'post: {
                         if let Err(e) = broadcast_beef.merge_raw_tx(signed_tx.clone(), None) {
                             break 'post Err(format!(
-                                "Failed to merge the signed transaction into the broadcast BEEF: {}",
-                                e
+                                "Failed to merge the signed transaction into the broadcast BEEF: {e}"
                             ));
                         }
 
@@ -2496,10 +2494,7 @@ where
                         let beef_bytes = match broadcast_beef.to_binary() {
                             Ok(bytes) => bytes,
                             Err(e) => {
-                                break 'post Err(format!(
-                                    "Failed to write the broadcast BEEF: {}",
-                                    e
-                                ))
+                                break 'post Err(format!("Failed to write the broadcast BEEF: {e}"))
                             }
                         };
                         let txid_strings = vec![txid.clone()];
@@ -2630,8 +2625,7 @@ where
             };
             beef.merge_raw_tx(signed_tx.clone(), None).map_err(|e| {
                 internal_fault(format!(
-                    "sign_action: failed to merge the signed transaction into input_beef: {}",
-                    e
+                    "sign_action: failed to merge the signed transaction into input_beef: {e}"
                 ))
             })?;
             beef.to_binary_atomic(&txid).map_err(|e| {
