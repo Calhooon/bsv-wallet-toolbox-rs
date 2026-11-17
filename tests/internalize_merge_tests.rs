@@ -23,6 +23,8 @@ mod insertion;
 use bsv_rs::primitives::{PrivateKey, PublicKey};
 use bsv_rs::script::LockingScript;
 
+use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput};
+use bsv_wallet_toolbox_rs::WalletStorageWriter;
 use common::{args, beef_paying, p2pkh_bytes};
 use insertion::*;
 
@@ -97,4 +99,101 @@ async fn a_payment_merge_over_an_unspent_row_makes_it_change() {
     );
     assert_eq!(spent_state(&wallet, &txid).await, (1, None));
     assert_eq!(balance(&wallet).await, 4500);
+}
+
+fn outputs(tx: Vec<u8>, outputs: Vec<InternalizeOutput>) -> InternalizeActionArgs {
+    let mut a = args(tx, outputs[0].clone());
+    a.outputs = outputs;
+    a
+}
+
+/// The storage door's answer: whether it merged and the satoshis it
+/// reports, or the refusal's text.
+async fn at_store(wallet: &TestWallet, a: InternalizeActionArgs) -> Result<(bool, i64), String> {
+    let auth = storage_auth(wallet).await;
+    wallet
+        .storage()
+        .internalize_action(&auth, a)
+        .await
+        .map(|r| (r.is_merge, r.satoshis))
+        .map_err(|e| e.to_string())
+}
+
+/// The transaction row's satoshis and its output's basket, type and change.
+async fn held(wallet: &TestWallet, txid: &str) -> (i64, Option<String>, String, i64) {
+    let satoshis = sqlx::query_scalar("SELECT satoshis FROM transactions WHERE txid = ?")
+        .bind(txid)
+        .fetch_one(wallet.storage().writer())
+        .await
+        .unwrap();
+    let (basket, kind, change, ..) = row(wallet, txid, 0).await;
+    (satoshis, basket, kind, change)
+}
+
+const UNIQUE: &str = "Validation error: The outputs parameter must be unique outputIndex values";
+
+/// One existing output named by a payment and an insertion, in either
+/// order, at either door: refused, the row, the transaction's satoshis and
+/// the balance unmoved.
+#[tokio::test]
+async fn one_existing_output_named_by_a_payment_and_an_insertion_is_refused() {
+    let root = PrivateKey::random();
+    for (order, door) in [
+        ("payment then insertion", "storage"),
+        ("insertion then payment", "storage"),
+        ("payment then insertion", "wallet"),
+        ("insertion then payment", "wallet"),
+    ] {
+        let (wallet, bytes, txid, sender) = held_as_custom(&root).await;
+        let before = held(&wallet, &txid).await;
+        let payment = common::payment(&sender, PREFIX, SUFFIX);
+        let named = match order {
+            "payment then insertion" => vec![payment, insertion(0, "tokens")],
+            _ => vec![insertion(0, "tokens"), payment],
+        };
+        let a = outputs(bytes, named);
+        let answer = match door {
+            "storage" => at_store(&wallet, a).await.map(|_| true),
+            _ => at_wallet(&wallet, a).await.map_err(|(_, text)| text),
+        };
+        assert_eq!(answer, Err(UNIQUE.to_string()), "{order} at {door}");
+        assert_eq!(held(&wallet, &txid).await, before, "{order} at {door}");
+        assert_eq!(balance(&wallet).await, 0, "{order} at {door}");
+    }
+}
+
+/// What the reference does not refuse is not refused: two payments of one
+/// existing output are each counted in the reported satoshis (the
+/// reference's `computeWalletPaymentBalance`, :408-420), one row converted.
+#[tokio::test]
+async fn two_payments_of_one_existing_output_are_admitted() {
+    let root = PrivateKey::random();
+    let (wallet, bytes, txid, sender) = held_as_custom(&root).await;
+    let payment = common::payment(&sender, PREFIX, SUFFIX);
+    let answer = at_store(&wallet, outputs(bytes, vec![payment.clone(), payment])).await;
+    assert_eq!(answer, Ok((true, 9000)));
+    let (_, basket, kind, change) = held(&wallet, &txid).await;
+    assert_eq!(
+        (basket.as_deref(), kind.as_str(), change),
+        (Some("default"), "P2PKH", 1)
+    );
+    assert_eq!(balance(&wallet).await, 4500);
+}
+
+/// Two insertions of one existing output into its own basket are not
+/// refused either: the row stays in its basket.
+#[tokio::test]
+async fn two_insertions_of_one_existing_output_are_admitted() {
+    let root = PrivateKey::random();
+    let (wallet, bytes, txid, _) = held_as_custom(&root).await;
+    let named = vec![insertion(0, "tokens"), insertion(0, "tokens")];
+    assert_eq!(
+        at_store(&wallet, outputs(bytes, named)).await,
+        Ok((true, 0))
+    );
+    let (_, basket, kind, change) = held(&wallet, &txid).await;
+    assert_eq!(
+        (basket.as_deref(), kind.as_str(), change),
+        (Some("tokens"), "custom", 0)
+    );
 }
