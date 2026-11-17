@@ -741,7 +741,7 @@ host's retire are `failed` with `invalid`. The transitions, with who writes each
 | any / `invalid` | `failed` | `review_status` check 1 | the request already `invalid` |
 | `failed` / `invalid`, `doubleSpend` | `unproven` / `unmined` | `un_fail` | the network knows the transaction |
 | (none) | `completed`; `unproven` / `unmined`; `sending` / `unsent` | `internalize_action` | a received transaction: its BUMP checked and stored; checked and deferred by the proof gate; no proof, held until a broadcaster takes it or a proof arrives (DECISIONS 29.1) |
-| `unproven` / `unsent`, `sending` (a received transaction, no proof row, no `accepted`, `seen` or `mined` in `broadcast_seen`) | `sending` | migration 006 on `migrate()` and `make_available()` | a held receipt a store from 0.14.0-beta.8 or 0.14.0-beta.8.1 wrote `unproven` |
+| `unproven` / any word but `unmined`, `callback`, `unconfirmed`, `completed` (a received transaction, `is_outgoing = 0`, no proof row, no `accepted`, `seen` or `mined` in `broadcast_seen`) | `sending` | migration 006 on `migrate()` and `make_available()` | a held receipt a store from 0.14.0-beta.8 or 0.14.0-beta.8.1 wrote `unproven` |
 | `completed`, `unproven`, `nosend` | merged | `internalize_action` | a known txid: outputs not yet held added |
 
 | invariant | charter | test |
@@ -759,6 +759,9 @@ host's retire are `failed` with `invalid`. The transitions, with who writes each
 | a `nosend` merge without headers refuses and leaves the action unchanged | `tracker.md section 2` (fail closed) | `test_merge_nosend_without_headers_is_unchanged` |
 | a transaction's status is read from the request by the review pass | `wallet.md section 5` | `test_review_status_marks_tx_failed_when_req_invalid` (`--test review_status_tests`) |
 | a received payment no broadcaster took is held `sending`: not in the balance, not in `listOutputs`, listed by `listActions` as `sending` | `wallet.md section 14` (DECISIONS 29.1) | `internalize_refused_by_every_instance_is_held_sending_and_not_in_the_balance` (`--test internalize_held_receipt_tests`) |
+| taken is a request `unmined`, `callback`, `unconfirmed` or `completed`, or a recorded take; another user's `nosend` or `invalid` request leaves the receipt held | `wallet.md section 14` (DECISIONS 29.1) | `receipt_beside_another_users_nosend_request_is_held` (`--test internalize_held_word_tests`) |
+| every output of a held transaction, a basket insertion included, is out of its basket's listing until taken | `wallet.md section 14` (the keeper's reading 4 of 2026-11-17) | `held_basket_insertion_leaves_its_basket_until_an_instance_takes_it` (`--test internalize_held_word_tests`) |
+| the wallet's own `sending` action is listed and counted, a payment merged into it included | `wallet.md section 5` | `own_sending_action_with_a_merged_payment_is_listed_and_counted` (`--test internalize_held_word_tests`) |
 | a held coin is offered by no rule, `underReceivedRule` included, and a named must-spend of it is refused | `wallet.md section 2` and `section 14` (DECISIONS 29.1) | `internalize_with_no_answer_is_held_sending_and_not_offered_even_under_the_label` (`--test internalize_held_receipt_tests`) |
 | one instance's take makes the receipt `unproven`, counted, offered under the label | `wallet.md section 14` (DECISIONS 29.1) | `internalize_taken_by_one_instance_is_unproven_and_counted` (`--test internalize_held_receipt_tests`) |
 | the wallet's own outgoing change under `sending` stays counted | `wallet.md section 5` | `own_change_of_a_sending_action_is_still_counted` (`--test internalize_held_receipt_tests`) |
