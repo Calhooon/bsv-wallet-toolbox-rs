@@ -206,7 +206,7 @@ async fn own_change(wallet: &TestWallet, funding: &[u8]) -> (Vec<u8>, String, u3
     beef.merge_raw_tx(made.tx.expect("the raw transaction"), None)
         .unwrap();
     let atomic = beef.to_binary_atomic(&txid).unwrap();
-    (atomic, txid, vout as u32)
+    (atomic, txid, u32::try_from(vout).unwrap())
 }
 
 /// A basket insertion naming `default`, in each spelling the reference's
@@ -328,4 +328,89 @@ async fn a_received_payment_is_not_reclassified_as_a_basket_insertion() {
     );
     assert_eq!(row(&wallet, &txid, 0).await, kept);
     assert_eq!((balance(&wallet).await, counts(&wallet).await), before);
+}
+
+/// An output already in one application basket, named by a basket
+/// insertion into another, at each door: refused as the reference refuses
+/// it, the output stays and the other basket is not created. The same
+/// basket named again is admitted, the output unmoved.
+#[tokio::test]
+async fn an_output_in_one_basket_is_not_moved_into_another() {
+    for door in ["wallet", "storage"] {
+        let (bytes, txid) = beef_paying(other_lock());
+        let wallet = wallet(&PrivateKey::random(), &txid).await;
+        assert_eq!(
+            at_storage(&wallet, args(bytes.clone(), insertion(0, "tokens"))).await,
+            Ok(true)
+        );
+        let kept = row(&wallet, &txid, 0).await;
+        let before = counts(&wallet).await;
+        let into = |basket: &str| args(bytes.clone(), insertion(0, basket));
+        let answer = match door {
+            "wallet" => at_wallet(&wallet, into("other")).await,
+            _ => at_storage(&wallet, into("other")).await,
+        };
+        assert_eq!(
+            answer,
+            Err((
+                WalletRefusalClass::InvalidParameter,
+                "Validation error: The outputs parameter must be output 0 is already assigned \
+                 to a different basket and cannot be reclassified as a basket insertion into \
+                 other"
+                    .to_string()
+            )),
+            "{door}"
+        );
+        assert_eq!(row(&wallet, &txid, 0).await, kept, "{door}: the row");
+        assert_eq!(counts(&wallet).await, before, "{door}: no basket created");
+
+        let again = match door {
+            "wallet" => at_wallet(&wallet, into("tokens")).await,
+            _ => at_storage(&wallet, into("tokens")).await,
+        };
+        assert_eq!(again, Ok(true), "{door}: the same basket");
+        assert_eq!(row(&wallet, &txid, 0).await.0.as_deref(), Some("tokens"));
+    }
+}
+
+/// The reference's legacy recovery state: an output in the default basket
+/// that is not wallet-managed change, swept into a real basket by a basket
+/// insertion, at each door: admitted, no satoshis counted, the row custom
+/// in the real basket.
+#[tokio::test]
+async fn an_output_in_the_default_basket_that_is_not_change_is_swept_into_a_basket() {
+    for door in ["wallet", "storage"] {
+        let (bytes, txid) = beef_paying(other_lock());
+        let wallet = wallet(&PrivateKey::random(), &txid).await;
+        assert_eq!(
+            at_storage(&wallet, args(bytes.clone(), insertion(0, "staging"))).await,
+            Ok(true)
+        );
+        // The state rows written before the default basket was refused.
+        sqlx::query(
+            "UPDATE outputs SET basket_id = (SELECT basket_id FROM output_baskets \
+             WHERE name = 'default') WHERE txid = ?",
+        )
+        .bind(&txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+        assert_eq!(row(&wallet, &txid, 0).await.0.as_deref(), Some("default"));
+
+        let sweep = args(bytes, insertion(0, "recovered"));
+        if door == "wallet" {
+            assert_eq!(at_wallet(&wallet, sweep).await, Ok(true));
+        } else {
+            let auth = storage_auth(&wallet).await;
+            let swept = wallet.storage().internalize_action(&auth, sweep).await;
+            let swept = swept.expect("the sweep is admitted");
+            assert_eq!((swept.is_merge, swept.satoshis), (true, 0));
+        }
+        let (basket, kind, change, ..) = row(&wallet, &txid, 0).await;
+        assert_eq!(
+            (basket.as_deref(), kind.as_str(), change),
+            (Some("recovered"), "custom", 0),
+            "{door}"
+        );
+    }
 }
