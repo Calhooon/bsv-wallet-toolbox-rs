@@ -79,7 +79,34 @@ pub(crate) fn validate_internalize_action_args(
     if has_brc177_no_send_label(args.labels.as_deref()) {
         return Err(Error::ValidationError(BRC177_INCOMING_REFUSAL.to_string()));
     }
+    validate_insertion_baskets(args)?;
     Ok(senders)
+}
+
+/// The name of the wallet's own change basket.
+pub(crate) const DEFAULT_BASKET: &str = "default";
+
+/// The reference refuses `default` as a basket insertion's basket, in the
+/// signer (ts-stack@4d0ea63c8 `signer/methods/internalizeAction.ts:93-99`)
+/// and in storage (`storage/methods/internalizeAction.ts:282-285, 305-307`),
+/// after `validateInternalizeActionArgs` has normalized the name with
+/// validateBasket (`validationHelpers.ts:376, 409-418, 941`: trimmed, then
+/// lowercased), so every spelling that normalizes to `default` is refused.
+/// The text is `WERR_INVALID_PARAMETER`'s (`WERR_errors.ts:105`).
+fn validate_insertion_baskets(args: &InternalizeActionArgs) -> Result<()> {
+    let refused = args
+        .outputs
+        .iter()
+        .filter(|output| output.protocol == BASKET_INSERTION_PROTOCOL)
+        .filter_map(|output| output.insertion_remittance.as_ref())
+        .any(|insertion| label::normalize_label(&insertion.basket) == DEFAULT_BASKET);
+    if refused {
+        return Err(invalid_parameter(
+            "insertionRemittance.basket",
+            "a non-default basket",
+        ));
+    }
+    Ok(())
 }
 
 /// The outputs' checks in the reference's order, returning each wallet
