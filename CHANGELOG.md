@@ -31,8 +31,9 @@
   existing output with this sentence and every other pair with a store
   error: on a transaction it holds nothing is written; on a new
   transaction the error comes after the transaction row and its proof
-  request were recorded and the transaction broadcast. The one sentence
-  for every pair, ahead of any record or broadcast, is this port's choice.
+  request were recorded and, where the BEEF carried no proof, the
+  transaction broadcast. The one sentence for every pair, ahead of any
+  record or broadcast, is this port's choice.
   The check reads the request alone, before the BEEF is read, so a
   request that repeats an index answers this sentence ahead of the
   door's refusals that need the BEEF (an index out of range, a BEEF that
