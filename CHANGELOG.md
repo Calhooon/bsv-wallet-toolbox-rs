@@ -192,26 +192,36 @@ it and clears its derivation, while the reference's recovery sweep, a
 The basket of the third is matched by its name as given, as this port
 stores and finds basket names; the reference matches the trimmed,
 lowercased name, so a request naming the output's own basket in another
-spelling (` Tokens ` for `tokens`) is refused here and admitted there.
+spelling (` Tokens ` for `tokens`) is refused here and admitted there. The
+same lookup skips a soft-deleted basket, where the reference's
+`findOutputBaskets` reads every row of the name (ts-stack@4d0ea63c8
+`StorageKnex.ts:1125-1128, 1203-1205, 1414-1418`), so an output whose own
+basket is soft-deleted, named again by that basket, is refused here and
+admitted there.
 
 What a host holds from before. An output a basket insertion put into the
 default basket (the name `default` exactly; any other spelling made a
 basket of its own) sits there beside the wallet's change, counted by
 `Wallet::balance`, which sums the default basket; `createAction` never
-selects it as change (its `type` is `custom`, `change = 0`). `listOutputs`
-on `default` lists it with no field that sets it apart; the storage reader
-does: `find_outputs` with the default basket's `basket_id` returns it with
-`type` `custom` and `change` false. `relinquishOutput` with `basket:
+selects it as change (its `type` is `custom`, `change = 0`: with it the only
+output in the default basket a `createAction` of 1000 satoshis answers
+`Insufficient funds: need 1005, have 0`). `listOutputs` on `default` lists
+it with the fields it lists for the wallet's own change (`labels`,
+`lockingScript`, `outpoint`, `satoshis`, `spendable`, `tags`), none of which
+sets it apart; the storage reader does: `find_outputs` with the default
+basket's `basket_id` returns it with `type` `custom` and `change` false. `relinquishOutput` with `basket:
 "default"` and its outpoint takes it out of the basket and the balance
-(`a_host_finds_and_relinquishes_a_custom_output_in_the_default_basket`:
-4500 before, 0 after). A change output reclassified by a basket insertion
-now sits in that basket as `custom`, `change = 0`, its derivation prefix,
+(`a_host_finds_and_relinquishes_a_custom_output_in_the_default_basket`,
+`tests/internalize_insertion_host_tests.rs`: 4500 before, 0 after). A
+change output reclassified by a basket insertion now sits in that basket as `custom`, `change = 0`, its derivation prefix,
 suffix and sender NULL: the wallet no longer selects it as change and holds
 nothing to sign for it with. Internalizing the same transaction again as a
-wallet payment of that output restores it (a run at the base: the row back
-in `default`, `P2PKH`, `change = 1`, purpose `receive`, the sender the
-remittance's, the balance back to its value), but only with the remittance
-the output was derived with: for a received payment that is the sender's
+wallet payment of that output restores it (the row back in `default`,
+`P2PKH`, `change = 1`, purpose `receive`, the sender the remittance's, the
+balance back to its value;
+`a_reclassified_change_row_is_restored_only_with_its_own_derivation`, on
+the row as the base wrote it), but only with the remittance the output was
+derived with: for a received payment that is the sender's
 remittance, which a host may keep; for the wallet's own change it is the
 prefix and suffix the reclassification erased, and the same call with any
 other answers `Derivation mismatch for output <vout>: derived <hash> !=

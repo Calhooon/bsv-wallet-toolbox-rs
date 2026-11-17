@@ -821,13 +821,7 @@ async fn validate_basket_merge(
     if current == change_basket_id {
         return Ok(());
     }
-    let requested: Option<i64> = sqlx::query_scalar(
-        "SELECT basket_id FROM output_baskets WHERE user_id = ? AND name = ? AND is_deleted = 0",
-    )
-    .bind(user_id)
-    .bind(&insertion.basket)
-    .fetch_optional(&mut *conn)
-    .await?;
+    let requested = find_basket_id(conn, user_id, &insertion.basket).await?;
     if requested != Some(current) {
         return Err(Error::ValidationError(format!(
             "The outputs parameter must be output {vout} is already assigned to a different \
@@ -838,23 +832,30 @@ async fn validate_basket_merge(
     Ok(())
 }
 
+/// The user's basket named `name` (as given, not deleted), without
+/// creating it.
+async fn find_basket_id(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    name: &str,
+) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar(
+        "SELECT basket_id FROM output_baskets WHERE user_id = ? AND name = ? AND is_deleted = 0",
+    )
+    .bind(user_id)
+    .bind(name)
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
 /// Gets or creates a basket and returns its ID.
 async fn get_or_create_basket_id(
     conn: &mut SqliteConnection,
     user_id: i64,
     name: &str,
 ) -> Result<i64> {
-    // Try to find existing
-    let row = sqlx::query(
-        "SELECT basket_id FROM output_baskets WHERE user_id = ? AND name = ? AND is_deleted = 0",
-    )
-    .bind(user_id)
-    .bind(name)
-    .fetch_optional(&mut *conn)
-    .await?;
-
-    if let Some(row) = row {
-        return Ok(row.get("basket_id"));
+    if let Some(basket_id) = find_basket_id(conn, user_id, name).await? {
+        return Ok(basket_id);
     }
 
     // Create new basket
