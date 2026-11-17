@@ -13,17 +13,18 @@
 
 #![cfg(feature = "sqlite")]
 
+mod common;
+
 use bsv_rs::primitives::{hash160, PrivateKey, PublicKey};
 use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
 use bsv_rs::wallet::{
-    BasketInsertion, Counterparty, InternalizeActionArgs, InternalizeOutput, KeyDeriverApi,
-    ProtoWallet, Protocol, SecurityLevel, WalletInterface, WalletPayment,
+    BasketInsertion, InternalizeActionArgs, InternalizeOutput, WalletInterface, WalletPayment,
 };
-use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
-use bsv_wallet_toolbox_rs::{
-    PostBeefResult, PostTxResultForTxid, StorageSqlx, Wallet, WalletStorageWriter,
-};
+use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
+use bsv_wallet_toolbox_rs::{StorageSqlx, Wallet};
+
+use common::{p2pkh_bytes, stored_outputs, OTHER_HASH};
 
 const PREFIX: &str = "bG9jay1wcmVmaXg=";
 const SUFFIX: &str = "bG9jay1zdWZmaXg=";
@@ -32,30 +33,13 @@ const NOT_BRC29: &str =
 /// Builds an output's locking script from the derived key.
 type ScriptFor = fn(&PublicKey) -> Vec<u8>;
 
-const OTHER_HASH: &str = "dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa";
-
-fn p2pkh_bytes(pubkey: &PublicKey) -> Vec<u8> {
-    let mut script = vec![0x76, 0xa9, 0x14];
-    script.extend_from_slice(&hash160(&pubkey.to_compressed()));
-    script.extend([0x88, 0xac]);
-    script
-}
-
 fn lock(bytes: &[u8]) -> LockingScript {
     LockingScript::from_binary(bytes).unwrap()
 }
 
 /// The key the recipient `root` derives for the remittance from `sender`.
 fn derived_key(root: &PrivateKey, sender: &PublicKey) -> PublicKey {
-    ProtoWallet::new(Some(root.clone()))
-        .key_deriver()
-        .derive_public_key(
-            &Protocol::new(SecurityLevel::Counterparty, "3241645161d8"),
-            &format!("{PREFIX} {SUFFIX}"),
-            &Counterparty::Other(sender.clone()),
-            true,
-        )
-        .unwrap()
+    common::derived_key(root, sender, PREFIX, SUFFIX)
 }
 
 /// An AtomicBEEF of a child with one output locked by `lock`, spending a
@@ -89,41 +73,8 @@ fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
     (beef.to_binary_atomic(&txid).unwrap(), txid)
 }
 
-fn accepted(txid: &str) -> PostBeefResult {
-    PostBeefResult {
-        name: "arc".to_string(),
-        status: "success".to_string(),
-        txid_results: vec![PostTxResultForTxid {
-            txid: txid.to_string(),
-            status: "success".to_string(),
-            double_spend: false,
-            orphan_mempool: false,
-            competing_txs: None,
-            data: None,
-            service_error: false,
-            block_hash: None,
-            block_height: None,
-            notes: vec![],
-        }],
-        error: None,
-        notes: vec![],
-    }
-}
-
 async fn wallet(root: &PrivateKey, txid: &str) -> Wallet<StorageSqlx, MockWalletServices> {
-    let storage = StorageSqlx::in_memory().await.expect("in-memory storage");
-    let identity = root.public_key().to_hex();
-    storage
-        .migrate("internalize-payment-lock-tests", &identity)
-        .await
-        .expect("migrate");
-    storage.make_available().await.expect("make_available");
-    let services = MockWalletServices::builder()
-        .post_beef_response(MockResponse::Success(vec![accepted(txid)]))
-        .build();
-    Wallet::new(Some(root.clone()), storage, services)
-        .await
-        .expect("wallet")
+    common::wallet("internalize-payment-lock-tests", root, txid).await
 }
 
 fn args(tx: Vec<u8>, output: InternalizeOutput) -> InternalizeActionArgs {
@@ -147,13 +98,6 @@ fn payment(sender: &PublicKey) -> InternalizeOutput {
         }),
         insertion_remittance: None,
     }
-}
-
-async fn stored_outputs(wallet: &Wallet<StorageSqlx, MockWalletServices>) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM outputs")
-        .fetch_one(wallet.storage().writer())
-        .await
-        .unwrap()
 }
 
 /// Internalizes `output` of a transaction whose one output is locked by the

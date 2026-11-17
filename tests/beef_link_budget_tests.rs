@@ -16,82 +16,24 @@
 
 #![cfg(feature = "sqlite")]
 
+mod common;
+
 use std::sync::Arc;
 
 use bsv_rs::primitives::PrivateKey;
-use bsv_rs::script::{LockingScript, UnlockingScript};
-use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
+use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{BasketInsertion, InternalizeActionArgs, InternalizeOutput};
 use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
 use bsv_wallet_toolbox_rs::{
-    AuthId, PostBeefResult, PostTxResultForTxid, StorageSqlx, WalletServices,
-    WalletStorageProvider, WalletStorageWriter,
+    AuthId, StorageSqlx, WalletServices, WalletStorageProvider, WalletStorageWriter,
 };
 
-/// Outputs of the one parent the child sweeps: past the 702 P2PKH outputs
-/// bsv-rs 0.8.11 states as the default budget's single-sweep reach.
-const SWEPT: u32 = 800;
+use common::{accepted, other_lock, sweep_beef};
 
-fn pay_lock() -> LockingScript {
-    LockingScript::from_hex("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap()
-}
-
-/// A proven parent of `SWEPT` P2PKH outputs and an unmined child spending
-/// every one of them into a single output, as an AtomicBEEF.
+/// A proven parent of `common::SWEPT` P2PKH outputs and an unmined child
+/// spending every one of them into a single output, as an AtomicBEEF.
 fn sweep_atomic_beef() -> (Vec<u8>, String) {
-    let mut parent = Transaction::new();
-    let mut parent_input = TransactionInput::new("11".repeat(32), 0);
-    parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(parent_input);
-    for _ in 0..SWEPT {
-        parent.outputs.push(TransactionOutput {
-            satoshis: Some(1_000),
-            locking_script: pay_lock(),
-            change: false,
-        });
-    }
-    let parent_txid = parent.id();
-
-    let mut child = Transaction::new();
-    child.version = 1;
-    for vout in 0..SWEPT {
-        let mut input = TransactionInput::new(parent_txid.clone(), vout);
-        input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-        child.inputs.push(input);
-    }
-    child.outputs.push(TransactionOutput {
-        satoshis: Some(u64::from(SWEPT) * 1_000 - 500),
-        locking_script: pay_lock(),
-        change: false,
-    });
-    let txid = child.id();
-
-    let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump));
-    beef.merge_raw_tx(child.to_binary(), None);
-    (beef.to_binary_atomic(&txid).unwrap(), txid)
-}
-
-fn accepted(txid: &str) -> PostBeefResult {
-    PostBeefResult {
-        name: "arc".to_string(),
-        status: "success".to_string(),
-        txid_results: vec![PostTxResultForTxid {
-            txid: txid.to_string(),
-            status: "success".to_string(),
-            double_spend: false,
-            orphan_mempool: false,
-            competing_txs: None,
-            data: None,
-            service_error: false,
-            block_hash: None,
-            block_height: None,
-            notes: vec![],
-        }],
-        error: None,
-        notes: vec![],
-    }
+    sweep_beef(other_lock())
 }
 
 /// The linking door refuses the sweep under its default budget, with the
