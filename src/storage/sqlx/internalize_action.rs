@@ -3165,7 +3165,8 @@ mod tests {
         stub.merge_raw_tx(
             beef.find_txid(&txid).unwrap().tx().unwrap().to_binary(),
             None,
-        ).unwrap();
+        )
+        .unwrap();
         let args = wallet_payment_args(stub.to_binary_atomic(&txid).unwrap(), "missing ancestry");
         let result = internalize_action_internal(&storage, user_id, args).await;
         assert!(matches!(
@@ -3195,15 +3196,17 @@ mod tests {
         let (plain_bytes, plain_txid, _s) = create_test_atomic_beef();
         let complete = Beef::from_binary(&plain_bytes).unwrap();
         let mut plain = Beef::new();
-        plain.merge_raw_tx(
-            complete
-                .find_txid(&plain_txid)
-                .unwrap()
-                .tx()
-                .unwrap()
-                .to_binary(),
-            None,
-        ).unwrap();
+        plain
+            .merge_raw_tx(
+                complete
+                    .find_txid(&plain_txid)
+                    .unwrap()
+                    .tx()
+                    .unwrap()
+                    .to_binary(),
+                None,
+            )
+            .unwrap();
         assert!(extract_bump_claim(plain.find_bump(&plain_txid), &plain_txid).is_none());
     }
 
@@ -3549,7 +3552,8 @@ mod tests {
     #[test]
     fn test_extract_input_outpoints_skips_missing_source_txid() {
         let mut tx = Transaction::new();
-        tx.inputs_mut().push(TransactionInput::new("aa".repeat(32), 3));
+        tx.inputs_mut()
+            .push(TransactionInput::new("aa".repeat(32), 3));
         let mut missing = TransactionInput::new("bb".repeat(32), 1);
         missing.source_txid = None;
         tx.inputs_mut().push(missing);
@@ -3773,7 +3777,8 @@ mod tests {
         let root = bump.compute_root(Some(&parent_txid)).unwrap();
         let mut beef = Beef::new();
         let bump_index = beef.merge_bump(bump);
-        beef.merge_raw_tx(parent.to_binary(), Some(bump_index)).unwrap();
+        beef.merge_raw_tx(parent.to_binary(), Some(bump_index))
+            .unwrap();
         beef.merge_transaction(payment);
         let bytes = beef.to_binary_atomic(&txid).unwrap();
 

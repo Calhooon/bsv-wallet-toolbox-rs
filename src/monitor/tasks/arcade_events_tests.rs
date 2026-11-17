@@ -92,7 +92,11 @@ impl Scene {
             timestamp: None,
             block_hash: Some("cd".repeat(32)),
             block_height: Some(HEIGHT),
-            merkle_path: Some(MerklePath::from_coinbase_txid(txid, HEIGHT).to_hex().unwrap()),
+            merkle_path: Some(
+                MerklePath::from_coinbase_txid(txid, HEIGHT)
+                    .to_hex()
+                    .unwrap(),
+            ),
             extra_info: None,
             status_code: None,
             competing_txs: None,
@@ -424,7 +428,11 @@ async fn count_status_busy_arms(status: &str, known: bool) -> usize {
     let mut ev = scene.event(status);
     if !known {
         ev.txid = "ef".repeat(32);
-        ev.merkle_path = Some(MerklePath::from_coinbase_txid(&ev.txid, HEIGHT).to_hex().unwrap());
+        ev.merkle_path = Some(
+            MerklePath::from_coinbase_txid(&ev.txid, HEIGHT)
+                .to_hex()
+                .unwrap(),
+        );
     }
     sqlx::query("PRAGMA busy_timeout = 200")
         .execute(storage.writer())

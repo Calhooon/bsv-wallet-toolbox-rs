@@ -204,7 +204,8 @@ async fn create_review_carries_competing_beef_from_request_input_beef() {
         .execute(f.wallet.storage().writer())
         .await
         .unwrap();
-    f.request("unmined", Some(ancestry.to_binary().unwrap())).await;
+    f.request("unmined", Some(ancestry.to_binary().unwrap()))
+        .await;
     let beef = f.beef().await;
     assert_eq!(
         beef.find_txid(&f.competitor).unwrap().raw_tx(),

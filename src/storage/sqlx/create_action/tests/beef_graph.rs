@@ -148,7 +148,8 @@ fn test_prune_stops_at_a_proven_ancestor() {
     let mut beef = Beef::new();
     let bump_idx = beef.merge_bump(synth_bump(900_000, &chain[1].1));
     beef.merge_raw_tx(chain[0].0.clone(), None).unwrap();
-    beef.merge_raw_tx(chain[1].0.clone(), Some(bump_idx)).unwrap();
+    beef.merge_raw_tx(chain[1].0.clone(), Some(bump_idx))
+        .unwrap();
     beef.merge_raw_tx(chain[2].0.clone(), None).unwrap();
 
     prune_beef_to_roots(&mut beef, &[chain[2].1.clone()]).unwrap();

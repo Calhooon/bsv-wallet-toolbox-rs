@@ -185,9 +185,14 @@ async fn test_create_action_refuses_a_transaction_with_no_input_at_its_offset() 
     let mut beef = Beef::new();
     beef.merge_raw_tx(raw, None).unwrap();
 
-    let err = create_action_internal(&storage, None, user_id, envelope_args(beef.to_binary().unwrap()))
-        .await
-        .expect_err("a transaction with no input is invalid bytes");
+    let err = create_action_internal(
+        &storage,
+        None,
+        user_id,
+        envelope_args(beef.to_binary().unwrap()),
+    )
+    .await
+    .expect_err("a transaction with no input is invalid bytes");
     // The version (4), the two counts (1 + 1), the format byte (1).
     assert_eq!(err.to_string(), "Invalid BEEF at byte 7: NoInputs");
     assert!(matches!(

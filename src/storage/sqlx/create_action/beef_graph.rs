@@ -230,7 +230,10 @@ pub(super) fn needed_by_roots(beef: &Beef, txids: &[String], roots: &[String]) -
 ///
 /// Roots that are absent from `beef` are ignored. If that leaves nothing to
 /// keep, `beef` is left untouched: pruning must never empty a BEEF.
-pub(in crate::storage::sqlx) fn prune_beef_to_roots(beef: &mut Beef, roots: &[String]) -> Result<()> {
+pub(in crate::storage::sqlx) fn prune_beef_to_roots(
+    beef: &mut Beef,
+    roots: &[String],
+) -> Result<()> {
     if beef.txs.is_empty() || roots.is_empty() {
         return Ok(());
     }

@@ -37,7 +37,9 @@ fn cases(surface: &str) -> Vec<Value> {
 }
 
 fn coinbase_bump_hex(txid: &str, height: u32) -> String {
-    MerklePath::from_coinbase_txid(txid, height).to_hex().unwrap()
+    MerklePath::from_coinbase_txid(txid, height)
+        .to_hex()
+        .unwrap()
 }
 
 /// The case's body with its placeholders filled.

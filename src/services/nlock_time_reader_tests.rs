@@ -21,7 +21,12 @@ fn raw(satoshis: u64, lock: u32) -> Vec<u8> {
 
 #[test]
 fn a_transaction_followed_by_bytes_is_refused_840() {
-    assert_eq!(NLockTimeInput::from_raw_tx(&raw(1_000, 7)).unwrap().lock_time, 7);
+    assert_eq!(
+        NLockTimeInput::from_raw_tx(&raw(1_000, 7))
+            .unwrap()
+            .lock_time,
+        7
+    );
     let mut trailing = raw(1_000, 7);
     trailing.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
     let refused = NLockTimeInput::from_raw_tx(&trailing).unwrap_err();
@@ -40,7 +45,12 @@ fn a_transaction_followed_by_bytes_is_refused_840() {
 #[test]
 fn an_output_of_two_to_the_53_satoshis_is_refused_844() {
     let ceiling = (1u64 << 53) - 1;
-    assert_eq!(NLockTimeInput::from_raw_tx(&raw(ceiling, 9)).unwrap().lock_time, 9);
+    assert_eq!(
+        NLockTimeInput::from_raw_tx(&raw(ceiling, 9))
+            .unwrap()
+            .lock_time,
+        9
+    );
     let refused = NLockTimeInput::from_raw_tx(&raw(1u64 << 53, 9)).unwrap_err();
     assert_eq!(
         refused.to_string(),

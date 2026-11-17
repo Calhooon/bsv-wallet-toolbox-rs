@@ -376,7 +376,10 @@ async fn replay_p0_1d_soak_walk() {
             .unwrap();
             let mut t_beef = Beef::from_binary(&beef.to_binary().unwrap()).unwrap();
             t_beef.merge_raw_tx(template, None).unwrap();
-            println!("P0_1D_TEMPLATE_BEEF {}", hex::encode(t_beef.to_binary().unwrap()));
+            println!(
+                "P0_1D_TEMPLATE_BEEF {}",
+                hex::encode(t_beef.to_binary().unwrap())
+            );
         }
         assert!(
             leaf_flagged(&beef, &root),
@@ -398,7 +401,9 @@ async fn the_monitors_compaction_stores_the_leaf_flagged() {
     super::reorg_tests::insert_req(&s, &x.t.1, &x.t.0, "completed", 0, None, Utc::now()).await;
     let mut stored = Beef::new();
     stored.merge_raw_tx(x.b.0.clone(), None).unwrap();
-    stored.merge_raw_tx(super::proof_root_tests::unreached_filler(), None).unwrap();
+    stored
+        .merge_raw_tx(super::proof_root_tests::unreached_filler(), None)
+        .unwrap();
     let stored_bytes = stored.to_binary().unwrap();
     assert!(
         stored_bytes.len() > 1000,

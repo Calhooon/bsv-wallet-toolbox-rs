@@ -93,7 +93,8 @@ fn lineage(bad: bool, parent_lock: &str) -> (Transaction, Beef, MockChainTracker
     tracker.add_root(HEIGHT, bump.compute_root(None).unwrap());
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(grandparent.to_binary(), Some(index)).unwrap();
+    beef.merge_raw_tx(grandparent.to_binary(), Some(index))
+        .unwrap();
     beef.merge_raw_tx(parent.to_binary(), None).unwrap();
     (parent, beef, tracker)
 }

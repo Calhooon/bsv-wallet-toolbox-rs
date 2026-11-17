@@ -1777,7 +1777,11 @@ mod tests {
             tx_status: statuses::MINED.to_string(),
             block_hash: Some("bb".repeat(32)),
             block_height: Some(height),
-            merkle_path: Some(MerklePath::from_coinbase_txid(txid, height).to_hex().unwrap()),
+            merkle_path: Some(
+                MerklePath::from_coinbase_txid(txid, height)
+                    .to_hex()
+                    .unwrap(),
+            ),
             ..Default::default()
         }
     }
@@ -1785,7 +1789,9 @@ mod tests {
     #[test]
     fn test_decode_bump_candidates_hex_and_base64() {
         let txid = "aa".repeat(32);
-        let bytes = MerklePath::from_coinbase_txid(&txid, 850_000).to_binary().unwrap();
+        let bytes = MerklePath::from_coinbase_txid(&txid, 850_000)
+            .to_binary()
+            .unwrap();
 
         let from_hex = decode_bump_candidates(&hex::encode(&bytes));
         assert!(from_hex.contains(&bytes), "hex encoding must decode");
@@ -1806,7 +1812,9 @@ mod tests {
         assert_eq!(bump.block_height, height);
         assert_eq!(
             bytes,
-            MerklePath::from_coinbase_txid(&txid, height).to_binary().unwrap()
+            MerklePath::from_coinbase_txid(&txid, height)
+                .to_binary()
+                .unwrap()
         );
 
         // Partial enrichment: height missing.
@@ -1829,7 +1837,9 @@ mod tests {
     fn test_status_proof_accepts_a_base64_merkle_path() {
         let txid = "cc".repeat(32);
         let height = 851_000u32;
-        let bytes = MerklePath::from_coinbase_txid(&txid, height).to_binary().unwrap();
+        let bytes = MerklePath::from_coinbase_txid(&txid, height)
+            .to_binary()
+            .unwrap();
 
         let mut doc = mined_doc(&txid, height);
         doc.merkle_path = Some(base64::Engine::encode(
@@ -1857,7 +1867,8 @@ mod tests {
             Some(
                 MerklePath::from_coinbase_txid(&txid, height)
                     .to_hex()
-                    .unwrap().as_str()
+                    .unwrap()
+                    .as_str()
             )
         );
     }

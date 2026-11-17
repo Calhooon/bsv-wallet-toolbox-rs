@@ -297,7 +297,11 @@ async fn an_unproven_output_is_kept_only_when_its_spend_verifies() {
         *child.inputs_mut() = vec![input];
         let mut beef = Beef::from_binary(&proven(&parent, HEIGHT)).unwrap();
         beef.merge_raw_tx(child.to_binary(), None).unwrap();
-        answer.push(kept(vec![at(beef.to_binary().unwrap(), 0)], &tracker()).await.len());
+        answer.push(
+            kept(vec![at(beef.to_binary().unwrap(), 0)], &tracker())
+                .await
+                .len(),
+        );
     }
     assert_eq!(answer, vec![1, 0]);
 }

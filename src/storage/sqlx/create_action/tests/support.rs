@@ -620,7 +620,13 @@ pub(super) async fn l2_23_assembly(
     seed_proven_chain_tx(&s, &chain[0].1, &chain[0].0, 100).await;
     let mut stub = Beef::new();
     stub.merge_raw_tx(chain[1].0.clone(), None).unwrap();
-    seed_unproven_tx(&s, &chain[1].1, &chain[1].0, Some(&stub.to_binary().unwrap())).await;
+    seed_unproven_tx(
+        &s,
+        &chain[1].1,
+        &chain[1].0,
+        Some(&stub.to_binary().unwrap()),
+    )
+    .await;
     seed_unproven_tx(&s, &chain[2].1, &chain[2].0, None).await;
     let mut t = MockChainTracker::new(101);
     t.add_root(100, chain[0].1.clone());

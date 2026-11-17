@@ -34,7 +34,9 @@ fn fanned_token(fan: u32, fields: usize) -> (Beef, String) {
         input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
         child.inputs_mut().push(input);
     }
-    let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap().public_key();
+    let key = PrivateKey::from_hex(&format!("{:064x}", 7))
+        .unwrap()
+        .public_key();
     let mut data: Vec<Vec<u8>> = (0..fields).map(|i| vec![b'a' + i as u8; 4]).collect();
     data.push(vec![0x30; 8]);
     child.outputs_mut().push(TransactionOutput {
@@ -77,5 +79,8 @@ fn a_token_whose_transaction_sweeps_one_parent_is_read_749() {
 fn a_token_of_a_small_transaction_is_read_as_before_749() {
     let (beef, txid) = fanned_token(2, 2);
     assert!(token_source(&beef, &output(&txid), 2).is_some());
-    assert!(token_source(&beef, &output(&txid), 3).is_none(), "the field count still binds");
+    assert!(
+        token_source(&beef, &output(&txid), 3).is_none(),
+        "the field count still binds"
+    );
 }

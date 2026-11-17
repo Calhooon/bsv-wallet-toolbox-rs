@@ -66,7 +66,8 @@ fn build_chain() -> ChainBeef {
     let bump = MerklePath::from_coinbase_txid(&root, 800_000);
     let mut beef = Beef::with_version(BEEF_V1);
     let bump_idx = beef.merge_bump(bump);
-    beef.merge_raw_tx(root_tx.to_binary(), Some(bump_idx)).unwrap();
+    beef.merge_raw_tx(root_tx.to_binary(), Some(bump_idx))
+        .unwrap();
     beef.merge_transaction(a_tx);
     beef.merge_transaction(b_tx);
     beef.merge_transaction(subject_tx);
@@ -1388,7 +1389,13 @@ mod storage_wiring {
         storage.set_chain_tracker(StdArc::new(tracker)).await;
 
         let outcome = storage
-            .ingest_merkle_proof(&txid, &bump.to_binary().unwrap(), height, &"b".repeat(64), None)
+            .ingest_merkle_proof(
+                &txid,
+                &bump.to_binary().unwrap(),
+                height,
+                &"b".repeat(64),
+                None,
+            )
             .await
             .expect("ingest ok");
         assert!(matches!(outcome, ProofIngestOutcome::Ingested(_)));
