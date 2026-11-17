@@ -685,10 +685,7 @@ async fn held_by_request(conn: &mut SqliteConnection, txid: &str) -> Result<bool
             .bind(txid)
             .fetch_optional(&mut *conn)
             .await?;
-    Ok(matches!(
-        req.as_deref(),
-        None | Some("unsent") | Some("sending")
-    ))
+    Ok(matches!(req.as_deref(), None | Some("unsent" | "sending")))
 }
 
 /// Finds an existing transaction by user and txid.
