@@ -35,9 +35,11 @@ impl StorageSqlx {
         }
 
         // 2. Find transactions where status doesn't match proven_tx_req status.
-        // A `sending` row heals only on a recorded take or a stored proof
-        // (`held_receipts::taken_condition`, DECISIONS 29.1): a request's
-        // word alone is not evidence that a broadcaster took it.
+        // A received `sending` row heals only on a recorded take or a stored
+        // proof whose root was checked (`held_receipts::taken_condition`,
+        // DECISIONS 29.1): a request's word alone is not evidence that a
+        // broadcaster took it. The wallet's own outgoing row heals on its
+        // request's word, as before the ruling, which is about receipts.
         let mismatch_sql = format!(
             r#"
             SELECT t.transaction_id, t.txid, t.status AS tx_status, p.status AS req_status, p.proven_tx_id
@@ -46,7 +48,7 @@ impl StorageSqlx {
             WHERE t.user_id = ?
               AND (
                 (t.status = 'unproven' AND p.status = 'completed')
-                OR (t.status = 'sending' AND p.status IN ('completed', 'unmined') AND {taken})
+                OR (t.status = 'sending' AND p.status IN ('completed', 'unmined') AND (t.is_outgoing = 1 OR {taken}))
                 OR (t.status = 'completed' AND p.status NOT IN ('completed', 'nosend'))
               )
             "#,
