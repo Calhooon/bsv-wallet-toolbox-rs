@@ -105,10 +105,11 @@ pub async fn internalize_action_internal(
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
     // Step 0: The arguments refused before anything else: no output at all,
-    // one output index named more than once (the reference ends every such
-    // request without a write: `linkExistingOutputs` for a payment and an
-    // insertion of a held output, the outputs table's unique key for every
-    // other pair), a wallet payment with an empty derivation prefix or
+    // one output index named more than once (the reference fails every such
+    // request: `linkExistingOutputs` for a payment and an insertion of a
+    // held output, the outputs table's unique key for every other pair,
+    // which on a new transaction it meets only after recording the
+    // transaction), a wallet payment with an empty derivation prefix or
     // suffix (a change row nothing could sign), and a wallet payment whose
     // sender is neither empty nor a compressed key. The request alone is
     // read: it comes before any tracker, service or row is asked.
