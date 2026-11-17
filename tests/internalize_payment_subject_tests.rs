@@ -147,7 +147,9 @@ async fn a_txid_only_parent_with_a_payment_key_that_derives_is_stored() {
 }
 
 /// Bytes with no readable subject and a payment output: refused before
-/// anything is stored, saying the subject cannot be read.
+/// anything is stored, saying the subject cannot be read. The whole text a
+/// host reads is pinned for each input: bytes that are not a BEEF, and an
+/// AtomicBEEF naming a subject it does not carry.
 #[tokio::test]
 async fn a_payment_in_bytes_with_no_readable_subject_is_refused_before_storage() {
     let root = PrivateKey::random();
@@ -156,18 +158,31 @@ async fn a_payment_in_bytes_with_no_readable_subject_is_refused_before_storage()
     // An AtomicBEEF naming a subject it does not carry.
     let mut absent = good.clone();
     absent[4..36].copy_from_slice(&[0x5a; 32]);
-    for bytes in [vec![0xde, 0xad, 0xbe, 0xef], absent] {
+    let cases = [
+        (
+            vec![0xde, 0xad, 0xbe, 0xef],
+            "Cannot read the BEEF's subject transaction to check payment outputs: \
+             BEEF error: Invalid BEEF version: 0xEFBEADDE"
+                .to_string(),
+        ),
+        (
+            absent,
+            format!(
+                "Cannot read the BEEF's subject transaction to check payment outputs: \
+                 transaction error: Transaction {} not found in BEEF",
+                "5a".repeat(32)
+            ),
+        ),
+    ];
+    for (bytes, expected) in cases {
         let wallet = wallet(&root, &"00".repeat(32)).await;
         let answer = wallet
             .internalize_action(payment_args(bytes, &sender), "test.local")
             .await;
         match answer {
-            Err(bsv_rs::Error::WalletError(text)) => assert!(
-                text.starts_with(
-                    "Cannot read the BEEF's subject transaction to check payment outputs: "
-                ),
-                "{text}"
-            ),
+            Err(e @ bsv_rs::Error::WalletError(_)) => {
+                assert_eq!(e.to_string(), format!("wallet error: {expected}"))
+            }
             other => panic!(
                 "not refused for the subject: {:?}",
                 other.map(|r| r.accepted)
