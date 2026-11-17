@@ -28,7 +28,7 @@ This module provides manager components that sit above the core storage, service
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | 317 | Module declarations, re-exports, `WalletLogger`, `SetupWalletOptions`, `setup_wallet()` |
-| `storage_manager.rs` | 1392 | Multi-storage orchestration with active/backup semantics, lock queues, MonitorStorage impl with task locking, sync-safe cached settings/services |
+| `storage_manager.rs` | 1668 | Multi-storage orchestration with active/backup semantics, lock queues, MonitorStorage impl with task locking, sync-safe cached settings/services |
 | `cwi_style_wallet_manager.rs` | 765 | CWI-compatible multi-profile manager with PBKDF2 password derivation, UMP tokens, snapshots, JSON import/export |
 | `permissions_manager.rs` | 1978 | BRC-98/99 permission enforcement with DPACP/DBAP/DCAP/DSAP, in-memory cache (5-min TTL), permission request handler |
 | `settings_manager.rs` | 354 | Persistent wallet settings with mainnet/testnet defaults and string serialization |
@@ -168,10 +168,11 @@ set_services(services) / get_services() -> Result<Arc<dyn WalletServices>>
 
 ### Sync rules
 
-- Every drain (`sync_from_reader`, `sync_to_writer`, `update_backups`) makes the writer's user (`find_or_insert_user`) before any chunk: a chunk never creates its user. Drive several chunks through `process_sync_chunk_mapped` with one `SyncMap`, as the drain does.
+- Every drain (`drain_sync_chunks`: `sync_from_reader`, `sync_to_writer`, `update_backups`, and `set_active`'s backups) refuses a reader and a writer whose `settings.chain` differ (`Live sync requires matching declared network chains on both storage providers.`), then makes the writer's user (`find_or_insert_user`) before any chunk: a chunk never creates its user. A writer's answer with `error` set fails the drain ahead of `done`; `done = false` to a chunk that carried no row is refused (`Sync provider reported an unfinished page without advancing its durable checkpoint.`).
+- A drain whose reader answers `checks_received_beef_in_process` false runs inside `crate::storage::remote_sync::scope`: a local writer's proof preflight then validates every proof row it does not hold as the same proof, new rows too, one root check and one header read per height per sync, eight in flight, no retry. Drive several chunks through `process_sync_chunk_mapped` with one `SyncMap`, as the drain does.
 - `sync_from_reader` writes the wallet's own active storage (the active store's cached user row) into the chunk's user row: a reader does not choose the active store. A push (`sync_to_writer`) carries the reader's.
-- The `WalletStorageSync` surface (`get_sync_chunk`, `process_sync_chunk`) refuses an identity that is not the manager's: `Access denied: Identity key mismatch`.
-- `set_active` writes each store's row by that store's own user id (`AuthId::with_user_id(identity, store.user.user_id)`), the calls under the stores read lock, then sets the cached user row of each store whose call succeeded under the write lock, before `make_available` partitions again (it reads the cached rows). It refuses while the stores are in conflict (`update_backups` needs an enabled active).
+- Every sync entry that takes an identity (`sync_from_reader`, `sync_to_writer`, and the `WalletStorageSync` surface: `get_sync_chunk`, `process_sync_chunk`, `find_or_insert_sync_state`, `set_active`) calls `check_sync_identity` before anything else: `Access denied: Identity key mismatch`.
+- `set_active` writes each store's row by that store's own user id (`AuthId::with_user_id(identity, store.user.user_id)`), the calls under the stores read lock, then sets the cached user row of each store whose call succeeded under the write lock, before `make_available` partitions again (it reads the cached rows). It refuses while the stores are in conflict (`update_backups` needs an enabled active). One transition at a time (`set_active_lock`, a lock no other operation takes; the no-op decision is under it too). A transition that fails part way runs `discard_partition`: `is_available` false, `auth_id.is_active` false, every store's `is_available` false and cached `user` dropped, so the next call's `make_available` reads every store again.
 - A backup's request keeps the status it was given when the backup received it (the reference's request merge), so a wallet made active on that backup asks or sends again. Replacing a held proof needs the backup store's services.
 
 ### SyncResult

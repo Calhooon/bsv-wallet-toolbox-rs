@@ -200,8 +200,8 @@ async fn the_proof_rows_of_one_height_are_checked_once() {
     services.set_header_for_height(header);
     let (act, mgr) = wallet(services.clone()).await;
     let reader = reader_with(&rows, true).await;
-    let first = mgr.sync_from_reader(ALICE, reader.clone()).await;
-    let after_first = (
+    let once = mgr.sync_from_reader(ALICE, reader.clone()).await;
+    let after_once = (
         services.root_check_count(),
         services.call_count("get_header_for_height"),
     );
@@ -212,12 +212,12 @@ async fn the_proof_rows_of_one_height_are_checked_once() {
     );
     let rows_stored = stored(&act).await;
     println!(
-        "WITNESS 8 load, four rows at one height: {} (root checks, header reads) {after_first:?}; the same sync again: {} {after_again:?}; rows {rows_stored:?}",
-        refusal(&first),
+        "WITNESS 8 load, four rows at one height: {} (root checks, header reads) {after_once:?}; the same sync again: {} {after_again:?}; rows {rows_stored:?}",
+        refusal(&once),
         refusal(&again)
     );
-    assert_eq!(refusal(&first), "ok");
-    assert_eq!(after_first, (1, 1));
+    assert_eq!(refusal(&once), "ok");
+    assert_eq!(after_once, (1, 1));
     assert_eq!(refusal(&again), "ok");
     assert_eq!(after_again, (1, 1));
     assert_eq!(rows_stored, (4, 4));

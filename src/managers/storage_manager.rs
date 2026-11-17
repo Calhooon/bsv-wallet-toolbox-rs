@@ -790,7 +790,7 @@ impl WalletStorageManager {
 
     /// The manager's sync entries serve its own identity alone, as the
     /// reference's StorageSyncReader and syncToWriter refuse another
-    /// identity: every entry that takes an identity calls this first.
+    /// identity: every entry that takes an identity calls this before anything else.
     async fn check_sync_identity(&self, identity_key: &str) -> Result<()> {
         if identity_key != self.auth_id.read().await.identity_key {
             return Err(Error::AccessDenied("Identity key mismatch".to_string()));
@@ -913,7 +913,7 @@ impl WalletStorageManager {
 
     /// Sets a new active storage from among the current stores.
     ///
-    /// One transition at a time: a second call waits for the first, on a
+    /// One transition at a time: a second call waits for the one running, on a
     /// lock no other operation of the manager takes. A transition that fails
     /// part way leaves the manager not available, with no cached user row of
     /// any store, so its next call reads every store again before anything

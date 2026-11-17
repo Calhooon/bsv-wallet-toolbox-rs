@@ -226,8 +226,8 @@ fn unreadable(txid: &str) -> Error {
 
 /// The network half of `validateSyncProof` for one height, asked once: the
 /// tracker holds `root` at `height`, and the active header there is 80
-/// bytes and carries that root. Answers the header's hash. `txid` names the
-/// first row at that height in a refusal.
+/// bytes and carries that root. Answers the header's hash. `txid` names a
+/// row at that height in a refusal.
 async fn chain_answer(
     services: &dyn crate::services::WalletServices,
     height: i64,
@@ -271,7 +271,7 @@ async fn chain_answer(
 const IN_FLIGHT: usize = 8;
 
 /// The reference's `validateSyncProof` for the rows `which` of `proofs`.
-/// Every row's own checks run first; then each distinct height not yet
+/// Every row's own checks run before any network call; then each distinct height not yet
 /// answered in this sync is asked once (one root check, one header read),
 /// up to eight heights at once, with no retry. A row whose root is not the
 /// one its height was confirmed with is refused. Answers, for each row, the
