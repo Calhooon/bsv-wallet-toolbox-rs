@@ -209,7 +209,7 @@ async fn block_hash_of(s: &StorageSqlx, txid: &str) -> String {
 async fn a_backup_of_a_proof_row_without_block_hash_completes() {
     let (act, mgr, txid) = wallet_with_a_proof_without_block_hash().await;
     let backup = store(DST).await;
-    let first = mgr.sync_to_writer(ALICE, backup.clone()).await;
+    let backup_one = mgr.sync_to_writer(ALICE, backup.clone()).await;
     let linked = stored_link(&backup, "transactions", &txid).await;
     let after_first = block_hash_of(&backup, &txid).await;
     exec(
@@ -220,18 +220,18 @@ async fn a_backup_of_a_proof_row_without_block_hash_completes() {
         ),
     )
     .await;
-    let second = mgr.sync_to_writer(ALICE, backup.clone()).await;
+    let backup_two = mgr.sync_to_writer(ALICE, backup.clone()).await;
     let after_second = block_hash_of(&backup, &txid).await;
     println!(
         "WITNESS 0 backup with an empty block hash: {}, link {linked:?}, hash {after_first:?}; \
          after the source's is filled: {}, hash {after_second:?}",
-        verdict(&first),
-        verdict(&second)
+        verdict(&backup_one),
+        verdict(&backup_two)
     );
-    assert_eq!(verdict(&first), "ok");
+    assert_eq!(verdict(&backup_one), "ok");
     assert_eq!(linked, Some(txid.clone()));
     assert_eq!(after_first, "");
-    assert_eq!(verdict(&second), "ok");
+    assert_eq!(verdict(&backup_two), "ok");
     assert_eq!(after_second, "");
 }
 
