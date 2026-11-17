@@ -92,7 +92,7 @@ async fn a_sweep_past_the_link_budget_with_a_payment_key_that_derives_is_stored(
 /// Bytes with no readable subject and a payment output: refused before
 /// anything is stored, saying the subject cannot be read. The whole text a
 /// host reads is pinned for each input: bytes that are not a BEEF, and an
-/// AtomicBEEF naming a subject it does not carry.
+/// atomic BEEF naming a subject it does not carry.
 #[tokio::test]
 async fn a_payment_in_bytes_with_no_readable_subject_is_refused_before_storage() {
     let root = PrivateKey::random();
