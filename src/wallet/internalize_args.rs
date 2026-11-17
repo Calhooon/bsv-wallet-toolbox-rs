@@ -84,7 +84,7 @@ pub(crate) fn validate_internalize_action_args(
 }
 
 /// The name of the wallet's own change basket.
-pub(crate) const DEFAULT_BASKET: &str = "default";
+const DEFAULT_BASKET: &str = "default";
 
 /// Whether a basket insertion's `basket` names the default basket as the
 /// reference reads it: validateBasket (ts-stack@4d0ea63c8

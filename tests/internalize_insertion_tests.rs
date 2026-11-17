@@ -23,241 +23,15 @@
 
 #[path = "common/internalize_payment.rs"]
 mod common;
+#[path = "common/insertion.rs"]
+mod insertion;
 
 use bsv_rs::primitives::PrivateKey;
-use bsv_rs::transaction::Beef;
-use bsv_rs::wallet::{
-    BasketInsertion, CreateActionArgs, CreateActionOptions, CreateActionOutput,
-    InternalizeActionArgs, InternalizeOutput, RelinquishOutputArgs, WalletInterface,
-};
 use bsv_rs::WalletRefusalClass;
-use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
-use bsv_wallet_toolbox_rs::{
-    AuthId, StorageSqlx, Wallet, WalletStorageReader, WalletStorageWriter,
-};
+use bsv_wallet_toolbox_rs::WalletStorageWriter;
 
-use bsv_wallet_toolbox_rs::storage::FindOutputsArgs;
-
-use common::{args, beef_paying, other_lock, p2pkh_bytes, refusal};
-
-const PREFIX: &str = "aW5zZXJ0LXByZWZpeA==";
-const SUFFIX: &str = "aW5zZXJ0LXN1ZmZpeA==";
-
-/// The reference's sentence for `default` as the insertion basket.
-const NON_DEFAULT: &str = "The insertionRemittance.basket parameter must be a non-default basket";
-
-/// Every spelling the reference's validateBasket maps to `default`.
-const DEFAULT_SPELLINGS: [&str; 5] = [
-    "default",
-    "DEFAULT",
-    " Default ",
-    "\u{FEFF}default\t",
-    "\ndeFAULT\u{00A0}",
-];
-
-type TestWallet = Wallet<StorageSqlx, MockWalletServices>;
-
-async fn wallet(root: &PrivateKey, txid: &str) -> TestWallet {
-    common::wallet("internalize-insertion-tests", root, txid).await
-}
-
-async fn storage_auth(wallet: &TestWallet) -> AuthId {
-    let identity = wallet.identity_key().to_string();
-    let (user, _) = wallet
-        .storage()
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
-    AuthId::with_user_id(&identity, user.user_id)
-}
-
-fn insertion(vout: u32, basket: &str) -> InternalizeOutput {
-    InternalizeOutput {
-        output_index: vout,
-        protocol: "basket insertion".to_string(),
-        payment_remittance: None,
-        insertion_remittance: Some(BasketInsertion {
-            basket: basket.to_string(),
-            custom_instructions: None,
-            tags: None,
-        }),
-    }
-}
-
-/// The store's output and basket counts.
-async fn counts(wallet: &TestWallet) -> (i64, i64) {
-    let writer = wallet.storage().writer();
-    let outputs = sqlx::query_scalar("SELECT COUNT(*) FROM outputs")
-        .fetch_one(writer)
-        .await
-        .unwrap();
-    let baskets = sqlx::query_scalar("SELECT COUNT(*) FROM output_baskets")
-        .fetch_one(writer)
-        .await
-        .unwrap();
-    (outputs, baskets)
-}
-
-/// The stored row of `txid.vout`: basket name, type, change, derivation
-/// prefix, suffix and sender.
-type Row = (
-    Option<String>,
-    String,
-    i64,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
-
-async fn row(wallet: &TestWallet, txid: &str, vout: u32) -> Row {
-    sqlx::query_as(
-        "SELECT b.name, o.type, o.change, o.derivation_prefix, o.derivation_suffix, \
-         o.sender_identity_key FROM outputs o LEFT JOIN output_baskets b \
-         ON b.basket_id = o.basket_id WHERE o.txid = ? AND o.vout = ?",
-    )
-    .bind(txid)
-    .bind(vout)
-    .fetch_one(wallet.storage().writer())
-    .await
-    .unwrap()
-}
-
-async fn balance(wallet: &TestWallet) -> u64 {
-    wallet.balance().await.unwrap().total
-}
-
-/// The two doors, each answering the class and message of a refusal.
-async fn at_wallet(
-    wallet: &TestWallet,
-    args: InternalizeActionArgs,
-) -> Result<bool, (WalletRefusalClass, String)> {
-    match wallet.internalize_action(args, Some("test.local")).await {
-        Ok(r) => Ok(r.accepted),
-        Err(e) => Err(refusal(Err(e), "wallet door")),
-    }
-}
-
-async fn at_storage(
-    wallet: &TestWallet,
-    args: InternalizeActionArgs,
-) -> Result<bool, (WalletRefusalClass, String)> {
-    let auth = storage_auth(wallet).await;
-    match wallet.storage().internalize_action(&auth, args).await {
-        Ok(r) => Ok(r.base.accepted),
-        Err(e) => Err((WalletRefusalClass::InvalidParameter, e.to_string())),
-    }
-}
-
-/// Funds a wallet of `root` with a received payment of 4500 satoshis and
-/// answers it with the payment's atomic BEEF.
-async fn funded(root: &PrivateKey) -> (TestWallet, Vec<u8>) {
-    let sender = PrivateKey::random().public_key();
-    let derived = common::derived_key(root, &sender, PREFIX, SUFFIX);
-    let lock = bsv_rs::script::LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap();
-    let (bytes, txid) = beef_paying(lock);
-    let wallet = wallet(root, &txid).await;
-    let paid = wallet
-        .internalize_action(
-            args(bytes.clone(), common::payment(&sender, PREFIX, SUFFIX)),
-            Some("test.local"),
-        )
-        .await
-        .expect("the payment is internalized");
-    assert!(paid.accepted);
-    assert_eq!(balance(&wallet).await, 4500);
-    (wallet, bytes)
-}
-
-/// A transaction the wallet makes from its own change: one 1000-satoshi
-/// output locked by `lock` (another key's when `None`), the change back to
-/// the wallet, not sent. Answers its atomic BEEF, its txid, the index of
-/// its change output and of the 1000-satoshi output.
-async fn made(
-    wallet: &TestWallet,
-    funding: &[u8],
-    lock: Option<Vec<u8>>,
-) -> (Vec<u8>, String, u32, u32) {
-    let made = wallet
-        .create_action(
-            CreateActionArgs {
-                description: "a payment with change".to_string(),
-                input_beef: None,
-                inputs: None,
-                outputs: Some(vec![CreateActionOutput {
-                    locking_script: lock.unwrap_or_else(|| other_lock().to_binary()),
-                    satoshis: 1_000,
-                    output_description: "a payment".to_string(),
-                    basket: None,
-                    custom_instructions: None,
-                    tags: None,
-                }]),
-                lock_time: None,
-                version: None,
-                labels: Some(vec!["underReceivedRule".to_string()]),
-                options: Some(CreateActionOptions {
-                    no_send: Some(true),
-                    ..Default::default()
-                }),
-            },
-            Some("test.local"),
-        )
-        .await
-        .expect("createAction");
-    let txid = hex::encode(made.txid.expect("txid"));
-    let vout_where = |change: i64| {
-        sqlx::query_scalar::<_, i64>("SELECT vout FROM outputs WHERE txid = ? AND change = ?")
-            .bind(txid.clone())
-            .bind(change)
-            .fetch_one(wallet.storage().writer())
-    };
-    let change = vout_where(1).await.expect("the change output");
-    let paid = vout_where(0).await.expect("the payment output");
-    // The noSend answer is the raw transaction; its atomic BEEF carries the
-    // payment it spends and that payment's proven parent.
-    let mut beef = Beef::from_binary(funding).expect("the payment's BEEF");
-    beef.merge_raw_tx(made.tx.expect("the raw transaction"), None)
-        .unwrap();
-    let atomic = beef.to_binary_atomic(&txid).unwrap();
-    let index = |vout: i64| u32::try_from(vout).unwrap();
-    (atomic, txid, index(change), index(paid))
-}
-
-/// [`made`] with the payment to another key: its atomic BEEF, its txid and
-/// its change output's index.
-async fn own_change(wallet: &TestWallet, funding: &[u8]) -> (Vec<u8>, String, u32) {
-    let (atomic, txid, change, _) = made(wallet, funding, None).await;
-    (atomic, txid, change)
-}
-
-/// Every column of the stored row of `txid.vout`, quoted, in one string.
-async fn every_column(wallet: &TestWallet, txid: &str, vout: u32) -> String {
-    sqlx::query_scalar(
-        "SELECT quote(output_id) || '|' || quote(user_id) || '|' || quote(transaction_id)          || '|' || quote(basket_id) || '|' || quote(spendable) || '|' || quote(change)          || '|' || quote(vout) || '|' || quote(satoshis) || '|' || quote(provided_by)          || '|' || quote(purpose) || '|' || quote(type) || '|' || quote(output_description)          || '|' || quote(txid) || '|' || quote(sender_identity_key)          || '|' || quote(derivation_prefix) || '|' || quote(derivation_suffix)          || '|' || quote(custom_instructions) || '|' || quote(spent_by)          || '|' || quote(sequence_number) || '|' || quote(spending_description)          || '|' || quote(script_length) || '|' || quote(script_offset)          || '|' || quote(locking_script) || '|' || quote(created_at)          || '|' || quote(updated_at) FROM outputs WHERE txid = ? AND vout = ?",
-    )
-    .bind(txid)
-    .bind(vout)
-    .fetch_one(wallet.storage().writer())
-    .await
-    .unwrap()
-}
-
-/// The stored `provided_by` and `purpose` of `txid.vout`.
-async fn origin(wallet: &TestWallet, txid: &str, vout: u32) -> (String, String) {
-    sqlx::query_as("SELECT provided_by, purpose FROM outputs WHERE txid = ? AND vout = ?")
-        .bind(txid)
-        .bind(vout)
-        .fetch_one(wallet.storage().writer())
-        .await
-        .unwrap()
-}
-
-/// The refusal of a basket insertion naming wallet-managed change.
-fn managed_change_refusal(vout: u32) -> String {
-    format!(
-        "Validation error: The outputs parameter must be output {vout} is wallet-managed \
-         change and cannot be reclassified as a basket insertion"
-    )
-}
+use common::{args, beef_paying, other_lock, p2pkh_bytes};
+use insertion::*;
 
 /// A basket insertion naming `default`, in each spelling the reference's
 /// validator maps to it, at each door: refused with the reference's
@@ -296,6 +70,7 @@ async fn a_basket_insertion_into_a_named_basket_is_stored() {
     for door in ["wallet", "storage"] {
         let (bytes, txid) = beef_paying(other_lock());
         let wallet = wallet(&PrivateKey::random(), &txid).await;
+        let before = balance(&wallet).await;
         let args = args(bytes, insertion(0, "tokens"));
         let answer = match door {
             "wallet" => at_wallet(&wallet, args).await,
@@ -308,6 +83,7 @@ async fn a_basket_insertion_into_a_named_basket_is_stored() {
             (Some("tokens"), "custom", 0),
             "{door}"
         );
+        assert_eq!(balance(&wallet).await, before, "{door}: no balance moved");
     }
 }
 
@@ -552,65 +328,4 @@ async fn an_output_in_the_default_basket_that_is_not_change_is_swept_into_a_bask
             "{door}"
         );
     }
-}
-
-/// What a host does about an output an earlier basket insertion put in the
-/// default basket: the storage reader finds it there as `custom`, not
-/// change; `relinquishOutput` on "default" takes it out of the basket the
-/// balance sums.
-#[tokio::test]
-async fn a_host_finds_and_relinquishes_a_custom_output_in_the_default_basket() {
-    let (bytes, txid) = beef_paying(other_lock());
-    let wallet = wallet(&PrivateKey::random(), &txid).await;
-    assert_eq!(
-        at_storage(&wallet, args(bytes, insertion(0, "staging"))).await,
-        Ok(true)
-    );
-    let default_id: i64 =
-        sqlx::query_scalar("SELECT basket_id FROM output_baskets WHERE name = 'default'")
-            .fetch_one(wallet.storage().writer())
-            .await
-            .unwrap();
-    sqlx::query("UPDATE outputs SET basket_id = ? WHERE txid = ?")
-        .bind(default_id)
-        .bind(&txid)
-        .execute(wallet.storage().writer())
-        .await
-        .unwrap();
-    assert_eq!(balance(&wallet).await, 4500, "the default basket sums it");
-
-    let auth = storage_auth(&wallet).await;
-    let found: Vec<String> = wallet
-        .storage()
-        .find_outputs(
-            &auth,
-            FindOutputsArgs {
-                basket_id: Some(default_id),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|o| o.output_type == "custom" && !o.change)
-        .map(|o| format!("{}.{}", o.txid, o.vout))
-        .collect();
-    assert_eq!(found, vec![format!("{txid}.0")]);
-
-    let relinquished = wallet
-        .relinquish_output(
-            RelinquishOutputArgs {
-                basket: "default".to_string(),
-                output: bsv_rs::wallet::Outpoint::from_string(&found[0]).unwrap(),
-            },
-            Some("test.local"),
-        )
-        .await
-        .unwrap();
-    assert!(relinquished.relinquished);
-    assert_eq!(
-        balance(&wallet).await,
-        0,
-        "the default basket no longer sums it"
-    );
 }

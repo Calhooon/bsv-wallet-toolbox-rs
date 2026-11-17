@@ -232,6 +232,50 @@ async fn module_arguments_reach_the_underlying_call() {
     }
 }
 
+/// A module whose arguments rewrite the insertion basket to the default
+/// basket (any spelling validateBasket maps to `default`): the door
+/// validates the chain's arguments again and refuses with the default
+/// basket's sentence, nothing stored.
+#[tokio::test]
+async fn module_arguments_naming_the_default_basket_are_refused() {
+    for spelling in ["default", " Default ", "\u{FEFF}DEFAULT"] {
+        let module = Rewriter::quiet();
+        let (_dir, wallet, _prompts) = funded(vec![("btms", module.clone())]).await;
+        let mut rewritten =
+            serde_json::to_value(internalizing(&wallet, "p btms coins", "")).unwrap();
+        rewritten["outputs"][0]["insertionRemittance"]["basket"] = json!(spelling);
+        *module.request.lock().unwrap() = json!({ "outputs": rewritten["outputs"] });
+        let outputs = || async {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outputs")
+                .fetch_one(wallet.storage().pool())
+                .await
+                .unwrap();
+            count
+        };
+        let before = outputs().await;
+        let answer = call(
+            &wallet,
+            "internalize_action",
+            "p btms coins",
+            "p btms token",
+            ORIGINATOR,
+        )
+        .await;
+        assert_module_refusal(
+            answer,
+            "Validation error: The insertionRemittance.basket parameter must be a non-default \
+             basket",
+            spelling,
+        );
+        assert_eq!(
+            module.asked().len(),
+            1,
+            "{spelling:?}: the module was asked"
+        );
+        assert_eq!(outputs().await, before, "{spelling:?}: nothing stored");
+    }
+}
+
 /// The relinquish answers `true` for an outpoint the store does not hold,
 /// so its module names the funded coin: the coin leaves its basket.
 #[tokio::test]
