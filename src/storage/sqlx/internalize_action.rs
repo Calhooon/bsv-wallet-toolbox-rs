@@ -165,6 +165,20 @@ pub async fn internalize_action_internal(
     // CheckForProofs backstop re-derives the proof from a service.
     let validated_bump = validate_bump_claim(storage, &txid, bump_claim).await;
 
+    // Step 1e: The default basket is never a basket insertion's basket, in
+    // any spelling the reference's validator trims and lowercases to
+    // `default` (the reference's `classifyRequestedOutput` and `getBasket`).
+    // Refused before any row is written and before any basket is created.
+    for output_spec in &args.outputs {
+        if let Some(ref insertion) = output_spec.insertion_remittance {
+            if crate::insertion_basket::names_default_basket(&insertion.basket) {
+                return Err(Error::ValidationError(
+                    crate::insertion_basket::DEFAULT_BASKET_INSERTION_REFUSAL.to_string(),
+                ));
+            }
+        }
+    }
+
     // Step 2: Get the user's default (change) basket
     // NOTE: This uses its own connection (known limitation).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
