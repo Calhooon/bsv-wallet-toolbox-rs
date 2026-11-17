@@ -301,7 +301,7 @@ pub async fn internalize_action_internal(
 | New wallet payment | +satoshis |
 | Existing change output -> wallet payment | 0 (ignored) |
 | Existing non-change -> wallet payment | +satoshis |
-| Change output -> basket insertion | -satoshis |
+| Wallet-managed change -> basket insertion | refused (`output <n> is wallet-managed change ...`) |
 
 A basket insertion naming the default basket (any spelling that trims and lowercases to `default`) is refused before any row or basket is written: `The insertionRemittance.basket parameter must be a non-default basket`.
 
