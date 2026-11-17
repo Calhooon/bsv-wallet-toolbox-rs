@@ -287,14 +287,10 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         let url = endpoint_url.into();
         let transport = SimplifiedFetchTransport::new(&url);
 
-        let peer = Peer::new(PeerOptions {
-            wallet: wallet.clone(),
-            transport,
-            certificates_to_request: None,
-            session_manager: None,
-            auto_persist_last_session: true,
-            originator: Some(Self::ORIGINATOR.to_string()),
-        });
+        let peer = Peer::new(
+            PeerOptions::new(wallet.clone(), transport)
+                .with_originator(Some(Self::ORIGINATOR.to_string())),
+        );
 
         // Start the peer to set up the transport callback for receiving messages
         peer.start();

@@ -51,14 +51,9 @@ pub(super) async fn post_authenticated(
     );
     #[cfg(any(test, feature = "bench-support"))]
     let transport = SimplifiedFetchTransport::new(&origin);
-    let peer = Peer::new(PeerOptions {
-        wallet: peer_wallet,
-        transport,
-        certificates_to_request: None,
-        session_manager: None,
-        auto_persist_last_session: false,
-        originator: None,
-    });
+    let peer = Peer::new(
+        PeerOptions::new(peer_wallet, transport).with_auto_persist_last_session(false),
+    );
     peer.start();
 
     // The request nonce, 32 random bytes (`AuthFetch.ts:644-675`); the only
