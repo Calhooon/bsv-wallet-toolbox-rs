@@ -1842,6 +1842,9 @@ mod tests {
     use bsv_rs::wallet::{BasketInsertion, InternalizeOutput, WalletPayment};
 
     /// Helper to create test storage.
+    /// A sender identity key: a compressed public key (the generator's).
+    const SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
     async fn create_test_storage() -> StorageSqlx {
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage
@@ -2081,7 +2084,7 @@ mod tests {
                 payment_remittance: Some(WalletPayment {
                     derivation_prefix: "test_prefix".to_string(),
                     derivation_suffix: "test_suffix".to_string(),
-                    sender_identity_key: "sender_key".to_string(),
+                    sender_identity_key: SENDER.to_string(),
                 }),
                 insertion_remittance: None,
             }],
@@ -2315,7 +2318,7 @@ mod tests {
                 payment_remittance: Some(WalletPayment {
                     derivation_prefix: "prefix".to_string(),
                     derivation_suffix: "suffix".to_string(),
-                    sender_identity_key: "sender".to_string(),
+                    sender_identity_key: SENDER.to_string(),
                 }),
                 insertion_remittance: None,
             }],
@@ -2344,7 +2347,7 @@ mod tests {
                 payment_remittance: Some(WalletPayment {
                     derivation_prefix: "prefix1".to_string(),
                     derivation_suffix: "suffix1".to_string(),
-                    sender_identity_key: "sender1".to_string(),
+                    sender_identity_key: SENDER.to_string(),
                 }),
                 insertion_remittance: None,
             }],
@@ -2369,7 +2372,7 @@ mod tests {
                 payment_remittance: Some(WalletPayment {
                     derivation_prefix: "prefix2".to_string(),
                     derivation_suffix: "suffix2".to_string(),
-                    sender_identity_key: "sender2".to_string(),
+                    sender_identity_key: SENDER.to_string(),
                 }),
                 insertion_remittance: None,
             }],
@@ -2407,7 +2410,7 @@ mod tests {
                 payment_remittance: Some(WalletPayment {
                     derivation_prefix: "prefix".to_string(),
                     derivation_suffix: "suffix".to_string(),
-                    sender_identity_key: "sender".to_string(),
+                    sender_identity_key: SENDER.to_string(),
                 }),
                 insertion_remittance: None,
             }],
@@ -2482,7 +2485,7 @@ mod tests {
                 payment_remittance: Some(WalletPayment {
                     derivation_prefix: "prefix".to_string(),
                     derivation_suffix: "suffix".to_string(),
-                    sender_identity_key: "sender".to_string(),
+                    sender_identity_key: SENDER.to_string(),
                 }),
                 insertion_remittance: None,
             }],
@@ -2504,7 +2507,7 @@ mod tests {
                 payment_remittance: Some(WalletPayment {
                     derivation_prefix: "prefix".to_string(),
                     derivation_suffix: "suffix".to_string(),
-                    sender_identity_key: "sender".to_string(),
+                    sender_identity_key: SENDER.to_string(),
                 }),
                 insertion_remittance: None,
             }],
@@ -2591,7 +2594,7 @@ mod tests {
                     payment_remittance: Some(WalletPayment {
                         derivation_prefix: "prefix0".to_string(),
                         derivation_suffix: "suffix0".to_string(),
-                        sender_identity_key: "sender0".to_string(),
+                        sender_identity_key: SENDER.to_string(),
                     }),
                     insertion_remittance: None,
                 },
@@ -2649,7 +2652,7 @@ mod tests {
                 payment_remittance: Some(WalletPayment {
                     derivation_prefix: "test_prefix".to_string(),
                     derivation_suffix: "test_suffix".to_string(),
-                    sender_identity_key: "sender_key".to_string(),
+                    sender_identity_key: SENDER.to_string(),
                 }),
                 insertion_remittance: None,
             }],
