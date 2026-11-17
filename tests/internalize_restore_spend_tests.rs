@@ -274,6 +274,22 @@ async fn a_restored_change_row_with_the_wallets_identity_key_is_spent() {
     let restored = row(&wallet, &txid, vout).await;
     assert_eq!(restored.5, Some(me.to_hex()), "the stored sender");
     println!("restored with the wallet's identity key: row {restored:?}");
+    assert_eq!(origin(&wallet, &txid, vout).await.1, "receive");
+
+    // The restored row's purpose is `receive`: while its transaction is
+    // unproven an action without the `underReceivedRule` label does not
+    // select it.
+    let mut ordinary = spend_args(true);
+    ordinary.labels = None;
+    let unselected = wallet
+        .create_action(ordinary, Some("test.local"))
+        .await
+        .map(|made| made.txid.map(hex::encode))
+        .map_err(|e| e.to_string());
+    println!("an ordinary action while unproven: {unselected:?}");
+    let unselected = unselected.expect_err("not selected while unproven");
+    assert!(unselected.contains("Insufficient funds"), "{unselected}");
+    assert_eq!(spends_recorded(&wallet).await, 0);
 
     let tx = spend(&wallet, false)
         .await
@@ -281,9 +297,10 @@ async fn a_restored_change_row_with_the_wallets_identity_key_is_spent() {
     spends_the_coin(&wallet, &tx, &txid, vout).await;
 }
 
-/// A received payment an earlier basket insertion reclassified, restored
-/// by a wallet payment with the prefix, suffix and the sender identity key
-/// the row held: a spend that selects the coin signs it.
+/// A received payment an earlier basket insertion reclassified: the same
+/// prefix and suffix under the wallet's own key is refused, and the wallet
+/// payment with the prefix, suffix and the sender identity key the row held
+/// restores it; a spend that selects the coin signs it.
 #[tokio::test]
 async fn a_restored_received_payment_with_its_sender_is_spent() {
     let root = PrivateKey::random();
@@ -298,6 +315,23 @@ async fn a_restored_received_payment_with_its_sender_is_spent() {
         Ok(true)
     );
     reclassify(&wallet, &txid, 0).await;
+    assert_eq!(balance(&wallet).await, 0);
+
+    // The same prefix and suffix under the wallet's own key is refused: the
+    // door derives with the remittance's sender as the counterparty.
+    let under_own_key = common::payment(&root.public_key(), PREFIX, SUFFIX);
+    let refused = at_wallet(&wallet, args(bytes.clone(), under_own_key))
+        .await
+        .unwrap_err();
+    println!("restored under the wallet's own key: {refused:?}");
+    assert!(
+        refused
+            .1
+            .starts_with("Derivation mismatch for output 0: derived "),
+        "{}",
+        refused.1
+    );
+    assert_eq!(row(&wallet, &txid, 0).await.1, "custom");
     assert_eq!(balance(&wallet).await, 0);
 
     assert_eq!(at_wallet(&wallet, args(bytes, payment)).await, Ok(true));

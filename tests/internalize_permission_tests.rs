@@ -75,11 +75,22 @@ async fn guarded(
     txid: &str,
     grant: fn(&PermissionRequest) -> bool,
 ) -> (TestWallet, Asked) {
+    let config = WalletPermissionsManagerConfig::all_enabled();
+    guarded_by(root, txid, grant, config).await
+}
+
+/// [`guarded`] under `config`.
+async fn guarded_by(
+    root: &PrivateKey,
+    txid: &str,
+    grant: fn(&PermissionRequest) -> bool,
+    config: WalletPermissionsManagerConfig,
+) -> (TestWallet, Asked) {
     let mut wallet = wallet(root, txid).await;
     let manager = Arc::new(WalletPermissionsManager::new(
         Arc::new(ProtoWallet::new(Some(root.clone()))),
         ADMIN.to_string(),
-        WalletPermissionsManagerConfig::all_enabled(),
+        config,
     ));
     let asked: Asked = Arc::default();
     let seen = Arc::clone(&asked);
@@ -270,5 +281,87 @@ async fn with_no_manager_nothing_is_asked() {
     assert_eq!(
         row(&wallet, &txid, 0).await.0.as_deref(),
         Some("admin secrets")
+    );
+}
+
+/// An originator with no grant inserting into `tokens` with the label
+/// `invoices`, the handler refusing every prompt, under the default config
+/// and with each of the two flags on: with both off (`Default`) it is
+/// admitted unasked; with `seek_basket_insertion_permissions` on the basket
+/// is asked and refused; with `seek_permission_when_applying_action_labels`
+/// on the label is asked and refused.
+#[tokio::test]
+async fn each_flag_decides_whether_its_name_is_asked() {
+    let root = PrivateKey::random();
+    let basket_on = WalletPermissionsManagerConfig {
+        seek_basket_insertion_permissions: true,
+        ..Default::default()
+    };
+    let label_on = WalletPermissionsManagerConfig {
+        seek_permission_when_applying_action_labels: true,
+        ..Default::default()
+    };
+    let refusal_text = "Access denied: refused by the user".to_string();
+    for (name, config, answer, prompts) in [
+        (
+            "default",
+            WalletPermissionsManagerConfig::default(),
+            Ok(true),
+            vec![],
+        ),
+        (
+            "basket flag on",
+            basket_on,
+            Err((WalletRefusalClass::Unauthorized, refusal_text.clone())),
+            vec![format!("tokens | {DESCRIPTION}")],
+        ),
+        (
+            "label flag on",
+            label_on,
+            Err((WalletRefusalClass::Unauthorized, refusal_text.clone())),
+            vec![format!("action label invoices | {DESCRIPTION}")],
+        ),
+    ] {
+        let (a, txid) = request("tokens", &["invoices"]);
+        let (wallet, asked) = guarded_by(&root, &txid, |_| false, config).await;
+        let got = from(&wallet, a, APP)
+            .await
+            .map_err(|e| refusal(Err(e), name));
+        let prompted = asked.lock().unwrap().clone();
+        println!("{name}: {got:?}, prompts {prompted:?}");
+        assert_eq!((got, prompted), (answer, prompts), "{name}");
+    }
+}
+
+/// An insertion into `default` under a manager, with the default config,
+/// is refused as admin-only by the manager before the validator; with no
+/// manager the validator's sentence answers.
+#[tokio::test]
+async fn an_insertion_into_default_under_a_manager_is_admin_only() {
+    let root = PrivateKey::random();
+    let (a, txid) = request("default", &[]);
+    let config = WalletPermissionsManagerConfig::default();
+    let (wallet, asked) = guarded_by(&root, &txid, |_| true, config).await;
+    let answer = refused(&wallet, a).await;
+    println!("under a manager: {answer:?}");
+    assert_eq!(
+        answer,
+        (
+            WalletRefusalClass::Unauthorized,
+            "Access denied: Basket \"default\" is admin-only.".to_string()
+        )
+    );
+    assert!(asked.lock().unwrap().is_empty());
+
+    let (a, txid) = request("default", &[]);
+    let bare = insertion::wallet(&root, &txid).await;
+    let answer = refused(&bare, a).await;
+    println!("with no manager: {answer:?}");
+    assert_eq!(
+        answer,
+        (
+            WalletRefusalClass::InvalidParameter,
+            format!("Validation error: {NON_DEFAULT}")
+        )
     );
 }
