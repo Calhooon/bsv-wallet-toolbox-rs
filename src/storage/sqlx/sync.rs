@@ -1870,8 +1870,11 @@ async fn find_transaction_id_for_sync(
     Ok(row.map(|r| r.get::<i64, _>("transaction_id")))
 }
 
-/// The `purpose` a synced output is stored with: the source row's, or `''`
-/// when the chunk carries none (the column is `NOT NULL`), never `receive`.
+/// The `purpose` a synced output is inserted with: the source row's, or `''`
+/// when the chunk carries none. The column is `NOT NULL` and a source that
+/// does not send the column says nothing of the row; `''` is what beta's
+/// writer stores there (Go's zero value), and it is not `receive`, so such
+/// a row is selected as the wallet's own change.
 fn stored_purpose(output: &TableOutput) -> &str {
     output.purpose.as_deref().unwrap_or("")
 }
@@ -1924,15 +1927,19 @@ async fn upsert_output(
 
         // Update if chunk is newer. `provided_by` and `purpose` are the
         // source row's, as EntityOutput.mergeExisting assigns them (ts-stack
-        // 4d0ea63c8): the received-coin rule reads `purpose`.
+        // 4d0ea63c8): the received-coin rule reads `purpose`. A chunk that
+        // carries no `purpose` says nothing of either column, so the row
+        // keeps both as stored (`COALESCE` of a NULL bind).
         if output.updated_at > local_updated {
+            let said = output.purpose.is_some();
             sqlx::query(
                 r#"
                 UPDATE outputs
                 SET transaction_id = ?, basket_id = ?, satoshis = ?, locking_script = ?,
                     script_length = ?, script_offset = ?, type = ?, spendable = ?, change = ?,
                     derivation_prefix = ?, derivation_suffix = ?, sender_identity_key = ?,
-                    custom_instructions = ?, provided_by = ?, purpose = ?, updated_at = ?
+                    custom_instructions = ?, provided_by = COALESCE(?, provided_by),
+                    purpose = COALESCE(?, purpose), updated_at = ?
                 WHERE output_id = ?
                 "#,
             )
@@ -1949,8 +1956,8 @@ async fn upsert_output(
             .bind(&output.derivation_suffix)
             .bind(&output.sender_identity_key)
             .bind(&output.custom_instructions)
-            .bind(&output.provided_by)
-            .bind(stored_purpose(output))
+            .bind(said.then_some(output.provided_by.as_str()))
+            .bind(output.purpose.as_deref())
             .bind(output.updated_at)
             .bind(local_id)
             .execute(&mut *storage.writer_conn().await?)

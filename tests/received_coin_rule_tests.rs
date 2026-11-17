@@ -18,7 +18,9 @@
 //! - a row that came by sync is stored as its source row is: a received coin
 //!   is held there as here, the wallet's own change is taken; a row an
 //!   earlier sync stored as change is left so by a second sync, and takes
-//!   the source's columns when the source row is newer;
+//!   the source's columns when the source row is newer; a newer chunk that
+//!   carries no purpose leaves both columns as stored, and a row inserted
+//!   from one is stored with purpose `''` and selected as change;
 //! - an input the caller names by outpoint is the caller's word and answers
 //!   as before.
 //!
@@ -742,6 +744,56 @@ async fn a_newer_received_coin_synced_over_a_change_row_is_a_received_coin_there
     assert_eq!(answer, Err(HELD.to_string()));
     let signed = spend(&target, action(1_000, &[RULE], false)).await;
     println!("the label: {:?}", signed.as_ref().map(|_| "signed"));
+    assert_eq!(spends(&signed.unwrap(), &txid, 0, 9_500, &lock), Some(true));
+}
+
+/// The chunk as a source that does not send the two columns makes it:
+/// `providedBy` `you` and no `purpose`.
+fn without_purpose(chunk: &mut SyncChunk) {
+    for output in chunk.outputs.iter_mut().flatten() {
+        output.provided_by = "you".to_string();
+        output.purpose = None;
+    }
+}
+
+/// A newer row whose chunk carries no `purpose` updates the row, and the
+/// row keeps the `provided_by` and `purpose` it holds: still a received
+/// coin, still held without the label.
+#[tokio::test]
+async fn a_newer_row_whose_chunk_carries_no_purpose_keeps_the_stored_purpose() {
+    let root = PrivateKey::random();
+    let (tx, txid, _, sender) = received(&root, false, 1);
+    let source = funded(&root, tx, &txid, &sender).await;
+    let target = common::wallet("received-coin-rule-tests", &root, &txid).await;
+    sync_into(&source, &target, &root).await;
+    touched(&source, &txid).await;
+    let again = sync_into_with(&source, &target, &root, without_purpose).await;
+    let row = origin(&target, &txid, 0).await;
+    println!("a newer row, no purpose (inserts, updates) {again:?}: {row:?}");
+    assert_eq!((row.0.as_str(), row.1.as_str()), ("storage", "receive"));
+    assert_eq!(
+        coin(&target, &txid).await,
+        ("unproven".into(), "receive".into(), true, None)
+    );
+    let answer = spend(&target, action(1_000, &[], false)).await.map(|_| ());
+    println!("no label: {answer:?}");
+    assert_eq!(answer, Err(HELD.to_string()));
+}
+
+/// A row inserted from a chunk that carries no `purpose` is stored with
+/// purpose `''`, so the coin is selected as the wallet's own change.
+#[tokio::test]
+async fn a_row_inserted_from_a_chunk_without_purpose_is_selected_as_change() {
+    let root = PrivateKey::random();
+    let (tx, txid, lock, sender) = received(&root, false, 1);
+    let source = funded(&root, tx, &txid, &sender).await;
+    let target = common::wallet("received-coin-rule-tests", &root, &txid).await;
+    sync_into_with(&source, &target, &root, without_purpose).await;
+    let row = origin(&target, &txid, 0).await;
+    println!("inserted, no purpose: {row:?}");
+    assert_eq!((row.0.as_str(), row.1.as_str()), ("you", ""));
+    let signed = spend(&target, action(1_000, &[], false)).await;
+    println!("no label: {:?}", signed.as_ref().map(|_| "signed"));
     assert_eq!(spends(&signed.unwrap(), &txid, 0, 9_500, &lock), Some(true));
 }
 
