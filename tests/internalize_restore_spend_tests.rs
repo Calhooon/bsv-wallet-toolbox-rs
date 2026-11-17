@@ -311,3 +311,82 @@ async fn a_restored_received_payment_with_its_sender_is_spent() {
         .expect("the restored coin signs");
     spends_the_coin(&wallet, &tx, &txid, 0).await;
 }
+
+/// The actions recorded with the spend's description, with their status.
+async fn spend_actions(wallet: &TestWallet) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT status FROM transactions WHERE description = ? ORDER BY transaction_id",
+    )
+    .bind(SPEND)
+    .fetch_all(wallet.storage().writer())
+    .await
+    .unwrap()
+}
+
+/// A received payment's change row (derived for another counterparty) whose
+/// stored sender identity key is an empty string: read as the wallet's own,
+/// its key does not match the coin's lock. A spend that selects it is
+/// refused at signing, nothing broadcast, the coin left as a failed
+/// signing leaves any coin.
+async fn received_with_an_empty_sender(deferred: bool) {
+    let root = PrivateKey::random();
+    let sender = PrivateKey::random().public_key();
+    let derived = common::derived_key(&root, &sender, PREFIX, SUFFIX);
+    let lock = LockingScript::from_binary(&common::p2pkh_bytes(&derived)).unwrap();
+    let (bytes, txid) = common::beef_paying(lock);
+    let wallet = wallet(&root, &txid).await;
+    let payment = common::payment(&sender, PREFIX, SUFFIX);
+    assert_eq!(at_wallet(&wallet, args(bytes, payment)).await, Ok(true));
+    sqlx::query("UPDATE outputs SET sender_identity_key = '' WHERE txid = ? AND vout = 0")
+        .bind(&txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+    let held = coin(&wallet, &txid, 0).await;
+    let posted = wallet.services().call_count("post_beef");
+    let answer = spend(&wallet, deferred).await;
+    let after = coin(&wallet, &txid, 0).await;
+    let actions = spend_actions(&wallet).await;
+    println!(
+        "received coin, empty sender, {}: {:?}; coin (spendable, spent_by, satoshis) before \
+         {held:?}, after {after:?}; spend actions {actions:?}; posts {posted} -> {}",
+        if deferred {
+            "signAction"
+        } else {
+            "createAction"
+        },
+        answer.as_ref().map(|tx| tx.id()),
+        wallet.services().call_count("post_beef"),
+    );
+    let refused = answer.expect_err("a coin whose key does not match its lock is not signed");
+    let step = if deferred {
+        "signAction: "
+    } else {
+        "createAction: "
+    };
+    assert!(refused.starts_with(step), "{refused}");
+    assert!(
+        refused.contains("does not match locking script hash160")
+            && refused.ends_with("Transaction aborted and UTXOs released."),
+        "{refused}"
+    );
+    // Through createAction nothing is recorded; a deferred action is failed.
+    let recorded: &[&str] = if deferred { &["failed"] } else { &[] };
+    assert_eq!(actions, recorded);
+    assert_eq!(after, held, "the coin left spendable, no spender");
+    assert_eq!(
+        wallet.services().call_count("post_beef"),
+        posted,
+        "nothing broadcast"
+    );
+}
+
+#[tokio::test]
+async fn a_received_coin_with_an_empty_sender_is_refused_by_create_action() {
+    received_with_an_empty_sender(false).await;
+}
+
+#[tokio::test]
+async fn a_received_coin_with_an_empty_sender_is_refused_by_sign_action() {
+    received_with_an_empty_sender(true).await;
+}
