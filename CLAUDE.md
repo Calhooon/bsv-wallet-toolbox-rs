@@ -1,7 +1,7 @@
 # BSV Wallet Toolbox (Rust)
 
 Rust implementation of the BSV wallet toolbox (`@bsv/wallet-toolbox` / `go-wallet-toolbox`).
-Provides storage, services, and monitoring for BSV wallets, built on top of `bsv-sdk`.
+Provides storage, services, and monitoring for BSV wallets, built on top of `bsv-rs`.
 
 **Crate:** `bsv-wallet-toolbox` v0.1.0 | **Edition:** 2021 | **License:** MIT
 **Stats:** 69 source files, ~51k lines of Rust
@@ -22,8 +22,8 @@ cargo doc --no-deps --open           # Generate docs
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
 
-**bsv-sdk dependency:** Local path `../rust-sdk` with `full` and `http` features.
-You MUST have `../rust-sdk` checked out for the project to compile.
+**bsv-rs dependency:** `bsv-rs` from crates.io, `"0.8.11"` (caret: at least 0.8.11, below 0.9.0) with the `full` and `http` features.
+0.8.11 is the floor: every earlier 0.8 release is named by a published bsv-rs security advisory.
 
 ## Architecture
 
@@ -100,7 +100,7 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 
 ## Known Issues / Gotchas
 
-- `bsv-sdk` is a local path dep - must have `../rust-sdk` checked out
+- `bsv-rs` is required at `"0.8.11"`: do not lower it (every earlier 0.8 release is named by a published bsv-rs advisory)
 - `StorageSqlx::pool()` is the READER pool (`query_only`): writes go to `writer()` (one connection) or `write_tx()` (`BEGIN IMMEDIATE`); never await a service or tracker while holding either. `clippy.toml` bans every other `begin` (bsv-wallet-cli #44)
 - One store per file per process: give a `Wallet` and a `Monitor` clones of ONE `StorageSqlx` (`impl Clone` shares the pools and every field); never open the same file twice in one process (two writer pools meet on SQLite's busy handler)
 - `ChainTrackerError` must be imported separately: `use bsv_sdk::transaction::ChainTrackerError;`
@@ -140,7 +140,7 @@ Shared: test vectors, entity field names (camelCase), API method signatures, sta
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `bsv-sdk` | 0.2.0 (local) | Primitives, transactions, WalletInterface trait |
+| `bsv-rs` | 0.8.11 (crates.io, caret) | Primitives, transactions, WalletInterface trait |
 | `tokio` | 1 | Async runtime (full features) |
 | `sqlx` | 0.8 | SQLite/MySQL database |
 | `reqwest` | 0.12 | HTTP client |

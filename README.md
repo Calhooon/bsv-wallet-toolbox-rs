@@ -7,7 +7,7 @@ The CI badge is the required set on `main`, the gate every pull request and push
 Storage, signing, services and monitoring for BSV wallets. The release of record
 is the tag **v0.9.0**, published on crates.io as **0.9.0** (the same version);
 the repository's Releases page carries a Release per tag. It declares
-**bsv-rs 0.7.0** by caret, the Rust SDK published by this project. The toolbox
+**bsv-rs 0.8.11** by caret (at least 0.8.11, below 0.9.0), the Rust SDK published by this project. The toolbox
 implements wallet operations over local SQLite storage or a remote
 JSON-RPC storage service.
 
