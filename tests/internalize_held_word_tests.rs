@@ -321,10 +321,10 @@ async fn held_basket_insertion_leaves_its_basket_until_an_instance_takes_it() {
     println!("held insertion: {held:?}");
     assert_eq!(held, ("sending".into(), 0, ("Sending".into(), 1)));
 
-    let past = chrono::Utc::now() - chrono::Duration::hours(3);
+    let backdated = chrono::Utc::now() - chrono::Duration::hours(3);
     sqlx::query("UPDATE proven_tx_reqs SET created_at = ?, updated_at = ? WHERE txid = ?")
-        .bind(past)
-        .bind(past)
+        .bind(backdated)
+        .bind(backdated)
         .bind(&txid)
         .execute(wallet.storage().writer())
         .await
