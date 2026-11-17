@@ -201,3 +201,27 @@ async fn with_no_manager_nothing_is_asked() {
     let (answer, stored) = internalize(false, APP, "admin vault", labels).await;
     assert_eq!((answer, stored), (Ok(true), 1));
 }
+
+/// A manager with no permission request handler: a named basket with no
+/// grant is refused with the manager's own text.
+#[tokio::test]
+async fn a_named_basket_with_no_handler_is_refused() {
+    let root = PrivateKey::random();
+    let (tx, txid) = beef_paying(other_lock());
+    let mut wallet = common::wallet("internalize-permission-tests", &root, &txid).await;
+    let under = common::wallet("underlying", &PrivateKey::random(), &txid).await;
+    let under: Arc<dyn WalletInterface + Send + Sync> = Arc::new(under);
+    wallet.set_permissions_manager(Arc::new(WalletPermissionsManager::new(
+        under,
+        ADMIN.into(),
+        WalletPermissionsManagerConfig::all_enabled(),
+    )));
+    let answer = wallet
+        .internalize_action(insertion_args(tx, "tokens", None), APP)
+        .await
+        .map(|r| r.accepted)
+        .map_err(|e| e.to_string());
+    println!("no handler: {answer:?}");
+    assert!(answer.is_err());
+    assert_eq!(stored_outputs(&wallet).await, 0);
+}

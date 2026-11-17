@@ -139,3 +139,43 @@ async fn with_no_tracker_anywhere_the_storage_door_refuses() {
         .unwrap();
     assert_eq!((outputs, transactions), (0, 0));
 }
+
+/// A wallet built on `Services` with no header service (`chaintracks_url`
+/// unset) and no tracker on its storage: the services have no chain tracker,
+/// so the wallet door refuses before anything is stored or broadcast.
+#[tokio::test]
+async fn a_wallet_whose_services_have_no_tracker_refuses() {
+    let root = PrivateKey::random();
+    let sender = PrivateKey::random().public_key();
+    let (tx, _txid) = paying_derived(&root, &sender, PREFIX, SUFFIX);
+    let storage = StorageSqlx::in_memory().await.unwrap();
+    storage
+        .migrate("internalize-root-check-tests", &root.public_key().to_hex())
+        .await
+        .unwrap();
+    storage.make_available().await.unwrap();
+    let services = bsv_wallet_toolbox_rs::Services::mainnet().unwrap();
+    let wallet = Wallet::new(Some(root), storage, services).await.unwrap();
+    let args = InternalizeActionArgs {
+        tx,
+        outputs: vec![payment(0, PREFIX, SUFFIX, &sender.to_hex())],
+        description: "a payment with roots to check".to_string(),
+        labels: None,
+        seek_permission: None,
+    };
+    let answer = wallet
+        .internalize_action(args, "test.local")
+        .await
+        .map(|r| r.accepted)
+        .map_err(|e| e.to_string());
+    println!("services with no tracker: {answer:?}");
+    assert_eq!(
+        answer,
+        Err("wallet error: Validation error: No chain tracker is available to verify the BEEF: install one on the storage or configure the services' chain tracker".to_string())
+    );
+    let outputs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outputs")
+        .fetch_one(wallet.storage().writer())
+        .await
+        .unwrap();
+    assert_eq!(outputs, 0);
+}
