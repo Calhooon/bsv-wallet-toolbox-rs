@@ -86,20 +86,32 @@ pub(crate) fn validate_internalize_action_args(
 /// The name of the wallet's own change basket.
 pub(crate) const DEFAULT_BASKET: &str = "default";
 
+/// Whether a basket insertion's `basket` names the default basket as the
+/// reference reads it: validateBasket (ts-stack@4d0ea63c8
+/// `validationHelpers.ts:375-377`) calls validateIdentifier, whose
+/// `s.trim().toLowerCase()` (411) is JavaScript's `String.prototype.trim`,
+/// so every spelling that trims with ECMAScript's whitespace and lowercases
+/// to `default` is the default basket. That set (`label.rs`) strips U+FEFF
+/// and keeps U+0085, where Rust's `str::trim` does the reverse; the stable
+/// line's `names_default_basket` reads the same set.
+fn names_default_basket(basket: &str) -> bool {
+    label::normalize_label(basket) == DEFAULT_BASKET
+}
+
 /// The reference refuses `default` as a basket insertion's basket, in the
 /// signer (ts-stack@4d0ea63c8 `signer/methods/internalizeAction.ts:93-99`)
 /// and in storage (`storage/methods/internalizeAction.ts:282-285, 305-307`),
 /// after `validateInternalizeActionArgs` has normalized the name with
-/// validateBasket (`validationHelpers.ts:376, 409-418, 941`: trimmed, then
-/// lowercased), so every spelling that normalizes to `default` is refused.
-/// The text is `WERR_INVALID_PARAMETER`'s (`WERR_errors.ts:105`).
+/// validateBasket (`validationHelpers.ts:941`), so every spelling
+/// [`names_default_basket`] reads as `default` is refused. The text is
+/// `WERR_INVALID_PARAMETER`'s (`WERR_errors.ts:105`).
 fn validate_insertion_baskets(args: &InternalizeActionArgs) -> Result<()> {
     let refused = args
         .outputs
         .iter()
         .filter(|output| output.protocol == BASKET_INSERTION_PROTOCOL)
         .filter_map(|output| output.insertion_remittance.as_ref())
-        .any(|insertion| label::normalize_label(&insertion.basket) == DEFAULT_BASKET);
+        .any(|insertion| names_default_basket(&insertion.basket));
     if refused {
         return Err(invalid_parameter(
             "insertionRemittance.basket",
@@ -265,6 +277,32 @@ fn validate_insertion_instructions(args: &InternalizeActionArgs) -> Result<()> {
         bsv_rs::Error::WalletError(text) => Error::ValidationError(text),
         other => Error::ValidationError(other.to_string()),
     })
+}
+
+#[cfg(test)]
+mod basket_tests {
+    use super::names_default_basket;
+
+    /// The stable line's list (`src/insertion_basket.rs`): every spelling
+    /// JavaScript's `trim` and lowercasing map to `default` names it.
+    #[test]
+    fn every_spelling_the_reference_lowercases_and_trims_to_default_names_it() {
+        for name in [
+            "default",
+            "Default",
+            "DEFAULT",
+            " default",
+            "default ",
+            "\tdefault\n",
+            "\u{FEFF}default",
+            "\u{A0}DeFaUlT\u{3000}",
+        ] {
+            assert!(names_default_basket(name), "{name:?}");
+        }
+        for name in ["defaults", "de fault", "\u{85}default", "tokens", ""] {
+            assert!(!names_default_basket(name), "{name:?}");
+        }
+    }
 }
 
 #[cfg(all(test, feature = "sqlite"))]
