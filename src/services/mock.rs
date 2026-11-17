@@ -136,6 +136,7 @@ pub struct MockCallRecord {
 struct MockChainTracker {
     height: u32,
     roots_valid: bool,
+    root_checks: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait]
@@ -145,6 +146,8 @@ impl ChainTracker for MockChainTracker {
         _root: &str,
         _height: u32,
     ) -> std::result::Result<bool, ChainTrackerError> {
+        self.root_checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.roots_valid)
     }
 
@@ -290,6 +293,14 @@ impl MockWalletServices {
     /// Get a copy of the call history.
     pub fn call_history(&self) -> Vec<MockCallRecord> {
         self.call_history.lock().unwrap().clone()
+    }
+
+    /// How many roots the chain tracker `get_chain_tracker` hands out has
+    /// been asked to confirm (`is_valid_root_for_height` calls).
+    pub fn root_check_count(&self) -> usize {
+        self.chain_tracker
+            .root_checks
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Get the number of calls made to a specific method.
@@ -600,6 +611,7 @@ impl MockWalletServicesBuilder {
             chain_tracker: MockChainTracker {
                 height: self.height,
                 roots_valid: self.roots_valid,
+                root_checks: std::sync::atomic::AtomicUsize::new(0),
             },
             height: self.height,
             post_beef_response: Mutex::new(self.post_beef_response),

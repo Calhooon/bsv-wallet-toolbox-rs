@@ -1221,6 +1221,25 @@ impl WalletStorageProvider for WalletStorageManager {
         false // Manager is not a direct storage provider
     }
 
+    /// The active store's answer: the manager calls its active store's
+    /// `internalize_action`, so the active store's door is the one that
+    /// checks. With no active store chosen yet the answer is false (the
+    /// wallet checks). The locks are taken with `.await`, never blocking.
+    async fn checks_received_beef_in_process(&self) -> bool {
+        let active = {
+            let active_idx = self.active_index.read().await;
+            let stores = self.stores.read().await;
+            match *active_idx {
+                Some(idx) => stores.get(idx).map(|store| store.storage.clone()),
+                None => None,
+            }
+        };
+        match active {
+            Some(store) => store.checks_received_beef_in_process().await,
+            None => false,
+        }
+    }
+
     fn storage_identity_key(&self) -> String {
         // This is sync - use get_active_store() for async access
         unimplemented!("Use async get_active_store() method instead")
