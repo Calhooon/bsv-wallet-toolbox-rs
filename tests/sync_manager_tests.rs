@@ -257,13 +257,15 @@ async fn sync_to_writer_transfers_proven_tx_req_with_raw_tx_notify_and_batch() {
 
     let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
 
-    let (_ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
+    let (ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
 
     let txid = "abcd".repeat(16);
     let raw_tx: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00, 0x01];
     let notify = "{\"subscribers\":[\"app://wallet\"]}";
     let batch = "batch-multi-tx-1";
 
+    // The request is the reader user's: one of the user's transactions has its txid.
+    insert_transaction(&reader_store, ruser.user_id, &txid).await;
     insert_proven_tx_req(&reader_store, &txid, &raw_tx, notify, Some(batch)).await;
 
     let writer_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
@@ -377,7 +379,7 @@ async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields()
 
     let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
 
-    let (_ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
+    let (ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
 
     let writer_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
     writer_store
@@ -418,6 +420,8 @@ async fn sync_to_writer_updates_existing_proven_tx_req_with_all_mutable_fields()
     let new_notify = r#"{"subscribers":["app://wallet"]}"#;
     let new_history = r#"[{"attempt":1,"err":"timeout"}]"#;
     let new_batch = "batch-after-regroup";
+    // The request is the reader user's: one of the user's transactions has its txid.
+    insert_transaction(&reader_store, ruser.user_id, &txid).await;
     insert_proven_tx_req_with_timestamps(
         &reader_store,
         &txid,
@@ -515,7 +519,7 @@ async fn sync_to_writer_round_trips_non_completed_proven_tx_req_status() {
 
     let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
 
-    let (_ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
+    let (ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
 
     let writer_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
     writer_store
@@ -551,6 +555,8 @@ async fn sync_to_writer_round_trips_non_completed_proven_tx_req_status() {
     // Reader seeded with the NEWER row carrying `sending` status —
     // exactly the variant that pre-fix collapsed to `pending` on read.
     let new_raw_tx: Vec<u8> = vec![0xCA, 0xFE, 0xBA, 0xBE];
+    // The request is the reader user's: one of the user's transactions has its txid.
+    insert_transaction(&reader_store, ruser.user_id, &txid).await;
     insert_proven_tx_req_with_timestamps(
         &reader_store,
         &txid,
