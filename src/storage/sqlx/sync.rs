@@ -417,9 +417,25 @@ pub async fn process_sync_chunk_internal(
     // none of its rows, and no other writer's row lands between two of them.
     // The id maps are restored with it, so a later chunk does not resolve a
     // parent this one never wrote.
+    // The chunk's proof rows are decided before the writer is taken: every
+    // tracker and header read happens here (super::sync_proof).
+    let mut chunk = chunk;
+    let decisions = match chunk.proven_txs.as_mut() {
+        Some(proofs) => super::sync_proof::preflight(storage, proofs).await?,
+        None => Default::default(),
+    };
     let saved_map = sync_map.clone();
     let mut db_tx = storage.write_tx().await?;
-    match apply_chunk(&mut db_tx, user.user_id, &args, &chunk, sync_map).await {
+    match apply_chunk(
+        &mut db_tx,
+        user.user_id,
+        &args,
+        &chunk,
+        &decisions,
+        sync_map,
+    )
+    .await
+    {
         Ok(result) => {
             super::storage_sqlx::commit(db_tx).await?;
             Ok(result)
@@ -452,6 +468,7 @@ async fn apply_chunk(
     user_id: i64,
     args: &RequestSyncChunkArgs,
     chunk: &SyncChunk,
+    decisions: &super::sync_proof::ProofDecisions,
     sync_map: &mut crate::storage::SyncMap,
 ) -> Result<ProcessSyncChunkResult> {
     let mut result = ProcessSyncChunkResult {
@@ -521,7 +538,7 @@ async fn apply_chunk(
     // map: a request's proof link is the source store's proof id.
     if let Some(proven_txs) = &chunk.proven_txs {
         for ptx in proven_txs {
-            let upsert_result = upsert_proven_tx(&mut *conn, ptx).await?;
+            let upsert_result = upsert_proven_tx(&mut *conn, ptx, decisions).await?;
             remap(
                 &mut proof_id_map,
                 "provenTx",
@@ -1626,12 +1643,13 @@ async fn upsert_basket(
 async fn upsert_proven_tx(
     conn: &mut SqliteConnection,
     ptx: &TableProvenTx,
+    decisions: &super::sync_proof::ProofDecisions,
 ) -> Result<UpsertResult> {
-    // Check if exists by txid
+    // Global by txid, as the reference's EntityProvenTx.mergeFind.
     let existing = sqlx::query(
         r#"
-        SELECT proven_tx_id, updated_at FROM proven_txs
-        WHERE txid = ?
+        SELECT proven_tx_id, txid, height, idx, merkle_path, raw_tx, block_hash, merkle_root
+        FROM proven_txs WHERE txid = ?
         "#,
     )
     .bind(&ptx.txid)
@@ -1640,10 +1658,38 @@ async fn upsert_proven_tx(
 
     if let Some(row) = existing {
         let local_id: i64 = row.get("proven_tx_id");
-        let local_updated: DateTime<Utc> = row.get("updated_at");
-
-        // Update if chunk is newer
-        if ptx.updated_at > local_updated {
+        let path: Vec<u8> = row.get("merkle_path");
+        let raw: Vec<u8> = row.get("raw_tx");
+        let held_txid: String = row.get("txid");
+        let block_hash: String = row.get("block_hash");
+        let root: String = row.get("merkle_root");
+        let same = super::sync_proof::same_proof(
+            (
+                &held_txid,
+                row.get("height"),
+                row.get("idx"),
+                &path,
+                &raw,
+                &block_hash,
+                &root,
+            ),
+            ptx,
+        );
+        // The reference's EntityProvenTx.mergeExisting: the same proof is
+        // not written; a different one replaces the held row only when the
+        // preflight validated it.
+        if !same {
+            if !decisions.replacement_authorized.contains(&ptx.txid) {
+                let why = if decisions.insert_only.contains(&ptx.txid) {
+                    "a concurrent proof row appeared; retry synchronization"
+                } else {
+                    "replacement requires active-chain validation"
+                };
+                return Err(Error::SyncError(format!(
+                    "sync chunk proof {} is refused: {why}",
+                    ptx.txid
+                )));
+            }
             sqlx::query(
                 r#"
                 UPDATE proven_txs
@@ -1668,7 +1714,8 @@ async fn upsert_proven_tx(
             is_new: false,
         })
     } else {
-        // Insert new
+        // A new proof row is taken as given, as the reference's direct sync
+        // takes one.
         let result = sqlx::query(
             r#"
             INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
