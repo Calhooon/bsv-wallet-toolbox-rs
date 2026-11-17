@@ -25,16 +25,16 @@ use crate::services::mock::MockWalletServices;
 use crate::storage::WalletStorageWriter;
 use crate::{StorageSqlx, Wallet};
 
-const ADMIN: &str = "wallet.admin";
-const APP: &str = "app.example.com";
-const BASKET: &str = "tickets";
-const CERT_TYPE: &str = "dGhlIHdpdG5lc3MgY2VydGlmaWNhdGUgdHlwZSAzMiBi";
+pub(super) const ADMIN: &str = "wallet.admin";
+pub(super) const APP: &str = "app.example.com";
+pub(super) const BASKET: &str = "tickets";
+pub(super) const CERT_TYPE: &str = "dGhlIHdpdG5lc3MgY2VydGlmaWNhdGUgdHlwZSAzMiBi";
 
-type FullWallet = Wallet<StorageSqlx, MockWalletServices>;
+pub(super) type FullWallet = Wallet<StorageSqlx, MockWalletServices>;
 
 /// The full wallet behind the manager, its three token reads counted.
-struct Counted {
-    inner: FullWallet,
+pub(super) struct Counted {
+    pub(super) inner: FullWallet,
     lists: AtomicUsize,
     decrypts: AtomicUsize,
     keys: AtomicUsize,
@@ -105,13 +105,13 @@ counted_delegates! {
 
 /// A manager over the counted full wallet, every kind's prompt on, and a
 /// handler that counts its prompts and grants each for an hour.
-struct Scene {
-    counted: Arc<Counted>,
-    manager: WalletPermissionsManager,
-    prompts: Arc<AtomicUsize>,
+pub(super) struct Scene {
+    pub(super) counted: Arc<Counted>,
+    pub(super) manager: WalletPermissionsManager,
+    pub(super) prompts: Arc<AtomicUsize>,
 }
 
-async fn scene() -> Scene {
+pub(super) async fn scene() -> Scene {
     let storage = StorageSqlx::in_memory().await.unwrap();
     let root = PrivateKey::random();
     let identity = root.public_key().to_hex();
@@ -256,12 +256,12 @@ async fn store_token(wallet: &FullWallet, script: LockingScript, basket: &str, t
     }
 }
 
-fn strings(items: &[&str]) -> Vec<String> {
+pub(super) fn strings(items: &[&str]) -> Vec<String> {
     items.iter().map(ToString::to_string).collect()
 }
 
 /// The witness protocol at level 2 with the counterparty `self`.
-fn witness_protocol() -> Protocol {
+pub(super) fn witness_protocol() -> Protocol {
     Protocol::new(SecurityLevel::Counterparty, "ticket stub")
 }
 
@@ -337,14 +337,14 @@ async fn seed_certificate(scene: &Scene, expiry: i64) {
     .await;
 }
 
-fn verifier() -> String {
+pub(super) fn verifier() -> String {
     PrivateKey::from_hex(&format!("{:064x}", 41))
         .unwrap()
         .public_key()
         .to_hex()
 }
 
-fn live() -> i64 {
+pub(super) fn live() -> i64 {
     Utc::now().timestamp() + 3600
 }
 
@@ -352,7 +352,7 @@ fn expired() -> i64 {
     Utc::now().timestamp() - 3600
 }
 
-async fn protocol_call(scene: &Scene, seek: bool) -> Result<bool> {
+pub(super) async fn protocol_call(scene: &Scene, seek: bool) -> Result<bool> {
     scene
         .manager
         .ensure_protocol_permission_seeking(
@@ -367,14 +367,14 @@ async fn protocol_call(scene: &Scene, seek: bool) -> Result<bool> {
         .await
 }
 
-async fn basket_call(scene: &Scene) -> Result<bool> {
+pub(super) async fn basket_call(scene: &Scene) -> Result<bool> {
     scene
         .manager
         .ensure_basket_access(APP, BASKET, None, BasketUsageType::Listing)
         .await
 }
 
-async fn certificate_call(scene: &Scene) -> Result<bool> {
+pub(super) async fn certificate_call(scene: &Scene) -> Result<bool> {
     certificate_call_for(scene, &["seat"]).await
 }
 
@@ -395,11 +395,11 @@ async fn certificate_call_for(scene: &Scene, fields: &[&str]) -> Result<bool> {
         .await
 }
 
-fn prompts(scene: &Scene) -> usize {
+pub(super) fn prompts(scene: &Scene) -> usize {
     scene.prompts.load(Ordering::SeqCst)
 }
 
-fn refusal(result: Result<bool>) -> String {
+pub(super) fn refusal(result: Result<bool>) -> String {
     match result {
         Err(Error::AccessDenied(message)) => message,
         other => panic!("expected a refusal, got {other:?}"),
@@ -466,7 +466,9 @@ async fn no_protocol_token_refuses_seek_false_and_prompts_seek_true_as_before() 
     assert_eq!(prompts(&scene), 0);
     assert!(protocol_call(&scene, true).await.unwrap());
     assert_eq!(prompts(&scene), 1);
-    assert_eq!(scene.counted.reads(), (4, 0, 0));
+    // The grant's mint reads the token key once (step 2a); this wallet has
+    // no coin, so the mint fails and the grant stands on the cache.
+    assert_eq!(scene.counted.reads(), (4, 0, 1));
 }
 
 #[tokio::test]
@@ -526,7 +528,8 @@ async fn no_basket_token_or_an_expired_one_prompts_as_before() {
     let scene = scene().await;
     assert!(basket_call(&scene).await.unwrap());
     assert_eq!(prompts(&scene), 1);
-    assert_eq!(scene.counted.reads(), (2, 0, 0));
+    // The grant's mint reads the token key once, and fails unfunded.
+    assert_eq!(scene.counted.reads(), (2, 0, 1));
     let scene = scene_with_basket(expired()).await;
     assert!(basket_call(&scene).await.unwrap());
     assert_eq!(prompts(&scene), 1);
@@ -554,7 +557,8 @@ async fn no_certificate_token_or_an_expired_one_prompts_as_before() {
     let scene = scene().await;
     assert!(certificate_call(&scene).await.unwrap());
     assert_eq!(prompts(&scene), 1);
-    assert_eq!(scene.counted.reads(), (2, 0, 0));
+    // The grant's mint reads the token key once, and fails unfunded.
+    assert_eq!(scene.counted.reads(), (2, 0, 1));
     let scene = self::scene().await;
     seed_certificate(&scene, expired()).await;
     assert!(certificate_call(&scene).await.unwrap());

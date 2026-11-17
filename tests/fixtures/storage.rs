@@ -6,6 +6,7 @@ mod model;
 mod must_spend;
 mod normalize;
 mod operations;
+mod permission_grant;
 mod received_rule;
 mod seed;
 

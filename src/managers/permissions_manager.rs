@@ -11,7 +11,8 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -221,6 +222,41 @@ pub struct PermissionRequest {
     /// The wallet operation being requested (e.g., "createAction", "signAction").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>,
+    /// The id the host answers with through
+    /// [`WalletPermissionsManager::grant_permission`] or
+    /// [`WalletPermissionsManager::deny_permission`]: the reference's event
+    /// `requestID` (ts-stack@edf6e03 `WalletPermissionsManager.ts:2671-2690`),
+    /// set by the manager on the request the handler receives.
+    #[serde(rename = "requestID", default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Whether the request renews an expired token (`:336`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renewal: Option<bool>,
+    /// The expired token a renewal replaces (`:337`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_token: Option<PermissionToken>,
+}
+
+impl PermissionRequest {
+    /// A request of `request_type` from `originator` naming nothing else.
+    pub(crate) fn bare(request_type: PermissionType, originator: &str) -> Self {
+        Self {
+            request_type,
+            originator: originator.to_string(),
+            display_originator: None,
+            privileged: None,
+            protocol_id: None,
+            counterparty: None,
+            basket: None,
+            certificate: None,
+            spending: None,
+            reason: None,
+            operation: None,
+            request_id: None,
+            renewal: None,
+            previous_token: None,
+        }
+    }
 }
 
 /// Type of permission.
@@ -277,6 +313,10 @@ pub struct PermissionToken {
     pub satoshis: u64,
     /// Originator allowed to use this permission.
     pub originator: String,
+    /// The originator as captured when the token was minted, unnormalized
+    /// (ts-stack@edf6e03 `WalletPermissionsManager.ts:376-380`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_originator: Option<String>,
     /// Expiration time (UNIX epoch seconds).
     pub expiry: u64,
     /// Whether privileged access is granted.
@@ -509,6 +549,16 @@ pub struct WalletPermissionsManager {
     whitelisted_counterparties: HashMap<String, Vec<String>>,
     /// The stored tokens' locking key, read once (#751).
     permission_token_locking_key: OnceCell<String>,
+    /// The requests awaiting the host's answer, by request id
+    /// (`activeRequests`, ts-stack@edf6e03 `WalletPermissionsManager.ts:2652-2668`).
+    active_requests: StdMutex<HashMap<String, permission_grant::ActiveRequest>>,
+    /// The spending requests' sequence, one prompt per spend (`:710`, `:5830-5835`).
+    spending_request_sequence: AtomicU64,
+    /// The mints in flight, by request key (`mintsInFlight`, `:702`): a
+    /// receiver whose sender drops when the mint ends.
+    mints_in_flight: StdMutex<HashMap<String, tokio::sync::watch::Receiver<()>>>,
+    /// The recent grants' cover ends, by request key (`recentGrants`, `:675`).
+    recent_grants: StdMutex<HashMap<String, Instant>>,
 }
 
 impl WalletPermissionsManager {
@@ -526,6 +576,10 @@ impl WalletPermissionsManager {
             permission_request_handler: RwLock::new(None),
             whitelisted_counterparties: HashMap::new(),
             permission_token_locking_key: OnceCell::new(),
+            active_requests: StdMutex::new(HashMap::new()),
+            spending_request_sequence: AtomicU64::new(0),
+            mints_in_flight: StdMutex::new(HashMap::new()),
+            recent_grants: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -703,36 +757,8 @@ impl WalletPermissionsManager {
     // Permission Request Flow
     // =========================================================================
 
-    /// Invokes the permission request handler to get user consent.
-    ///
-    /// If no handler is registered, returns an error.
-    /// On success, caches the granted permission.
-    pub async fn request_permission_flow(&self, request: PermissionRequest) -> Result<bool> {
-        let handler_guard = self.permission_request_handler.read().await;
-        let handler = handler_guard.as_ref().ok_or_else(|| {
-            Error::AccessDenied(
-                "No permission request handler registered. Cannot request user consent."
-                    .to_string(),
-            )
-        })?;
-
-        let token = handler(request.clone()).await?;
-
-        // Cache the granted permission
-        let cache_key = Self::build_cache_key(
-            request.request_type,
-            &request.originator,
-            request.privileged,
-            request.protocol_id.as_ref(),
-            request.counterparty.as_deref(),
-            request.basket.as_deref(),
-            request.certificate.as_ref(),
-            request.spending.as_ref().map(|s| s.satoshis),
-        );
-        self.cache_permission(cache_key, token.expiry).await;
-
-        Ok(true)
-    }
+    // The request flow, `grant_permission` and `deny_permission` are in
+    // `permission_grant.rs`.
 
     // =========================================================================
     // Enforcement Methods
@@ -777,9 +803,8 @@ impl WalletPermissionsManager {
     /// Ahead of the refusal and the prompt the stored token is looked up
     /// (`:1522-1566`, #751 step 1): a live token admits and is cached, an
     /// expired one refuses a seek-false call with `:1549`'s text and prompts
-    /// otherwise. The port mints no token yet, so its own grants admit a
-    /// seek-false call only while the cache holds them (`CACHE_TTL_SECS`,
-    /// lost on a restart).
+    /// otherwise. A persistent grant mints that token (#751 step 2a), so
+    /// it admits a seek-false call past the cache and across a restart.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn ensure_protocol_permission_seeking(
         &self,
@@ -875,7 +900,8 @@ impl WalletPermissionsManager {
             None,
             None,
         );
-        if self.is_permission_cached(&cache_key).await {
+        // The cache, the recent-grant cover or a mint in flight (`:1518-1519`).
+        if self.has_recent_or_pending_grant(&cache_key).await {
             return Ok(true);
         }
 
@@ -895,17 +921,11 @@ impl WalletPermissionsManager {
 
         // 8) Request permission flow
         self.request_permission_flow(PermissionRequest {
-            request_type: PermissionType::Protocol,
-            originator: originator.to_string(),
-            display_originator: None,
             privileged: Some(priv_flag),
             protocol_id: Some(protocol.clone()),
             counterparty: counterparty.map(|s| s.to_string()),
-            basket: None,
-            certificate: None,
-            spending: None,
             reason: reason.map(|s| s.to_string()),
-            operation: None,
+            ..PermissionRequest::bare(PermissionType::Protocol, originator)
         })
         .await
     }
@@ -996,7 +1016,7 @@ impl WalletPermissionsManager {
             None,
             None,
         );
-        if self.is_permission_cached(&cache_key).await {
+        if self.has_recent_or_pending_grant(&cache_key).await {
             return Ok(true);
         }
         // The stored token (`:1595-1615`, #751); an expired one prompts.
@@ -1007,17 +1027,9 @@ impl WalletPermissionsManager {
 
         // 5) Request permission flow
         self.request_permission_flow(PermissionRequest {
-            request_type: PermissionType::Basket,
-            originator: originator.to_string(),
-            display_originator: None,
-            privileged: None,
-            protocol_id: None,
-            counterparty: None,
             basket: Some(basket.to_string()),
-            certificate: None,
-            spending: None,
             reason: reason.map(|s| s.to_string()),
-            operation: None,
+            ..PermissionRequest::bare(PermissionType::Basket, originator)
         })
         .await
     }
@@ -1078,7 +1090,7 @@ impl WalletPermissionsManager {
             Some(&cert_details),
             None,
         );
-        if self.is_permission_cached(&cache_key).await {
+        if self.has_recent_or_pending_grant(&cache_key).await {
             return Ok(true);
         }
         // The stored token (`:1669-1709`, #751); an expired one prompts.
@@ -1094,17 +1106,10 @@ impl WalletPermissionsManager {
 
         // 5) Request permission flow
         self.request_permission_flow(PermissionRequest {
-            request_type: PermissionType::Certificate,
-            originator: originator.to_string(),
-            display_originator: None,
             privileged: Some(priv_flag),
-            protocol_id: None,
-            counterparty: None,
-            basket: None,
             certificate: Some(cert_details),
-            spending: None,
             reason: reason.map(|s| s.to_string()),
-            operation: None,
+            ..PermissionRequest::bare(PermissionType::Certificate, originator)
         })
         .await
     }
@@ -1149,20 +1154,12 @@ impl WalletPermissionsManager {
 
         // 4) Request permission flow
         self.request_permission_flow(PermissionRequest {
-            request_type: PermissionType::Spending,
-            originator: originator.to_string(),
-            display_originator: None,
-            privileged: None,
-            protocol_id: None,
-            counterparty: None,
-            basket: None,
-            certificate: None,
             spending: Some(SpendingPermissionDetails {
                 satoshis,
                 line_items: None,
             }),
             reason: reason.map(|s| s.to_string()),
-            operation: None,
+            ..PermissionRequest::bare(PermissionType::Spending, originator)
         })
         .await
     }
@@ -1596,15 +1593,22 @@ fn token_source(beef: &Beef, output: &WalletOutput, count: usize) -> Option<Push
     valid.then_some(decoded)
 }
 
-/// `ProtoWallet::list_outputs`' refusal (bsv-rs 0.9.0-beta.6
-/// `proto_wallet/interface.rs:210-212`): the underlying keeps no outputs.
-const PROTO_WALLET_LIST_REFUSAL: &str =
-    "listOutputs requires a full wallet implementation with UTXO management";
+/// The tail of `ProtoWallet`'s refusal of a call that needs outputs, after
+/// the call's name (bsv-rs 0.9.0-beta.6 `proto_wallet/interface.rs:154-156`,
+/// `:210-212`): the underlying keeps no outputs.
+const PROTO_WALLET_REFUSAL_TAIL: &str =
+    " requires a full wallet implementation with UTXO management";
 
-/// Whether a list failure is an underlying that cannot list, which holds no
-/// token, rather than a fault.
+/// Whether a failure of `call` is `ProtoWallet`'s refusal of it: an
+/// underlying that keeps no outputs, so holds no token, rather than a fault.
+fn proto_wallet_refuses(error: &bsv_rs::Error, call: &str) -> bool {
+    matches!(error, bsv_rs::Error::WalletError(message)
+        if message.strip_suffix(PROTO_WALLET_REFUSAL_TAIL) == Some(call))
+}
+
+/// Whether a list failure is an underlying that cannot list.
 fn cannot_list(error: &bsv_rs::Error) -> bool {
-    matches!(error, bsv_rs::Error::WalletError(message) if message == PROTO_WALLET_LIST_REFUSAL)
+    proto_wallet_refuses(error, "listOutputs")
 }
 
 /// A stored token's standing for a request.
@@ -2285,6 +2289,9 @@ module_call_serde!(CreateActionArgs => CreateActionResult, "createAction");
 module_call_serde!(ListActionsArgs => ListActionsResult, "listActions");
 module_call_serde!(InternalizeActionArgs => InternalizeActionResult, "internalizeAction");
 
+#[path = "permission_grant.rs"]
+mod permission_grant;
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -2292,6 +2299,10 @@ module_call_serde!(InternalizeActionArgs => InternalizeActionResult, "internaliz
 #[cfg(all(test, feature = "sqlite"))]
 #[path = "permission_token_lookup_tests.rs"]
 mod permission_token_lookup_tests;
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "permission_grant_tests.rs"]
+mod permission_grant_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2348,7 +2359,9 @@ mod tests {
         ) -> bsv_rs::Result<ListOutputsResult> {
             // The stored-token lookup's read (#751): a `ProtoWallet`'s
             // refusal, no token held.
-            Err(bsv_rs::Error::WalletError(PROTO_WALLET_LIST_REFUSAL.into()))
+            Err(bsv_rs::Error::WalletError(format!(
+                "listOutputs{PROTO_WALLET_REFUSAL_TAIL}"
+            )))
         }
         async fn relinquish_output(
             &self,
@@ -2383,7 +2396,8 @@ mod tests {
             _args: EncryptArgs,
             _originator: Option<&str>,
         ) -> bsv_rs::Result<EncryptResult> {
-            unimplemented!()
+            // A grant's mint begins with encrypt; this wallet keeps no outputs.
+            Err(bsv_rs::Error::WalletError("no mint here".to_string()))
         }
         async fn decrypt(
             &self,
@@ -2505,6 +2519,7 @@ mod tests {
             output_script: "76a914...88ac".to_string(),
             satoshis: 1000,
             originator: originator.to_string(),
+            raw_originator: None,
             expiry,
             privileged: None,
             protocol: None,
@@ -2540,20 +2555,14 @@ mod tests {
     #[test]
     fn test_permission_request_serialization() {
         let request = PermissionRequest {
-            request_type: PermissionType::Protocol,
-            originator: "app.example.com".to_string(),
-            display_originator: None,
             privileged: Some(false),
             protocol_id: Some(Protocol::new(
                 SecurityLevel::Counterparty,
                 "test protocol".to_string(),
             )),
-            counterparty: None,
-            basket: None,
-            certificate: None,
-            spending: None,
             reason: Some("Testing".to_string()),
             operation: Some("createAction".to_string()),
+            ..PermissionRequest::bare(PermissionType::Protocol, "app.example.com")
         };
         let json = serde_json::to_string(&request).unwrap();
         let parsed: PermissionRequest = serde_json::from_str(&json).unwrap();
@@ -2896,6 +2905,7 @@ mod tests {
                     output_script: "76a914...88ac".to_string(),
                     satoshis: 0,
                     originator: "app.example.com".to_string(),
+                    raw_originator: None,
                     expiry,
                     privileged: None,
                     protocol: Some("test".to_string()),
@@ -3003,17 +3013,8 @@ mod tests {
     fn test_check_permission_admin_always_allowed() {
         let manager = make_manager(WalletPermissionsManagerConfig::all_enabled());
         let req = PermissionRequest {
-            request_type: PermissionType::Protocol,
-            originator: "admin.wallet".to_string(),
-            display_originator: None,
-            privileged: None,
-            protocol_id: None,
-            counterparty: None,
-            basket: None,
-            certificate: None,
-            spending: None,
-            reason: None,
             operation: Some("createAction".to_string()),
+            ..PermissionRequest::bare(PermissionType::Protocol, "admin.wallet")
         };
         assert!(manager.check_permission(&req));
     }
@@ -3024,17 +3025,8 @@ mod tests {
         config.allow_create_action = false;
         let manager = make_manager(config);
         let req = PermissionRequest {
-            request_type: PermissionType::Protocol,
-            originator: "app.example.com".to_string(),
-            display_originator: None,
-            privileged: None,
-            protocol_id: None,
-            counterparty: None,
-            basket: None,
-            certificate: None,
-            spending: None,
-            reason: None,
             operation: Some("createAction".to_string()),
+            ..PermissionRequest::bare(PermissionType::Protocol, "app.example.com")
         };
         assert!(!manager.check_permission(&req));
     }

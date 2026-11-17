@@ -1,0 +1,24 @@
+{
+  "name": "protocol_grant_mint",
+  "issue": 751,
+  "inputs": {
+    "baskets": [{"desired": 1, "minimum": 1000, "name": "default"}],
+    "transactions": [
+      {"name": "funding", "outputs": [{"basket": "default", "change": true, "satoshis": 100000}]}
+    ],
+    "user": "Alice"
+  },
+  "admin": "wallet.admin",
+  "originator": "app.example.com",
+  "protocol": [2, "ticket stub"],
+  "basket": "admin protocol-permission",
+  "description": "Grant protocol permission",
+  "fields": ["app.example.com", "<expiry>", "false", "2", "ticket stub", "self"],
+  "tags": [
+    "counterparty self",
+    "originator app.example.com",
+    "privileged false",
+    "protocolname ticket stub",
+    "protocolsecuritylevel 2"
+  ]
+}
