@@ -2033,7 +2033,7 @@ async fn upsert_transaction(
     // Check if exists by reference (unique per user)
     let existing = sqlx::query(
         r#"
-        SELECT transaction_id, updated_at FROM transactions
+        SELECT transaction_id, updated_at, proven_tx_id FROM transactions
         WHERE user_id = ? AND reference = ?
         "#,
     )
@@ -2047,9 +2047,18 @@ async fn upsert_transaction(
     if let Some(row) = existing {
         let local_id: i64 = row.get("transaction_id");
         let local_updated: DateTime<Utc> = row.get("updated_at");
+        let local_proof: Option<i64> = row.get("proven_tx_id");
 
-        // Update if chunk is newer
-        if tx.updated_at > local_updated {
+        // The reference's EntityTransaction.mergeExisting (shouldMerge, with
+        // no BRC-177 expiry state on either side, which this line does not
+        // hold): a newer row merges its ordinary properties; an older row
+        // that carries a proof link where this store holds none merges its
+        // proof evidence alone (status, the link, the bytes where none are
+        // held). The reference is never updated.
+        let incoming_carries_proof = tx.proof_txid.is_some();
+        let adds_proof_evidence = incoming_carries_proof && local_proof.is_none();
+        let incoming_is_newer = tx.updated_at > local_updated;
+        if incoming_is_newer {
             sqlx::query(
                 r#"
                 UPDATE transactions
@@ -2069,6 +2078,22 @@ async fn upsert_transaction(
             .bind(tx.is_outgoing)
             .bind(proven_tx_id)
             .bind(tx.updated_at)
+            .bind(local_id)
+            .execute(&mut *conn)
+            .await?;
+        } else if adds_proof_evidence {
+            sqlx::query(
+                r#"
+                UPDATE transactions
+                SET status = ?, proven_tx_id = ?, raw_tx = COALESCE(raw_tx, ?),
+                    input_beef = COALESCE(input_beef, ?)
+                WHERE transaction_id = ?
+                "#,
+            )
+            .bind(status_str)
+            .bind(proven_tx_id)
+            .bind(&tx.raw_tx)
+            .bind(&tx.input_beef)
             .bind(local_id)
             .execute(&mut *conn)
             .await?;
