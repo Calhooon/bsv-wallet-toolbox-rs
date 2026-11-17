@@ -2236,6 +2236,16 @@ where
     ) -> bsv_rs::Result<InternalizeActionResult> {
         validate_originator(originator)?;
 
+        // At least one output to internalize (the reference's
+        // `validateInternalizeActionArgs`), refused before anything is
+        // stored or broadcast.
+        if args.outputs.is_empty() {
+            return Err(bsv_rs::Error::WalletError(
+                "The outputs parameter must be at least one output to internalize from the transaction"
+                    .to_string(),
+            ));
+        }
+
         // The default basket is never a basket insertion's basket, in any
         // spelling the reference's validator trims and lowercases to
         // `default` (the reference's `setupBasketInsertionForOutput`).

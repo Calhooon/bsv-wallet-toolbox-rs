@@ -35,6 +35,11 @@ const WALLET_PAYMENT_PROTOCOL: &str = "wallet payment";
 /// Protocol identifier for basket insertions.
 const BASKET_INSERTION_PROTOCOL: &str = "basket insertion";
 
+/// The refusal of a request with no output to internalize (the reference's
+/// `validateInternalizeActionArgs`).
+pub(crate) const NO_OUTPUTS_REFUSAL: &str =
+    "The outputs parameter must be at least one output to internalize from the transaction";
+
 /// The refusal of an AtomicBEEF when neither the storage nor its services
 /// has a chain tracker to verify its merkle roots.
 pub(crate) const NO_CHAIN_TRACKER_REFUSAL: &str =
@@ -83,6 +88,12 @@ pub async fn internalize_action_internal(
     user_id: i64,
     args: InternalizeActionArgs,
 ) -> Result<StorageInternalizeActionResult> {
+    // Step 0: The arguments the reference's validator refuses before
+    // anything else: no output at all.
+    if args.outputs.is_empty() {
+        return Err(Error::ValidationError(NO_OUTPUTS_REFUSAL.to_string()));
+    }
+
     // Step 1: Read the AtomicBEEF through the streaming reader first: a
     // refusal is for invalid bytes only, with the offset and the kind, and
     // never for a size or a count. The bytes arrive whole (the argument is a
