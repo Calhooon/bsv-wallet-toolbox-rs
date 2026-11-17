@@ -258,8 +258,16 @@ pub async fn internalize_action_internal(
                 od.existing_output_id = Some(eo.output_id);
                 od.existing_basket_id = eo.basket_id;
                 od.existing_is_change = eo.change;
-                if od.insertion.is_some() {
-                    validate_basket_merge(od.vout, eo)?;
+                if let Some(ref insertion) = od.insertion {
+                    validate_basket_merge(
+                        &mut tx,
+                        user_id,
+                        change_basket.basket_id,
+                        od.vout,
+                        &insertion.basket,
+                        eo,
+                    )
+                    .await?;
                 }
             }
         }
@@ -864,12 +872,40 @@ pub(crate) fn is_managed_change_output(output: &TableOutput) -> bool {
 /// A basket insertion over an output the transaction already holds: the
 /// reference's `validateBasketMerges` (wallet-toolbox storage
 /// `internalizeAction.ts`, ts-stack 4d0ea63c8). Wallet-managed change is
-/// never reclassified as a basket insertion.
-fn validate_basket_merge(vout: u32, existing: &TableOutput) -> Result<()> {
+/// never reclassified as a basket insertion. An output in an application
+/// basket stays in it: naming any other basket is refused. An output in no
+/// basket, or in the default basket without being wallet-managed change,
+/// may be swept into the named basket. The named basket is looked up without
+/// inserting it, so a refused request creates no basket.
+async fn validate_basket_merge(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    change_basket_id: i64,
+    vout: u32,
+    basket: &str,
+    existing: &TableOutput,
+) -> Result<()> {
     if is_managed_change_output(existing) {
         return Err(Error::ValidationError(format!(
             "The outputs parameter must be output {} is wallet-managed change and cannot be reclassified as a basket insertion",
             vout
+        )));
+    }
+    let current = match existing.basket_id {
+        Some(id) if id != change_basket_id => id,
+        _ => return Ok(()),
+    };
+    let requested: Option<i64> = sqlx::query_scalar(
+        "SELECT basket_id FROM output_baskets WHERE user_id = ? AND name = ? AND is_deleted = 0",
+    )
+    .bind(user_id)
+    .bind(basket)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if requested != Some(current) {
+        return Err(Error::ValidationError(format!(
+            "The outputs parameter must be output {} is already assigned to a different basket and cannot be reclassified as a basket insertion into {}",
+            vout, basket
         )));
     }
     Ok(())

@@ -9,6 +9,10 @@
 //!   and lowercases to `default`, is never the insertion basket;
 //! - an output the wallet already holds as its own managed change is never
 //!   reclassified as a basket insertion;
+//! - an output in an application basket is never moved into another one;
+//!   naming its own basket again is admitted;
+//! - an output in the default basket that is not managed change may be swept
+//!   into a named basket (the reference's legacy-recovery state).
 //!
 //! A refusal writes no output row and creates no basket. Real SQLite
 //! storage, a mock broadcaster; nothing touches the network.
@@ -406,4 +410,129 @@ async fn a_received_payment_is_never_reclassified_as_a_basket_insertion() {
     );
     assert_eq!(row(&wallet, &txid, 0).await, before_row);
     assert_eq!(wallet.balance().await.unwrap().total, before_balance);
+}
+
+/// The reference's legacy-recovery state: an application output sitting in
+/// the default basket without being managed change. A basket insertion
+/// sweeps it into a named basket, typed `custom`.
+#[tokio::test]
+async fn a_custom_output_in_the_default_basket_is_swept_into_a_named_basket() {
+    for door in ["wallet", "storage"] {
+        let (wallet, root, tx, txid) = spent_wallet(
+            "insertion-recovery",
+            Some("recovery staging"),
+            hex::decode(format!("76a914{OTHER_HASH}88ac")).unwrap(),
+        )
+        .await;
+        let pool = wallet.storage().writer();
+        // Reproduce the legacy state: the custom row moved into the default
+        // basket.
+        sqlx::query(
+            "UPDATE outputs SET basket_id = (SELECT basket_id FROM output_baskets WHERE name = 'default') \
+             WHERE txid = ? AND vout = 0",
+        )
+        .bind(&txid)
+        .execute(pool)
+        .await
+        .unwrap();
+        let answer = if door == "wallet" {
+            wallet
+                .internalize_action(args(tx, insertion(0, "recovered")), "test.local")
+                .await
+                .map(|r| r.accepted)
+                .map_err(|e| e.to_string())
+        } else {
+            wallet
+                .storage()
+                .internalize_action(
+                    &auth(&wallet, &root).await,
+                    args(tx, insertion(0, "recovered")),
+                )
+                .await
+                .map(|r| r.base.accepted)
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(answer, Ok(true), "{door}");
+        let (change, kind, ..) = row(&wallet, &txid, 0).await;
+        let basket: String = sqlx::query_scalar(
+            "SELECT b.name FROM outputs o JOIN output_baskets b ON b.basket_id = o.basket_id \
+             WHERE o.txid = ? AND o.vout = 0",
+        )
+        .bind(&txid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (change, kind.as_str(), basket.as_str()),
+            (0, "custom", "recovered"),
+            "{door}"
+        );
+    }
+}
+
+/// An output in an application basket, named by a basket insertion into
+/// another basket: refused, and the other basket is not created. Naming its
+/// own basket again is admitted and leaves it there.
+#[tokio::test]
+async fn an_output_in_an_application_basket_is_never_moved_into_another() {
+    for door in ["wallet", "storage"] {
+        let (wallet, root, tx, txid) = spent_wallet(
+            "insertion-move",
+            Some("staging"),
+            hex::decode(format!("76a914{OTHER_HASH}88ac")).unwrap(),
+        )
+        .await;
+        let before_row = row(&wallet, &txid, 0).await;
+        let before_counts = counts(&wallet).await;
+        let auth = auth(&wallet, &root).await;
+        let internalize = |basket: &'static str| {
+            let tx = tx.clone();
+            let wallet = &wallet;
+            let auth = auth.clone();
+            async move {
+                if door == "wallet" {
+                    wallet
+                        .internalize_action(args(tx, insertion(0, basket)), "test.local")
+                        .await
+                        .map(|r| r.accepted)
+                        .map_err(|e| e.to_string())
+                } else {
+                    wallet
+                        .storage()
+                        .internalize_action(&auth, args(tx, insertion(0, basket)))
+                        .await
+                        .map(|r| r.base.accepted)
+                        .map_err(|e| e.to_string())
+                }
+            }
+        };
+        let sentence = "Validation error: The outputs parameter must be output 0 is already assigned to a different basket and cannot be reclassified as a basket insertion into other";
+        let expected = if door == "wallet" {
+            format!("wallet error: {sentence}")
+        } else {
+            sentence.to_string()
+        };
+        assert_eq!(internalize("other").await, Err(expected), "{door}");
+        assert_eq!(
+            row(&wallet, &txid, 0).await,
+            before_row,
+            "{door}: untouched"
+        );
+        assert_eq!(
+            counts(&wallet).await,
+            before_counts,
+            "{door}: no basket created"
+        );
+
+        assert_eq!(
+            internalize("staging").await,
+            Ok(true),
+            "{door}: same basket"
+        );
+        assert_eq!(
+            row(&wallet, &txid, 0).await.5,
+            before_row.5,
+            "{door}: still in staging"
+        );
+    }
 }
