@@ -748,3 +748,60 @@ async fn an_older_transaction_row_merges_only_its_proof_evidence() {
         ]
     );
 }
+
+/// The update of a held output copies what the reference copies and never
+/// the coin's satoshis or key derivation.
+#[tokio::test]
+async fn a_newer_output_row_keeps_the_coins_amount_and_derivation() {
+    let s = store(DST).await;
+    let (u, _) = s.find_or_insert_user(ALICE).await.unwrap();
+    let t = "a".repeat(64);
+    let tx = exec(&s, &format!("INSERT INTO transactions (user_id,status,reference,is_outgoing,satoshis,description,txid,created_at,updated_at) VALUES ({},'completed','r1',0,0,'held','{t}','2026-01-01 00:00:00','2026-01-01 00:00:00')", u.user_id)).await;
+    exec(&s, &format!("INSERT INTO outputs (user_id,transaction_id,spendable,change,vout,satoshis,provided_by,purpose,type,txid,derivation_prefix,derivation_suffix,locking_script,created_at,updated_at) VALUES ({},{tx},1,1,0,1000,'you','change','P2PKH','{t}','pre','suf',X'51','2026-01-01 00:00:00','2026-01-01 00:00:00')", u.user_id)).await;
+    let out = TableOutput {
+        output_id: 9,
+        user_id: 1,
+        transaction_id: 5,
+        basket_id: None,
+        spendable: false,
+        change: true,
+        output_description: None,
+        vout: 0,
+        satoshis: 999_999,
+        provided_by: "you".to_string(),
+        purpose: Some("change".to_string()),
+        output_type: "P2PKH".to_string(),
+        txid: t.clone(),
+        sender_identity_key: None,
+        derivation_prefix: Some("other".to_string()),
+        derivation_suffix: Some("other".to_string()),
+        custom_instructions: None,
+        spent_by: None,
+        sequence_number: None,
+        spending_description: None,
+        script_length: 1,
+        script_offset: 0,
+        locking_script: Some(vec![0x51]),
+        created_at: at(0),
+        updated_at: at(9),
+    };
+    let mut chunk = chunk_for(ALICE);
+    chunk.outputs = Some(vec![out]);
+    s.process_sync_chunk(args_for(ALICE), chunk).await.unwrap();
+    let row: (i64, Option<String>, Option<String>, bool) = ::sqlx::query_as(
+        "SELECT satoshis, derivation_prefix, derivation_suffix, spendable FROM outputs",
+    )
+    .fetch_one(s.pool())
+    .await
+    .unwrap();
+    println!("WITNESS B16 held output (satoshis, prefix, suffix, spendable): {row:?}");
+    assert_eq!(
+        row,
+        (
+            1000,
+            Some("pre".to_string()),
+            Some("suf".to_string()),
+            false
+        )
+    );
+}
