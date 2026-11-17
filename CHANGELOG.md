@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.13.6] - 2026-11-17
+
+A security patch on the stable line, and nothing else. The bsv-rs requirement moves from "0.8.11" to "0.8.12", which closes GHSA-33fm-jcm5-4m3m, the completion of GHSA-gvmh-f5gf-5vjj's fix: that advisory names every 0.8 release through 0.8.11, and every earlier 0.8 release is named by a published bsv-rs advisory. A build of 0.13.5 with a fresh resolve already takes 0.8.12; one with a lock that holds 0.8.11 does not, and this release makes the floor binding. No public signature of this crate moves.
+
+### Security
+
+- [GHSA-33fm-jcm5-4m3m](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-33fm-jcm5-4m3m) (high): memory exhaustion while linking a BEEF. 0.8.11's link budget counted the wire bytes a shared parent re-materializes, not the heap its clones and their proofs hold; 0.8.12 adds a heap bound of 56 MiB beside it. This crate links only an overlay host's answer (the SLAP host and certificate lookups), which the new bound now holds; the storage and wallet doors that read a BEEF (`internalizeAction`, `createAction`) link nothing, so the bound refuses none of the wallet's own work.
+
+### Hosts
+
+- Nothing changes at the storage and wallet doors: they answer as in 0.13.5, and every test of 0.13.5 answers the same on bsv-rs 0.8.12. The storage `internalizeAction` door still takes a sweep of 800 outputs of one parent (`tests/beef_link_budget_tests.rs`).
+- The certificate lookups (`discoverByIdentityKey`, `discoverByAttributes`) are where this crate links another party's BEEF: a SLAP tracker's answer and an overlay host's answer, each with bsv-rs's default bounds (`src/wallet/lookup.rs`). An answer whose BEEF passes the new heap bound is passed over, as one past the wire bound already was, and the lookup goes on with the other answers (read in the code, not from a run). A host that serves those calls on a lock holding bsv-rs 0.8.11 or earlier is the host this release is for.
+- A host that links a BEEF in its own code with bsv-rs's default doors (`Transaction::from_beef`, `from_atomic_beef`) has an honest sweep of P2PKH outputs of one parent refused above 586 outputs (above 702 on 0.8.11), with `BEEF link resource limit: linking would hold more than 58720256 heap bytes of re-materialized shared-parent stubs and proofs at once (bsv-rs #749). Raise or disable the bound with Transaction::from_beef_with_limits / BeefLinkLimits::with_max_link_heap_bytes / BeefLinkLimits::unbounded.` (`the_linking_door_takes_586_swept_outputs_and_refuses_587`). bsv-rs states its onsets for outputs that carry data (251 of 256 bytes, 127 of 1 KiB) unchanged. Such a host raises the heap bound with `BeefLinkLimits::with_max_link_heap_bytes` through `Transaction::from_beef_with_limits` (in step with `max_link_bytes`, if it set a larger one), or lifts both bounds with `BeefLinkLimits::unbounded` for a source it trusts.
+
 ## [0.13.5] - 2026-11-17
 
 From this release an action that should spend a coin the wallet received in a payment whose transaction has no proof yet carries the label `underReceivedRule`; without it a local store's selection passes that coin over and the action answers `Insufficient funds` when nothing else covers it. A host that offers such a coin under its own gate passes the label where it admits one. A payment's BEEF handed to `internalizeAction` carries every ancestor whole: a transaction the BEEF names by its id without its bytes is refused. A wallet whose storage is a storage client checks every received BEEF itself, with the chain tracker of its own services, so it needs one there (`ServicesOptions::with_chaintracks_url`). This release does not change the answer or the balance for a received payment that passes these checks: on this line `internalizeAction` still answers accepted for a received payment that carries no proof, whether or not a broadcaster has taken it, and `Wallet::balance` still counts it; what changes here is that the wallet's own selection does not spend it without the label. The bsv-rs requirement is unchanged at "0.8.11".
