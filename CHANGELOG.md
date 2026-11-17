@@ -6,21 +6,20 @@
 - #533 (the owner's word of 2026-11-16): `bsv-rs` pinned at `=0.9.0-beta.8`
   in `Cargo.toml` and `fuzz/Cargo.toml`, the 0.9.0 prerelease that carries
   the stable line's 0.8.6 to 0.8.11 security fixes. Five of its ten
-  breaking changes reach the toolbox, each migrated in its own commit:
-  `Transaction`'s accessors (#843), the BEEF and merkle path writers'
-  `Result` carried into the toolbox's error at each site (#817),
-  `PeerOptions::new` and its setters (#843d8a), `WalletRefusalClass::ALL`
-  as a slice (#843dall), `OutputListItem.txid` (#735). No toolbox public
-  signature moves (`cargo semver-checks` against the base: no semver
-  update required).
-- The two readers of one output of a BEEF read the subject unlinked, so
-  bsv-rs's new default link budget (GHSA-gvmh-f5gf-5vjj, #749) never
-  applies to them: a SLAP advertisement (`Transaction::from_beef_subject`,
-  as bsv-rs's own resolver reads it) and a stored permission token (the
-  BEEF entry's own transaction). A transaction spending many outputs of one
-  parent is read at both, as at beta.7; without this change the pin would
-  have dropped the host and missed the grant (`lookup_beta8_tests.rs`,
-  `permission_token_link_tests.rs`).
+  breaking changes reach the toolbox's own code: `Transaction`'s accessors
+  (bsv-rs #843), the BEEF and merkle path writers' `Result`, carried into
+  the toolbox's error at each site (bsv-rs #817), `PeerOptions::new` and its
+  setters (bsv-rs #843d8a), `WalletRefusalClass::ALL` as a slice (bsv-rs
+  #843dall), `OutputListItem.txid` (bsv-rs #735). No item the toolbox itself
+  declares changes its signature (`cargo semver-checks` against the base: no
+  semver update required); what moves for a host through bsv-rs's types is
+  the opening line under Hosts.
+- A SLAP advertisement and a stored permission token whose transaction
+  spends many outputs of one parent are read as at beta.7: each reader
+  takes the BEEF's subject unlinked (`Transaction::from_beef_subject`, the
+  BEEF entry's own transaction), so bsv-rs's default link budget
+  (GHSA-gvmh-f5gf-5vjj, bsv-rs #749) does not apply to them
+  (`lookup_beta8_tests.rs`, `permission_token_link_tests.rs`).
 
 ### Fixed
 - `Wallet::internalize_action`'s BRC-29 check on a wallet payment output
@@ -35,17 +34,34 @@
   remittance only when its locking script is the P2PKH of the key its
   remittance derives, byte for byte, whatever the script's shape, as the
   reference's `internalizeAction` requires (`setupWalletPaymentForOutput`).
-  A 25-byte P2PKH paying another key keeps the `Derivation mismatch` text;
-  a script of any other shape (a P2PK lock of the derived key, an OP_RETURN
+  A script of any other shape (a P2PK lock of the derived key, an OP_RETURN
   script, the derived key's P2PKH with bytes after it, an empty script) is
-  refused with the reference's sentence, and nothing is stored. A basket
-  insertion with no payment remittance is not held to the rule; one that
-  carries a payment remittance is refused by the argument validator, as
-  before (`tests/internalize_payment_lock_tests.rs`).
+  refused and nothing is stored. A basket insertion with no payment
+  remittance is not held to the rule; one that carries a payment remittance
+  is refused by the argument validator, as before
+  (`tests/internalize_payment_lock_tests.rs`). The texts of both entries
+  are under Hosts.
 
 ### Hosts
-Host lines for bsv-wallet-cli#386 (the beta.8 pin intake), each text from
-the witness run at this tree; each witness is red at beta.7:
+Host lines for bsv-wallet-cli#386 (the beta.8 pin intake).
+
+What a host's own build meets:
+- With this release a host's own `bsv-rs` moves to `=0.9.0-beta.8`, the
+  exact pin; its ten breaking changes since beta.7 are listed on this
+  repository's issue #533, the comment of 2026-11-16T22:42:51Z. Two of them
+  reach a host through the toolbox's types. A host that implements
+  `OverlayLookupResolver`, or writes an `OutputListItem` literal anywhere,
+  adds the `txid` member (`None`, or the hint it has; bsv-rs #735). A host
+  that calls `StorageClient::peer()` gets a `Peer` whose `session_manager()`
+  returns `&SessionManagerHandle` (bsv-rs #843dforeign): from a compile at
+  this tree, `.read().await`, `.write().await` and `.clone()` on it compile
+  unchanged; a binding or argument typed
+  `&Arc<tokio::sync::RwLock<SessionManager>>` and `Arc::clone(..)` of it do
+  not (E0308), nor does `.try_read()` (E0599), the handle offering `read`
+  and `write` alone.
+
+Answers that move with the pin, each text from the witness run at this
+tree; each witness is red at beta.7:
 - `NLockTimeInput::from_raw_tx` and `from_hex_tx` read exactly one
   transaction (bsv-rs #840). Old: a transaction followed by other bytes
   answered `Ok`, its lock time read from the front. New: `Invalid argument:
@@ -60,7 +76,9 @@ the witness run at this tree; each witness is red at beta.7:
   was not a string was read, the member ignored. New: that answer does not
   parse and is skipped as any unparseable answer is: a tracker's names no
   host, a host's gives no output (`lookup_beta8_tests.rs`). A string hint is
-  carried on the output; the evidence check does not compare it yet.
+  carried on the output as the overlay host sent it, unchecked by the
+  toolbox, which attributes no output by it; a host that reads it compares
+  it with the txid of the BEEF's subject.
 - `WalletPermissionsManager` reads a stored token's signature field with
   `Signature::from_der`, which reads exactly one DER signature (bsv-rs
   #842). Old: a token whose signature field was its DER signature followed
@@ -85,7 +103,8 @@ class `InvalidParameter`:
   the link budget takes, whose P2PKH does not pay the derived key:
   `Derivation mismatch for output <n>: derived <hash> != script <hash>`;
   before, that output was stored. A payment output that does pay the
-  derived key is stored as before.
+  derived key is stored as before, and a 25-byte P2PKH paying another key
+  in a subject within the budget keeps the same `Derivation mismatch` text.
 - a payment output whose locking script is not a 25-byte P2PKH and is not
   the P2PKH of the derived key: `The paymentRemittance parameter must be
   locked by script conforming to BRC-29`; before, it was admitted and
