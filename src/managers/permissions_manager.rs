@@ -1022,6 +1022,43 @@ impl WalletPermissionsManager {
         .await
     }
 
+    /// The reference's `ensureLabelAccess` for a label applied to an action
+    /// (ts-stack@4d0ea63c8 `WalletPermissionsManager.ts:1786-1835`): the
+    /// admin originator admitted; a label starting `admin` or `p ` refused
+    /// as admin-only (`isAdminLabel`, `:5600-5609`); admitted with
+    /// `seek_permission_when_applying_action_labels` off; else the level-1
+    /// protocol `action label <label>` for `self`, usage generic, through
+    /// [`Self::ensure_protocol_permission`] (its cache, stored token and
+    /// prompt). Called by `internalize_action` alone.
+    pub(crate) async fn ensure_label_apply_access(
+        &self,
+        originator: &str,
+        label: &str,
+        reason: Option<&str>,
+    ) -> Result<bool> {
+        if self.is_admin(originator) {
+            return Ok(true);
+        }
+        if label.starts_with("admin") || label.starts_with("p ") {
+            return Err(Error::AccessDenied(format!(
+                "Label \"{label}\" is admin-only."
+            )));
+        }
+        if !self.config.seek_permission_when_applying_action_labels {
+            return Ok(true);
+        }
+        let protocol = Protocol::new(SecurityLevel::App, format!("action label {label}"));
+        self.ensure_protocol_permission(
+            originator,
+            false,
+            &protocol,
+            Some("self"),
+            reason,
+            PermissionUsageType::Generic,
+        )
+        .await
+    }
+
     /// Ensures the originator has certificate access permission (DCAP).
     ///
     /// Checks in order:
