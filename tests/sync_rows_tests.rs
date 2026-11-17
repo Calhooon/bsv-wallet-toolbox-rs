@@ -144,3 +144,131 @@ async fn a_failing_chunk_leaves_none_of_its_rows() {
     println!("WITNESS B20 rows left by the failed chunk: baskets={left} sync_states={states}");
     assert_eq!((left, states), (0, 0));
 }
+
+fn proof(id: i64, txid: &str) -> TableProvenTx {
+    TableProvenTx {
+        proven_tx_id: id,
+        txid: txid.to_string(),
+        height: 1,
+        index: 0,
+        block_hash: "e".repeat(64),
+        merkle_root: "e".repeat(64),
+        merkle_path: vec![0],
+        raw_tx: vec![0],
+        created_at: at(0),
+        updated_at: at(0),
+    }
+}
+
+fn request(id: i64, txid: &str, proof_id: Option<i64>) -> TableProvenTxReq {
+    TableProvenTxReq {
+        proven_tx_req_id: id,
+        txid: txid.to_string(),
+        status: ProvenTxReqStatus::Unmined,
+        attempts: 0,
+        history: "{}".to_string(),
+        notified: false,
+        notify: "{}".to_string(),
+        raw_tx: Some(vec![1]),
+        input_beef: None,
+        proven_tx_id: proof_id,
+        batch: None,
+        created_at: at(0),
+        updated_at: at(0),
+    }
+}
+
+async fn stored_link(s: &StorageSqlx, table: &str, txid: &str) -> Option<String> {
+    ::sqlx::query_scalar::<_, Option<String>>(&format!(
+        "SELECT p.txid FROM {table} r LEFT JOIN proven_txs p ON p.proven_tx_id = r.proven_tx_id WHERE r.txid = ?"
+    ))
+    .bind(txid)
+    .fetch_one(s.pool())
+    .await
+    .unwrap()
+}
+
+/// A transaction's and a request's proof link travel through the chunk's
+/// proof rows: a request names its proof by the source's id, a transaction by
+/// the proof's txid; a link that maps to no proof row is not stored.
+#[tokio::test]
+async fn a_proof_link_is_mapped_through_the_chunks_proof_rows() {
+    let s = store(DST).await;
+    s.find_or_insert_user(ALICE).await.unwrap();
+    // A proof row of another transaction this store already holds (local id 1).
+    let other = "c".repeat(64);
+    exec(&s, &format!("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES ('{other}',1,0,'{h}','{h}',X'00',X'00',datetime('now'),datetime('now'))", h = "e".repeat(64))).await;
+    let mined = "d".repeat(64);
+    let pending = "f".repeat(64);
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_txs = Some(vec![proof(7, &mined)]);
+    chunk.proven_tx_reqs = Some(vec![
+        request(3, &mined, Some(7)),
+        request(4, &pending, Some(99)),
+    ]);
+    let mut t_mined = transaction(5, "r-mined", Some(&mined));
+    t_mined.proof_txid = Some(mined.clone());
+    let mut t_numbered = transaction(6, "r-numbered", Some(&pending));
+    t_numbered.proof_txid = Some("1".to_string());
+    chunk.transactions = Some(vec![t_mined, t_numbered]);
+    let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+    println!(
+        "WITNESS B7/B10 chunk: {:?}",
+        r.as_ref()
+            .map(|r| (r.inserts, r.updates))
+            .map_err(|e| e.to_string())
+    );
+    assert!(r.is_ok());
+    let links = (
+        stored_link(&s, "proven_tx_reqs", &mined).await,
+        stored_link(&s, "proven_tx_reqs", &pending).await,
+        stored_link(&s, "transactions", &mined).await,
+        stored_link(&s, "transactions", &pending).await,
+    );
+    println!("WITNESS B7/B10 links (req mined, req unmapped, tx mined, tx numbered): {links:?}");
+    assert_eq!(
+        links,
+        (Some(mined.clone()), None, Some(mined.clone()), None)
+    );
+}
+
+/// Two rows of one chunk that claim one source id are refused, and nothing
+/// of the chunk is written.
+#[tokio::test]
+async fn a_chunk_mapping_one_source_id_twice_is_refused() {
+    let s = store(DST).await;
+    s.find_or_insert_user(ALICE).await.unwrap();
+    let mut chunk = chunk_for(ALICE);
+    chunk.output_baskets = Some(vec![basket(5, "one"), basket(5, "two")]);
+    let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+    let rows = count(
+        &s,
+        "SELECT COUNT(*) FROM output_baskets WHERE name IN ('one','two')",
+    )
+    .await;
+    println!(
+        "WITNESS B22 chunk: {:?} rows={rows}",
+        r.as_ref().map(|r| r.inserts).map_err(|e| e.to_string())
+    );
+    assert!(r.is_err());
+    assert_eq!(rows, 0);
+}
+
+/// A transaction whose proof link is a number is not linked to the local
+/// proof row that number names.
+#[tokio::test]
+async fn a_numbered_proof_link_names_no_local_row() {
+    let s = store(DST).await;
+    s.find_or_insert_user(ALICE).await.unwrap();
+    let other = "c".repeat(64);
+    exec(&s, &format!("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES ('{other}',1,0,'{h}','{h}',X'00',X'00',datetime('now'),datetime('now'))", h = "e".repeat(64))).await;
+    let pending = "f".repeat(64);
+    let mut t = transaction(6, "r-numbered", Some(&pending));
+    t.proof_txid = Some("1".to_string());
+    let mut chunk = chunk_for(ALICE);
+    chunk.transactions = Some(vec![t]);
+    s.process_sync_chunk(args_for(ALICE), chunk).await.unwrap();
+    let link = stored_link(&s, "transactions", &pending).await;
+    println!("WITNESS B10 numbered link stored as: {link:?}");
+    assert_eq!(link, None);
+}

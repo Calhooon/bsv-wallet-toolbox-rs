@@ -436,6 +436,21 @@ pub async fn process_sync_chunk_internal(
     }
 }
 
+/// Record that the source row `from` of `entity` is the local row `to`. A
+/// source id the map already holds for another local row is an incoherent
+/// chunk and is refused, as the reference's `updateSyncMap` refuses it.
+fn remap(map: &mut HashMap<i64, i64>, entity: &str, from: i64, to: i64) -> Result<()> {
+    match map.get(&from) {
+        Some(&held) if held != to => Err(Error::SyncError(format!(
+            "sync chunk {entity} id {from} maps to local id {held} and {to}"
+        ))),
+        _ => {
+            map.insert(from, to);
+            Ok(())
+        }
+    }
+}
+
 async fn apply_chunk(
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -468,6 +483,7 @@ async fn apply_chunk(
     let transaction_id_map = &mut sync_map.transaction;
     let output_id_map = &mut sync_map.output;
     let certificate_id_map = &mut sync_map.certificate;
+    let mut proof_id_map: HashMap<i64, i64> = HashMap::new();
 
     // Check if chunk is empty (sync complete)
     let chunk_is_empty = chunk.output_baskets.as_ref().is_none_or(|v| v.is_empty())
@@ -508,37 +524,18 @@ async fn apply_chunk(
         update_max_updated_at(&mut result.max_updated_at, chunk_user.updated_at);
     }
 
-    // Process output baskets
-    if let Some(baskets) = &chunk.output_baskets {
-        for basket in baskets {
-            let upsert_result = upsert_basket(&mut *conn, user_id, basket).await?;
-            basket_id_map.insert(basket.basket_id, upsert_result.local_id);
-            if upsert_result.is_new {
-                result.inserts += 1;
-            } else {
-                result.updates += 1;
-            }
-            update_max_updated_at(&mut result.max_updated_at, basket.updated_at);
-        }
-    }
-
-    // Process proven tx reqs
-    if let Some(reqs) = &chunk.proven_tx_reqs {
-        for req in reqs {
-            let upsert_result = upsert_proven_tx_req(&mut *conn, req).await?;
-            if upsert_result.is_new {
-                result.inserts += 1;
-            } else {
-                result.updates += 1;
-            }
-            update_max_updated_at(&mut result.max_updated_at, req.updated_at);
-        }
-    }
-
-    // Process proven txs
+    // Process proven txs ahead of every row that names one (the reference's
+    // order puts provenTx ahead of every entity and provenTxReq last), building the chunk's proof id
+    // map: a request's proof link is the source store's proof id.
     if let Some(proven_txs) = &chunk.proven_txs {
         for ptx in proven_txs {
             let upsert_result = upsert_proven_tx(&mut *conn, ptx).await?;
+            remap(
+                &mut proof_id_map,
+                "provenTx",
+                ptx.proven_tx_id,
+                upsert_result.local_id,
+            )?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -548,11 +545,35 @@ async fn apply_chunk(
         }
     }
 
+    // Process output baskets
+    if let Some(baskets) = &chunk.output_baskets {
+        for basket in baskets {
+            let upsert_result = upsert_basket(&mut *conn, user_id, basket).await?;
+            remap(
+                basket_id_map,
+                "outputBasket",
+                basket.basket_id,
+                upsert_result.local_id,
+            )?;
+            if upsert_result.is_new {
+                result.inserts += 1;
+            } else {
+                result.updates += 1;
+            }
+            update_max_updated_at(&mut result.max_updated_at, basket.updated_at);
+        }
+    }
+
     // Process tx labels
     if let Some(labels) = &chunk.tx_labels {
         for label in labels {
             let upsert_result = upsert_tx_label(&mut *conn, user_id, label).await?;
-            label_id_map.insert(label.label_id, upsert_result.local_id);
+            remap(
+                label_id_map,
+                "txLabel",
+                label.label_id,
+                upsert_result.local_id,
+            )?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -566,7 +587,7 @@ async fn apply_chunk(
     if let Some(tags) = &chunk.output_tags {
         for tag in tags {
             let upsert_result = upsert_output_tag(&mut *conn, user_id, tag).await?;
-            tag_id_map.insert(tag.tag_id, upsert_result.local_id);
+            remap(tag_id_map, "outputTag", tag.tag_id, upsert_result.local_id)?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -580,7 +601,12 @@ async fn apply_chunk(
     if let Some(transactions) = &chunk.transactions {
         for tx in transactions {
             let upsert_result = upsert_transaction(&mut *conn, user_id, tx).await?;
-            transaction_id_map.insert(tx.transaction_id, upsert_result.local_id);
+            remap(
+                transaction_id_map,
+                "transaction",
+                tx.transaction_id,
+                upsert_result.local_id,
+            )?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -627,7 +653,12 @@ async fn apply_chunk(
                 .and_then(|bid| basket_id_map.get(&bid).copied());
             let upsert_result =
                 upsert_output(&mut *conn, user_id, output, tx_id, local_basket_id).await?;
-            output_id_map.insert(output.output_id, upsert_result.local_id);
+            remap(
+                output_id_map,
+                "output",
+                output.output_id,
+                upsert_result.local_id,
+            )?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -676,7 +707,12 @@ async fn apply_chunk(
     if let Some(certs) = &chunk.certificates {
         for cert in certs {
             let upsert_result = upsert_certificate(&mut *conn, user_id, cert).await?;
-            certificate_id_map.insert(cert.certificate_id, upsert_result.local_id);
+            remap(
+                certificate_id_map,
+                "certificate",
+                cert.certificate_id,
+                upsert_result.local_id,
+            )?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -716,6 +752,19 @@ async fn apply_chunk(
                 }
                 update_max_updated_at(&mut result.max_updated_at, comm.updated_at);
             }
+        }
+    }
+
+    // Process proven tx reqs last, as the reference does
+    if let Some(reqs) = &chunk.proven_tx_reqs {
+        for req in reqs {
+            let upsert_result = upsert_proven_tx_req(&mut *conn, req, &proof_id_map).await?;
+            if upsert_result.is_new {
+                result.inserts += 1;
+            } else {
+                result.updates += 1;
+            }
+            update_max_updated_at(&mut result.max_updated_at, req.updated_at);
         }
     }
 
@@ -1618,7 +1667,13 @@ async fn upsert_proven_tx(
 async fn upsert_proven_tx_req(
     conn: &mut SqliteConnection,
     req: &TableProvenTxReq,
+    proof_id_map: &HashMap<i64, i64>,
 ) -> Result<UpsertResult> {
+    // The source's proof id, mapped through the chunk's proof rows; a link
+    // the chunk does not map is not stored (the reference's mergeNew).
+    let proven_tx_id = req
+        .proven_tx_id
+        .and_then(|id| proof_id_map.get(&id).copied());
     // Check if exists by txid
     let existing = sqlx::query(
         r#"
@@ -1661,7 +1716,7 @@ async fn upsert_proven_tx_req(
             .bind(&req.notify)
             .bind(req.raw_tx.clone().unwrap_or_default())
             .bind(&req.input_beef)
-            .bind(req.proven_tx_id)
+            .bind(proven_tx_id)
             .bind(&req.batch)
             .bind(req.updated_at)
             .bind(local_id)
@@ -1695,7 +1750,7 @@ async fn upsert_proven_tx_req(
         .bind(&req.notify)
         .bind(req.raw_tx.clone().unwrap_or_default())
         .bind(&req.input_beef)
-        .bind(req.proven_tx_id)
+        .bind(proven_tx_id)
         .bind(&req.batch)
         .bind(req.created_at)
         .bind(req.updated_at)
@@ -1829,11 +1884,30 @@ async fn upsert_output_tag(
     }
 }
 
+/// The local proof row a synced transaction's proof link names: the link is
+/// the proof's txid, and a proof row is global by txid. A link that names no
+/// proof row of this store is not stored.
+async fn local_proof_id(
+    conn: &mut SqliteConnection,
+    proof_txid: Option<&str>,
+) -> Result<Option<i64>> {
+    let Some(txid) = proof_txid else {
+        return Ok(None);
+    };
+    Ok(
+        sqlx::query_scalar("SELECT proven_tx_id FROM proven_txs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?,
+    )
+}
+
 async fn upsert_transaction(
     conn: &mut SqliteConnection,
     user_id: i64,
     tx: &TableTransaction,
 ) -> Result<UpsertResult> {
+    let proven_tx_id = local_proof_id(&mut *conn, tx.proof_txid.as_deref()).await?;
     // Check if exists by reference (unique per user)
     let existing = sqlx::query(
         r#"
@@ -1871,7 +1945,7 @@ async fn upsert_transaction(
             .bind(&tx.raw_tx)
             .bind(&tx.input_beef)
             .bind(tx.is_outgoing)
-            .bind(&tx.proof_txid)
+            .bind(proven_tx_id)
             .bind(tx.updated_at)
             .bind(local_id)
             .execute(&mut *conn)
@@ -1901,7 +1975,7 @@ async fn upsert_transaction(
         .bind(&tx.raw_tx)
         .bind(&tx.input_beef)
         .bind(tx.is_outgoing)
-        .bind(&tx.proof_txid)
+        .bind(proven_tx_id)
         .bind(tx.created_at)
         .bind(tx.updated_at)
         .execute(&mut *conn)
