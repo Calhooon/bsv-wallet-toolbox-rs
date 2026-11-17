@@ -167,6 +167,66 @@ async fn a_basket_insertion_into_the_default_basket_is_refused_at_the_storage_do
     }
 }
 
+/// A wallet payment carrying a stray insertion remittance that names the
+/// default basket: the default-basket refusal reads basket insertions alone,
+/// so the payment is stored as change in the default basket at both doors,
+/// as 0.13.2 stored it.
+#[tokio::test]
+async fn a_wallet_payment_with_a_stray_insertion_remittance_naming_default_is_stored() {
+    for door in ["wallet", "storage"] {
+        let root = PrivateKey::random();
+        let sender = PrivateKey::random().public_key();
+        let lock =
+            LockingScript::from_binary(&p2pkh_bytes(&derived_key(&root, &sender, PREFIX, SUFFIX)))
+                .unwrap();
+        let (bytes, txid) = beef_paying(lock);
+        let wallet = common::wallet("insertion-stray", &root, &txid).await;
+        let output = InternalizeOutput {
+            output_index: 0,
+            protocol: "wallet payment".to_string(),
+            payment_remittance: Some(WalletPayment {
+                derivation_prefix: PREFIX.to_string(),
+                derivation_suffix: SUFFIX.to_string(),
+                sender_identity_key: sender.to_hex(),
+            }),
+            insertion_remittance: Some(BasketInsertion {
+                basket: "default".to_string(),
+                custom_instructions: None,
+                tags: None,
+            }),
+        };
+        let answer = if door == "wallet" {
+            wallet
+                .internalize_action(args(bytes, output), "test.local")
+                .await
+                .map(|r| r.accepted)
+                .map_err(|e| e.to_string())
+        } else {
+            wallet
+                .storage()
+                .internalize_action(&auth(&wallet, &root).await, args(bytes, output))
+                .await
+                .map(|r| r.base.accepted)
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(answer, Ok(true), "{door}");
+        let (change, kind, prefix, ..) = row(&wallet, &txid, 0).await;
+        let basket: String = sqlx::query_scalar(
+            "SELECT b.name FROM outputs o JOIN output_baskets b ON b.basket_id = o.basket_id \
+             WHERE o.txid = ? AND o.vout = 0",
+        )
+        .bind(&txid)
+        .fetch_one(wallet.storage().writer())
+        .await
+        .unwrap();
+        assert_eq!(
+            (change, kind.as_str(), prefix.as_deref(), basket.as_str()),
+            (1, "P2PKH", Some(PREFIX), "default"),
+            "{door}"
+        );
+    }
+}
+
 /// A basket insertion into a named basket: stored, at both doors, in a
 /// basket of that name.
 #[tokio::test]

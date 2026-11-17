@@ -20,6 +20,20 @@ pub(crate) fn names_default_basket(basket: &str) -> bool {
     basket.trim_matches(js_space).to_lowercase() == "default"
 }
 
+/// Whether any basket insertion of `outputs` names the default basket. Only
+/// an output whose protocol is `basket insertion` is read, as the reference
+/// reads an insertion remittance only for that protocol: a wallet payment
+/// carrying a stray insertion remittance is not refused here. Both doors
+/// (the wallet's and the storage's `internalize_action`) ask this before
+/// any row is written, each answering with its own error.
+pub(crate) fn inserts_into_default_basket(outputs: &[bsv_rs::wallet::InternalizeOutput]) -> bool {
+    outputs
+        .iter()
+        .filter(|output| output.protocol == "basket insertion")
+        .filter_map(|output| output.insertion_remittance.as_ref())
+        .any(|insertion| names_default_basket(&insertion.basket))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

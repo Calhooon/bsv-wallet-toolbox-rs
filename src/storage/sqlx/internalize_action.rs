@@ -169,14 +169,10 @@ pub async fn internalize_action_internal(
     // any spelling the reference's validator trims and lowercases to
     // `default` (the reference's `classifyRequestedOutput` and `getBasket`).
     // Refused before any row is written and before any basket is created.
-    for output_spec in &args.outputs {
-        if let Some(ref insertion) = output_spec.insertion_remittance {
-            if crate::insertion_basket::names_default_basket(&insertion.basket) {
-                return Err(Error::ValidationError(
-                    crate::insertion_basket::DEFAULT_BASKET_INSERTION_REFUSAL.to_string(),
-                ));
-            }
-        }
+    if crate::insertion_basket::inserts_into_default_basket(&args.outputs) {
+        return Err(Error::ValidationError(
+            crate::insertion_basket::DEFAULT_BASKET_INSERTION_REFUSAL.to_string(),
+        ));
     }
 
     // Step 2: Get the user's default (change) basket
