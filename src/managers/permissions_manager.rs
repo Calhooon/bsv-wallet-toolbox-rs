@@ -1575,7 +1575,12 @@ fn originator_lookup_values(originator: &str) -> (String, Vec<Option<String>>) {
 /// within the decoder's bounds.
 fn token_source(beef: &Beef, output: &WalletOutput, count: usize) -> Option<PushDrop> {
     let txid = bsv_rs::primitives::to_hex(&output.outpoint.txid);
-    let tx = beef.find_atomic_transaction(&txid)?;
+    // The entry's own transaction, unlinked: the source is read from its
+    // outputs and its id alone, so no ancestry is linked and bsv-rs's link
+    // budget (GHSA-gvmh-f5gf-5vjj, #749), which refuses a token transaction
+    // spending many outputs of one parent, never applies. The bytes are the
+    // underlying wallet's own list_outputs answer.
+    let tx = beef.find_txid(&txid)?.tx()?;
     let tx_output = tx
         .outputs()
         .get(usize::try_from(output.outpoint.vout).ok()?)?;
@@ -2292,6 +2297,10 @@ module_call_serde!(InternalizeActionArgs => InternalizeActionResult, "internaliz
 #[cfg(all(test, feature = "sqlite"))]
 #[path = "permission_token_lookup_tests.rs"]
 mod permission_token_lookup_tests;
+
+#[cfg(test)]
+#[path = "permission_token_link_tests.rs"]
+mod permission_token_link_tests;
 
 #[cfg(test)]
 mod tests {
