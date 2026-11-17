@@ -105,19 +105,28 @@ class `InvalidParameter`:
   before, that output was stored. A payment output that does pay the
   derived key is stored as before, and a 25-byte P2PKH paying another key
   in a subject within the budget keeps the same `Derivation mismatch` text.
-- a payment output whose locking script is not a 25-byte P2PKH and is not
-  the P2PKH of the derived key: `The paymentRemittance parameter must be
-  locked by script conforming to BRC-29`; before, it was admitted and
-  stored.
+- a payment output whose locking script is not a 25-byte P2PKH: `The
+  paymentRemittance parameter must be locked by script conforming to
+  BRC-29`; before, it was admitted and stored.
+
+For the same unreadable bytes the refusal's text depends on the outputs:
+with an output that carries a payment remittance it is the `Cannot read the
+BEEF's subject transaction to check payment outputs: ..` text above, with
+basket insertions only it is storage's `Invalid BEEF at byte N: ..`; the
+class is `InvalidParameter` in both.
 
 A host that had such an output admitted before holds it in the default
-basket as change the wallet cannot sign for. Storage holds it as change of
-the default basket (`change = 1`, `spendable = 1`), the rows `createAction`'s
-change selection takes (an unproven receipt under the `underReceivedRule`
-label, a completed one under any), so a later `createAction` that needs
-change can select it as an input. `listOutputs` with `basket: "default"`
-lists it: its `outpoint` is the txid `internalizeAction` admitted and the
-output's index. `relinquishOutput` with `basket: "default"` and that
+basket as change whose script is not the P2PKH of the derived key that the
+wallet's own change is locked by. Storage holds it as change of the default
+basket (`change = 1`, `spendable = 1`), the rows `createAction`'s change
+selection takes (an unproven receipt under the `underReceivedRule` label, a
+completed one under any), so a later `createAction` that needs change can
+select it as an input. `listOutputs` with `basket: "default"` lists it: its
+`outpoint` is the txid `internalizeAction` admitted and the output's index;
+with `include: Some(OutputInclude::LockingScripts)` each listed output
+carries its locking script, and such an output is one whose script is not a
+25-byte P2PKH, or (the sweep above) a P2PKH of a hash that is not the
+derived key's. `relinquishOutput` with `basket: "default"` and that
 `outpoint` takes it out of the basket, and from then on `createAction` does
 not select it (`tests/internalize_payment_lock_tests.rs`,
 `a_payment_output_not_the_derived_p2pkh_leaves_change_when_relinquished`:
