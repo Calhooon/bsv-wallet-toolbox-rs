@@ -702,3 +702,49 @@ async fn a_new_requests_status_is_stored_in_the_references_words() {
         ]
     );
 }
+
+/// An older transaction row that carries a proof link where the store holds
+/// none merges its proof evidence alone (status and link; the held bytes
+/// stay); an older row without one changes nothing.
+#[tokio::test]
+async fn an_older_transaction_row_merges_only_its_proof_evidence() {
+    let s = store(DST).await;
+    let (u, _) = s.find_or_insert_user(ALICE).await.unwrap();
+    let t = "a".repeat(64);
+    let quiet = "b".repeat(64);
+    for (r, txid) in [("r-proof", &t), ("r-quiet", &quiet)] {
+        exec(&s, &format!("INSERT INTO transactions (user_id,status,reference,is_outgoing,satoshis,description,txid,raw_tx,created_at,updated_at) VALUES ({},'unproven','{r}',0,0,'held','{txid}',X'aa','2026-01-11 00:00:00','2026-01-11 00:00:00')", u.user_id)).await;
+    }
+    let mut proven = transaction(5, "r-proof", Some(&t));
+    proven.status = TransactionStatus::Completed;
+    proven.proof_txid = Some(t.clone());
+    proven.raw_tx = Some(vec![0xbb]);
+    proven.description = "theirs".to_string();
+    proven.updated_at = at(5);
+    let mut quiet_row = transaction(6, "r-quiet", Some(&quiet));
+    quiet_row.status = TransactionStatus::Failed;
+    quiet_row.updated_at = at(5);
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_txs = Some(vec![proof(7, &t)]);
+    chunk.transactions = Some(vec![proven, quiet_row]);
+    s.process_sync_chunk(args_for(ALICE), chunk).await.unwrap();
+    let rows: Vec<(String, String, Option<String>, Vec<u8>)> = ::sqlx::query_as(
+        "SELECT t.status, t.description, p.txid, t.raw_tx FROM transactions t LEFT JOIN proven_txs p ON p.proven_tx_id = t.proven_tx_id ORDER BY t.reference",
+    )
+    .fetch_all(s.pool())
+    .await
+    .unwrap();
+    println!("WITNESS B11 (status, description, proof, raw) r-proof, r-quiet: {rows:?}");
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "completed".to_string(),
+                "held".to_string(),
+                Some(t.clone()),
+                vec![0xaa]
+            ),
+            ("unproven".to_string(), "held".to_string(), None, vec![0xaa]),
+        ]
+    );
+}
