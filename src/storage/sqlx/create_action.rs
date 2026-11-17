@@ -2565,7 +2565,7 @@ impl ChangePick<'_> {
 /// The wallet charter's R1 (d): a received coin whose transaction is not
 /// `completed` is taken only when the action names the received rule. Its
 /// one `?` binds the rule.
-const RECEIVED_COIN_CLAUSE: &str =
+pub(super) const RECEIVED_COIN_CLAUSE: &str =
     "AND (t.status = 'completed' OR COALESCE(o.purpose, '') <> 'receive' OR ?)";
 
 /// The label an action names to take received coins whose transaction is
