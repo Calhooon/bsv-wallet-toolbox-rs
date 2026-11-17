@@ -193,7 +193,7 @@ pub(crate) fn verify_subject_inputs(
     network: &str,
     tip: Option<ChainTip>,
 ) -> Result<()> {
-    // First read: the subject's body and the heights the BUMPs prove.
+    // One read: the subject's body and the heights the BUMPs prove.
     let mut heights: HashMap<Hash32, u64> = HashMap::new();
     let mut found: Option<(u64, Hash32, bool, TxBody)> = None;
     for element in BeefStream::new(bytes) {

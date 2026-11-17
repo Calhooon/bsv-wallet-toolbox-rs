@@ -11,8 +11,8 @@
 //!
 //! - one input whose unlocking script does not satisfy the coin's P2PKH:
 //!   refused, nothing written, the coin's row exactly as before;
-//! - two inputs, the first verifying and the second not: refused at the
-//!   second;
+//! - two inputs, input 0 verifying and input 1 not: refused at input
+//!   1;
 //! - an empty unlocking script: refused;
 //! - a basket insertion in place of a payment: refused the same way;
 //! - the subject carrying its own checked proof: its scripts are not run
@@ -113,7 +113,7 @@ async fn holding(root: &PrivateKey, sender: &PublicKey) -> (TestWallet, Vec<u8>,
 }
 
 /// The subject of `case`, spending the coin `coin`:0 carried in `paid`
-/// (and, with `two_inputs`, first an `anyone_lock` output of a proven
+/// (and, with `two_inputs`, ahead of it an `anyone_lock` output of a proven
 /// parent), paying 9,000 satoshis to the key `root` derives for `sender`
 /// under `SECOND`: its AtomicBEEF and txid.
 fn subject(
