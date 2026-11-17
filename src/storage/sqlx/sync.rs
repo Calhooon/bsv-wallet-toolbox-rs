@@ -635,14 +635,23 @@ async fn apply_chunk(
     // at the call site makes that substitution structurally impossible.
     if let Some(outputs) = &chunk.outputs {
         for output in outputs {
+            // An output naming a basket the chunk does not map is an
+            // incoherent chunk, refused (the reference's mappedBasketId), not
+            // an output stored without its basket.
+            let local_basket_id = match output.basket_id {
+                None => None,
+                Some(bid) => Some(basket_id_map.get(&bid).copied().ok_or_else(|| {
+                    Error::SyncError(format!(
+                        "sync chunk output {} names basket {bid}, which the chunk does not map",
+                        output.output_id
+                    ))
+                })?),
+            };
             let local_tx_id = match transaction_id_map.get(&output.transaction_id).copied() {
                 Some(tid) => Some(tid),
                 None => find_transaction_id_for_sync(&mut *conn, user_id, &output.txid).await?,
             };
             let Some(tx_id) = local_tx_id else { continue };
-            let local_basket_id = output
-                .basket_id
-                .and_then(|bid| basket_id_map.get(&bid).copied());
             let upsert_result =
                 upsert_output(&mut *conn, user_id, output, tx_id, local_basket_id).await?;
             remap(
