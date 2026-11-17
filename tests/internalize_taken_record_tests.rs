@@ -1,14 +1,16 @@
-//! Taken is a recorded take or a stored proof (the owner's ruling of
-//! 2026-11-17, DECISIONS 29.1).
+//! Taken is a recorded take or a stored proof whose root was checked (the
+//! owner's ruling of 2026-11-17, DECISIONS 29.1).
 //!
 //! At the internalize door a new received row with no checked proof is
 //! taken when the door's own post drew an acceptance, when the store holds
 //! a record of a take for the txid (`broadcast_seen` `accepted`, `seen` or
-//! `mined`), or when a proof is stored for it. A request's word alone does
-//! not make it taken; the door records its own take whichever services a
-//! host built; the per-user `review_status` heals a held row only on the
-//! same evidence; migration 006 keeps the request's word for rows written
-//! before.
+//! `mined`), or when a stored proof whose root was checked is held for it.
+//! A request's word alone does not make it taken, nor does a stored proof
+//! whose root no chain tracker checked (a row a sync chunk wrote); the door
+//! records its own take whichever services a host built; the per-user
+//! `review_status` heals a held row only on the same evidence; migration
+//! 006 keeps the request's word for rows written before and reads the same
+//! checked proof.
 //!
 //! Two or three users on one real SQLite store, mock broadcasters and
 //! trackers; nothing is sent.
@@ -26,7 +28,9 @@ use bsv_rs::wallet::{
     InternalizeActionArgs, InternalizeOutput, WalletInterface,
 };
 use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
-use bsv_wallet_toolbox_rs::storage::entities::{ProvenTxReqStatus, TableProvenTxReq};
+use bsv_wallet_toolbox_rs::storage::entities::{
+    ProvenTxReqStatus, TableProvenTx, TableProvenTxReq,
+};
 use bsv_wallet_toolbox_rs::storage::{RequestSyncChunkArgs, SyncChunk};
 use bsv_wallet_toolbox_rs::{
     AuthId, PostBeefResult, StorageSqlx, Wallet, WalletStorageSync, WalletStorageWriter,
@@ -442,4 +446,84 @@ async fn migration_006_keeps_the_request_word_for_legacy_rows() {
             ("unsent", true, "unproven".to_string()),
         ]
     );
+}
+
+/// The sync arguments and an empty chunk for `identity`, from another store.
+fn chunk_for(identity: &str) -> (RequestSyncChunkArgs, SyncChunk) {
+    let args = RequestSyncChunkArgs {
+        from_storage_identity_key: "elsewhere".into(),
+        to_storage_identity_key: "here".into(),
+        identity_key: identity.to_string(),
+        since: None,
+        max_rough_size: 100_000,
+        max_items: 100,
+        offsets: vec![],
+    };
+    let chunk = SyncChunk {
+        from_storage_identity_key: "elsewhere".into(),
+        to_storage_identity_key: "here".into(),
+        user_identity_key: identity.to_string(),
+        ..Default::default()
+    };
+    (args, chunk)
+}
+
+/// Witness 7. On a shared store a sync chunk for user A carries a
+/// `proven_txs` row for T, no root check recorded; user B internalizes T
+/// with no proof: held, and B's own `review_status` leaves it held. RED at
+/// the base (the door read any `proven_txs` row).
+#[tokio::test]
+async fn a_proof_row_a_sync_chunk_wrote_does_not_make_a_receipt_taken() {
+    let root_b = PrivateKey::random();
+    let (beef, output, txid) = paying(&root_b, &PrivateKey::random().public_key(), "cHJvb2Y=");
+    let wallet_b = common::wallet_posting("taken-record", &root_b, no_answer()).await;
+    let user_a = PrivateKey::random().public_key().to_hex();
+    let (sync_args, mut chunk) = chunk_for(&user_a);
+    let now = chrono::Utc::now();
+    chunk.proven_txs = Some(vec![TableProvenTx {
+        proven_tx_id: 3,
+        txid: txid.clone(),
+        height: 900_002,
+        index: 0,
+        block_hash: "ab".repeat(32),
+        merkle_root: "cd".repeat(32),
+        merkle_path: vec![1, 2, 3],
+        raw_tx: vec![1],
+        created_at: now,
+        updated_at: now,
+    }]);
+    wallet_b
+        .storage()
+        .process_sync_chunk(sync_args, chunk)
+        .await
+        .expect("the chunk");
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM proven_txs WHERE txid = ?")
+        .bind(&txid)
+        .fetch_one(wallet_b.storage().pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 1, "the chunk wrote the proof row");
+
+    internalize(&wallet_b, args(beef, output)).await;
+    assert_held(&wallet_b, &root_b, &txid, "B beside a synced proof row").await;
+
+    // The request's word as a chunk could also write it: B's own heal
+    // still finds no evidence.
+    sql(
+        &wallet_b,
+        "UPDATE proven_tx_reqs SET status = 'unmined' WHERE txid = ?",
+        &txid,
+    )
+    .await;
+    let auth = AuthId::with_user_id(
+        root_b.public_key().to_hex(),
+        user_id(&wallet_b, &root_b).await,
+    );
+    let review = wallet_b
+        .storage()
+        .review_status(&auth, chrono::Utc::now())
+        .await
+        .expect("review_status");
+    println!("review: {}", review.log.trim());
+    assert_held(&wallet_b, &root_b, &txid, "B after its own review_status").await;
 }
