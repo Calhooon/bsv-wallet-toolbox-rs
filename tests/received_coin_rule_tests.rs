@@ -17,7 +17,8 @@
 //!   received coin;
 //! - a row that came by sync is stored as its source row is: a received coin
 //!   is held there as here, the wallet's own change is taken; a row an
-//!   earlier sync stored as change is left so by a second sync;
+//!   earlier sync stored as change is left so by a second sync, and takes
+//!   the source's columns when the source row is newer;
 //! - an input the caller names by outpoint is the caller's word and answers
 //!   as before.
 //!
@@ -40,7 +41,9 @@ use bsv_rs::wallet::{
     InternalizeActionArgs, Outpoint, SignActionArgs, WalletInterface,
 };
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
-use bsv_wallet_toolbox_rs::storage::{RequestSyncChunkArgs, SyncOffset, WalletStorageSync};
+use bsv_wallet_toolbox_rs::storage::{
+    RequestSyncChunkArgs, SyncChunk, SyncOffset, WalletStorageSync,
+};
 use bsv_wallet_toolbox_rs::{StorageSqlx, Wallet, WalletStorageProvider, WalletStorageWriter};
 
 use common::{derived_key, other_lock, p2pkh_bytes, paying_derived, payment};
@@ -524,6 +527,16 @@ async fn coin_at(
 /// Every row of `source`'s user synced into `target` in one chunk; the
 /// number of outputs the chunk inserted and updated.
 async fn sync_into(source: &TestWallet, target: &TestWallet, root: &PrivateKey) -> (u32, u32) {
+    sync_into_with(source, target, root, |_| {}).await
+}
+
+/// `sync_into`, the chunk passed through `edit` on its way.
+async fn sync_into_with(
+    source: &TestWallet,
+    target: &TestWallet,
+    root: &PrivateKey,
+    edit: impl FnOnce(&mut SyncChunk),
+) -> (u32, u32) {
     let args = RequestSyncChunkArgs {
         from_storage_identity_key: source.storage().storage_identity_key().to_string(),
         to_storage_identity_key: target.storage().storage_identity_key().to_string(),
@@ -549,11 +562,12 @@ async fn sync_into(source: &TestWallet, target: &TestWallet, root: &PrivateKey) 
         })
         .collect(),
     };
-    let chunk = source
+    let mut chunk = source
         .storage()
         .get_sync_chunk(args.clone())
         .await
         .expect("chunk");
+    edit(&mut chunk);
     let done = target
         .storage()
         .process_sync_chunk(args, chunk)
@@ -680,6 +694,55 @@ async fn a_row_an_earlier_sync_stored_as_change_is_left_so_by_a_second_sync() {
     let row = coin(&fresh, &txid).await;
     println!("a store synced afresh: {row:?}");
     assert_eq!(row, ("unproven".into(), "receive".into(), true, None));
+}
+
+/// The source row's `updated_at` moved an hour on, so a sync carries it as
+/// newer than the row the target holds.
+async fn touched(wallet: &TestWallet, txid: &str) {
+    sqlx::query("UPDATE outputs SET updated_at = ? WHERE txid = ?")
+        .bind(chrono::Utc::now() + chrono::Duration::hours(1))
+        .bind(txid)
+        .execute(wallet.storage().writer())
+        .await
+        .unwrap();
+}
+
+/// A target row an earlier sync stored as `you` / `change`, and a source row
+/// that is newer and holds a received payment: the sync's update stores the
+/// source's `provided_by` and `purpose`, so the coin is held there as in its
+/// source and taken under the label.
+#[tokio::test]
+async fn a_newer_received_coin_synced_over_a_change_row_is_a_received_coin_there() {
+    let root = PrivateKey::random();
+    let (tx, txid, lock, sender) = received(&root, false, 1);
+    let source = funded(&root, tx, &txid, &sender).await;
+    let target = common::wallet("received-coin-rule-tests", &root, &txid).await;
+    sync_into(&source, &target, &root).await;
+    sqlx::query("UPDATE outputs SET provided_by = 'you', purpose = 'change' WHERE txid = ?")
+        .bind(&txid)
+        .execute(target.storage().writer())
+        .await
+        .unwrap();
+    touched(&source, &txid).await;
+    let again = sync_into(&source, &target, &root).await;
+    println!(
+        "a newer source row synced (inserts, updates) {again:?}: {:?}",
+        origin(&target, &txid, 0).await
+    );
+    assert_eq!(
+        origin(&target, &txid, 0).await,
+        origin(&source, &txid, 0).await
+    );
+    assert_eq!(
+        coin(&target, &txid).await,
+        ("unproven".into(), "receive".into(), true, None)
+    );
+    let answer = spend(&target, action(1_000, &[], false)).await.map(|_| ());
+    println!("no label: {answer:?}");
+    assert_eq!(answer, Err(HELD.to_string()));
+    let signed = spend(&target, action(1_000, &[RULE], false)).await;
+    println!("the label: {:?}", signed.as_ref().map(|_| "signed"));
+    assert_eq!(spends(&signed.unwrap(), &txid, 0, 9_500, &lock), Some(true));
 }
 
 #[tokio::test]
