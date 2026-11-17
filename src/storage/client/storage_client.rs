@@ -1439,6 +1439,17 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
+    /// A storage client's door is a server's: it takes the default, so a
+    /// wallet on it checks a received BEEF itself.
+    #[tokio::test]
+    async fn a_storage_client_does_not_say_its_door_checks_in_process() {
+        let wallet =
+            bsv_rs::wallet::ProtoWallet::new(Some(bsv_rs::primitives::PrivateKey::random()));
+        let client = StorageClient::new(wallet, "http://127.0.0.1:9");
+        assert!(!client.checks_received_beef_in_process().await);
+        assert!(!client.is_storage_provider());
+    }
+
     #[test]
     fn test_endpoint_urls() {
         assert_eq!(MAINNET_URL, "https://storage.babbage.systems");

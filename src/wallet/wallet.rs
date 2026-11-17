@@ -2294,14 +2294,16 @@ where
         }
 
         // The received BEEF's merkle roots are checked once, by something
-        // this process holds. A local store (`is_storage_provider`) checks
-        // them at its own door with its tracker, else its services'; any
-        // other storage (a storage client, a manager) is not trusted for
-        // it, so the wallet checks them here with its own services' chain
-        // tracker before storage is called (the reference's wallet
+        // this process holds. A storage that says its own door checks in
+        // this process (`checks_received_beef_in_process`: a local store,
+        // a manager whose active store is one) checks them there with its
+        // tracker, else its services'; for any other storage (a storage
+        // client, a manager over one, a host's own type by default) the
+        // wallet checks them here with its own services' chain tracker
+        // before storage is called (the reference's wallet
         // `validateAtomicBeef`). With no tracker on the services the
         // request is refused here, with the storage door's sentence.
-        if !self.storage.is_storage_provider() {
+        if !self.storage.checks_received_beef_in_process().await {
             let tracker = self.services.get_chain_tracker().await.map_err(|_| {
                 Error::ValidationError(super::received_beef::NO_CHAIN_TRACKER_REFUSAL.to_string())
             })?;

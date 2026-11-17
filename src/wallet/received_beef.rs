@@ -5,8 +5,9 @@
 //! tracker before calling storage, and its storage method verifies it again
 //! with the storage's tracker. Here the storage door's check (the store's
 //! own tracker, else its services') is the one check when the wallet's
-//! storage is a local store in the wallet's own process
-//! (`WalletStorageProvider::is_storage_provider`); when it is not, this
+//! storage says its own door checks in the wallet's process
+//! (`WalletStorageProvider::checks_received_beef_in_process`); when it does
+//! not, this
 //! check runs at the wallet door, before storage is called, so that
 //! something the wallet's own process holds has checked the roots.
 //!

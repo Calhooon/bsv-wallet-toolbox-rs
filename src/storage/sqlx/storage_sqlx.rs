@@ -3004,6 +3004,13 @@ impl WalletStorageSync for StorageSqlx {
 
 #[async_trait]
 impl WalletStorageProvider for StorageSqlx {
+    /// True: this store's `internalize_action` checks a received BEEF's
+    /// bytes, structure and roots in the wallet's process before any row is
+    /// written, so the wallet leaves the check to it.
+    async fn checks_received_beef_in_process(&self) -> bool {
+        true
+    }
+
     fn storage_identity_key(&self) -> String {
         // Empty on a poisoned lock.
         lock_read(&self.storage_identity_key)

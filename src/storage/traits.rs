@@ -918,6 +918,24 @@ pub trait WalletStorageProvider: WalletStorageSync {
         true
     }
 
+    /// Whether this storage's own `internalize_action` checks a received
+    /// AtomicBEEF (its bytes, its structure, every transaction whole and
+    /// every merkle root against a chain tracker) in the wallet's own
+    /// process. The wallet's `internalizeAction` checks the BEEF itself,
+    /// with its services' chain tracker, before it calls a storage that
+    /// answers false, and leaves the check to the storage's door when it
+    /// answers true.
+    ///
+    /// The default is false: the wallet checks. `StorageSqlx` answers true
+    /// (its door is the check); a storage client takes the default (its
+    /// door is a server's); `WalletStorageManager` answers for its active
+    /// store. A host's own storage type answers true only when its
+    /// `internalize_action` runs that check in the wallet's process before
+    /// anything is stored, as a `StorageSqlx` it forwards to does.
+    async fn checks_received_beef_in_process(&self) -> bool {
+        false
+    }
+
     /// Get the storage identity key (owned, as `get_settings`).
     fn storage_identity_key(&self) -> String;
 

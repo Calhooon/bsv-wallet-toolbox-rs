@@ -284,3 +284,28 @@ pub fn spends(raw: &[u8], txid: &str, vout: u32, satoshis: u64, lock: &[u8]) -> 
     });
     Some(matches!(spend.validate(), Ok(true)))
 }
+
+/// A wallet of `root` on `manager` with `services`. `Wallet::new` calls the
+/// storage's `set_services`, which on a `WalletStorageManager` is a sync
+/// trait method that takes the manager's locks with a blocking read; a
+/// blocking read panics on a runtime thread, so the wallet is built on a
+/// thread of its own that holds the runtime's handle while the runtime's
+/// workers drive the store's I/O (hence a multi-thread runtime).
+pub fn wallet_on_manager<V>(
+    root: &PrivateKey,
+    manager: bsv_wallet_toolbox_rs::WalletStorageManager,
+    services: V,
+) -> Wallet<bsv_wallet_toolbox_rs::WalletStorageManager, V>
+where
+    V: bsv_wallet_toolbox_rs::WalletServices + Send + Sync + 'static,
+{
+    let handle = tokio::runtime::Handle::current();
+    let key = root.clone();
+    std::thread::spawn(move || {
+        let _entered = handle.enter();
+        futures::executor::block_on(Wallet::new(Some(key), manager, services))
+    })
+    .join()
+    .unwrap()
+    .unwrap()
+}
