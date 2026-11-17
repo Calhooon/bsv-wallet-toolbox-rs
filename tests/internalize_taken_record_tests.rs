@@ -527,3 +527,43 @@ async fn a_proof_row_a_sync_chunk_wrote_does_not_make_a_receipt_taken() {
     println!("review: {}", review.log.trim());
     assert_held(&wallet_b, &root_b, &txid, "B after its own review_status").await;
 }
+
+/// The per-user `review_status` heals the wallet's own outgoing `sending`
+/// row beside its `unmined` request with no record of a take, as before the
+/// ruling: the evidence condition is for received rows alone.
+#[tokio::test]
+async fn the_per_user_review_status_heals_the_wallets_own_outgoing_row_on_its_request() {
+    let (wallet_a, _b, _root_b, _beef, _payment, t) = nosend_merged_by_its_owner().await;
+    sql(
+        &wallet_a,
+        "UPDATE transactions SET status = 'sending' WHERE txid = ? AND is_outgoing = 1",
+        &t,
+    )
+    .await;
+    let (user, outgoing): (i64, bool) =
+        sqlx::query_as("SELECT user_id, is_outgoing FROM transactions WHERE txid = ?")
+            .bind(&t)
+            .fetch_one(wallet_a.storage().pool())
+            .await
+            .unwrap();
+    assert!(outgoing, "A's own action");
+    assert_eq!(request_word(&wallet_a, &t).await, "unmined");
+    assert!(records(&wallet_a, &t).await.is_empty());
+    let identity: String = sqlx::query_scalar("SELECT identity_key FROM users WHERE user_id = ?")
+        .bind(user)
+        .fetch_one(wallet_a.storage().pool())
+        .await
+        .unwrap();
+    let review = wallet_a
+        .storage()
+        .review_status(&AuthId::with_user_id(identity, user), chrono::Utc::now())
+        .await
+        .expect("review_status");
+    println!("review: {}", review.log.trim());
+    let status: String = sqlx::query_scalar("SELECT status FROM transactions WHERE txid = ?")
+        .bind(&t)
+        .fetch_one(wallet_a.storage().pool())
+        .await
+        .unwrap();
+    assert_eq!(status, "unproven");
+}
