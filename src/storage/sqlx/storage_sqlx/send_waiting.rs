@@ -423,7 +423,7 @@ impl StorageSqlx {
                                 .await;
 
                             if reconciled {
-                                // Tx is actually alive on chain — treat as
+                                // Tx is actually alive on chain: treat as
                                 // success, the status source's word recorded.
                                 self.promote_taken(
                                     req.proven_tx_req_id,
