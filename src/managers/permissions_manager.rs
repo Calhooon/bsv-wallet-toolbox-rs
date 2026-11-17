@@ -569,6 +569,23 @@ impl WalletPermissionsManager {
         protocol.protocol_name.starts_with("admin")
     }
 
+    /// Checks if an action label is admin-reserved (starts with "admin").
+    pub(crate) fn is_admin_label(label: &str) -> bool {
+        label.starts_with("admin")
+    }
+
+    /// Refuses an admin-reserved action label from any originator but the
+    /// admin originator (the reference's `ensureLabelAccess` refusal).
+    pub(crate) fn refuse_admin_label(&self, originator: &str, label: &str) -> Result<()> {
+        if !self.is_admin(originator) && Self::is_admin_label(label) {
+            return Err(Error::AccessDenied(format!(
+                "Label \"{}\" is admin-only.",
+                label
+            )));
+        }
+        Ok(())
+    }
+
     /// Checks if a basket is admin-reserved ("default" or starts with "admin").
     pub fn is_admin_basket(basket: &str) -> bool {
         basket == "default" || basket.starts_with("admin")

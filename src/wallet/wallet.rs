@@ -2245,6 +2245,31 @@ where
             ));
         }
 
+        // BRC-98/99: with a permissions manager, each basket insertion's
+        // basket is asked for insertion as createAction's output baskets are,
+        // and an admin-reserved action label is refused (the reference's
+        // `authorizeInternalizeActionBaskets` and
+        // `authorizeInternalizeActionLabels`), before anything is stored.
+        if let Some(ref pm) = self.permissions_manager {
+            for output in &args.outputs {
+                if let Some(ref insertion) = output.insertion_remittance {
+                    if output.protocol == "basket insertion" {
+                        self.check_basket_permission(
+                            originator,
+                            &insertion.basket,
+                            crate::managers::BasketUsageType::Insertion,
+                        )
+                        .await?;
+                    }
+                }
+            }
+            if let Some(ref labels) = args.labels {
+                for label in labels {
+                    pm.refuse_admin_label(originator, label)?;
+                }
+            }
+        }
+
         // Serialize spending operations (creates new spendable outputs).
         let _spend_guard = self.spend_lock.lock().await;
 
