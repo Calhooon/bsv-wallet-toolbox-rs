@@ -1,10 +1,12 @@
 //! A request whose outputs name one output index more than once is refused
 //! before anything is written or broadcast, whatever the protocols, on a new
 //! transaction and on the merge path alike, at both doors, with `The outputs
-//! parameter must be unique outputIndex values`. The reference ends every
-//! such request without a write (ts-stack 4d0ea63c8: `linkExistingOutputs`
-//! for a payment and an insertion of a held output, the outputs table's
-//! unique key for every other pair).
+//! parameter must be unique outputIndex values`. The reference fails every
+//! such request (ts-stack 4d0ea63c8: `linkExistingOutputs` for a payment and
+//! an insertion of a held output, the outputs table's unique key for every
+//! other pair: on a merge with nothing written, on a new transaction after
+//! the transaction was recorded and, with no proof in the BEEF, broadcast,
+//! `storage/methods/internalizeAction.ts:663-739`).
 //!
 //! Real SQLite storage, a mock broadcaster; nothing touches the network.
 
