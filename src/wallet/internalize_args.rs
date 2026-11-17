@@ -100,9 +100,13 @@ pub(crate) fn validate_internalize_action_args(
 /// named by a payment and an insertion with this sentence (ts-stack@4d0ea63c8
 /// `storage/methods/internalizeAction.ts:345-359`); every other pair fails
 /// there when its second `outputs` row meets the table's unique key
-/// (`transactionId`, `vout`, `userId`; `KnexMigrations.ts:765`) inside the
-/// call's transaction (`:610`, `:764-792`, `:829-866`), so it writes nothing
-/// either. This port answers every pair with the one sentence.
+/// (`transactionId`, `vout`, `userId`; `KnexMigrations.ts:765`, the inserts
+/// at `:764-792` and `:829-866`): on a merge inside the call's one
+/// transaction (`:610`), so nothing is written; on a new transaction in the
+/// outputs transaction (`:728-739`), after the transaction row, its spent
+/// inputs and its proof request were committed (`:663-698`) and the
+/// transaction was broadcast (`:700-721`). This port answers every pair with
+/// the one sentence, before any of that.
 fn validate_unique_output_indexes(args: &InternalizeActionArgs) -> Result<()> {
     let mut seen = std::collections::HashSet::with_capacity(args.outputs.len());
     if args

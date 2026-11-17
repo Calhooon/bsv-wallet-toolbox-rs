@@ -14,7 +14,9 @@
 //!   :345-359), and every other pair fails there on the outputs table's
 //!   unique key (`transactionId`, `vout`, `userId`) inside the merge's
 //!   transaction (:610, `storeNew*ForOutput` :764-792, :829-866), so the
-//!   whole call writes nothing.
+//!   whole merge writes nothing. (On a new transaction the reference meets
+//!   the same key after it recorded and broadcast the transaction,
+//!   :663-739; this port refuses ahead of that.)
 //!
 //! Real SQLite storage, a mock broadcaster and tracker; nothing touches the
 //! network.
