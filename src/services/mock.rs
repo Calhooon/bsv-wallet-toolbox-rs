@@ -136,6 +136,7 @@ pub struct MockCallRecord {
 struct MockChainTracker {
     height: u32,
     roots_valid: bool,
+    root_fault: Option<String>,
     root_checks: std::sync::atomic::AtomicUsize,
 }
 
@@ -148,7 +149,10 @@ impl ChainTracker for MockChainTracker {
     ) -> std::result::Result<bool, ChainTrackerError> {
         self.root_checks
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(self.roots_valid)
+        match &self.root_fault {
+            Some(message) => Err(ChainTrackerError::NetworkError(message.clone())),
+            None => Ok(self.roots_valid),
+        }
     }
 
     async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
@@ -352,6 +356,7 @@ impl Default for MockWalletServices {
 pub struct MockWalletServicesBuilder {
     height: u32,
     roots_valid: bool,
+    root_fault: Option<String>,
     post_beef_response: MockResponse<Vec<PostBeefResult>>,
     get_raw_tx_response: MockResponse<GetRawTxResult>,
     get_merkle_path_response: MockResponse<GetMerklePathResult>,
@@ -370,6 +375,7 @@ impl Default for MockWalletServicesBuilder {
         Self {
             height: 880_000,
             roots_valid: true,
+            root_fault: None,
             post_beef_response: MockResponse::Success(vec![PostBeefResult {
                 name: "MockProvider".to_string(),
                 status: "success".to_string(),
@@ -430,6 +436,13 @@ impl MockWalletServicesBuilder {
     /// `true`, every root is valid).
     pub fn roots_valid(mut self, valid: bool) -> Self {
         self.roots_valid = valid;
+        self
+    }
+
+    /// Make the chain tracker fail every root check with a network error
+    /// carrying `message` (default: no fault).
+    pub fn root_fault(mut self, message: impl Into<String>) -> Self {
+        self.root_fault = Some(message.into());
         self
     }
 
@@ -611,6 +624,7 @@ impl MockWalletServicesBuilder {
             chain_tracker: MockChainTracker {
                 height: self.height,
                 roots_valid: self.roots_valid,
+                root_fault: self.root_fault,
                 root_checks: std::sync::atomic::AtomicUsize::new(0),
             },
             height: self.height,

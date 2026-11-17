@@ -10,9 +10,7 @@
 
 use crate::error::{Error, Result};
 use crate::storage::entities::{TableOutput, TableTransaction, TransactionStatus};
-use crate::storage::traits::{
-    BeefVerificationMode, StorageInternalizeActionResult, WalletStorageReader,
-};
+use crate::storage::traits::{StorageInternalizeActionResult, WalletStorageReader};
 use bsv_rs::transaction::{Beef, Transaction};
 use bsv_rs::wallet::{
     BasketInsertion, InternalizeActionArgs, InternalizeActionResult, WalletPayment,
@@ -21,7 +19,6 @@ use chrono::Utc;
 use sqlx::{Row, SqliteConnection};
 use std::collections::{HashMap, HashSet};
 
-use super::beef_verification::verify_beef_merkle_proofs;
 use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
 use super::StorageSqlx;
 
@@ -59,7 +56,7 @@ pub(crate) const INVALID_SENDER_REFUSAL: &str =
 /// The refusal of an AtomicBEEF when neither the storage nor its services
 /// has a chain tracker to verify its merkle roots (one sentence, the wallet
 /// door's and the storage door's).
-pub(crate) use crate::wallet::received_beef::NO_CHAIN_TRACKER_REFUSAL;
+pub(crate) use crate::storage::received_beef::NO_CHAIN_TRACKER_REFUSAL;
 
 // =============================================================================
 // Internal Types
@@ -136,26 +133,15 @@ pub async fn internalize_action_internal(
         }
     }
 
-    // Step 1: Read the AtomicBEEF through the streaming reader first: a
-    // refusal is for invalid bytes only, with the offset and the kind, and
-    // never for a size or a count. The bytes arrive whole (the argument is a
-    // byte vector), so the in-memory parse below holds them whole as well.
-    super::beef_verification::refuse_invalid_beef_bytes(&args.tx)?;
-    let mut beef = Beef::from_binary(&args.tx)
-        .map_err(|e| Error::ValidationError(format!("Failed to parse AtomicBEEF: {}", e)))?;
-
-    // Get the atomic txid (target transaction)
-    let txid = beef.atomic_txid.clone().ok_or_else(|| {
-        Error::ValidationError("BEEF is not AtomicBEEF (missing atomic_txid)".to_string())
-    })?;
-
-    // Step 1b: Check structure even when no chain tracker is configured.
-    // An incomplete ancestry must never be stored as input_beef.
-    if !beef.verify_valid(true).valid {
-        return Err(Error::ValidationError(
-            "BEEF structure is invalid".to_string(),
-        ));
-    }
+    // Steps 1 to 1b: the received-BEEF check's steps 1 to 3
+    // (`crate::storage::received_beef`, the wallet door's as well): the
+    // bytes through the streaming reader (a refusal is for invalid bytes
+    // only, with the offset and the kind, never for a size or a count), the
+    // parse and the subject, and the structure, checked even when no chain
+    // tracker is configured: an incomplete ancestry is never stored as
+    // input_beef.
+    let received = crate::storage::received_beef::read_received_beef(&args.tx)?;
+    let txid = received.txid.clone();
 
     // Step 1c: The incoming merkle roots are always verified before anything
     // is stored (the reference's `validateAtomicBeef`, `ab.verify` with the
@@ -179,27 +165,13 @@ pub async fn internalize_action_internal(
                 return Err(Error::ValidationError(NO_CHAIN_TRACKER_REFUSAL.to_string()));
             }
         };
-    {
-        // Every transaction the BEEF carries must be whole: an entry carried
-        // by txid alone is refused whether or not this store holds it (the
-        // reference's `ab.verify(chainTracker, false)`), before any row is
-        // written. The tracker is resolved before this refusal, as the
-        // reference reads it before it verifies.
-        crate::wallet::received_beef::refuse_entries_carried_by_txid_alone(&beef)?;
-
-        // Verify the BEEF merkle proofs against the chain (Strict: every
-        // root). The known-txids argument is not read by the verifier.
-        let _is_valid = verify_beef_merkle_proofs(
-            &mut beef,
-            chain_tracker,
-            BeefVerificationMode::Strict,
-            &HashSet::new(),
-        )
-        .await?;
-        // Note: verify_beef_merkle_proofs returns Err on invalid proofs,
-        // Ok(false) for a valid structure with no roots, Ok(true) with roots.
-        // A missing ancestor is refused even when there are no proofs.
-    }
+    // Every transaction the BEEF carries must be whole (an entry carried by
+    // txid alone is refused whether or not this store holds it), then every
+    // root the tracker confirms: the received-BEEF check's steps 5 and 6,
+    // before any row is written.
+    let roots = received.whole_roots()?;
+    crate::storage::received_beef::check_roots(&roots, chain_tracker).await?;
+    let beef = received.beef;
 
     // Find the target transaction
     let beef_tx = beef.find_txid(&txid).ok_or_else(|| {

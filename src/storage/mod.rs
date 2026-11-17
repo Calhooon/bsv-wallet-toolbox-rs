@@ -28,6 +28,9 @@ mod traits;
 // Broadcast classification + BEEF validation (feature-independent)
 pub mod broadcast;
 
+/// The one check of a received AtomicBEEF, both doors' (no feature gate).
+pub(crate) mod received_beef;
+
 // SQLx storage (SQLite/MySQL)
 #[cfg(any(feature = "sqlite", feature = "mysql"))]
 pub mod sqlx;
