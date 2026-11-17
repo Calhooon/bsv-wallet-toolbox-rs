@@ -395,8 +395,18 @@ pub async fn internalize_action_internal(
             None => None,
         };
         proof_stored = new_proven_tx_id.is_some();
+        // The owner's ruling of 2026-11-17 (DECISIONS 29.1): with no checked
+        // proof and no broadcaster's take the transaction is HELD, written
+        // `sending`, the word the wallet's own untaken transaction carries:
+        // the balance and `listOutputs` leave its received outputs out and
+        // no allocator offers them. Every path that learns of a take moves
+        // `sending` to `unproven` (the post below, send-waiting, the push,
+        // `review_status`, `promote_if_alive`). A proof the LAG gate
+        // deferred (`has_proof`, request `unmined`) stays `unproven`.
         let status = if proof_stored {
             "completed"
+        } else if !has_proof && held_by_request(&mut tx, &txid).await? {
+            "sending"
         } else {
             "unproven"
         };
@@ -664,6 +674,22 @@ pub async fn internalize_action_internal(
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// Is a new received transaction with no proof held: no request for its
+/// txid yet (the door creates it `unsent`), or one still `unsent` or
+/// `sending`? A request another user's internalize already moved past
+/// those words was taken, and the transaction is `unproven`.
+async fn held_by_request(conn: &mut SqliteConnection, txid: &str) -> Result<bool> {
+    let req: Option<String> =
+        sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    Ok(matches!(
+        req.as_deref(),
+        None | Some("unsent") | Some("sending")
+    ))
+}
 
 /// Finds an existing transaction by user and txid.
 async fn find_existing_transaction(
@@ -1469,16 +1495,17 @@ async fn restore_inputs_to_spendable(
 /// - SUCCESS: accepted OR "already known / seen on network". The payer
 ///   usually broadcast this tx already, so a duplicate-submission ack is the
 ///   normal case (providers report it with status "success"). The req is
-///   advanced 'unsent' -> 'unmined'; the transaction stays 'unproven' and
-///   CheckForProofs owns it from here.
+///   advanced 'unsent' -> 'unmined' and the transaction, written 'sending'
+///   at the door, moves to 'unproven'; CheckForProofs owns it from here.
 /// - EVERY OTHER WORD (a 465 and every other refusal, a double-spend word
 ///   named or not, an orphan-mempool hold, a transient word, no broadcaster
 ///   reached): a hint (bsv-stack-lean #66). A refusal is first checked
 ///   against the status sources (a tx they hold is a success). Otherwise the
 ///   internalize succeeds, the word is recorded on the req's history, the
 ///   req stays 'unsent' for the re-ask on the send-waiting cadence, and a
-///   competitor the word names is queued for a proof ask. The transaction,
-///   its outputs and the coins it spends keep their words. Until 0.7.4 a
+///   competitor the word names is queued for a proof ask. The transaction
+///   stays 'sending' (held: not counted, not offered), and its outputs and
+///   the coins it spends keep their words. Until 0.7.4 a
 ///   refusal marked the tx 'failed', its outputs unspendable and its req
 ///   'invalid', and returned an error.
 /// - No services configured: the internalize succeeds and the req stays
@@ -1594,7 +1621,7 @@ async fn broadcast_new_internalized_req(
     // Success (accepted, already known, or reconciled-alive): advance the
     // req to 'unmined' so send_waiting never re-broadcasts it and
     // CheckForProofs takes ownership. Matches the send_waiting success
-    // transition (req -> 'unmined', tx stays 'unproven').
+    // transition (req -> 'unmined', tx -> 'unproven').
     #[cfg(test)]
     if storage.take_busy_next_status_write() {
         return Err(crate::error::Error::StoreBusy {
@@ -1602,13 +1629,24 @@ async fn broadcast_new_internalized_req(
         });
     }
     let now = Utc::now();
+    // The request and the held transaction move together: taken, the
+    // transaction is `unproven` (counted, offered under the action's rule).
+    let mut tx = storage.write_tx().await?;
     sqlx::query(
         "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status = 'unsent'",
     )
     .bind(now)
     .bind(txid)
-    .execute(&mut *storage.writer_conn().await?)
+    .execute(&mut *tx)
     .await?;
+    sqlx::query(
+        "UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ? AND status = 'sending'",
+    )
+    .bind(now)
+    .bind(txid)
+    .execute(&mut *tx)
+    .await?;
+    super::storage_sqlx::commit(tx).await?;
 
     tracing::info!(
         txid = %txid,
@@ -2834,7 +2872,8 @@ mod tests {
 
     /// New-path internalize + transient broadcast error: the internalize
     /// still succeeds, the req stays 'unsent' (SendWaiting is the documented
-    /// retry backstop), and the coin is selectable.
+    /// retry backstop), and the transaction is held `sending`: the coin is
+    /// not selectable (DECISIONS 29.1).
     #[tokio::test]
     async fn test_new_internalize_transient_error_defers_to_send_waiting() {
         let storage = create_test_storage().await;
@@ -2853,18 +2892,21 @@ mod tests {
 
         assert!(result.base.accepted);
         assert_eq!(req_status(&storage, &txid).await.as_deref(), Some("unsent"));
+        // Held (DECISIONS 29.1): no proof and no take is `sending`, offered
+        // by no rule.
         assert_eq!(
             tx_status(&storage, user_id, &txid).await.as_deref(),
-            Some("unproven")
+            Some("sending")
         );
-        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
     }
 
     /// New-path internalize + a double-spend word no status source
     /// contradicts: a hint (bsv-stack-lean #66). The internalize succeeds,
     /// the req stays 'unsent' for the re-ask with the word on its history,
-    /// and the tx and its outputs keep their words. Until 0.7.4 it errored
-    /// and wrote the tx 'failed', its outputs unspendable.
+    /// the tx is held `sending` and its outputs keep their words
+    /// (DECISIONS 29.1). Until 0.7.4 it errored and wrote the tx 'failed',
+    /// its outputs unspendable.
     #[tokio::test]
     async fn test_new_internalize_double_spend_word_is_a_hint() {
         let storage = create_test_storage().await;
@@ -2885,11 +2927,13 @@ mod tests {
 
         assert!(result.base.accepted);
         assert_eq!(req_status(&storage, &txid).await.as_deref(), Some("unsent"));
+        // Held (DECISIONS 29.1): no proof and no take is `sending`, offered
+        // by no rule.
         assert_eq!(
             tx_status(&storage, user_id, &txid).await.as_deref(),
-            Some("unproven")
+            Some("sending")
         );
-        assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
+        assert_eq!(count_selectable_coins(&storage, user_id).await, 0);
     }
 
     /// Merge into a pre-existing 'nosend' tx without proof: tx is promoted
@@ -3935,9 +3979,10 @@ mod tests {
         .unwrap();
 
         assert!(result.base.accepted);
+        // No services, no post, no take: held (DECISIONS 29.1).
         assert_eq!(
             tx_status(&storage, user_id, &txid).await.as_deref(),
-            Some("unproven")
+            Some("sending")
         );
         assert_eq!(
             tracker.requests.load(std::sync::atomic::Ordering::SeqCst),
@@ -4265,7 +4310,8 @@ mod tests {
                 assert!(result.base.accepted);
                 assert_eq!(
                     tx_status(&storage, user_id, &result.txid).await.as_deref(),
-                    Some("unproven")
+                    // No services, no post, no take: held (DECISIONS 29.1).
+                    Some("sending")
                 );
             } else {
                 assert!(
