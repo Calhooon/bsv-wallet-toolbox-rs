@@ -68,7 +68,7 @@ fn args(tx: Vec<u8>, vout: u32, prefix: &str, suffix: &str, sender: &str) -> Int
 }
 
 /// A `createAction` of 1000 satoshis to another key, funded by the
-/// wallet's change: signed and processed, or (`deferred`) signed by a
+/// wallet's change under the received rule: signed and processed, or (`deferred`) signed by a
 /// `signAction` after. The signed transaction, or the refusal's text.
 async fn spend(wallet: &TestWallet, deferred: bool) -> Result<Vec<u8>, String> {
     let created = wallet
@@ -87,7 +87,9 @@ async fn spend(wallet: &TestWallet, deferred: bool) -> Result<Vec<u8>, String> {
                 }]),
                 lock_time: None,
                 version: None,
-                labels: None,
+                // Every coin here is received and unproven: the action
+                // names the received rule.
+                labels: Some(vec!["underReceivedRule".to_string()]),
                 options: Some(CreateActionOptions {
                     sign_and_process: Some(!deferred),
                     no_send: Some(true),

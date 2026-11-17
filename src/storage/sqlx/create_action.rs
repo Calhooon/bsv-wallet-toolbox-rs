@@ -553,6 +553,11 @@ impl std::fmt::Display for Again {
 }
 
 impl Door<'_> {
+    /// The received-coin rule (R1 (d)), read from the action's labels.
+    fn allows_received(&self) -> bool {
+        names_received_rule(self.args)
+    }
+
     fn options(&self) -> Option<&bsv_rs::wallet::CreateActionOptions> {
         self.args.options.as_ref()
     }
@@ -599,11 +604,12 @@ impl Door<'_> {
         let extended_outputs = validate_and_extend_outputs(self.args)?;
         let extended_inputs =
             validate_and_extend_inputs(self.storage, &mut conn, self.user_id, self.args).await?;
-        let available_change_count = count_change_inputs(
+        let available_change_count = count_change_inputs_under_rule(
             &mut conn,
             self.user_id,
             self.change_basket.basket_id,
             !self.is_delayed(),
+            self.allows_received(),
         )
         .await?;
         let caller = chain_tracker.map(|inner| RecordingTracker {
@@ -640,6 +646,7 @@ impl Door<'_> {
                     reserved: &mut *reserved,
                     skip: &skip,
                     offer: self.offer,
+                    allow_received: self.allows_received(),
                 },
             )
             .await;
@@ -666,6 +673,7 @@ impl Door<'_> {
                         reserved: &mut own_only,
                         skip: &skip,
                         offer: self.offer,
+                        allow_received: self.allows_received(),
                     },
                 )
                 .await
@@ -767,8 +775,14 @@ impl Door<'_> {
             validate_and_extend_inputs(self.storage, &mut tx, user_id, args).await?;
 
         // Step 5: Count available change outputs for targeting
-        let available_change_count =
-            count_change_inputs(&mut tx, user_id, change_basket.basket_id, !is_delayed).await?;
+        let available_change_count = count_change_inputs_under_rule(
+            &mut tx,
+            user_id,
+            change_basket.basket_id,
+            !is_delayed,
+            self.allows_received(),
+        )
+        .await?;
 
         // Step 6: Create transaction record in DB
         let transaction_id = create_transaction_record(&mut tx, user_id, args).await?;
@@ -794,7 +808,10 @@ impl Door<'_> {
             &extended_outputs,
             available_change_count,
             is_delayed,
-            &mut ChangePick::Within { allowed: &allowed },
+            &mut ChangePick::Within {
+                allowed: &allowed,
+                allow_received: self.allows_received(),
+            },
         )
         .await
         {
@@ -1586,12 +1603,25 @@ async fn validate_and_extend_inputs(
     Ok(extended)
 }
 
-/// Counts available change inputs in the default basket.
+/// Counts available change inputs with the received rule off.
+#[cfg(test)]
 async fn count_change_inputs(
     conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,
     require_spendable: bool,
+) -> Result<usize> {
+    count_change_inputs_under_rule(conn, user_id, basket_id, require_spendable, false).await
+}
+
+/// Counts the change inputs in the default basket eligible under this
+/// action's received rule.
+async fn count_change_inputs_under_rule(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    basket_id: i64,
+    require_spendable: bool,
+    allow_received: bool,
 ) -> Result<usize> {
     let spendable_clause = if require_spendable {
         "AND o.spendable = 1"
@@ -1608,6 +1638,7 @@ async fn count_change_inputs(
           AND o.basket_id = ?
           AND o.change = 1
           AND t.status IN ('completed', 'unproven')
+          {RECEIVED_COIN_CLAUSE}
           {}
         "#,
         spendable_clause
@@ -1616,6 +1647,7 @@ async fn count_change_inputs(
     let row = sqlx::query(&sql)
         .bind(user_id)
         .bind(basket_id)
+        .bind(allow_received)
         .fetch_one(&mut *conn)
         .await?;
 
@@ -2506,10 +2538,73 @@ pub(super) enum ChangePick<'a> {
         reserved: &'a mut PickReservation,
         skip: &'a [i64],
         offer: Option<&'a [i64]>,
+        allow_received: bool,
     },
     /// Under the write lock: allocate, but only from the coins the pre-check
     /// read. A coin taken meanwhile is skipped as any allocated coin is.
-    Within { allowed: &'a [i64] },
+    Within {
+        allowed: &'a [i64],
+        allow_received: bool,
+    },
+}
+
+impl ChangePick<'_> {
+    /// Whether this action names the received rule: off for the tests'
+    /// allocation, whose signature names no rule.
+    fn allows_received(&self) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::Allocate => false,
+            Self::DryRun { allow_received, .. } | Self::Within { allow_received, .. } => {
+                *allow_received
+            }
+        }
+    }
+}
+
+/// The wallet charter's R1 (d): a received coin whose transaction is not
+/// `completed` is taken only when the action names the received rule. Its
+/// one `?` binds the rule.
+const RECEIVED_COIN_CLAUSE: &str =
+    "AND (t.status = 'completed' OR COALESCE(o.purpose, '') <> 'receive' OR ?)";
+
+/// The label an action names to take received coins whose transaction is
+/// not yet `completed`, as `normalize_label` leaves it.
+const RECEIVED_RULE_LABEL: &str = "underreceivedrule";
+
+/// ECMAScript's `WhiteSpace` and `LineTerminator`, the set the SDK's
+/// `validateLabel` trims.
+fn is_ecmascript_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{FEFF}'
+            | '\u{000A}'
+            | '\u{000D}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}'
+    )
+}
+
+/// A label as the SDK's `validateLabel` leaves it: ECMAScript's trim, then
+/// lowercase. The store keeps a label as the caller gave it; the received
+/// rule reads every label in this form.
+fn normalize_label(label: &str) -> String {
+    label.trim_matches(is_ecmascript_whitespace).to_lowercase()
+}
+
+/// Whether the action's labels name the received rule.
+fn names_received_rule(args: &bsv_rs::wallet::CreateActionArgs) -> bool {
+    args.labels
+        .iter()
+        .flatten()
+        .any(|label| normalize_label(label) == RECEIVED_RULE_LABEL)
 }
 
 /// The change coins `createAction` pre-checks in this process have picked
@@ -2693,6 +2788,7 @@ async fn allocate_change_input_by(
                 reserved,
                 skip,
                 offer,
+                ..
             } => {
                 let mut unavailable = reserved.unavailable();
                 unavailable.extend_from_slice(skip);
@@ -2712,8 +2808,8 @@ async fn allocate_change_input_by(
                 }
                 (clause, unavailable)
             }
-            ChangePick::Within { allowed } if allowed.is_empty() => return Ok(None),
-            ChangePick::Within { allowed } => (
+            ChangePick::Within { allowed, .. } if allowed.is_empty() => return Ok(None),
+            ChangePick::Within { allowed, .. } => (
                 format!("AND o.output_id IN ({})", placeholders(allowed.len())),
                 allowed.to_vec(),
             ),
@@ -2731,6 +2827,7 @@ async fn allocate_change_input_by(
               AND o.change = 1
               AND o.spent_by IS NULL
               AND t.status IN ('completed', 'unproven')
+              {RECEIVED_COIN_CLAUSE}
               {}
               {}
             ORDER BY
@@ -2743,7 +2840,10 @@ async fn allocate_change_input_by(
             spendable_clause, pick_clause
         );
 
-        let mut query = sqlx::query(&sql).bind(user_id).bind(basket_id);
+        let mut query = sqlx::query(&sql)
+            .bind(user_id)
+            .bind(basket_id)
+            .bind(pick.allows_received());
         for id in &pick_ids {
             query = query.bind(*id);
         }
@@ -11439,3 +11539,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "create_action_received_rule_tests.rs"]
+mod received_rule_tests;

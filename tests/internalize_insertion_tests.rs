@@ -260,7 +260,8 @@ async fn spent_wallet_of(
                 }]),
                 lock_time: None,
                 version: None,
-                labels: None,
+                // The coin is a received payment whose transaction is unproven.
+                labels: Some(vec!["underReceivedRule".to_string()]),
                 options: Some(CreateActionOptions {
                     no_send: Some(true),
                     randomize_outputs: Some(false),

@@ -57,7 +57,8 @@ async fn create_action_admits_an_output_into_default_as_a_custom_row() {
                 }]),
                 lock_time: None,
                 version: None,
-                labels: None,
+                // The coin is a received payment whose transaction is unproven.
+                labels: Some(vec!["underReceivedRule".to_string()]),
                 options: Some(CreateActionOptions {
                     no_send: Some(true),
                     randomize_outputs: Some(false),
