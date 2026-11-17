@@ -104,9 +104,9 @@ pub(crate) fn validate_internalize_action_args(
 /// at `:764-792` and `:829-866`): on a merge inside the call's one
 /// transaction (`:610`), so nothing is written; on a new transaction in the
 /// outputs transaction (`:728-739`), after the transaction row, its spent
-/// inputs and its proof request were committed (`:663-698`) and the
-/// transaction was broadcast (`:700-721`). This port answers every pair with
-/// the one sentence, before any of that.
+/// inputs and its proof request were committed (`:663-698`) and, where the
+/// BEEF carried no proof of it, the transaction was broadcast (`:700-721`).
+/// This port answers every pair with the one sentence, before any of that.
 fn validate_unique_output_indexes(args: &InternalizeActionArgs) -> Result<()> {
     let mut seen = std::collections::HashSet::with_capacity(args.outputs.len());
     if args
