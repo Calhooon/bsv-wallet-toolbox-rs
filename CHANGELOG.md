@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+### Changed
+- #533 (the owner's word of 2026-11-16): `bsv-rs` pinned at `=0.9.0-beta.8`
+  in `Cargo.toml` and `fuzz/Cargo.toml`, the 0.9.0 prerelease that carries
+  the stable line's 0.8.6 to 0.8.11 security fixes. Five of its ten
+  breaking changes reach the toolbox, each migrated in its own commit:
+  `Transaction`'s accessors (#843), the BEEF and merkle path writers'
+  `Result` carried into the toolbox's error at each site (#817),
+  `PeerOptions::new` and its setters (#843d8a), `WalletRefusalClass::ALL`
+  as a slice (#843dall), `OutputListItem.txid` (#735). No toolbox public
+  signature moves (`cargo semver-checks` against the base: no semver
+  update required).
+- The two readers of one output of a BEEF read the subject unlinked, so
+  bsv-rs's new default link budget (GHSA-gvmh-f5gf-5vjj, #749) never
+  applies to them: a SLAP advertisement (`Transaction::from_beef_subject`,
+  as bsv-rs's own resolver reads it) and a stored permission token (the
+  BEEF entry's own transaction). A transaction spending many outputs of one
+  parent is read at both, as at beta.7; without this change the pin would
+  have dropped the host and missed the grant (`lookup_beta8_tests.rs`,
+  `permission_token_link_tests.rs`).
+
+### Hosts
+Host lines for bsv-wallet-cli#386 (the beta.8 pin intake), each text from
+the witness run at this tree; each witness is red at beta.7:
+- `NLockTimeInput::from_raw_tx` and `from_hex_tx` read exactly one
+  transaction (bsv-rs #840). Old: a transaction followed by other bytes
+  answered `Ok`, its lock time read from the front. New: `Invalid argument:
+  Failed to parse transaction bytes: transaction error: Serialized
+  transaction contains trailing data` (`nlock_time_reader_tests.rs`).
+- The same two doors refuse an output of 2^53 satoshis or more (bsv-rs
+  #844); 2^53 - 1 is read. Old: `Ok`. New: `Invalid argument: Failed to
+  parse transaction bytes: transaction error: Number can only safely store
+  up to 53 bits`.
+- `HttpLookupResolver` reads each output's `txid` hint as a string (bsv-rs
+  #735). Old: a tracker's or an overlay host's answer whose `txid` member
+  was not a string was read, the member ignored. New: that answer does not
+  parse and is skipped as any unparseable answer is: a tracker's names no
+  host, a host's gives no output (`lookup_beta8_tests.rs`). A string hint is
+  carried on the output; the evidence check does not compare it yet.
+- `WalletPermissionsManager` reads a stored token's signature field with
+  `Signature::from_der`, which reads exactly one DER signature (bsv-rs
+  #842). Old: a token whose signature field was its DER signature followed
+  by a byte admitted the call. New: no grant; a seek-false call answers `No
+  protocol permission token found (seekPermission=false).`
+  (`permission_token_lookup_tests.rs`). Only a token in the wallet's own
+  admin basket reaches it; the reference's reader refuses the same bytes.
+
 ## [0.14.0-beta.7] - 2026-11-04
 
 ### Added

@@ -153,6 +153,16 @@ turns green when the CLI takes the toolbox's next prerelease with `bsv-rs`
 and `bsv-tracker` `=0.9.0-beta.7` (its pin lane, after the toolbox's), with
 the `[Unreleased]` host lines (bsv-wallet-cli#386).
 
+The toolbox's beta.8 re-pin (the bsv-rs tag `v0.9.0-beta.8` at `31a6ccf0`)
+moves this tree to `bsv-rs =0.9.0-beta.8`. The CLI's beta (6dc14ef,
+`0.19.0-beta.7`, read on 2026-11-17) still asks `bsv-rs` and `bsv-tracker`
+`=0.9.0-beta.6` and this toolbox `=0.14.0-beta.6`, so it is red by
+construction against this tree as the beta.7 row was; not run on the lane
+(`tools/dependents-check.sh` builds the CLI), so the row's red is read from
+the manifests alone. The row turns green when the CLI takes the toolbox's
+next prerelease with `bsv-rs` and `bsv-tracker` `=0.9.0-beta.8`, with the
+`[Unreleased]` host lines (bsv-wallet-cli#386).
+
 ### Re-pin plan
 
 The toolbox's #419 pin moves this tree to `bsv-rs =0.9.0-beta.3` in both

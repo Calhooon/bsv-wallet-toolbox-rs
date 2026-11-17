@@ -200,7 +200,7 @@ pub struct NLockTimeInput {
 **Factory Methods:**
 - `NLockTimeInput::from_lock_time(u32)` - From raw nLockTime value
 - `NLockTimeInput::from_transaction(&Transaction)` - From Transaction reference
-- `NLockTimeInput::from_raw_tx(&[u8])` - From raw transaction bytes
+- `NLockTimeInput::from_raw_tx(&[u8])` - From raw transaction bytes; exactly one transaction since the bsv-rs beta.8 pin (bytes after it, or an output of 2^53 satoshis or more, are `InvalidArgument`, bsv-rs #840, #844; `nlock_time_reader_tests.rs`)
 - `NLockTimeInput::from_hex_tx(&str)` - From hex-encoded transaction
 
 **Finality Rules:**
