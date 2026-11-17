@@ -17,9 +17,8 @@
 //!   whole merge writes nothing. (On a new transaction the reference meets
 //!   the same key only after it recorded the transaction, with its
 //!   proven-transaction row where the BEEF carried a proof and its proof
-//!   request where it did not, and the inputs it spends marked spent, and,
-//!   where that proof request was new, broadcast it, :663-739; this port
-//!   refuses ahead of that.)
+//!   request where it did not, and the inputs it spends marked spent,
+//!   :663-739; this port refuses ahead of that.)
 //!
 //! Real SQLite storage, a mock broadcaster and tracker; nothing touches the
 //! network.
