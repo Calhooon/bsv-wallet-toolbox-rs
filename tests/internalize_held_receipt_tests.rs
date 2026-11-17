@@ -100,18 +100,7 @@ fn post_words(outcome: Outcome, txid: &str) -> MockResponse<Vec<PostBeefResult>>
 
 /// A wallet of `root` over in-memory SQLite whose broadcaster answers `post`.
 async fn wallet_posting(root: &PrivateKey, post: MockResponse<Vec<PostBeefResult>>) -> TestWallet {
-    let storage = StorageSqlx::in_memory().await.expect("in-memory storage");
-    storage
-        .migrate("held-receipt-tests", &root.public_key().to_hex())
-        .await
-        .expect("migrate");
-    storage.make_available().await.expect("make_available");
-    let services = MockWalletServices::builder()
-        .post_beef_response(post)
-        .build();
-    Wallet::new(Some(root.clone()), storage, services)
-        .await
-        .expect("wallet")
+    common::wallet_posting("held-receipt-tests", root, post).await
 }
 
 /// An atomic BEEF paying `PAID` satoshis to `root`'s BRC-29 key derived from
@@ -140,11 +129,7 @@ struct Seen {
 
 async fn seen(wallet: &TestWallet, txid: &str) -> Seen {
     let storage = wallet.storage();
-    let tx: String = sqlx::query_scalar("SELECT status FROM transactions WHERE txid = ?")
-        .bind(txid)
-        .fetch_one(storage.pool())
-        .await
-        .unwrap();
+    let tx = tx_status(wallet, txid).await;
     let req: String = sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
         .bind(txid)
         .fetch_one(storage.pool())
@@ -277,26 +262,6 @@ async fn internalized(outcome: Outcome) -> (TestWallet, String, bool) {
         .expect("the call's answer is unchanged here: accepted")
         .accepted;
     (wallet, txid, answer)
-}
-
-/// Section B of the lane, printed: each outcome's answer, words, counts and
-/// offers. Asserts nothing the change moves; the witnesses below do.
-#[tokio::test]
-async fn held_receipt_observed_under_each_post_outcome() {
-    for outcome in [Outcome::EveryRefuses, Outcome::NoAnswer, Outcome::OneTakes] {
-        let (wallet, txid, answer) = internalized(outcome).await;
-        let s = seen(&wallet, &txid).await;
-        let posts = wallet.services().call_count("post_beef");
-        let no_label = offered(&wallet, false).await;
-        let label = offered(&wallet, true).await;
-        // The must-spend on a wallet of its own, the coin not yet taken.
-        let (other, other_txid, _) = internalized(outcome).await;
-        let must = must_spend(&other, &other_txid).await;
-        println!(
-            "HELD {outcome:?}: accepted={answer} posts={posts} {s:?} \
-             no_label={no_label:?} must_spend_under_label={must:?} under_label={label:?}"
-        );
-    }
 }
 
 /// RED at the base (the door wrote `unproven` and the balance counted it).
@@ -462,7 +427,8 @@ async fn held_receipt_seen_by_the_push_is_unproven_and_counted() {
 
 /// The wallet's own outgoing change under `sending` (a broadcast no
 /// instance answered) is counted exactly as before. Green at the base and
-/// the tip: the guard that the held clause reads `purpose = 'receive'`.
+/// the tip: the guard that the held clause leaves the wallet's own action
+/// listed.
 #[tokio::test]
 async fn own_change_of_a_sending_action_is_still_counted() {
     let root = PrivateKey::random();
