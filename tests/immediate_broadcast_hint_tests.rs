@@ -534,19 +534,19 @@ fn incoming_atomic_beef() -> (Vec<u8>, String) {
     let mut parent = Transaction::new();
     let mut parent_input = TransactionInput::new("11".repeat(32), 0);
     parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(parent_input);
-    parent.outputs.push(TransactionOutput {
+    parent.inputs_mut().push(parent_input);
+    parent.outputs_mut().push(TransactionOutput {
         satoshis: Some(20_000),
         locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
     });
     let parent_txid = parent.id();
     let mut tx = Transaction::new();
-    tx.version = 1;
+    tx.set_version(1);
     let mut input = TransactionInput::new(parent_txid.clone(), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(10_000),
         locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
         change: false,

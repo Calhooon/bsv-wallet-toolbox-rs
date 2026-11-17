@@ -303,16 +303,16 @@ fn bytes(value: Value) -> Result<Vec<u8>> {
 fn transaction(raw: &[u8]) -> Result<Value> {
     let tx = Transaction::from_binary(raw)?;
     anyhow::ensure!(tx.to_binary() == raw, "raw transaction does not round-trip");
-    let inputs: Vec<_> = tx.inputs.iter().map(|input| json!({
+    let inputs: Vec<_> = tx.inputs().iter().map(|input| json!({
         "sourceTxid": input.source_txid, "vout": input.source_output_index,
         "sequence": input.sequence,
         "unlockingScript": input.unlocking_script.as_ref().map(|s| hex::encode(s.to_binary())).unwrap_or_default(),
     })).collect();
-    let outputs: Vec<_> = tx.outputs.iter().map(|output| json!({
+    let outputs: Vec<_> = tx.outputs().iter().map(|output| json!({
         "satoshis": output.satoshis, "lockingScript": hex::encode(output.locking_script.to_binary()),
     })).collect();
     Ok(
-        json!({"txid": tx.id(), "version": tx.version, "lockTime": tx.lock_time, "inputs": inputs, "outputs": outputs}),
+        json!({"txid": tx.id(), "version": tx.version(), "lockTime": tx.lock_time(), "inputs": inputs, "outputs": outputs}),
     )
 }
 
@@ -432,7 +432,7 @@ fn output_offsets(raw: &[u8]) -> Result<Vec<i64>> {
 fn signature_size_delta(raw: &[u8]) -> Result<isize> {
     let tx = Transaction::from_binary(raw)?;
     Ok(tx
-        .inputs
+        .inputs()
         .iter()
         .filter_map(|input| input.unlocking_script.as_ref())
         .map(|script| {

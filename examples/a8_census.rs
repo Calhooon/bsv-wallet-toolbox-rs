@@ -89,14 +89,14 @@ fn big_beef(bytes: usize) -> (Vec<u8>, String, String) {
     let hash = hash160(&key.public_key().to_compressed());
     let lock = [&[0x76, 0xa9, 0x14][..], &hash[..], &[0x88, 0xac][..]].concat();
     let mut parent = funding_transaction(1 << 20, &lock);
-    parent.outputs[0].satoshis = Some(BEEF_COIN);
+    parent.outputs_mut()[0].satoshis = Some(BEEF_COIN);
     let parent_id = parent.id();
 
     let mut child = Transaction::new();
     child
-        .inputs
+        .inputs_mut()
         .push(TransactionInput::new(parent_id.clone(), 0));
-    child.outputs.push(TransactionOutput {
+    child.outputs_mut().push(TransactionOutput {
         satoshis: Some(10_000),
         locking_script: LockingScript::from_binary(&lock).expect("lock"),
         change: false,
@@ -105,7 +105,7 @@ fn big_beef(bytes: usize) -> (Vec<u8>, String, String) {
     data.extend([0x00, 0x6a, 0x4e]);
     data.extend(u32::try_from(bytes).expect("data length").to_le_bytes());
     data.extend((0..=250u8).cycle().take(bytes));
-    child.outputs.push(TransactionOutput {
+    child.outputs_mut().push(TransactionOutput {
         satoshis: Some(0),
         locking_script: LockingScript::from_binary(&data).expect("data"),
         change: false,
@@ -119,8 +119,7 @@ fn big_beef(bytes: usize) -> (Vec<u8>, String, String) {
             &Script::from_binary(&lock).expect("script"),
         ))
         .expect("sign");
-    child.inputs[0].unlocking_script = Some(unlock);
-    child.invalidate_caches();
+    child.inputs_mut()[0].unlocking_script = Some(unlock);
     let child_id = child.id();
 
     let mut beef = Beef::new();
@@ -208,10 +207,10 @@ async fn one(scene: &str, store: &Store, size: usize, beef: &[(Vec<u8>, String)]
                 .await
                 .expect("create action");
             let tx = Transaction::from_binary(result.tx.as_deref().expect("signed")).expect("tx");
-            assert_eq!(tx.inputs.len(), size, "every offered coin spent");
+            assert_eq!(tx.inputs().len(), size, "every offered coin spent");
             let posts = store.wallet.services().call_count("post_beef");
             assert_eq!(posts, usize::from(scene == "process"), "posted to the mock");
-            tx.inputs.len()
+            tx.inputs().len()
         }
         "internalize" => {
             let result = store

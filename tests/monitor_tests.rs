@@ -1105,11 +1105,11 @@ mod monitor_integration {
 
         // Parent: a coinbase-shaped tx with one P2PKH output.
         let mut parent = Transaction::new();
-        parent.version = 1;
+        parent.set_version(1);
         let mut pin = TransactionInput::new("0".repeat(64), 0xffff_ffff);
         pin.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-        parent.inputs.push(pin);
-        parent.outputs.push(TransactionOutput {
+        parent.inputs_mut().push(pin);
+        parent.outputs_mut().push(TransactionOutput {
             satoshis: Some(5_000),
             locking_script: lock.clone(),
             change: false,
@@ -1119,11 +1119,11 @@ mod monitor_integration {
 
         // Child: spends parent:0, one change output.
         let mut child = Transaction::new();
-        child.version = 1;
+        child.set_version(1);
         let mut cin = TransactionInput::new(parent_txid.clone(), 0);
         cin.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-        child.inputs.push(cin);
-        child.outputs.push(TransactionOutput {
+        child.inputs_mut().push(cin);
+        child.outputs_mut().push(TransactionOutput {
             satoshis: Some(4_000),
             locking_script: lock.clone(),
             change: true,

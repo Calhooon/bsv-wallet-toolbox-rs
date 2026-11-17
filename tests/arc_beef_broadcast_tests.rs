@@ -661,7 +661,7 @@ async fn test_post_beef_ef_embeds_parent_utxo() {
         .find(|btx| btx.bump_index().is_none() && !btx.is_txid_only())
         .unwrap();
     let mut new_tx = new_btx.tx().unwrap().clone();
-    for input in &mut new_tx.inputs {
+    for input in new_tx.inputs_mut() {
         let src_txid = input.get_source_txid().unwrap();
         let parent_btx = beef_parsed.find_txid(&src_txid).unwrap();
         input.source_transaction = Some(Box::new(parent_btx.tx().unwrap().clone()));
@@ -678,10 +678,10 @@ async fn test_post_beef_ef_embeds_parent_utxo() {
     let ef_bytes = hex::decode(&expected_ef_hex).unwrap();
     let parsed_ef_tx = Transaction::from_ef(&ef_bytes).unwrap();
 
-    assert_eq!(parsed_ef_tx.inputs.len(), 1);
-    let input = &parsed_ef_tx.inputs[0];
+    assert_eq!(parsed_ef_tx.inputs().len(), 1);
+    let input = &parsed_ef_tx.inputs()[0];
     let source_tx = input.source_transaction.as_ref().unwrap();
-    let source_output = &source_tx.outputs[input.source_output_index as usize];
+    let source_output = &source_tx.outputs()[input.source_output_index as usize];
 
     assert_eq!(
         source_output.satoshis,

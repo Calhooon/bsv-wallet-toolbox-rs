@@ -51,8 +51,8 @@ fn payment() -> InternalizeActionArgs {
     let mut parent = Transaction::new();
     let mut input = TransactionInput::new("11".repeat(32), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(input);
-    parent.outputs.push(TransactionOutput {
+    parent.inputs_mut().push(input);
+    parent.outputs_mut().push(TransactionOutput {
         satoshis: Some(20_000),
         locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
@@ -60,8 +60,8 @@ fn payment() -> InternalizeActionArgs {
     let mut child = Transaction::new();
     let mut input = TransactionInput::new(parent.id(), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    child.inputs.push(input);
-    child.outputs.push(TransactionOutput {
+    child.inputs_mut().push(input);
+    child.outputs_mut().push(TransactionOutput {
         satoshis: Some(10_000),
         locking_script: LockingScript::from_hex(&format!("76a914{}88ac", "00".repeat(20))).unwrap(),
         change: false,

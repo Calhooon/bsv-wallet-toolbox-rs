@@ -76,8 +76,8 @@ impl Fixture {
         let script = vec![0x51];
         let txid = "11".repeat(32);
         let mut spender = funding_transaction(123, &script);
-        spender.inputs[0].source_txid = Some(txid.clone());
-        spender.inputs[0].source_output_index = 0;
+        spender.inputs_mut()[0].source_txid = Some(txid.clone());
+        spender.inputs_mut()[0].source_output_index = 0;
         let spender_id = spender.id();
         let mut hash = sha256(&script);
         hash.reverse();

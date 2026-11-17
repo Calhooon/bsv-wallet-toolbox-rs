@@ -551,7 +551,7 @@ async fn an_arc_400_leaves_the_transactions_word_unchanged() {
     let beef = Beef::from_binary(plain).unwrap();
     let subject_tx = beef.txs.last().unwrap().tx().unwrap().clone();
     let raw = subject_tx.to_binary();
-    let parent_txid = subject_tx.inputs[0].get_source_txid().unwrap();
+    let parent_txid = subject_tx.inputs()[0].get_source_txid().unwrap();
     let then = chrono::Utc::now() - chrono::Duration::minutes(5);
     let lock = hex::decode("51").unwrap();
 

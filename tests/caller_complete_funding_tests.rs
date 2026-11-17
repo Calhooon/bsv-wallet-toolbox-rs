@@ -265,16 +265,16 @@ async fn anyonecanpay_shortfall_is_funded_and_the_callers_bytes_are_untouched() 
         .expect("an ANYONECANPAY shortfall must be funded");
 
     let signed = Transaction::from_binary(result.tx.as_ref().expect("signed tx")).unwrap();
-    assert_eq!(signed.inputs.len(), 2, "one funding input appended");
+    assert_eq!(signed.inputs().len(), 2, "one funding input appended");
     // Change is appended after the caller's outputs. `generate_change` may split
     // it into several outputs to replenish the change-UTXO pool (the same
     // behaviour as any wallet-funded createAction, and as the TS toolbox).
     assert!(
-        signed.outputs.len() >= 3,
+        signed.outputs().len() >= 3,
         "change must be appended, got {} outputs",
-        signed.outputs.len()
+        signed.outputs().len()
     );
-    for change in &signed.outputs[2..] {
+    for change in &signed.outputs()[2..] {
         let script = change.locking_script.to_binary();
         assert_eq!(script.len(), 25, "change is P2PKH");
         assert_eq!(&script[..3], &[0x76, 0xa9, 0x14]);
@@ -282,7 +282,7 @@ async fn anyonecanpay_shortfall_is_funded_and_the_callers_bytes_are_untouched() 
     }
 
     // The caller's input is vin 0, byte for byte: outpoint, script, sequence.
-    let vin0 = &signed.inputs[0];
+    let vin0 = &signed.inputs()[0];
     assert_eq!(
         vin0.source_txid.as_deref(),
         Some(seeded.parent_txid.as_str())
@@ -296,14 +296,14 @@ async fn anyonecanpay_shortfall_is_funded_and_the_callers_bytes_are_untouched() 
     );
 
     // The caller's outputs are vout 0 and 1, byte for byte.
-    assert_eq!(signed.outputs[0].satoshis, Some(1));
-    assert_eq!(signed.outputs[0].locking_script.to_binary(), COVENANT_LOCK);
-    assert_eq!(signed.outputs[1].satoshis, Some(1_000));
-    assert_eq!(signed.outputs[1].locking_script.to_binary(), fee_lock());
+    assert_eq!(signed.outputs()[0].satoshis, Some(1));
+    assert_eq!(signed.outputs()[0].locking_script.to_binary(), COVENANT_LOCK);
+    assert_eq!(signed.outputs()[1].satoshis, Some(1_000));
+    assert_eq!(signed.outputs()[1].locking_script.to_binary(), fee_lock());
 
     // The wallet's funding input is vin 1 (the seeded change UTXO) and carries a
     // real P2PKH unlock the signer produced.
-    let vin1 = &signed.inputs[1];
+    let vin1 = &signed.inputs()[1];
     assert_eq!(
         vin1.source_txid.as_deref(),
         Some(seeded.parent_txid.as_str())
@@ -318,12 +318,12 @@ async fn anyonecanpay_shortfall_is_funded_and_the_callers_bytes_are_untouched() 
     assert_ne!(funding_unlock, unlock);
 
     // Change comes back to the wallet; the whole thing balances with a sane fee.
-    let change: u64 = signed.outputs[2..]
+    let change: u64 = signed.outputs()[2..]
         .iter()
         .map(|o| o.satoshis.unwrap())
         .sum();
     assert!(change > 0 && change < FUNDING_SATS);
-    let total_out: u64 = signed.outputs.iter().map(|o| o.satoshis.unwrap()).sum();
+    let total_out: u64 = signed.outputs().iter().map(|o| o.satoshis.unwrap()).sum();
     let total_in = FUNDING_SATS + 1;
     assert!(total_in > total_out);
     assert!(total_in - total_out < 500, "fee {}", total_in - total_out);
@@ -404,18 +404,18 @@ async fn sighash_all_self_sufficient_tx_is_broadcast_verbatim() {
         .await
         .expect("verbatim broadcast");
     let signed = Transaction::from_binary(result.tx.as_ref().unwrap()).unwrap();
-    assert_eq!(signed.inputs.len(), 1);
-    assert_eq!(signed.outputs.len(), 2);
+    assert_eq!(signed.inputs().len(), 1);
+    assert_eq!(signed.outputs().len(), 2);
     assert_eq!(
-        signed.inputs[0]
+        signed.inputs()[0]
             .unlocking_script
             .as_ref()
             .unwrap()
             .to_binary(),
         unlock
     );
-    assert_eq!(signed.outputs[0].satoshis, Some(2_000));
-    assert_eq!(signed.outputs[1].satoshis, Some(2_500));
+    assert_eq!(signed.outputs()[0].satoshis, Some(2_000));
+    assert_eq!(signed.outputs()[1].satoshis, Some(2_500));
     assert_eq!(wallet.services().call_count("post_beef"), 1);
 }
 
