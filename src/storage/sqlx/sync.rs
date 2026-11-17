@@ -534,8 +534,9 @@ async fn apply_chunk(
     }
 
     // Process proven txs ahead of every row that names one (the reference's
-    // order puts provenTx ahead of every entity and provenTxReq last), building the chunk's proof id
-    // map: a request's proof link is the source store's proof id.
+    // order puts provenTx ahead of every entity and provenTxReq last). A
+    // row links to the proof of its own txid; the chunk's proof id map only
+    // refuses a source proof id that maps to two local rows.
     if let Some(proven_txs) = &chunk.proven_txs {
         for ptx in proven_txs {
             let upsert_result = upsert_proven_tx(&mut *conn, ptx, decisions).await?;
@@ -776,8 +777,7 @@ async fn apply_chunk(
     // Process proven tx reqs last, as the reference does
     if let Some(reqs) = &chunk.proven_tx_reqs {
         for req in reqs {
-            let upsert_result =
-                upsert_proven_tx_req(&mut *conn, req, &proof_id_map, transaction_id_map).await?;
+            let upsert_result = upsert_proven_tx_req(&mut *conn, req, transaction_id_map).await?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -1835,7 +1835,6 @@ fn notify_with_ids(notify: &str, ids: &[i64], keep_held: bool) -> String {
 async fn upsert_proven_tx_req(
     conn: &mut SqliteConnection,
     req: &TableProvenTxReq,
-    proof_id_map: &HashMap<i64, i64>,
     transaction_id_map: &HashMap<i64, i64>,
 ) -> Result<UpsertResult> {
     let existing = sqlx::query(
@@ -1900,14 +1899,16 @@ async fn upsert_proven_tx_req(
             is_new: false,
         })
     } else {
-        // Insert new, as the reference's mergeNew: the proof link mapped
-        // through the chunk's proof rows (a link the chunk does not map is
-        // not stored), the notify ids through the transaction map, the
-        // status in the reference's own words. raw_tx is BLOB NOT NULL:
-        // a missing raw_tx is stored empty (real reqs always carry it).
-        let proven_tx_id = req
-            .proven_tx_id
-            .and_then(|id| proof_id_map.get(&id).copied());
+        // Insert new, as the reference's mergeNew: a request that carries a
+        // proof link is linked to the proof of its own txid when this store
+        // holds it (whichever chunk of the sync brought it), the notify ids
+        // mapped through the transaction map, the status in the reference's
+        // own words. raw_tx is BLOB NOT NULL: a missing raw_tx is stored
+        // empty (real reqs always carry it).
+        let proven_tx_id = match req.proven_tx_id {
+            Some(_) => local_proof_id(&mut *conn, Some(&req.txid), Some(&req.txid)).await?,
+            None => None,
+        };
         let (notify, notified) = match incoming_notify_ids {
             Some(ids) if !ids.is_empty() => (notify_with_ids(&req.notify, &ids, false), false),
             Some(ids) => (notify_with_ids(&req.notify, &ids, false), req.notified),

@@ -569,3 +569,97 @@ async fn sync_to_writer_round_trips_non_completed_proven_tx_req_status() {
          being collapsed to 'pending' (PR #2 review item 3)"
     );
 }
+
+/// A request is linked to the proof of its own txid when the manager's
+/// backup brings the proof in one chunk and the request in a later one.
+#[tokio::test]
+async fn a_requests_proof_link_survives_a_chunk_boundary() {
+    let identity = "a".repeat(66);
+    let txid = "ab".repeat(32);
+    let reader_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
+    reader_store
+        .migrate("reader", &"1".repeat(64))
+        .await
+        .unwrap();
+    reader_store.make_available().await.unwrap();
+    let (ruser, _) = reader_store.find_or_insert_user(&identity).await.unwrap();
+    let tx_id = insert_transaction(&reader_store, ruser.user_id, &txid).await;
+    // A proof whose bytes fill the manager's chunk: its request goes in the
+    // next one.
+    let now = Utc::now();
+    let proof_id = ::sqlx::query(
+        "INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) \
+         VALUES (?,1,0,?,?,X'00',zeroblob(60000),?,?)",
+    )
+    .bind(&txid)
+    .bind("e".repeat(64))
+    .bind("e".repeat(64))
+    .bind(now)
+    .bind(now)
+    .execute(reader_store.writer())
+    .await
+    .unwrap()
+    .last_insert_rowid();
+    ::sqlx::query("UPDATE transactions SET proven_tx_id = ? WHERE transaction_id = ?")
+        .bind(proof_id)
+        .bind(tx_id)
+        .execute(reader_store.writer())
+        .await
+        .unwrap();
+    let req_id = insert_proven_tx_req(&reader_store, &txid, &[1], "{}", None).await;
+    ::sqlx::query("UPDATE proven_tx_reqs SET proven_tx_id = ? WHERE proven_tx_req_id = ?")
+        .bind(proof_id)
+        .bind(req_id)
+        .execute(reader_store.writer())
+        .await
+        .unwrap();
+    let chunk = reader_store
+        .get_sync_chunk(RequestSyncChunkArgs {
+            from_storage_identity_key: "1".repeat(64),
+            to_storage_identity_key: "2".repeat(64),
+            identity_key: identity.clone(),
+            since: None,
+            max_rough_size: 100_000,
+            max_items: 1000,
+            offsets: vec![
+                SyncOffset {
+                    name: "provenTx".to_string(),
+                    offset: 0,
+                },
+                SyncOffset {
+                    name: "provenTxReq".to_string(),
+                    offset: 0,
+                },
+            ],
+        })
+        .await
+        .unwrap();
+    let split = chunk.proven_txs.is_some() && chunk.proven_tx_reqs.is_none();
+
+    let reader_mgr = WalletStorageManager::new(identity.clone(), Some(reader_store.clone()), None);
+    let writer_store = Arc::new(StorageSqlx::in_memory().await.unwrap());
+    writer_store
+        .migrate("writer", &"2".repeat(64))
+        .await
+        .unwrap();
+    writer_store.make_available().await.unwrap();
+    let r = reader_mgr
+        .sync_to_writer(&identity, writer_store.clone())
+        .await;
+    let link: Option<String> = ::sqlx::query_scalar(
+        "SELECT p.txid FROM proven_tx_reqs r LEFT JOIN proven_txs p ON p.proven_tx_id = r.proven_tx_id WHERE r.txid = ?",
+    )
+    .bind(&txid)
+    .fetch_one(writer_store.pool())
+    .await
+    .unwrap();
+    println!(
+        "WITNESS 2 proof and request in two chunks (split {split}): {:?}; request link {link:?}",
+        r.as_ref()
+            .map(|r| (r.inserts, r.updates))
+            .map_err(|e| e.to_string())
+    );
+    assert!(split, "the proof fills the reader's chunk");
+    assert!(r.is_ok());
+    assert_eq!(link, Some(txid));
+}
