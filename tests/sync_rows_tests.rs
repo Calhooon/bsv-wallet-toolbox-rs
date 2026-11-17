@@ -503,3 +503,74 @@ async fn a_backup_to_a_fresh_store_completes() {
     assert!(r.is_ok());
     assert_eq!(rows, 1);
 }
+
+/// The manager's sync surface serves the manager's identity alone: a chunk
+/// request or a chunk for another identity is refused.
+#[tokio::test]
+async fn the_manager_sync_surface_refuses_another_identity() {
+    let act = store(SRC).await;
+    act.find_or_insert_user(ALICE).await.unwrap();
+    act.find_or_insert_user(BOB).await.unwrap();
+    let mgr = bsv_wallet_toolbox_rs::managers::WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(act.clone() as Arc<dyn MonitorStorage>),
+        None,
+    );
+    mgr.make_available().await.unwrap();
+    let read = mgr.get_sync_chunk(args_for(BOB)).await;
+    let mut chunk = chunk_for(BOB);
+    chunk.output_baskets = Some(vec![basket(1, "planted")]);
+    let write = mgr.process_sync_chunk(args_for(BOB), chunk).await;
+    let planted = count(
+        &act,
+        "SELECT COUNT(*) FROM output_baskets WHERE name = 'planted'",
+    )
+    .await;
+    println!(
+        "WITNESS C1 manager for alice, bob's chunk: read {:?} write {:?} rows {planted}",
+        read.as_ref().map(|_| "ok").map_err(|e| e.to_string()),
+        write.as_ref().map(|_| "ok").map_err(|e| e.to_string())
+    );
+    assert!(read.is_err() && write.is_err());
+    assert_eq!(planted, 0);
+}
+
+/// `set_active` writes each store's row of the wallet's user by that store's
+/// own user id: a store that numbers its users differently switches the
+/// wallet's user and leaves its other users' rows as they were.
+#[tokio::test]
+async fn set_active_writes_each_stores_own_user_row() {
+    let a = store(SRC).await;
+    let b = store(DST).await;
+    a.find_or_insert_user(ALICE).await.unwrap();
+    let (filler, _) = b.find_or_insert_user(BOB).await.unwrap();
+    let nine = "9".repeat(64);
+    b.update_user_active_storage(filler.user_id, &nine)
+        .await
+        .unwrap();
+    let (bu, _) = b.find_or_insert_user(ALICE).await.unwrap();
+    b.update_user_active_storage(bu.user_id, SRC).await.unwrap();
+    let mgr = bsv_wallet_toolbox_rs::managers::WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(a.clone() as Arc<dyn MonitorStorage>),
+        Some(vec![b.clone() as Arc<dyn MonitorStorage>]),
+    );
+    mgr.make_available().await.unwrap();
+    let r = mgr.set_active(DST).await;
+    let rows = (
+        active_storage_of(&b, ALICE).await,
+        active_storage_of(&b, BOB).await,
+        mgr.get_active_store().await.ok(),
+    );
+    println!(
+        "WITNESS C3 set_active(B) with B's ids (bob {}, alice {}): {:?}; B rows (alice, bob), active = {rows:?}",
+        filler.user_id,
+        bu.user_id,
+        r.as_ref().map(|_| "ok").map_err(|e| e.to_string())
+    );
+    assert!(r.is_ok());
+    assert_eq!(
+        rows,
+        (Some(DST.to_string()), Some(nine), Some(DST.to_string()))
+    );
+}

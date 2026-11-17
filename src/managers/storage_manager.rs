@@ -741,6 +741,15 @@ impl WalletStorageManager {
             .collect()
     }
 
+    /// The manager's sync surface serves its own identity alone, as the
+    /// reference's StorageSyncReader refuses another identity.
+    async fn check_sync_identity(&self, identity_key: &str) -> Result<()> {
+        if identity_key != self.auth_id.read().await.identity_key {
+            return Err(Error::AccessDenied("Identity key mismatch".to_string()));
+        }
+        Ok(())
+    }
+
     /// The active store's user row's `active_storage`, as this manager holds it.
     async fn active_user_active_storage(&self) -> Option<String> {
         let idx = (*self.active_index.read().await)?;
@@ -893,15 +902,27 @@ impl WalletStorageManager {
         log.push_str("BACKUP CURRENT ACTIVE STATE THEN SET NEW ACTIVE\n");
         log.push_str(&self.update_backups().await?);
 
-        // Update user records in all stores
+        // Update user records in all stores, each by that store's own row of
+        // the wallet's user: stores number their users independently.
         let auth = self.get_auth(false).await?;
-        let stores = self.stores.read().await;
+        let mut stores = self.stores.write().await;
 
-        for store in stores.iter() {
+        for store in stores.iter_mut() {
+            let user_id = store
+                .user
+                .as_ref()
+                .map(|u| u.user_id)
+                .ok_or(Error::StorageNotAvailable)?;
+            let store_auth = AuthId::with_user_id(&auth.identity_key, user_id);
             store
                 .storage
-                .set_active(&auth, storage_identity_key)
+                .set_active(&store_auth, storage_identity_key)
                 .await?;
+            // The re-partition below reads the cached rows, as the
+            // reference's setActive sets each store's cached row.
+            if let Some(user) = store.user.as_mut() {
+                user.active_storage = Some(storage_identity_key.to_string());
+            }
         }
 
         drop(stores);
@@ -1236,6 +1257,7 @@ impl WalletStorageSync for WalletStorageManager {
     }
 
     async fn get_sync_chunk(&self, args: RequestSyncChunkArgs) -> Result<SyncChunk> {
+        self.check_sync_identity(&args.identity_key).await?;
         self.run_as_sync(|active| async move { active.get_sync_chunk(args).await })
             .await
     }
@@ -1245,6 +1267,7 @@ impl WalletStorageSync for WalletStorageManager {
         args: RequestSyncChunkArgs,
         chunk: SyncChunk,
     ) -> Result<ProcessSyncChunkResult> {
+        self.check_sync_identity(&args.identity_key).await?;
         self.run_as_sync(|active| async move { active.process_sync_chunk(args, chunk).await })
             .await
     }
