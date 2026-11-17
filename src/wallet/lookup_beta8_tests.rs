@@ -47,7 +47,7 @@ fn raw(inputs: &[(String, u32)], outputs: &[(u64, String)]) -> Vec<u8> {
     hex::decode(tx).unwrap()
 }
 
-/// A V2 BEEF of raw entries, parents first, no BUMP.
+/// A V2 BEEF of raw entries, each parent ahead of its children, no BUMP.
 fn beef(txs: &[&[u8]]) -> Vec<u8> {
     let mut bytes = hex::decode("0200beef00").unwrap();
     bytes.extend(hex::decode(varint(txs.len())).unwrap());
