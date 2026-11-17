@@ -35,7 +35,7 @@ A security patch on the stable line. The bsv-rs requirement moves from "0.8.0" t
 
 ### Hosts
 
-A refusal a `Wallet` answers through the `WalletInterface` prints with bsv-rs's `Error::WalletError` prefix, `wallet error: `; the texts below are quoted whole as they print, each read from a run.
+Most refusals a `Wallet` answers through the `WalletInterface` print with bsv-rs's `Error::WalletError` prefix, `wallet error: `; `verifySignature`'s refusal is bsv-rs's own signature error and prints without it. The texts below are quoted whole as they print, each read from a run.
 
 Answers that move with bsv-rs 0.8.11. Each was an acceptance on bsv-rs 0.8.3 (the version the 0.13.1 crate file's lock holds) and is a refusal on 0.8.11:
 
@@ -48,7 +48,7 @@ Answers that move with this crate's own change. `Wallet::internalize_action` wit
 
 - bytes that are not a BEEF (`deadbeef`): `wallet error: Cannot read the BEEF's subject transaction to check payment outputs: BEEF error: Invalid BEEF version: 0xEFBEADDE` (on 0.13.1, `wallet error: Invalid BEEF at byte 0: BadVersion`). A refusal on both.
 - an AtomicBEEF naming a subject it does not carry: `wallet error: Cannot read the BEEF's subject transaction to check payment outputs: transaction error: Transaction <txid> not found in BEEF` (on 0.13.1, `wallet error: Validation error: BEEF structure is invalid`). A refusal on both.
-- a payment output in a subject that sweeps more outputs of one parent than the link budget takes, whose script does not pay the derived key: `wallet error: Derivation mismatch for output <n>: derived <hash> != script <hash>`; on 0.13.1 that output was stored. A payment output that does pay the derived key is stored as before. On 0.13.1 such an output sits in the default basket as change paying a key the wallet does not hold: see the remedy below.
+- a payment output in a subject that sweeps more outputs of one parent than the link budget takes, whose script does not pay the derived key: `wallet error: Derivation mismatch for output <n>: derived <hash> != script <hash>`; on 0.13.1 that output was stored. A payment output that does pay the derived key is stored as before. On 0.13.1 such an output sits in the default basket as change whose script is not the P2PKH of the derived key: see the remedy below.
 - a payment output whose locking script is not a 25-byte P2PKH and is not the P2PKH of the derived key: `wallet error: The paymentRemittance parameter must be locked by script conforming to BRC-29`; on 0.13.1 it was admitted and stored, in the default basket as change whose script is not the P2PKH the wallet signs its change for: see the remedy below.
 - a basket insertion output that also carries a payment remittance is held to the same rule and answers the same two texts; on 0.13.1 one whose script was not a 25-byte P2PKH was stored (read from a run with an OP_RETURN script).
 
