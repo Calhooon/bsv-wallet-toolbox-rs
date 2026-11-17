@@ -244,10 +244,12 @@ fn validate_insertion_instructions(args: &InternalizeActionArgs) -> Result<()> {
 mod tests {
     use crate::services::mock::MockWalletServices;
     use crate::{StorageSqlx, Wallet, WalletStorageWriter};
-    use bsv_rs::primitives::PrivateKey;
+    use bsv_rs::primitives::{PrivateKey, PublicKey};
     use bsv_rs::script::{LockingScript, UnlockingScript};
     use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
-    use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput, WalletInterface};
+    use bsv_rs::wallet::{
+        BasketInsertion, InternalizeActionArgs, InternalizeOutput, WalletInterface, WalletPayment,
+    };
     use bsv_rs::WalletRefusalClass;
 
     fn payment() -> Vec<u8> {
@@ -272,6 +274,63 @@ mod tests {
         beef.merge_raw_tx(parent.to_binary(), Some(bump)).unwrap();
         beef.merge_transaction(child);
         beef.to_binary_atomic(&txid).unwrap()
+    }
+
+    /// The pairing `Wallet::internalize_action` relies on: one answer per
+    /// output, the parsed sender for an output that carries a payment
+    /// remittance and `None` for one that carries none.
+    #[test]
+    fn every_payment_remittance_is_paired_with_its_validated_sender() {
+        let senders: Vec<_> = [3u8, 5]
+            .iter()
+            .map(|n| {
+                PrivateKey::from_hex(&format!("{n:064x}"))
+                    .unwrap()
+                    .public_key()
+            })
+            .collect();
+        let payment = |sender: &PublicKey| InternalizeOutput {
+            output_index: 0,
+            protocol: super::WALLET_PAYMENT_PROTOCOL.to_string(),
+            payment_remittance: Some(WalletPayment {
+                derivation_prefix: "cHJlZml4".to_string(),
+                derivation_suffix: "c3VmZml4".to_string(),
+                // Padded: the validator answers the key it parsed.
+                sender_identity_key: format!(" {} ", sender.to_hex()),
+            }),
+            insertion_remittance: None,
+        };
+        let insertion = InternalizeOutput {
+            output_index: 1,
+            protocol: super::BASKET_INSERTION_PROTOCOL.to_string(),
+            payment_remittance: None,
+            insertion_remittance: Some(BasketInsertion {
+                basket: "a basket".to_string(),
+                custom_instructions: None,
+                tags: None,
+            }),
+        };
+        let outputs = vec![
+            payment(&senders[0]),
+            insertion.clone(),
+            payment(&senders[1]),
+            insertion,
+        ];
+        let args = InternalizeActionArgs {
+            tx: Vec::new(),
+            outputs,
+            description: "a valid description".to_string(),
+            labels: None,
+            seek_permission: None,
+        };
+        let paired = super::validate_internalize_action_args(&args).unwrap();
+        assert_eq!(paired.len(), args.outputs.len(), "one answer per output");
+        for (output, sender) in args.outputs.iter().zip(&paired) {
+            assert_eq!(output.payment_remittance.is_some(), sender.is_some());
+        }
+        let hex = |key: &Option<PublicKey>| key.as_ref().map(PublicKey::to_hex);
+        assert_eq!(hex(&paired[0]), Some(senders[0].to_hex()));
+        assert_eq!(hex(&paired[2]), Some(senders[1].to_hex()));
     }
 
     /// bsv-rs #384: the protocol refusal precedes description and labels,

@@ -229,6 +229,7 @@ retained site in `wallet.rs` (line numbers as of beta.3):
 | `sign_action`, txid decode (2415) | The signed transaction's own txid failed to decode. |
 | `sign_action`, BEEF parse/encode (2433, 2443) | Parsing cached ancestry or encoding the wallet's result failed. |
 | `internalize_action`, key derivation (2420) | The SDK failed to derive a key from the validated sender. |
+| `internalize_action`, payment remittance with no validated sender | The validator pairs a sender with every payment remittance (`internalize_args.rs:94-101`), so the arm is not reached; were the pairing to break, the door stops with `internalize output <n> carries a payment remittance with no validated sender` and the derivation check is never skipped. |
 | `prove_certificate`, missing stored keyring (2925) | Incomplete stored certificate data; `MasterCertificate.ts:35-37,350` raises plain `Error` for a missing record. |
 | Field name helper (3469) | The SDK reference raises plain `Error`, `MasterCertificate.ts:23-29`. |
 | Reveal array limit (3478) | The SDK reference raises plain `TypeError`, `MasterCertificate.ts:125-129`. |
