@@ -271,7 +271,7 @@ pub(super) fn subject(beef: &[u8]) -> Transaction {
 }
 
 fn input_script(tx: &Transaction, vin: usize) -> Vec<u8> {
-    tx.inputs[vin]
+    tx.inputs()[vin]
         .unlocking_script
         .as_ref()
         .unwrap()
@@ -399,7 +399,7 @@ async fn sign_action_refuses_caller_spend_over_declared_length() {
         assert_eq!(raw.as_ref(), Some(&signed.to_binary()));
         let fee = scene.input.satoshis
             - signed
-                .outputs
+                .outputs()
                 .iter()
                 .map(|o| o.satoshis.unwrap())
                 .sum::<u64>();
@@ -424,7 +424,7 @@ async fn sign_action_refuses_caller_spend_over_declared_length() {
     let script = caller_script(&scene, &signable);
     let signed = complete(&scene, signable, Some(script.clone())).await;
     assert_eq!(input_script(&signed, 0), script);
-    assert_eq!(signed.inputs[0].sequence, u32::MAX);
+    assert_eq!(signed.inputs()[0].sequence, u32::MAX);
 }
 
 #[tokio::test]
@@ -525,7 +525,7 @@ async fn sign_action_preserves_named_script_and_signs_only_allocated_inputs() {
     let scene = named_input_scene().await;
     fund_wallet_change(&scene.wallet, 1).await;
     let signable = defer_named(&scene, 100_000, None).await;
-    assert_eq!(subject(&signable.tx).inputs.len(), 2);
+    assert_eq!(subject(&signable.tx).inputs().len(), 2);
     let script = caller_script(&scene, &signable);
     let signed = complete(&scene, signable, Some(script.clone())).await;
     assert_eq!(input_script(&signed, 0), script);
@@ -553,7 +553,7 @@ fn named_key(scene: &NamedInputScene) -> bsv_rs::primitives::PrivateKey {
 pub(super) fn script_for_create_action(scene: &NamedInputScene) -> Vec<u8> {
     let key = named_key(scene);
     let mut draft = Transaction::new();
-    draft.inputs.push(TransactionInput::new(
+    draft.inputs_mut().push(TransactionInput::new(
         scene.input.source_txid.clone(),
         scene.input.source_vout,
     ));
@@ -582,7 +582,7 @@ async fn assert_spend_without_deferred_named_input_refused(vin: u32, replacement
     let signable = defer_named(&scene, 100_000, Some(script.clone())).await;
     let reference = bsv_rs::primitives::to_base64(&signable.reference);
     let unsigned = subject(&signable.tx);
-    assert_eq!(unsigned.inputs.len(), 2);
+    assert_eq!(unsigned.inputs().len(), 2);
     {
         let cache = scene.wallet.pending_transactions.read().await;
         let pending = cache.get(&reference).unwrap();
@@ -622,12 +622,12 @@ async fn assert_spend_without_deferred_named_input_refused(vin: u32, replacement
     assert_ne!(input_script(&signed, 1), replacement);
     assert_eq!(
         signed
-            .inputs
+            .inputs()
             .iter()
             .map(|input| input.sequence)
             .collect::<Vec<_>>(),
         unsigned
-            .inputs
+            .inputs()
             .iter()
             .map(|input| input.sequence)
             .collect::<Vec<_>>()

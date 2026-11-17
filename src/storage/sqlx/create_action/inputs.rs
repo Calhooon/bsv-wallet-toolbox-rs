@@ -60,7 +60,7 @@ pub(super) async fn validate_and_extend_inputs(
                 // Output not in storage - look it up in the input_beef
                 if let Some(beef_tx) = beef.find_txid(&txid) {
                     if let Some(tx) = beef_tx.tx() {
-                        if let Some(out) = tx.outputs.get(vout as usize) {
+                        if let Some(out) = tx.outputs().get(vout as usize) {
                             let sats = out.satoshis.unwrap_or(0);
                             let script = out.locking_script.to_binary();
                             (sats, script, None)

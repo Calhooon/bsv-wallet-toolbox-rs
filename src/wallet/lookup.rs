@@ -446,7 +446,7 @@ fn extract_host_from_beef(beef: &[u8], output_index: u32) -> Result<String> {
         .map_err(|e| crate::Error::ServiceError(format!("SLAP BEEF parse failed: {}", e)))?;
 
     let output = tx
-        .outputs
+        .outputs()
         .get(output_index as usize)
         .ok_or_else(|| crate::Error::ServiceError("SLAP output index out of bounds".into()))?;
 

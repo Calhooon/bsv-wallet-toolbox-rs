@@ -18,9 +18,9 @@ const PROOF_HEIGHT: u32 = bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT + 
 fn raw_spending(txid: &str) -> Vec<u8> {
     let mut transaction = Transaction::new();
     transaction
-        .inputs
+        .inputs_mut()
         .push(TransactionInput::new(txid.to_string(), 0));
-    transaction.outputs.push(TransactionOutput::new(
+    transaction.outputs_mut().push(TransactionOutput::new(
         1_000,
         LockingScript::from_hex("51").unwrap(),
     ));

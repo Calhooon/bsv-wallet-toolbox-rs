@@ -359,14 +359,13 @@ pub(super) async fn seed_custom_output(
 ) -> String {
     let now = Utc::now();
     let mut tx = bsv_rs::transaction::Transaction::from_binary(&seed_raw_tx()).unwrap();
-    tx.lock_time = u32::from_str_radix(tag, 16).unwrap();
-    tx.outputs[0].satoshis = Some(satoshis as u64);
-    tx.outputs[0].locking_script =
+    tx.set_lock_time(u32::from_str_radix(tag, 16).unwrap());
+    tx.outputs_mut()[0].satoshis = Some(satoshis as u64);
+    tx.outputs_mut()[0].locking_script =
         bsv_rs::script::LockingScript::from_binary(locking_script).unwrap();
-    tx.invalidate_caches();
     let raw_tx = tx.to_binary();
     let txid = tx.id();
-    seed_proven_chain_tx(storage, &txid, &raw_tx, 100_001 + tx.lock_time).await;
+    seed_proven_chain_tx(storage, &txid, &raw_tx, 100_001 + tx.lock_time()).await;
     let tx_result = sqlx::query(
             r#"
             INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at)
@@ -666,7 +665,7 @@ pub(super) fn linked_in_memory_entry() -> (Beef, [String; 3]) {
     let mut b = bsv_rs::transaction::Transaction::from_binary(&chain[1].0).unwrap();
     b.merkle_path = Some(synth_bump(900_000, &chain[1].1));
     let mut c = bsv_rs::transaction::Transaction::from_binary(&chain[2].0).unwrap();
-    c.inputs[0].source_transaction = Some(Box::new(b));
+    c.inputs_mut()[0].source_transaction = Some(Box::new(b));
     let u = synth_chain(1).pop().unwrap();
     let mut beef = Beef::new();
     beef.txs.push(bsv_rs::transaction::BeefTx::from_tx(c, None));

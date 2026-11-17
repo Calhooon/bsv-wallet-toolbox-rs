@@ -95,12 +95,12 @@ fn host_judge(
 
 fn three_inputs() -> (Transaction, Transaction) {
     let mut parent = source(&[0x51]);
-    parent.outputs = vec![parent.outputs[0].clone(); 3];
+    *parent.outputs_mut() = vec![parent.outputs()[0].clone(); 3];
     let mut child = spend(&parent, 0, Some(&[]));
     for vout in 1..3 {
         let mut input = TransactionInput::new(parent.id(), vout);
         input.unlocking_script = Some(UnlockingScript::from_binary(&[]).unwrap());
-        child.inputs.push(input);
+        child.inputs_mut().push(input);
     }
     (parent, child)
 }
@@ -129,7 +129,7 @@ fn host_true_receives_the_input_and_both_words() {
     assert_eq!(spend.body.raw, child.to_binary());
     assert_eq!(spend.vin, 0);
     assert_eq!(spend.satoshis, SATOSHIS);
-    assert_eq!(&*spend.script, parent.outputs[0].locking_script.to_binary());
+    assert_eq!(&*spend.script, parent.outputs()[0].locking_script.to_binary());
     assert_eq!(context.proven_height, Some(u64::from(GENESIS)));
     assert_eq!(
         context.word,
@@ -144,7 +144,7 @@ fn host_true_receives_the_input_and_both_words() {
 #[test]
 fn host_body_offsets_lie_within_the_signed_transaction() {
     let (parent, mut child) = three_inputs();
-    child.outputs.push(TransactionOutput {
+    child.outputs_mut().push(TransactionOutput {
         satoshis: Some(7),
         locking_script: LockingScript::from_binary(&[0x52]).unwrap(),
         change: false,
@@ -378,8 +378,7 @@ async fn host_storage_internalize_refuses_before_writes_through_a_clone() {
 #[tokio::test]
 async fn host_live_pass_preserves_value_refusals() {
     let (mut child, mut beef, tracker) = proven_beef();
-    child.outputs[0].satoshis = Some(SATOSHIS + 1);
-    child.invalidate_caches();
+    child.outputs()[0].satoshis = Some(SATOSHIS + 1);
     // Only the proven source and this overspending child belong in the frame.
     beef.txs.pop();
     beef.merge_raw_tx(child.to_binary(), None);

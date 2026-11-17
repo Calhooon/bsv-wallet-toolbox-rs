@@ -87,7 +87,7 @@ pub(in crate::storage::sqlx) async fn judge_own_tx(
         let beef = input_beef.and_then(|bytes| Beef::from_binary(bytes).ok());
         let mut sources = HashMap::new();
         let mut stored = Vec::new();
-        for input in &tx.inputs {
+        for input in tx.inputs() {
             let txid = input.get_source_txid()?;
             if sources.contains_key(&txid) || stored.contains(&txid) {
                 continue;

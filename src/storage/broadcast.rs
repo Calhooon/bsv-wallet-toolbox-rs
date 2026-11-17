@@ -277,7 +277,7 @@ pub fn validate_beef_for_broadcast(beef: &Beef, txid: &str) -> std::result::Resu
 
     // Check each input has its source in the BEEF
     let mut missing_sources = Vec::new();
-    for (i, input) in parsed.inputs.iter().enumerate() {
+    for (i, input) in parsed.inputs().iter().enumerate() {
         let source_txid = input
             .source_txid
             .as_deref()

@@ -68,8 +68,7 @@ fn sign_without_forkid(
     checksig.push(0x01);
     let mut push = vec![u8::try_from(checksig.len()).unwrap()];
     push.extend(checksig);
-    child.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&push).unwrap());
-    child.invalidate_caches();
+    child.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_binary(&push).unwrap());
 }
 
 /// The unproven parent, its ancestry (the grandparent proven at `HEIGHT`)
@@ -86,7 +85,7 @@ fn lineage(bad: bool, parent_lock: &str) -> (Transaction, Beef, MockChainTracker
     let grandparent = spend(&"11".repeat(32), "00", 10_000, &coin);
     let mut parent = spend(&grandparent.id(), "", 9_000, parent_lock);
     if bad {
-        let coin = &grandparent.outputs[0].locking_script;
+        let coin = &grandparent.outputs()[0].locking_script;
         sign_without_forkid(&mut parent, coin, 10_000, &key);
     }
     let bump = MerklePath::from_coinbase_txid(&grandparent.id(), HEIGHT);
@@ -159,7 +158,7 @@ fn posted(bad: Bad) -> (Transaction, Beef, MockChainTracker, Transaction) {
     let (parent, beef, tracker) = lineage(matches!(bad, Bad::Parent), &parent_lock);
     let mut subject = spend(&parent.id(), "", 8_000, "51");
     if let Bad::Own = bad {
-        let coin = &parent.outputs[0].locking_script;
+        let coin = &parent.outputs()[0].locking_script;
         sign_without_forkid(&mut subject, coin, 9_000, &key);
     }
     (parent, beef, tracker, subject)
@@ -609,7 +608,7 @@ fn caller_args(
         "inputBEEF": bytes,
         "inputs": [{ "outpoint": format!("{}.0", parent.id()),
             "inputDescription": "the caller's coin", "unlockingScriptLength": 107 }],
-        "outputs": [{ "lockingScript": parent.outputs[0].locking_script.to_hex(),
+        "outputs": [{ "lockingScript": parent.outputs()[0].locking_script.to_hex(),
             "satoshis": 1_000, "outputDescription": "the recipient" }],
         "options": { "returnTXIDOnly": txid_only },
     }))

@@ -52,8 +52,8 @@ impl NLockTimeInput {
     pub fn from_transaction(tx: &Transaction) -> Self {
         const MAX_SEQUENCE: u32 = 0xFFFFFFFF;
         Self {
-            lock_time: tx.lock_time,
-            all_sequences_final: tx.inputs.iter().all(|i| i.sequence == MAX_SEQUENCE),
+            lock_time: tx.lock_time(),
+            all_sequences_final: tx.inputs().iter().all(|i| i.sequence == MAX_SEQUENCE),
         }
     }
 

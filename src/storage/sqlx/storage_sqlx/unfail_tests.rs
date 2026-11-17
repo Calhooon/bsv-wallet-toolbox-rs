@@ -40,12 +40,12 @@ mod tests {
         /// returns (raw bytes, txid).
         fn spending_tx(source_txid: &str, source_vout: u32) -> (Vec<u8>, String) {
             let mut tx = Transaction::new();
-            tx.version = 1;
-            tx.lock_time = 0;
+            tx.set_version(1);
+            tx.set_lock_time(0);
             let mut input = TransactionInput::new(source_txid.to_string(), source_vout);
             input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-            tx.inputs.push(input);
-            tx.outputs.push(TransactionOutput {
+            tx.inputs_mut().push(input);
+            tx.outputs_mut().push(TransactionOutput {
                 satoshis: Some(9000),
                 locking_script: LockingScript::from_hex(
                     "76a914000000000000000000000000000000000000000088ac",

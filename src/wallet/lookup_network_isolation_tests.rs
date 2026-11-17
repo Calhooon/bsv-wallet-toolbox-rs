@@ -70,7 +70,7 @@ async fn attribute_lookup_sends_the_supplied_map_order() {
         .unwrap()
         .public_key();
     let mut tx = Transaction::new();
-    tx.outputs.push(TransactionOutput {
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(1),
         locking_script: LockingScript::from_hex(&format!(
             "21{}ac{:02x}{}75",

@@ -1577,7 +1577,7 @@ fn token_source(beef: &Beef, output: &WalletOutput, count: usize) -> Option<Push
     let txid = bsv_rs::primitives::to_hex(&output.outpoint.txid);
     let tx = beef.find_atomic_transaction(&txid)?;
     let tx_output = tx
-        .outputs
+        .outputs()
         .get(usize::try_from(output.outpoint.vout).ok()?)?;
     if tx.id() != txid || tx_output.satoshis != Some(1) || output.satoshis != 1 {
         return None;
