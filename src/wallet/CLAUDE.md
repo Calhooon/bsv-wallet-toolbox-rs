@@ -187,7 +187,18 @@ prefix, as for the variant mapping above:
 - `internalize_action`'s output index and derivation mismatch are
   `InvalidParameter` (`signer/methods/internalizeAction.ts:57-58,88-89`).
   Its invalid-sender guard is gone (#453): the validator's sender reaches
-  the derivation already parsed.
+  the derivation already parsed. A payment output's script must equal the
+  derived key's P2PKH byte for byte: a 25-byte P2PKH paying another key
+  answers `Derivation mismatch for output <n>: derived <hash> != script
+  <hash>`, any other script the reference's `The paymentRemittance
+  parameter must be locked by script conforming to BRC-29` (ts-stack
+  4d0ea63c8 `internalizeAction.ts:79-91`), both `InvalidParameter`. The
+  check reads the subject unlinked (`Transaction::from_beef_subject`); a
+  BEEF with a payment output whose subject cannot be read answers `Cannot
+  read the BEEF's subject transaction to check payment outputs: <bsv-rs
+  error>`, `InvalidParameter`, before storage
+  (`tests/internalize_payment_subject_tests.rs`,
+  `tests/internalize_payment_lock_tests.rs`).
 - `prove_certificate`'s absent and ambiguous certificate matches are
   `InvalidParameter` (`signer/methods/proveCertificate.ts:28-29`).
 - A privileged request on a wallet with no privileged key manager (the

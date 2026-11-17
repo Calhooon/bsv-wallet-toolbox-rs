@@ -22,6 +22,27 @@
   have dropped the host and missed the grant (`lookup_beta8_tests.rs`,
   `permission_token_link_tests.rs`).
 
+### Fixed
+- `Wallet::internalize_action`'s BRC-29 check on a wallet payment output
+  reads the AtomicBEEF's subject transaction with
+  `Transaction::from_beef_subject`, which parses the BEEF and links none of
+  its ancestry, so the check runs whatever the ancestry's size: a subject
+  sweeping more outputs of one parent than bsv-rs's default link budget
+  takes is checked like any other. A BEEF carrying a payment output whose
+  subject cannot be read is refused before anything is stored
+  (`tests/internalize_payment_subject_tests.rs`).
+- `Wallet::internalize_action` admits an output that carries a payment
+  remittance only when its locking script is the P2PKH of the key its
+  remittance derives, byte for byte, whatever the script's shape, as the
+  reference's `internalizeAction` requires (`setupWalletPaymentForOutput`).
+  A 25-byte P2PKH paying another key keeps the `Derivation mismatch` text;
+  a script of any other shape (a P2PK lock of the derived key, an OP_RETURN
+  script, the derived key's P2PKH with bytes after it, an empty script) is
+  refused with the reference's sentence, and nothing is stored. A basket
+  insertion with no payment remittance is not held to the rule; one that
+  carries a payment remittance is refused by the argument validator, as
+  before (`tests/internalize_payment_lock_tests.rs`).
+
 ### Hosts
 Host lines for bsv-wallet-cli#386 (the beta.8 pin intake), each text from
 the witness run at this tree; each witness is red at beta.7:
@@ -47,6 +68,43 @@ the witness run at this tree; each witness is red at beta.7:
   protocol permission token found (seekPermission=false).`
   (`permission_token_lookup_tests.rs`). Only a token in the wallet's own
   admin basket reaches it; the reference's reader refuses the same bytes.
+
+Answers of `Wallet::internalize_action` with a wallet payment output that
+move with this tree's own change, each read from a run here and at the
+pin's tip; each prints through the `WalletInterface` as the message alone,
+class `InvalidParameter`:
+- bytes that are not a BEEF (`deadbeef`): `Cannot read the BEEF's subject
+  transaction to check payment outputs: BEEF error: invalid BEEF at byte 0:
+  BadVersion { word: 4022250974 }` (before, `Invalid BEEF at byte 0:
+  BadVersion`). A refusal on both.
+- an AtomicBEEF naming a subject it does not carry: `Cannot read the BEEF's
+  subject transaction to check payment outputs: transaction error:
+  Transaction <txid> not found in BEEF` (before, `Invalid BEEF at byte 4:
+  SubjectMissing`). A refusal on both.
+- a payment output in a subject that sweeps more outputs of one parent than
+  the link budget takes, whose P2PKH does not pay the derived key:
+  `Derivation mismatch for output <n>: derived <hash> != script <hash>`;
+  before, that output was stored. A payment output that does pay the
+  derived key is stored as before.
+- a payment output whose locking script is not a 25-byte P2PKH and is not
+  the P2PKH of the derived key: `The paymentRemittance parameter must be
+  locked by script conforming to BRC-29`; before, it was admitted and
+  stored.
+
+A host that had such an output admitted before holds it in the default
+basket as change the wallet cannot sign for. Storage holds it as change of
+the default basket (`change = 1`, `spendable = 1`), the rows `createAction`'s
+change selection takes (an unproven receipt under the `underReceivedRule`
+label, a completed one under any), so a later `createAction` that needs
+change can select it as an input. `listOutputs` with `basket: "default"`
+lists it: its `outpoint` is the txid `internalizeAction` admitted and the
+output's index. `relinquishOutput` with `basket: "default"` and that
+`outpoint` takes it out of the basket, and from then on `createAction` does
+not select it (`tests/internalize_payment_lock_tests.rs`,
+`a_payment_output_not_the_derived_p2pkh_leaves_change_when_relinquished`:
+before the relinquish the storage `createAction` selects that outpoint as its
+one input; after it, the same call answers `Insufficient funds: need 1005,
+have 0`).
 
 ## [0.14.0-beta.7] - 2026-11-04
 
