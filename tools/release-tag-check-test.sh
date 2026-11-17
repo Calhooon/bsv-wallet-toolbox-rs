@@ -44,6 +44,8 @@ expect refused "only -beta.N and -beta.N.M are prerelease shapes" "tag without v
 expect refused "is not on main" "plain tag on neither line refused" -- v1.2.3 1.2.3
 expect refused "is not on beta" "beta tag on neither line refused" -- v1.3.0-beta.1 1.3.0-beta.1 release/x
 expect ok "$beta_ok" "beta.N.M tag on beta passes" -- v0.14.0-beta.8.1 0.14.0-beta.8.1 beta
+expect ok "$beta_ok" "beta.N tag after a beta.N.M on beta passes" -- v0.14.0-beta.9 0.14.0-beta.9 beta
+expect refused "does not match Cargo.toml version 0.14.0-beta.8.1" "beta.9 tag on the beta.8.1 version refused" -- v0.14.0-beta.9 0.14.0-beta.8.1 beta
 expect refused "main holds but beta does not" "beta.N.M tag on main only refused" -- v0.14.0-beta.8.1 0.14.0-beta.8.1 main
 expect refused "does not match Cargo.toml version 0.14.0-beta.8" "beta.N.M tag on a beta.N version refused" -- v0.14.0-beta.8.1 0.14.0-beta.8 beta
 expect refused "only -beta.N and -beta.N.M are prerelease shapes" "v0.14.0-beta.8.1.2 refused" -- v0.14.0-beta.8.1.2 0.14.0-beta.8.1.2 beta
