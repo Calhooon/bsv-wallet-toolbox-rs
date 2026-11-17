@@ -1952,9 +1952,10 @@ mod tests {
         create_test_atomic_beef_spending(&test_parent().1, 0)
     }
 
-    /// Locally generated funding parent with a matching raw body and txid.
+    /// Locally generated funding parent with a matching raw body and txid,
+    /// its output locked by `anyone_lock`, which the input `00` spends.
     fn test_parent() -> (Vec<u8>, String) {
-        raw_tx_spending(&[(&"11".repeat(32), 0)], 20_000)
+        raw_tx_locked(&[(&"11".repeat(32), 0)], 20_000, &anyone_lock())
     }
 
     fn merge_test_parent(beef: &mut Beef) {
@@ -2116,6 +2117,21 @@ mod tests {
 
     /// One output, OP_TRUE, and the inputs given: the raw bytes and the txid.
     fn raw_tx_spending(inputs: &[(&str, u32)], satoshis: u64) -> (Vec<u8>, String) {
+        raw_tx_locked(inputs, satoshis, &[0x51])
+    }
+
+    /// A lock the input `00` spends under the node's word: push 20 bytes,
+    /// drop them, drop the empty push, push one (the 0.14 line's fixture
+    /// lock).
+    fn anyone_lock() -> Vec<u8> {
+        let mut script = vec![0x14];
+        script.extend([0u8; 20]);
+        script.extend([0x75, 0x75, 0x51]);
+        script
+    }
+
+    /// `raw_tx_spending` with its one output locked by `lock`.
+    fn raw_tx_locked(inputs: &[(&str, u32)], satoshis: u64, lock: &[u8]) -> (Vec<u8>, String) {
         let mut raw: Vec<u8> = Vec::new();
         raw.extend_from_slice(&1u32.to_le_bytes());
         raw.push(inputs.len() as u8);
@@ -2129,8 +2145,8 @@ mod tests {
         }
         raw.push(1);
         raw.extend_from_slice(&satoshis.to_le_bytes());
-        raw.push(1);
-        raw.push(0x51);
+        raw.push(lock.len() as u8);
+        raw.extend_from_slice(lock);
         raw.extend_from_slice(&0u32.to_le_bytes());
         let mut h = bsv_rs::primitives::hash::sha256d(&raw);
         h.reverse();

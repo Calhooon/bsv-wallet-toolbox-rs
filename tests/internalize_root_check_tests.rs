@@ -101,7 +101,7 @@ async fn the_storages_own_tracker_is_asked_before_the_services() {
     // Own tracker refutes, services confirm: refused, as before.
     let (wallet, args) = setup(true).await;
     let mut liar = MockChainTracker::new(1_000_000);
-    liar.add_root(100_003, "aa".repeat(32));
+    liar.add_root(common::PAYING_PROOF_HEIGHT, "aa".repeat(32));
     wallet.storage().set_chain_tracker(Arc::new(liar)).await;
     let answer = wallet.internalize_action(args, "test.local").await;
     println!("own tracker refutes: {answer:?}");

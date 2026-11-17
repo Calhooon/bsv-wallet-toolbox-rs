@@ -301,11 +301,11 @@ async fn a_refuted_root_answers_one_text_at_both_doors() {
 #[tokio::test]
 async fn a_tracker_fault_answers_one_text_at_both_doors() {
     let answers = at_both_doors(whole, mock(|b| b.root_fault("the header service is down"))).await;
-    same_refusal(
-        "tracker fault",
-        answers,
-        "ChainTracker verification failed at height 100003: network error: the header service is down",
+    let text = format!(
+        "ChainTracker verification failed at height {}: network error: the header service is down",
+        common::PAYING_PROOF_HEIGHT
     );
+    same_refusal("tracker fault", answers, &text);
 }
 
 #[tokio::test]

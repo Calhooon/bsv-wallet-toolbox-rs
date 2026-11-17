@@ -55,8 +55,8 @@ type TestWallet = Wallet<StorageSqlx, MockWalletServices>;
 const PREFIX: &str = "cmVjZWl2ZWQtcHJlZml4";
 const SUFFIX: &str = "cmVjZWl2ZWQtc3VmZml4";
 const RULE: &str = "underReceivedRule";
-/// The height a proven payment's proof names.
-const PROVEN_AT: u32 = 100_010;
+/// The height a proven payment's proof names, after Genesis.
+const PROVEN_AT: u32 = common::after_genesis(10);
 /// What an action without the label answers when the wallet's only coin is
 /// an unproven received payment.
 const HELD: &str = "wallet error: Insufficient funds: need 1005, have 0";

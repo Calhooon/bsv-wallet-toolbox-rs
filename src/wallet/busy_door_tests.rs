@@ -22,6 +22,17 @@ fn pay_lock() -> Vec<u8> {
     hex::decode("76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac").unwrap()
 }
 
+/// A lock the input `00` spends under the node's word: push 20 bytes, drop
+/// them, drop the empty push, push one (the 0.14 line's fixture lock).
+fn anyone_lock() -> Vec<u8> {
+    hex::decode(format!("14{}757551", "00".repeat(20))).unwrap()
+}
+
+/// A height after mainnet's Genesis, `offset` blocks past it.
+fn after_genesis(offset: u32) -> u32 {
+    bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT + offset
+}
+
 /// A wallet over a file store (WAL; a held writer does not block readers).
 async fn wallet() -> (tempfile::TempDir, Wallet<StorageSqlx, MockWalletServices>) {
     let dir = tempfile::tempdir().unwrap();
@@ -234,7 +245,7 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
     parent.inputs.push(parent_input);
     parent.outputs.push(TransactionOutput {
         satoshis: Some(20_000),
-        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        locking_script: LockingScript::from_binary(&anyone_lock()).unwrap(),
         change: false,
     });
     let parent_txid = parent.id();
@@ -249,7 +260,10 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
     });
     let txid = tx.id();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_001));
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(
+        &parent_txid,
+        after_genesis(1),
+    ));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_transaction(tx);
     let atomic = beef.to_binary_atomic(&txid).unwrap();
@@ -1050,7 +1064,7 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
     parent.inputs.push(parent_input);
     parent.outputs.push(TransactionOutput {
         satoshis: Some(20_000),
-        locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
+        locking_script: LockingScript::from_binary(&anyone_lock()).unwrap(),
         change: false,
     });
     let parent_txid = parent.id();
@@ -1065,7 +1079,10 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
     });
     let txid = tx.id();
     let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_002));
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(
+        &parent_txid,
+        after_genesis(2),
+    ));
     beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_transaction(tx);
     let atomic = beef.to_binary_atomic(&txid).unwrap();
