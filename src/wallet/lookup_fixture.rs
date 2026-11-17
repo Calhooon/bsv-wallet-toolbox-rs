@@ -182,5 +182,6 @@ pub(crate) fn published(record: &OverlayCertificate) -> OutputListItem {
         beef: beef(token(&subject, record_json(record))),
         output_index: 0,
         context: None,
+        txid: None,
     }
 }

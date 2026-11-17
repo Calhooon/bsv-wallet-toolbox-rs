@@ -66,6 +66,7 @@ fn at(beef: Vec<u8>, output_index: u32) -> OutputListItem {
         beef,
         output_index,
         context: None,
+        txid: None,
     }
 }
 

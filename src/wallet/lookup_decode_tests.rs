@@ -23,6 +23,7 @@ async fn answered(scripts: Vec<LockingScript>) -> Vec<String> {
             beef: beef(script),
             output_index: 0,
             context: None,
+            txid: None,
         })
         .collect();
     let tracker = MockChainTracker::always_valid(HEIGHT);
