@@ -57,9 +57,9 @@ pub(crate) const INVALID_SENDER_REFUSAL: &str =
     "Wallet payment outputs require a sender_identity_key that is empty or a compressed public key";
 
 /// The refusal of an AtomicBEEF when neither the storage nor its services
-/// has a chain tracker to verify its merkle roots.
-pub(crate) const NO_CHAIN_TRACKER_REFUSAL: &str =
-    "No chain tracker is available to verify the BEEF: install one on the storage or configure the services' chain tracker";
+/// has a chain tracker to verify its merkle roots (one sentence, the wallet
+/// door's and the storage door's).
+pub(crate) use crate::wallet::received_beef::NO_CHAIN_TRACKER_REFUSAL;
 
 // =============================================================================
 // Internal Types
