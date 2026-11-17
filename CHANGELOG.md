@@ -24,6 +24,14 @@
   admitted, as the reference admits them: two payments of one existing
   custom output report its satoshis twice (9000 for a 4500-satoshi output)
   and convert the one row.
+- `createAction` and `signAction` sign a stored coin whose sender identity
+  key is an empty string as the wallet's own coin, the wallet itself the
+  counterparty, as for a coin whose row holds no sender. Before, the call
+  answered `Signing failed: Validation error: Invalid sender key: invalid
+  public key: ...` for every action that selected it. A stored key that is
+  not empty and does not parse is refused as before; `internalizeAction`
+  still refuses an empty sender on a new request
+  (`tests/internalize_restore_spend_tests.rs`).
 
 ### Hosts
 
@@ -62,6 +70,37 @@ proof request and a broadcast, and marked spent the wallet's own coins
 it spends (read from the base's door, not run here): a host finds it as a
 transaction row with no `outputs` row; the coins it spent are spent on
 chain once the network accepted it, so nothing is restored.
+
+Restoring a reclassified row, each step read from a run that ends in a
+signed spend whose unlocking script is checked against the coin's P2PKH
+(`tests/internalize_restore_spend_tests.rs`). The wallet's own change an
+earlier basket insertion reclassified (`custom`, `change = 0`, its
+derivation prefix, suffix and sender NULL): internalize the transaction
+again as a wallet payment of that output with the prefix and suffix the
+row held and the wallet's own identity key (`Wallet::identity_key`) as
+`senderIdentityKey`; the row returns to `default` as `P2PKH` change with
+that key stored as its sender, and the next `createAction` that selects it
+signs it. An empty `senderIdentityKey`, the stable line's 0.13.3 restore,
+is refused on this line with `Validation error: The senderIdentityKey
+parameter must be hexadecimal string.`, class `InvalidParameter`, nothing
+stored. A received payment reclassified the same way: the prefix, the
+suffix and the sender identity key the row held, which the host must have
+kept, since the reclassification cleared all three; then it spends as any
+received coin (an unproven one under the action's `underReceivedRule`
+label). Correction of 0.14.0-beta.8's Hosts section: its restore of the
+wallet's own change was not run through a spend there, and its "the sender
+the remittance's" is the wallet's own identity key for that restore.
+
+A store holding a coin whose sender identity key is an empty string (the
+stable line's door stores an empty sender as given, the 0.13.3 restore
+among them, as can a sync from such a store): the balance counts the coin
+and `createAction` selects it. Before this change the action that selected
+it was refused with `Signing failed: Validation error: Invalid sender key:
+...`; through `createAction` with signing nothing was recorded and the
+coin stayed spendable, and through a deferred action `signAction` answered
+the same text, the action aborted and the coin released. After this change
+the coin signs with the wallet as its counterparty; the row is not
+rewritten.
 
 ## [0.14.0-beta.8] - 2026-11-17
 
