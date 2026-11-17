@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.9] - 2026-11-17
+
+The version moves for the `bsv-rs` `=0.9.0-beta.9` pin, the 0.9.0
+prerelease that carries the fix of GHSA-33fm-jcm5-4m3m, the completion of
+GHSA-gvmh-f5gf-5vjj's fix: the published advisory names every `bsv-rs`
+prerelease through 0.9.0-beta.8, so 0.14.0-beta.8.1 and earlier pin an
+affected version. This prerelease carries the pin alone, and its number
+again says which `bsv-rs` prerelease the line sits on.
+
+### Security
+- [GHSA-33fm-jcm5-4m3m](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-33fm-jcm5-4m3m)
+  (high): memory exhaustion while linking a BEEF whose shared parents or
+  shared proof re-materialize more heap than their wire bytes show. No
+  library door of this crate links a BEEF with `bsv-rs`'s linking doors
+  (each reads its subject or its entry unlinked), so the fix moves nothing
+  at this crate's doors; a host that links BEEFs in its own code with
+  `bsv-rs`'s default doors is bounded by it once on this pin.
+
+### Changed
+- #533 (the owner's word of 2026-11-17): `bsv-rs` pinned at `=0.9.0-beta.9`
+  in `Cargo.toml` and `fuzz/Cargo.toml`. Its note states no public item
+  changed shape since 0.9.0-beta.8; this tree built with no error and every
+  test kept its answer.
+
+### Hosts
+- Nothing changes at this crate's own doors: no answer of `createAction`,
+  `internalizeAction`, the signer, the overlay lookups or the permission
+  token reader moves.
+- A host that links BEEFs with `bsv-rs`'s default doors in its own code
+  (`Transaction::from_beef`, `from_atomic_beef`,
+  `Beef::find_atomic_transaction`) meets a heap bound of 56 MiB beside the
+  16 MiB wire bound: a child spending every output of one proven parent of
+  P2PKH outputs links up to 586 outputs (702 at 0.9.0-beta.8) and is
+  refused from 587 with `Error::BeefResourceLimit`, `BEEF link resource
+  limit: linking would hold more than 58720256 heap bytes of re-materialized
+  shared-parent stubs and proofs at once (bsv-rs #749). Raise or disable the
+  bound with Transaction::from_beef_with_limits /
+  BeefLinkLimits::with_max_link_heap_bytes / BeefLinkLimits::unbounded.`
+  (`tests/beef_link_onset_tests.rs`). A host that trusts its source raises
+  the bound with `BeefLinkLimits::with_max_link_heap_bytes` or lifts both
+  with `BeefLinkLimits::unbounded`.
+
 ## [0.14.0-beta.8.1] - 2026-11-17
 
 This prerelease stays on `bsv-rs` `=0.9.0-beta.8` and says so by its
