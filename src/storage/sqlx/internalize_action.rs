@@ -35,6 +35,11 @@ const WALLET_PAYMENT_PROTOCOL: &str = "wallet payment";
 /// Protocol identifier for basket insertions.
 const BASKET_INSERTION_PROTOCOL: &str = "basket insertion";
 
+/// The refusal of an AtomicBEEF when neither the storage nor its services
+/// has a chain tracker to verify its merkle roots.
+pub(crate) const NO_CHAIN_TRACKER_REFUSAL: &str =
+    "No chain tracker is available to verify the BEEF: install one on the storage or configure the services' chain tracker";
+
 // =============================================================================
 // Internal Types
 // =============================================================================
@@ -99,8 +104,29 @@ pub async fn internalize_action_internal(
         ));
     }
 
-    // With a tracker, also verify the incoming merkle roots before internalizing.
-    if let Some(chain_tracker) = storage.get_chain_tracker().await {
+    // Step 1c: The incoming merkle roots are always verified before anything
+    // is stored (the reference's `validateAtomicBeef`, `ab.verify` with the
+    // services' chain tracker). The tracker is the storage's own when the
+    // host installed one, else the services' tracker; with neither the
+    // request is refused. Every tracker call here comes before the writer or
+    // a write transaction is taken (the write lock rule).
+    let own_tracker = storage.get_chain_tracker().await;
+    let services = match own_tracker {
+        Some(_) => None,
+        None => storage.get_services().ok(),
+    };
+    let services_tracker = match services.as_ref() {
+        Some(s) => s.get_chain_tracker().await.ok(),
+        None => None,
+    };
+    let chain_tracker: &dyn bsv_rs::transaction::ChainTracker =
+        match own_tracker.as_deref().or(services_tracker) {
+            Some(t) => t,
+            None => {
+                return Err(Error::ValidationError(NO_CHAIN_TRACKER_REFUSAL.to_string()));
+            }
+        };
+    {
         // Get known txids for TrustKnown mode (transactions already in wallet)
         let known_txids = get_known_txids(storage, user_id).await?;
 
@@ -108,7 +134,7 @@ pub async fn internalize_action_internal(
         // Default to Strict mode for internalize_action
         let _is_valid = verify_beef_merkle_proofs(
             &mut beef,
-            chain_tracker.as_ref(),
+            chain_tracker,
             BeefVerificationMode::Strict,
             &known_txids,
         )
