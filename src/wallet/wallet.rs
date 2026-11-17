@@ -1568,8 +1568,11 @@ where
             // Build the full BEEF (signed tx + ancestor proofs) for broadcasting and returning to caller
             let full_beef_bytes = if let Some(input_beef_bytes) = input_beef {
                 match bsv_rs::transaction::Beef::from_binary(input_beef_bytes) {
-                    Ok(mut beef) => {
-                        beef.merge_raw_tx(signed_tx.clone(), None);
+                    Ok(mut beef) => 'build: {
+                        if let Err(e) = beef.merge_raw_tx(signed_tx.clone(), None) {
+                            tracing::error!(txid = %txid, error = %e, "Failed to merge the signed transaction into the input BEEF");
+                            break 'build None;
+                        }
 
                         // Prune to the subject tx's ANCESTOR CLOSURE. An over-inclusive
                         // inputBEEF (e.g. one carrying a counterparty's fee-reserve sibling
@@ -1627,7 +1630,13 @@ where
                             beef.version = bsv_rs::transaction::BEEF_V1;
                         }
 
-                        Some(beef.to_binary())
+                        match beef.to_binary() {
+                            Ok(bytes) => Some(bytes),
+                            Err(e) => {
+                                tracing::error!(txid = %txid, error = %e, "Failed to write the broadcast BEEF");
+                                None
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::error!(txid = %txid, error = %e, "Failed to parse input BEEF");
@@ -1939,7 +1948,12 @@ where
             }
             _ => bsv_rs::transaction::Beef::new(),
         };
-        beef.merge_raw_tx(unsigned_tx.clone(), None);
+        beef.merge_raw_tx(unsigned_tx.clone(), None).map_err(|e| {
+            internal_fault(format!(
+                "create_action: failed to merge the unsigned transaction into input_beef: {}",
+                e
+            ))
+        })?;
         let unsigned_txid = compute_txid(&unsigned_tx);
         let atomic_beef = beef.to_binary_atomic(&unsigned_txid).map_err(|e| {
             internal_fault(format!(
@@ -2457,8 +2471,13 @@ where
             let broadcast_outcome = if let Some(ref input_beef_bytes) = pending_tx.input_beef {
                 // Create a new BEEF that includes both the signed tx and its ancestors
                 match bsv_rs::transaction::Beef::from_binary(input_beef_bytes) {
-                    Ok(mut broadcast_beef) => {
-                        broadcast_beef.merge_raw_tx(signed_tx.clone(), None);
+                    Ok(mut broadcast_beef) => 'post: {
+                        if let Err(e) = broadcast_beef.merge_raw_tx(signed_tx.clone(), None) {
+                            break 'post Err(format!(
+                                "Failed to merge the signed transaction into the broadcast BEEF: {}",
+                                e
+                            ));
+                        }
 
                         // Structural validation (diagnostic only — does not block broadcast)
                         if let Err(validation_err) =
@@ -2474,7 +2493,12 @@ where
                             );
                         }
 
-                        let beef_bytes = broadcast_beef.to_binary();
+                        let beef_bytes = match broadcast_beef.to_binary() {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                break 'post Err(format!("Failed to write the broadcast BEEF: {}", e))
+                            }
+                        };
                         let txid_strings = vec![txid.clone()];
                         Ok(
                             match self.services.post_beef(&beef_bytes, &txid_strings).await {
@@ -2601,7 +2625,12 @@ where
                 }
                 _ => bsv_rs::transaction::Beef::new(),
             };
-            beef.merge_raw_tx(signed_tx.clone(), None);
+            beef.merge_raw_tx(signed_tx.clone(), None).map_err(|e| {
+                internal_fault(format!(
+                    "sign_action: failed to merge the signed transaction into input_beef: {}",
+                    e
+                ))
+            })?;
             beef.to_binary_atomic(&txid).map_err(|e| {
                 internal_fault(format!(
                     "sign_action: failed to encode AtomicBEEF for result.tx: {}",
@@ -7194,7 +7223,7 @@ mod tests {
             Some(ib) if !ib.is_empty() => bsv_rs::transaction::Beef::from_binary(ib).unwrap(),
             _ => bsv_rs::transaction::Beef::new(),
         };
-        beef.merge_raw_tx(unsigned_tx.clone(), None);
+        beef.merge_raw_tx(unsigned_tx.clone(), None).unwrap();
         let unsigned_txid = compute_txid(&unsigned_tx);
         let atomic_beef = beef.to_binary_atomic(&unsigned_txid).expect(
             "builder must produce AtomicBEEF from input_beef + unsigned_tx + tentative txid",

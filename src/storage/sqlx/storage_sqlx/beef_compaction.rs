@@ -121,11 +121,20 @@ impl StorageSqlx {
             // that a proven sibling happens to descend from.)
             if let Some(raw) = raw_tx {
                 if let Ok(roots) = parse_input_txids(raw) {
-                    prune_beef_to_roots(&mut beef, &roots);
+                    if let Err(e) = prune_beef_to_roots(&mut beef, &roots) {
+                        tracing::warn!(req_id, "compact: the input BEEF does not prune, left as stored: {e}");
+                        continue;
+                    }
                 }
             }
 
-            let new_bytes = beef.to_binary();
+            let new_bytes = match beef.to_binary() {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    tracing::warn!(req_id, "compact: the input BEEF is not writable, left as stored: {e}");
+                    continue;
+                }
+            };
             let new_size = new_bytes.len();
 
             // Only update if we actually saved space

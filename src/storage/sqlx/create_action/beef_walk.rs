@@ -127,7 +127,7 @@ pub(in crate::storage::sqlx) async fn beef_bfs_walk(
                     .map(|data| data.raw_tx),
             };
             if let Some(raw) = raw {
-                beef.merge_raw_tx(raw, Some(bump_idx));
+                beef.merge_raw_tx(raw, Some(bump_idx))?;
             }
             continue;
         }
@@ -187,7 +187,7 @@ pub(in crate::storage::sqlx) async fn beef_bfs_walk(
                         }
                     }
                 }
-                prune_beef_to_roots(&mut stored_beef, &stored_roots);
+                prune_beef_to_roots(&mut stored_beef, &stored_roots)?;
 
                 // Every root a stored BEEF carries is read against the
                 // wallet's headers of the moment, whoever called the walk
@@ -199,7 +199,7 @@ pub(in crate::storage::sqlx) async fn beef_bfs_walk(
                 };
 
                 if stored_beef_valid {
-                    merge_beef_linked(beef, &stored_beef);
+                    merge_beef_linked(beef, &stored_beef)?;
 
                     for beef_tx in &stored_beef.txs {
                         processed_txids.insert(beef_tx.txid());
@@ -298,7 +298,7 @@ pub(in crate::storage::sqlx) async fn beef_bfs_walk(
             };
 
             // Add the raw transaction to BEEF
-            beef.merge_raw_tx(tx_data.raw_tx.clone(), bump_index);
+            beef.merge_raw_tx(tx_data.raw_tx.clone(), bump_index)?;
 
             // If no merkle proof, we need to recurse to this transaction's inputs
             // so the recipient can trace back to proven transactions

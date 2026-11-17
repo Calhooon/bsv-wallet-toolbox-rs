@@ -99,14 +99,14 @@ async fn seed_announced(s: &StorageSqlx) -> Announced {
         outputs.push(id);
     }
     let mut beef = Beef::new();
-    beef.merge_raw_tx(parent_raw, None);
+    beef.merge_raw_tx(parent_raw, None).unwrap();
     sqlx::query(
         "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, input_beef, created_at, updated_at) \
          VALUES (?, 'unsent', 0, '{}', 0, '{}', ?, ?, ?, ?)",
     )
     .bind(&txid)
     .bind(&raw)
-    .bind(beef.to_binary())
+    .bind(beef.to_binary().unwrap())
     .bind(old)
     .bind(old)
     .execute(s.writer())

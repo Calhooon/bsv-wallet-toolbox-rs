@@ -130,7 +130,7 @@ async fn test_walk_reaches_the_proven_anchor_at_any_depth() {
 
     let mut tracker = MockChainTracker::new(HEIGHT + 1);
     tracker.add_root(HEIGHT, chain[0].1.clone());
-    let bytes = beef.to_binary();
+    let bytes = beef.to_binary().unwrap();
     let verdict = verify_stream_structure(&bytes[..], &tracker, None).unwrap();
     assert!(verdict.is_valid(), "valid to the stream: {verdict:?}");
 }
@@ -148,8 +148,8 @@ async fn test_walk_honours_a_bump_already_in_the_beef() {
 
     // The parent's stored input_beef still holds the whole unproven history.
     let mut stored = Beef::new();
-    stored.merge_raw_tx(chain[0].0.clone(), None);
-    let stored_bytes = stored.to_binary();
+    stored.merge_raw_tx(chain[0].0.clone(), None).unwrap();
+    let stored_bytes = stored.to_binary().unwrap();
 
     seed_unproven_tx(&storage, &chain[0].1, &chain[0].0, None).await;
     seed_unproven_tx(&storage, &chain[1].1, &chain[1].0, Some(&stored_bytes)).await;
@@ -241,7 +241,7 @@ async fn test_walk_links_a_root_that_a_siblings_bump_carries_unflagged() {
         "the BEEF is valid: {}",
         describe_invalid_beef(&mut beef, std::slice::from_ref(&txid_b))
     );
-    prune_beef_to_roots(&mut beef, std::slice::from_ref(&txid_b));
+    prune_beef_to_roots(&mut beef, std::slice::from_ref(&txid_b)).unwrap();
     assert!(
         beef.verify_valid(true).valid,
         "and stays valid after the trim"

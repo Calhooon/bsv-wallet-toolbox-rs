@@ -61,7 +61,7 @@ async fn seed_known(storage: &StorageSqlx, user_id: i64, tx: &Transaction, prove
     let txid = tx.id();
     let raw = tx.to_binary();
     if proven {
-        seed_proven_tx(storage, &txid, &raw, &bump_for(&txid, 900).to_binary()).await;
+        seed_proven_tx(storage, &txid, &raw, &bump_for(&txid, 900).to_binary().unwrap()).await;
     }
     let now = Utc::now();
     let row = sqlx::query(
@@ -138,11 +138,11 @@ fn args(inputs: Vec<CreateActionInput>, beef: Vec<u8>) -> bsv_rs::wallet::Create
 fn caller_beef(proven: &Transaction, txid_only: &[String]) -> Vec<u8> {
     let mut beef = Beef::new();
     let bi = beef.merge_bump(bump_for(&proven.id(), 800));
-    beef.merge_raw_tx(proven.to_binary(), Some(bi));
+    beef.merge_raw_tx(proven.to_binary(), Some(bi)).unwrap();
     for t in txid_only {
         beef.merge_txid_only(t.clone());
     }
-    beef.to_binary()
+    beef.to_binary().unwrap()
 }
 
 async fn count(storage: &StorageSqlx, sql: &str) -> i64 {
@@ -167,7 +167,7 @@ async fn seed_change_coin(
     let txid = funding.id();
     let raw = funding.to_binary();
     if proven {
-        seed_proven_tx(storage, &txid, &raw, &bump_for(&txid, 900).to_binary()).await;
+        seed_proven_tx(storage, &txid, &raw, &bump_for(&txid, 900).to_binary().unwrap()).await;
     }
     let now = Utc::now();
     let row = sqlx::query(

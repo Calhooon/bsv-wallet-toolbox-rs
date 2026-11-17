@@ -76,8 +76,8 @@ impl Normalizer {
                     let raw = hex::decode(raw)?;
                     let delta = signature_size_delta(&raw)?;
                     let mut beef = Beef::from_binary(&hex::decode(input)?)?;
-                    beef.merge_raw_tx(raw, None);
-                    let length = beef.to_binary().len();
+                    beef.merge_raw_tx(raw, None).unwrap();
+                    let length = beef.to_binary().unwrap().len();
                     self.beef_sizes.insert(
                         length,
                         length
@@ -86,7 +86,7 @@ impl Normalizer {
                     );
                     if beef.txs.iter().all(|tx| !tx.is_txid_only()) {
                         beef.version = bsv_rs::transaction::BEEF_V1;
-                        let length = beef.to_binary().len();
+                        let length = beef.to_binary().unwrap().len();
                         self.beef_sizes.insert(
                             length,
                             length

@@ -98,7 +98,7 @@ async fn test_rebuild_beef_for_broadcast_with_proven_tx() {
 
     // Create a valid MerklePath for this tx and serialize it
     let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(txid, 100_000);
-    let merkle_path_bytes = bump.to_binary();
+    let merkle_path_bytes = bump.to_binary().unwrap();
 
     seed_proven_tx(&storage, txid, &raw_tx, &merkle_path_bytes).await;
 
@@ -197,13 +197,13 @@ async fn replay_input_beef_case() {
     )
     .await
     .unwrap();
-    prune_beef_to_roots(&mut beef, &roots);
+    prune_beef_to_roots(&mut beef, &roots).unwrap();
     let valid = beef.verify_valid(true).valid;
     println!(
         "replay: valid={valid} {} tx(s), {} bump(s), {} bytes",
         beef.txs.len(),
         beef.bumps.len(),
-        beef.to_binary().len()
+        beef.to_binary().unwrap().len()
     );
     if !valid {
         panic!("{}", describe_invalid_beef(&mut beef, &roots));
@@ -279,8 +279,8 @@ async fn test_the_broadcast_rebuild_fetches_a_missing_proof_and_stores_it_throug
     // Every hop unproven, and the parent's stored BEEF still holds the
     // whole history behind it.
     let mut stored = Beef::new();
-    stored.merge_raw_tx(chain[0].0.clone(), None);
-    let stored_bytes = stored.to_binary();
+    stored.merge_raw_tx(chain[0].0.clone(), None).unwrap();
+    let stored_bytes = stored.to_binary().unwrap();
     seed_unproven_tx(&storage, &chain[0].1, &chain[0].0, None).await;
     seed_unproven_tx(&storage, &chain[1].1, &chain[1].0, Some(&stored_bytes)).await;
     seed_unproven_tx(&storage, &chain[2].1, &chain[2].0, None).await;
@@ -296,7 +296,7 @@ async fn test_the_broadcast_rebuild_fetches_a_missing_proof_and_stores_it_throug
     let services = MockWalletServices::builder()
         .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
             name: Some("MockProvider".to_string()),
-            merkle_path: Some(hex::encode(bump.to_binary())),
+            merkle_path: Some(hex::encode(bump.to_binary().unwrap())),
             header: Some(BlockHeader {
                 version: 1,
                 previous_hash: "00".repeat(32),
@@ -367,7 +367,7 @@ async fn test_the_broadcast_rebuild_fetches_a_missing_proof_and_stores_it_throug
 /// Report one assembled BEEF: tx count, bytes, bumps, and whether any
 /// proven ancestor dragged its own parents in.
 fn beef_diag_report(label: &str, beef: &mut Beef, roots: &[String], elapsed_ms: u128) {
-    let bytes = beef.to_binary();
+    let bytes = beef.to_binary().unwrap();
     let all: std::collections::HashSet<String> = beef.txs.iter().map(|t| t.txid()).collect();
 
     let mut with_bump = 0usize;
@@ -510,7 +510,7 @@ async fn beef_diag_live_store() {
     beef_diag_report("after walk, before prune", &mut beef, &roots, walk_ms);
 
     let t1 = std::time::Instant::now();
-    prune_beef_to_roots(&mut beef, &roots);
+    prune_beef_to_roots(&mut beef, &roots).unwrap();
     let prune_ms = t1.elapsed().as_millis();
 
     beef_diag_report(

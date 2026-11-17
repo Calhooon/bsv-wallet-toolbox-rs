@@ -29,5 +29,7 @@ fuzz_target!(|data: &[u8]| {
     for txid in &leaves {
         let _ = mp.compute_root(Some(txid));
     }
-    let _ = MerklePath::from_binary(&mp.to_binary());
+    // A path a reader read always writes (bsv-rs #817's writer rule).
+    let bytes = mp.to_binary().expect("a path read from bytes writes");
+    let _ = MerklePath::from_binary(&bytes);
 });

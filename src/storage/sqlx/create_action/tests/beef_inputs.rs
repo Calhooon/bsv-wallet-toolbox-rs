@@ -43,7 +43,7 @@ async fn test_build_input_beef_with_proven_tx() {
         ).unwrap();
 
     // A real single-leaf proof for the funding transaction.
-    let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary();
+    let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary().unwrap();
 
     let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
 

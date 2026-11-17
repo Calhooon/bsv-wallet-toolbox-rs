@@ -317,8 +317,8 @@ fn proven_frame(
     tracker.add_root(GENESIS, bump.compute_root(None).unwrap());
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent.to_binary(), Some(index));
-    beef.merge_raw_tx(child.to_binary(), None);
+    beef.merge_raw_tx(parent.to_binary(), Some(index)).unwrap();
+    beef.merge_raw_tx(child.to_binary(), None).unwrap();
     (beef, tracker)
 }
 
@@ -381,10 +381,10 @@ async fn host_live_pass_preserves_value_refusals() {
     child.outputs_mut()[0].satoshis = Some(SATOSHIS + 1);
     // Only the proven source and this overspending child belong in the frame.
     beef.txs.pop();
-    beef.merge_raw_tx(child.to_binary(), None);
+    beef.merge_raw_tx(child.to_binary(), None).unwrap();
     let roots = beef_roots(&beef);
     let error = super::super::super::verify_beef_spends_with_verifier(
-        &beef.to_binary(),
+        &beef.to_binary().unwrap(),
         &roots,
         &tracker,
         "main",
@@ -417,10 +417,10 @@ fn beef_roots(beef: &Beef) -> Vec<(u64, Hash32)> {
 async fn host_live_batch_spans_all_selected_transactions() {
     let (child, mut beef, tracker) = proven_beef();
     let grandchild = spend(&child, 0, Some(&[]));
-    beef.merge_raw_tx(grandchild.to_binary(), None);
+    beef.merge_raw_tx(grandchild.to_binary(), None).unwrap();
     let host = batch(Ok(vec![true, true]));
     super::super::super::verify_beef_spends_with_verifier(
-        &beef.to_binary(),
+        &beef.to_binary().unwrap(),
         &beef_roots(&beef),
         &tracker,
         "main",

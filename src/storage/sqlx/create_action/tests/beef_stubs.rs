@@ -54,7 +54,7 @@ async fn l2_23_pin_i_internalize_refuses_stub_without_storing() {
         }
         let chain = synth_chain(2);
         let mut stub = Beef::new();
-        stub.merge_raw_tx(chain[1].0.clone(), None);
+        stub.merge_raw_tx(chain[1].0.clone(), None).unwrap();
         let result = super::super::internalize_action::internalize_action_internal(
             &s,
             user.user_id,
@@ -134,7 +134,7 @@ async fn l2_23_stored_bumpless_structure_is_checked() {
     use bsv_rs::transaction::MockChainTracker;
     let chain = synth_chain(2);
     let mut stub = Beef::new();
-    stub.merge_raw_tx(chain[1].0.clone(), None);
+    stub.merge_raw_tx(chain[1].0.clone(), None).unwrap();
     assert!(!validate_stored_beef(&mut stub, &MockChainTracker::new(101), &chain[1].1).await);
 }
 

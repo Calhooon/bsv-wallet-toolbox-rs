@@ -314,7 +314,13 @@ impl StorageSqlx {
                 };
 
                 // Merge the transaction being broadcast into the BEEF
-                beef.merge_raw_tx(raw_tx.clone(), None);
+                if let Err(e) = beef.merge_raw_tx(raw_tx.clone(), None) {
+                    tracing::warn!(
+                        "send_waiting: the stored transaction {} does not merge into its BEEF: {e}",
+                        req.txid
+                    );
+                    continue;
+                }
 
                 // Validate BEEF structure before broadcast (diagnostic)
                 if let Err(e) = validate_beef_for_broadcast(&beef, &req.txid) {
@@ -325,7 +331,13 @@ impl StorageSqlx {
                     );
                 }
 
-                beef.to_binary()
+                match beef.to_binary() {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("send_waiting: the BEEF for {} is not writable: {e}", req.txid);
+                        continue;
+                    }
+                }
             };
 
             // Update status to sending

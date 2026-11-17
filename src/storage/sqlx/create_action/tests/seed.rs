@@ -78,7 +78,7 @@ async fn process_batch(seed: Option<[u8; 32]>, new_transaction: bool) -> Vec<Str
     let txid = raw_tx.as_deref().map(txid_of);
     if new_transaction {
         sqlx::query("INSERT INTO transactions (user_id, status, reference, is_outgoing, input_beef, description) VALUES (?, 'unsigned', 'new-action', 1, ?, 'new seeded request')")
-            .bind(auth.user_id).bind(Beef::new().to_binary())
+            .bind(auth.user_id).bind(Beef::new().to_binary().unwrap())
             .execute(storage.writer()).await.unwrap();
     }
     let result = storage

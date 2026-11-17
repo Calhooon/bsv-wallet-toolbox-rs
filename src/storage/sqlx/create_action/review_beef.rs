@@ -85,12 +85,12 @@ async fn build_competing_beef(conn: &mut SqliteConnection, root: &str) -> Result
         }
         if beef.find_txid(&txid).is_none_or(BeefTx::is_txid_only) {
             let Some(fragment) = stored_fragment(conn, &txid).await? else {
-                return Ok(txid_only(root));
+                return txid_only(root);
             };
-            merge_beef_linked(&mut beef, &fragment);
+            merge_beef_linked(&mut beef, &fragment)?;
         }
         if beef.find_txid(&txid).is_none() {
-            return Ok(txid_only(root));
+            return txid_only(root);
         }
         let raw = beef.find_txid(&txid).and_then(|tx| {
             if tx.bump_index().is_none() {
@@ -105,15 +105,15 @@ async fn build_competing_beef(conn: &mut SqliteConnection, root: &str) -> Result
     }
     beef.sort_txs();
     if !beef.verify_valid(false).valid {
-        return Ok(txid_only(root));
+        return txid_only(root);
     }
-    Ok(beef.to_binary())
+    Ok(beef.to_binary()?)
 }
 
-fn txid_only(txid: &str) -> Vec<u8> {
+fn txid_only(txid: &str) -> Result<Vec<u8>> {
     let mut beef = Beef::new();
     beef.merge_txid_only(txid.to_owned());
-    beef.to_binary()
+    Ok(beef.to_binary()?)
 }
 
 async fn stored_fragment(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Beef>> {
@@ -143,11 +143,11 @@ async fn stored_fragment(conn: &mut SqliteConnection, txid: &str) -> Result<Opti
     let mut beef = Beef::new();
     if let Some(proof) = proof {
         let index = beef.merge_bump(MerklePath::from_binary(&proof)?);
-        beef.merge_raw_tx(raw, Some(index));
+        beef.merge_raw_tx(raw, Some(index))?;
     } else {
-        beef.merge_raw_tx(raw, None);
+        beef.merge_raw_tx(raw, None)?;
         if let Some(ancestry) = ancestry {
-            merge_beef_linked(&mut beef, &Beef::from_binary(&ancestry)?);
+            merge_beef_linked(&mut beef, &Beef::from_binary(&ancestry)?)?;
         }
     }
     Ok(Some(beef))

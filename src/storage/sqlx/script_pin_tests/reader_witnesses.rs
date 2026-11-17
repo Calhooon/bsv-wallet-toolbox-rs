@@ -36,7 +36,7 @@ fn atomic(
     let mut id = hex::decode(subject.id()).unwrap();
     id.reverse();
     writer.write_bytes(&id);
-    beef.to_writer(&mut writer);
+    beef.to_writer(&mut writer).unwrap();
     writer.into_bytes()
 }
 

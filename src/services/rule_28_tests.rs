@@ -1274,7 +1274,7 @@ async fn spend_scene(scene: SpendScene) -> SpendFixtures {
                     .create_async()
                     .await,
                 );
-                proof.merkle_path = Some(bump.to_hex());
+                proof.merkle_path = Some(bump.to_hex().unwrap());
                 proof.header = Some(header);
             }
             spent_route
@@ -1760,7 +1760,7 @@ async fn named_spender_pass(
     let courier: MerklePathProvider = StdArc::new(CountedProof {
         answer: GetMerklePathResult {
             name: Some("courier".to_string()),
-            merkle_path: Some(bump.to_hex()),
+            merkle_path: Some(bump.to_hex().unwrap()),
             header: Some(BlockHeader {
                 version: 1,
                 previous_hash: "0".repeat(64),

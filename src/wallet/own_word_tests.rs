@@ -224,9 +224,9 @@ async fn supply_source(scene: &NamedInputScene) -> Vec<u8> {
         &scene.input.source_txid,
         height,
     ));
-    beef.merge_raw_tx(raw, Some(index));
+    beef.merge_raw_tx(raw, Some(index)).unwrap();
     forget_source_bytes(scene, "no action").await;
-    beef.to_binary()
+    beef.to_binary().unwrap()
 }
 
 /// A response option that touches the BEEF or the post.

@@ -123,7 +123,7 @@ pub(super) async fn fund_tagged(
     .bind(height)
     .bind("aa".repeat(32))
     .bind(&txid)
-    .bind(bump.to_binary())
+    .bind(bump.to_binary().unwrap())
     .bind(&raw)
     .bind(now)
     .bind(now)
@@ -275,7 +275,7 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
     let mut beef = Beef::new();
     let proof_height = above_genesis(&wallet, 0);
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, proof_height));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump)).unwrap();
     beef.merge_transaction(tx);
     let atomic = beef.to_binary_atomic(&txid).unwrap();
 
@@ -1096,7 +1096,7 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
     let mut beef = Beef::new();
     let parent_height = above_genesis(&wallet, 1);
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, parent_height));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump)).unwrap();
     beef.merge_transaction(tx);
     let atomic = beef.to_binary_atomic(&txid).unwrap();
 

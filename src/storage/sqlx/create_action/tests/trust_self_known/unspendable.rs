@@ -40,7 +40,7 @@ async fn a_precheck_skips_a_coin_whose_beef_cannot_be_built() {
         seed_change_coin(&storage, user_id, &b2, true).await;
         // One root per height: b2's proof is in the next block.
         sqlx::query("UPDATE proven_txs SET height = 901, merkle_path = ? WHERE txid = ?")
-            .bind(bump_for(&b2.id(), 901).to_binary())
+            .bind(bump_for(&b2.id(), 901).to_binary().unwrap())
             .bind(b2.id())
             .execute(storage.writer())
             .await

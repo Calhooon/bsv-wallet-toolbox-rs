@@ -93,8 +93,8 @@ fn lineage(bad: bool, parent_lock: &str) -> (Transaction, Beef, MockChainTracker
     tracker.add_root(HEIGHT, bump.compute_root(None).unwrap());
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(grandparent.to_binary(), Some(index));
-    beef.merge_raw_tx(parent.to_binary(), None);
+    beef.merge_raw_tx(grandparent.to_binary(), Some(index)).unwrap();
+    beef.merge_raw_tx(parent.to_binary(), None).unwrap();
     (parent, beef, tracker)
 }
 
@@ -229,7 +229,7 @@ async fn stored_nosend(
     )
     .bind(&txid)
     .bind(&raw)
-    .bind(beef.to_binary())
+    .bind(beef.to_binary().unwrap())
     .bind(json!({ "transactionIds": [action] }).to_string())
     .bind(now)
     .execute(storage.writer())
@@ -394,7 +394,7 @@ async fn unsigned_action(storage: &StorageSqlx, user_id: i64, beef: &mut Beef) {
     )
     .bind(user_id)
     .bind(chrono::Utc::now())
-    .bind(beef.to_binary())
+    .bind(beef.to_binary().unwrap())
     .execute(storage.writer())
     .await
     .unwrap();
@@ -455,7 +455,7 @@ fn proven(tracker: &mut MockChainTracker) -> (Transaction, Beef) {
     tracker.add_root(HEIGHT + 1, bump.compute_root(None).unwrap());
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(source.to_binary(), Some(index));
+    beef.merge_raw_tx(source.to_binary(), Some(index)).unwrap();
     (source, beef)
 }
 
@@ -591,7 +591,7 @@ async fn create(
     if stored {
         internalized(&storage, user_id, &parent, &mut beef).await;
     }
-    let args = caller_args(&parent, &beef.to_binary(), txid_only);
+    let args = caller_args(&parent, &beef.to_binary().unwrap(), txid_only);
     let created = create_action_internal(&storage, Some(&tracker), user_id, args)
         .await
         .map(|_| ());
@@ -678,7 +678,7 @@ async fn internalized(storage: &StorageSqlx, user_id: i64, parent: &Transaction,
     )
     .bind(&txid)
     .bind(&raw)
-    .bind(beef.to_binary())
+    .bind(beef.to_binary().unwrap())
     .bind(now)
     .execute(storage.writer())
     .await
@@ -716,8 +716,8 @@ async fn create_txid_only_refuses_missing_caller_ancestry() {
             .unwrap()
             .txid();
         let mut incomplete = Beef::new();
-        incomplete.merge_raw_tx(parent.to_binary(), None);
-        let bytes = incomplete.to_binary();
+        incomplete.merge_raw_tx(parent.to_binary(), None).unwrap();
+        let bytes = incomplete.to_binary().unwrap();
         let mut parsed = Beef::from_binary(&bytes).unwrap();
         assert!(!parsed.verify_valid(true).valid);
         let args = caller_args(&parent, &bytes, txid_only);

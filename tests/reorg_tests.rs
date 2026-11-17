@@ -844,7 +844,8 @@ mod reorg_m19 {
                     duplicate: false,
                 }]],
             }
-            .to_binary(),
+            .to_binary()
+            .unwrap(),
         )
     }
 

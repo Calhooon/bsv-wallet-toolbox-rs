@@ -161,7 +161,7 @@ async fn create_review_carries_competing_beef_with_stored_proof() {
         f.wallet.storage(),
         &f.competitor,
         &f.raw,
-        &synth_bump(100_002, &f.competitor).to_binary(),
+        &synth_bump(100_002, &f.competitor).to_binary().unwrap(),
     )
     .await;
     let mut beef = f.beef().await;
@@ -198,13 +198,13 @@ async fn create_review_carries_competing_beef_from_request_input_beef() {
         .await
         .unwrap();
     let bump = ancestry.merge_bump(synth_bump(100_003, &f.source));
-    ancestry.merge_raw_tx(source_raw, Some(bump));
+    ancestry.merge_raw_tx(source_raw, Some(bump)).unwrap();
     sqlx::query("UPDATE transactions SET raw_tx = NULL WHERE txid = ?")
         .bind(&f.competitor)
         .execute(f.wallet.storage().writer())
         .await
         .unwrap();
-    f.request("unmined", Some(ancestry.to_binary())).await;
+    f.request("unmined", Some(ancestry.to_binary().unwrap())).await;
     let beef = f.beef().await;
     assert_eq!(
         beef.find_txid(&f.competitor).unwrap().raw_tx(),

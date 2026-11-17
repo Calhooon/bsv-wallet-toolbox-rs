@@ -119,7 +119,7 @@ fn test_describe_invalid_beef_names_the_missing_parent() {
     let chain = synth_chain(3); // a <- b <- c
     let mut beef = Beef::new();
     // c spends b, and b is absent: the BEEF cannot be valid.
-    beef.merge_raw_tx(chain[2].0.clone(), None);
+    beef.merge_raw_tx(chain[2].0.clone(), None).unwrap();
     assert!(
         !beef.verify_valid(true).valid,
         "the shape under test is invalid"
@@ -147,11 +147,11 @@ fn test_prune_stops_at_a_proven_ancestor() {
     let chain = synth_chain(3); // a <- b <- c
     let mut beef = Beef::new();
     let bump_idx = beef.merge_bump(synth_bump(900_000, &chain[1].1));
-    beef.merge_raw_tx(chain[0].0.clone(), None);
-    beef.merge_raw_tx(chain[1].0.clone(), Some(bump_idx));
-    beef.merge_raw_tx(chain[2].0.clone(), None);
+    beef.merge_raw_tx(chain[0].0.clone(), None).unwrap();
+    beef.merge_raw_tx(chain[1].0.clone(), Some(bump_idx)).unwrap();
+    beef.merge_raw_tx(chain[2].0.clone(), None).unwrap();
 
-    prune_beef_to_roots(&mut beef, &[chain[2].1.clone()]);
+    prune_beef_to_roots(&mut beef, &[chain[2].1.clone()]).unwrap();
 
     let kept = beef_txids(&beef);
     assert_eq!(kept.len(), 2, "only the root and its proven parent remain");
@@ -170,10 +170,10 @@ fn test_prune_carries_an_unproven_ancestor_whole() {
     let chain = synth_chain(3);
     let mut beef = Beef::new();
     for (raw, _) in &chain {
-        beef.merge_raw_tx(raw.clone(), None);
+        beef.merge_raw_tx(raw.clone(), None).unwrap();
     }
 
-    prune_beef_to_roots(&mut beef, &[chain[2].1.clone()]);
+    prune_beef_to_roots(&mut beef, &[chain[2].1.clone()]).unwrap();
 
     assert_eq!(
         beef.txs.len(),
@@ -190,14 +190,14 @@ fn test_prune_ten_hops_with_the_middle_ones_proven() {
         // Hops 3, 4 and 5 were mined; the rest are still unproven.
         if (3..=5).contains(&i) {
             let idx = beef.merge_bump(synth_bump(965_000 + i as u32, txid));
-            beef.merge_raw_tx(raw.clone(), Some(idx));
+            beef.merge_raw_tx(raw.clone(), Some(idx)).unwrap();
         } else {
-            beef.merge_raw_tx(raw.clone(), None);
+            beef.merge_raw_tx(raw.clone(), None).unwrap();
         }
     }
     assert_eq!(beef.txs.len(), 10);
 
-    prune_beef_to_roots(&mut beef, &[chain[9].1.clone()]);
+    prune_beef_to_roots(&mut beef, &[chain[9].1.clone()]).unwrap();
 
     // Walking back from hop 9: 9, 8, 7, 6 are unproven and needed; hop 5 is
     // proven so it terminates the chain; hops 0..=4 are gone.
@@ -216,12 +216,12 @@ fn test_prune_keeps_an_unproven_root_below_a_proven_root() {
     // the case a root-blind trim gets wrong.
     let chain = synth_chain(3); // a <- b <- c
     let mut beef = Beef::new();
-    beef.merge_raw_tx(chain[0].0.clone(), None);
-    beef.merge_raw_tx(chain[1].0.clone(), None);
+    beef.merge_raw_tx(chain[0].0.clone(), None).unwrap();
+    beef.merge_raw_tx(chain[1].0.clone(), None).unwrap();
     let idx = beef.merge_bump(synth_bump(900_001, &chain[2].1));
-    beef.merge_raw_tx(chain[2].0.clone(), Some(idx));
+    beef.merge_raw_tx(chain[2].0.clone(), Some(idx)).unwrap();
 
-    prune_beef_to_roots(&mut beef, &[chain[1].1.clone(), chain[2].1.clone()]);
+    prune_beef_to_roots(&mut beef, &[chain[1].1.clone(), chain[2].1.clone()]).unwrap();
 
     let kept = beef_txids(&beef);
     assert!(kept.contains(&chain[2].1), "the proven root is kept");
@@ -237,9 +237,9 @@ fn test_prune_leaves_a_beef_alone_when_no_root_is_present() {
     let chain = synth_chain(2);
     let mut beef = Beef::new();
     for (raw, _) in &chain {
-        beef.merge_raw_tx(raw.clone(), None);
+        beef.merge_raw_tx(raw.clone(), None).unwrap();
     }
-    prune_beef_to_roots(&mut beef, &["00".repeat(32)]);
+    prune_beef_to_roots(&mut beef, &["00".repeat(32)]).unwrap();
     assert_eq!(beef.txs.len(), 2, "pruning must never empty a BEEF");
 }
 
@@ -250,7 +250,7 @@ fn test_prune_leaves_a_beef_alone_when_no_root_is_present() {
 #[test]
 fn the_prune_rebuild_keeps_an_in_memory_entry_alone_764() {
     let (mut beef, [b, c, u]) = linked_in_memory_entry();
-    prune_beef_to_roots(&mut beef, std::slice::from_ref(&c));
+    prune_beef_to_roots(&mut beef, std::slice::from_ref(&c)).unwrap();
     let kept = beef_txids(&beef);
     assert!(kept.contains(&c) && !kept.contains(&u), "{kept:?}");
     assert!(!kept.contains(&b), "the linked parent stays out: {kept:?}");

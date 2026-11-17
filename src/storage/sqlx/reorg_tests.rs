@@ -51,6 +51,7 @@ pub(super) fn single_leaf_bump(height: u32, txid: &str) -> Vec<u8> {
         }]],
     }
     .to_binary()
+    .unwrap()
 }
 
 pub(super) fn txid_of(raw: &[u8]) -> String {

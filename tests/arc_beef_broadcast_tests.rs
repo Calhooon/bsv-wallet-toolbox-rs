@@ -26,9 +26,9 @@ fn build_single_tx_beef(version: u32) -> (Vec<u8>, String) {
     let mut beef = Beef::with_version(version);
     let bump_idx = beef.merge_bump(bump);
     let raw_tx = hex::decode(TEST_TX_HEX).unwrap();
-    beef.merge_raw_tx(raw_tx, Some(bump_idx));
+    beef.merge_raw_tx(raw_tx, Some(bump_idx)).unwrap();
 
-    (beef.to_binary(), txid)
+    (beef.to_binary().unwrap(), txid)
 }
 
 /// Helper: build a BEEF with a proven parent and an unproven child that spends it.
@@ -98,12 +98,12 @@ fn build_parent_child_beef_with_output(
     // Add parent as proven (with merkle path)
     let bump = MerklePath::from_coinbase_txid(&parent_txid, 800_000);
     let bump_idx = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent_tx.to_binary(), Some(bump_idx));
+    beef.merge_raw_tx(parent_tx.to_binary(), Some(bump_idx)).unwrap();
 
     // Add child as unproven (no bump)
-    beef.merge_raw_tx(child_tx.to_binary(), None);
+    beef.merge_raw_tx(child_tx.to_binary(), None).unwrap();
 
-    (beef.to_binary(), child_txid, parent_txid)
+    (beef.to_binary().unwrap(), child_txid, parent_txid)
 }
 
 // =============================================================================
@@ -235,7 +235,7 @@ async fn test_post_beef_trim_removes_deep_ancestors() {
     // Add a "grandparent" proven tx (same bytes, different bump height)
     let bump_gp = MerklePath::from_coinbase_txid(&txid, 799_999);
     let bump_gp_idx = beef.merge_bump(bump_gp);
-    beef.merge_raw_tx(tx_bytes.clone(), Some(bump_gp_idx));
+    beef.merge_raw_tx(tx_bytes.clone(), Some(bump_gp_idx)).unwrap();
 
     let count_before = beef.txs.len();
     assert_eq!(count_before, 1, "Should have 1 tx before trim");
@@ -251,7 +251,7 @@ async fn test_post_beef_trim_removes_deep_ancestors() {
 
     // Now test via the ARC post_beef path which does trim internally.
     // Build a V1 BEEF and post it -- verify the request succeeds.
-    let beef_bytes = beef.to_binary();
+    let beef_bytes = beef.to_binary().unwrap();
 
     let mut server = mockito::Server::new_async().await;
 
@@ -587,13 +587,13 @@ async fn test_post_beef_v2_with_txid_only_sent_as_is() {
     // Add a proven transaction
     let bump = MerklePath::from_coinbase_txid(&txid, 800_000);
     let bump_idx = beef.merge_bump(bump);
-    beef.merge_raw_tx(raw_tx, Some(bump_idx));
+    beef.merge_raw_tx(raw_tx, Some(bump_idx)).unwrap();
 
     // Add a txid-only entry (V2-only feature)
     let fake_txid = "bb".repeat(32);
     beef.merge_txid_only(fake_txid);
 
-    let beef_bytes = beef.to_binary();
+    let beef_bytes = beef.to_binary().unwrap();
 
     // Verify it starts with V2 magic
     assert_eq!(beef_bytes[0..4], [0x02, 0x00, 0xBE, 0xEF]);

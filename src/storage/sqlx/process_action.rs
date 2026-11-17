@@ -767,11 +767,11 @@ async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result
             .as_ref()
             .ok_or_else(|| Error::Internal("missing signed transaction".into()))?;
         validate_txid_matches_raw_tx(&post.txid, raw)?;
-        beef.merge_beef(&Beef::from_binary(input)?);
-        beef.merge_raw_tx(raw.clone(), None);
+        beef.merge_beef(&Beef::from_binary(input)?)?;
+        beef.merge_raw_tx(raw.clone(), None)?;
         roots.push(post.txid.clone());
     }
-    super::create_action::prune_beef_to_roots(&mut beef, &roots);
+    super::create_action::prune_beef_to_roots(&mut beef, &roots)?;
     // bsv-rs 0.9.0 judges the order held: BRC-62 requires parents ahead of children.
     beef.sort_txs();
     // A proven txid-only entry validates, but a broadcaster still needs its
@@ -792,7 +792,7 @@ async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result
             Some(storage),
         )
         .await?;
-        beef.merge_beef(&ancestors);
+        beef.merge_beef(&ancestors)?;
         // Restoring ancestors can append them after the children already merged.
         beef.sort_txs();
     }
@@ -800,7 +800,7 @@ async fn stored_post_beef(storage: &StorageSqlx, posts: &[StoredPost]) -> Result
     if beef.txs.iter().all(|tx| !tx.is_txid_only()) {
         beef.version = bsv_rs::transaction::BEEF_V1;
     }
-    Ok(beef.to_binary())
+    Ok(beef.to_binary()?)
 }
 
 async fn verify_stored_post_beef(storage: &StorageSqlx, beef: &mut Beef) -> Result<()> {
@@ -1785,7 +1785,7 @@ mod tests {
         let txid = compute_txid(&raw_tx);
         let bump = bsv_rs::transaction::MerklePath::from_coinbase_txid(&txid, 100_000);
         sqlx::query("INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, 100000, 0, ?, ?, ?, ?, ?, ?)")
-            .bind(&txid).bind("aa".repeat(32)).bind(&txid).bind(bump.to_binary())
+            .bind(&txid).bind("aa".repeat(32)).bind(&txid).bind(bump.to_binary().unwrap())
             .bind(&raw_tx).bind(now).bind(now).execute(storage.writer()).await.unwrap();
         let tx_result = sqlx::query(
             "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'seed_ref', 0, ?, 1, 0, 'Seed transaction', ?, ?, ?, ?)",

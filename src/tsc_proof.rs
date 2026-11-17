@@ -28,7 +28,7 @@ pub fn tsc_json_to_bump_binary(json_str: &str, block_height: u32) -> Option<Vec<
         .collect();
 
     let mp = tsc_proof_to_merkle_path(txid, index, &nodes, block_height).ok()?;
-    Some(mp.to_binary())
+    mp.to_binary().ok()
 }
 
 /// Convert a TSC proof JSON string to BUMP hex string.
@@ -48,7 +48,7 @@ pub fn tsc_json_to_bump_hex(json_str: &str, block_height: u32) -> Option<String>
         .collect();
 
     let mp = tsc_proof_to_merkle_path(txid, index, &nodes, block_height).ok()?;
-    Some(mp.to_hex())
+    mp.to_hex().ok()
 }
 
 /// Convert TSC proof components into a MerklePath.

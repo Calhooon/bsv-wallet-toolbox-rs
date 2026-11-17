@@ -112,7 +112,7 @@ async fn test_m19_429_planted_stale_proof_spend_rides_raw_leg_and_heals() {
         beef: &mut Beef,
         tracker: &dyn ChainTracker,
     ) -> std::result::Result<(), String> {
-        let beef_bytes = beef.to_binary();
+        let beef_bytes = beef.to_binary().unwrap();
         if beef_bytes.len() > 4 && !beef.bumps.is_empty() {
             let validation = beef.verify_valid(true);
             if !validation.valid {
@@ -160,7 +160,7 @@ async fn test_m19_429_planted_stale_proof_spend_rides_raw_leg_and_heals() {
             duplicate: false,
         }]],
     };
-    let stale_bump_bytes = stale_bump.to_binary();
+    let stale_bump_bytes = stale_bump.to_binary().unwrap();
     // The stored proof's root equals the txid (single-leaf) and the
     // canonical root at HEIGHT differs: a genuine stale anchor.
     assert_ne!(FUNDING_TXID, CANONICAL_ROOT);
@@ -294,7 +294,7 @@ async fn test_m19_429_planted_stale_proof_spend_rides_raw_leg_and_heals() {
     // is attached (the pre-R1 path the fix removes).
     let mut control = Beef::new();
     let idx = control.merge_bump(stale_bump.clone());
-    control.merge_raw_tx(funding_raw.clone(), Some(idx));
+    control.merge_raw_tx(funding_raw.clone(), Some(idx)).unwrap();
     let control_err = verify_like_create_action(&mut control, &tracker)
         .await
         .expect_err("an attached orphan bump is rejected by the same check");
@@ -481,10 +481,10 @@ async fn test_walk_keeps_the_closure_of_the_inputs_when_the_stored_beef_lacks_it
 
     let mut stored = Beef::new();
     let parent_bump = stored.merge_bump(synth_bump(965_000, &parent));
-    stored.merge_raw_tx(parent_raw, Some(parent_bump));
+    stored.merge_raw_tx(parent_raw, Some(parent_bump)).unwrap();
     let stray_bump = stored.merge_bump(synth_bump(965_001, &stray));
-    stored.merge_raw_tx(stray_raw, Some(stray_bump));
-    seed_unproven_tx(&storage, &subject, &subject_raw, Some(&stored.to_binary())).await;
+    stored.merge_raw_tx(stray_raw, Some(stray_bump)).unwrap();
+    seed_unproven_tx(&storage, &subject, &subject_raw, Some(&stored.to_binary().unwrap())).await;
 
     let beef = super::beef_walk_ancestry::walk_from(&storage, &subject, None).await;
 

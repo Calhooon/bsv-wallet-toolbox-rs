@@ -181,7 +181,8 @@ pub fn sample() -> &'static (String, String, Vec<u8>) {
         let mut beef = bsv_rs::transaction::Beef::new();
         let txid = beef
             .merge_raw_tx(hex::decode(&raw).expect("hex"), None)
+            .expect("one transaction")
             .txid();
-        (raw, txid, beef.to_binary())
+        (raw, txid, beef.to_binary().expect("the sample writes"))
     })
 }

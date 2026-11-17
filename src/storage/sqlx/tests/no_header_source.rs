@@ -81,11 +81,11 @@ async fn create_pre_check_holds_for_the_proofs_want_of_headers() {
     let p2pkh = "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac";
     for header in [Header::Off, Header::None] {
         let (parent, mut beef, tracker) = lineage(false, p2pkh);
-        let (storage, created) = create_with(header, &parent, &beef.to_binary(), &tracker).await;
+        let (storage, created) = create_with(header, &parent, &beef.to_binary().unwrap(), &tracker).await;
         assert_held(header, &storage, created).await;
     }
     let (parent, mut beef, tracker) = lineage(false, p2pkh);
-    let (_, created) = create_with(Header::Tracker, &parent, &beef.to_binary(), &tracker).await;
+    let (_, created) = create_with(Header::Tracker, &parent, &beef.to_binary().unwrap(), &tracker).await;
     created.unwrap();
 }
 
@@ -102,7 +102,7 @@ fn proven_only(root: bool) -> (Transaction, Beef, MockChainTracker) {
     }
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(proven.to_binary(), Some(index));
+    beef.merge_raw_tx(proven.to_binary(), Some(index)).unwrap();
     (proven, beef, tracker)
 }
 
@@ -113,7 +113,7 @@ fn proven_only(root: bool) -> (Transaction, Beef, MockChainTracker) {
 async fn create_holds_a_caller_root_no_tracker_can_check() {
     for header in [Header::Off, Header::None] {
         let (proven, mut beef, tracker) = proven_only(false);
-        let (storage, created) = create_with(header, &proven, &beef.to_binary(), &tracker).await;
+        let (storage, created) = create_with(header, &proven, &beef.to_binary().unwrap(), &tracker).await;
         assert_held(header, &storage, created).await;
     }
 }
@@ -124,7 +124,7 @@ async fn create_holds_a_caller_root_no_tracker_can_check() {
 async fn create_with_a_tracker_refuses_the_wrong_root_and_admits_the_right_one() {
     let (proven, mut beef, tracker) = proven_only(false);
     let (storage, created) =
-        create_with(Header::Tracker, &proven, &beef.to_binary(), &tracker).await;
+        create_with(Header::Tracker, &proven, &beef.to_binary().unwrap(), &tracker).await;
     let error = created.unwrap_err();
     eprintln!("wrong root: {error}");
     assert!(
@@ -134,7 +134,7 @@ async fn create_with_a_tracker_refuses_the_wrong_root_and_admits_the_right_one()
     );
     assert_eq!(action_rows(&storage).await, 0);
     let (proven, mut beef, tracker) = proven_only(true);
-    let (_, created) = create_with(Header::Tracker, &proven, &beef.to_binary(), &tracker).await;
+    let (_, created) = create_with(Header::Tracker, &proven, &beef.to_binary().unwrap(), &tracker).await;
     created.unwrap();
 }
 
@@ -145,7 +145,7 @@ async fn create_on(
     proven: &Transaction,
     beef: &mut Beef,
 ) -> crate::Result<()> {
-    let args = caller_args(proven, &beef.to_binary(), false);
+    let args = caller_args(proven, &beef.to_binary().unwrap(), false);
     create_action_internal(storage, None, user_id, args)
         .await
         .map(|_| ())
@@ -358,8 +358,8 @@ async fn create_asks_no_header_service_for_a_beef_with_no_caller_root() {
     let grandparent = spend(&"11".repeat(32), "00", 10_000, "51");
     let parent = spend(&grandparent.id(), "", 9_000, "51");
     let mut beef = Beef::new();
-    beef.merge_raw_tx(parent.to_binary(), None);
-    let (storage, asks, error) = create_unreachable(&parent, &beef.to_binary()).await;
+    beef.merge_raw_tx(parent.to_binary(), None).unwrap();
+    let (storage, asks, error) = create_unreachable(&parent, &beef.to_binary().unwrap()).await;
     eprintln!("no caller root: {error}; asks={asks}");
     let (gp, p) = (grandparent.id(), parent.id());
     let structure = format!(
@@ -383,7 +383,7 @@ async fn create_asks_no_header_service_for_a_beef_with_no_caller_root() {
 #[tokio::test]
 async fn create_holds_a_caller_root_with_the_header_services_fault() {
     let (proven, mut beef, _) = proven_only(false);
-    let (storage, asks, error) = create_unreachable(&proven, &beef.to_binary()).await;
+    let (storage, asks, error) = create_unreachable(&proven, &beef.to_binary().unwrap()).await;
     eprintln!("caller root: {error}; asks={asks}");
     assert!(matches!(error, Error::ServiceError(_)), "{error:?}");
     assert_eq!(error.to_string(), UNREACHABLE_HOLD);

@@ -132,9 +132,10 @@ pub(in crate::storage::sqlx) fn link_txids_carried_by_bumps(beef: &mut Beef) {
 }
 
 /// `merge_beef`, then the reference's link of carried txids.
-pub(super) fn merge_beef_linked(beef: &mut Beef, other: &Beef) {
-    beef.merge_beef(other);
+pub(super) fn merge_beef_linked(beef: &mut Beef, other: &Beef) -> Result<()> {
+    beef.merge_beef(other)?;
     link_txids_carried_by_bumps(beef);
+    Ok(())
 }
 
 /// Why a BEEF failed structural validation, in one line. "BEEF structure is
@@ -157,7 +158,7 @@ pub(in crate::storage::sqlx) fn describe_invalid_beef(beef: &mut Beef, roots: &[
     };
     format!(
         "roots [{}]; missing inputs [{}]; transactions with missing inputs [{}]; \
-         not valid [{}]; txid-only [{}]; {} tx(s), {} bump(s), {} bytes",
+         not valid [{}]; txid-only [{}]; {} tx(s), {} bump(s), {}",
         short(roots),
         short(&sr.missing_inputs),
         short(&sr.with_missing_inputs),
@@ -165,7 +166,10 @@ pub(in crate::storage::sqlx) fn describe_invalid_beef(beef: &mut Beef, roots: &[
         short(&sr.txid_only),
         beef.txs.len(),
         beef.bumps.len(),
-        beef.to_binary().len()
+        beef.to_binary().map_or_else(
+            |e| format!("not writable: {e}"),
+            |bytes| format!("{} bytes", bytes.len())
+        )
     )
 }
 
@@ -226,9 +230,9 @@ pub(super) fn needed_by_roots(beef: &Beef, txids: &[String], roots: &[String]) -
 ///
 /// Roots that are absent from `beef` are ignored. If that leaves nothing to
 /// keep, `beef` is left untouched: pruning must never empty a BEEF.
-pub(in crate::storage::sqlx) fn prune_beef_to_roots(beef: &mut Beef, roots: &[String]) {
+pub(in crate::storage::sqlx) fn prune_beef_to_roots(beef: &mut Beef, roots: &[String]) -> Result<()> {
     if beef.txs.is_empty() || roots.is_empty() {
-        return;
+        return Ok(());
     }
 
     // `BeefTx::txid()` re-hashes the raw bytes on every call, so index once.
@@ -236,7 +240,7 @@ pub(in crate::storage::sqlx) fn prune_beef_to_roots(beef: &mut Beef, roots: &[St
     let needed = needed_by_roots(beef, &txids, roots);
 
     if needed.is_empty() || needed.len() == beef.txs.len() {
-        return;
+        return Ok(());
     }
 
     // Rebuild: bumps first so each merged transaction rediscovers its index.
@@ -263,18 +267,19 @@ pub(in crate::storage::sqlx) fn prune_beef_to_roots(beef: &mut Beef, roots: &[St
         if tx.is_txid_only() {
             pruned.merge_txid_only(txids[i].clone());
         } else if let Some(raw) = tx.raw_tx() {
-            pruned.merge_raw_tx(raw.to_vec(), None);
+            pruned.merge_raw_tx(raw.to_vec(), None)?;
         } else if let Some(t) = tx.tx() {
             // The entry alone: since bsv-rs 0.9.0-beta.7 (#764)
             // `merge_transaction` walks the sources an in-memory transaction
             // links, which would put back what the prune drops.
-            pruned.merge_raw_tx(t.to_binary(), None);
+            pruned.merge_raw_tx(t.to_binary(), None)?;
         }
     }
     // The rebuild links strictly; keep every link the original carried.
     link_txids_carried_by_bumps(&mut pruned);
 
     *beef = pruned;
+    Ok(())
 }
 
 /// Compacts a stored BEEF by upgrading unproven transactions with current
