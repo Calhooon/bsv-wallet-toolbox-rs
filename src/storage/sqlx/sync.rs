@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
+use sqlx::{Row, SqliteConnection};
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
@@ -396,14 +396,6 @@ pub async fn process_sync_chunk_internal(
     chunk: SyncChunk,
     sync_map: &mut crate::storage::SyncMap,
 ) -> Result<ProcessSyncChunkResult> {
-    let mut result = ProcessSyncChunkResult {
-        done: false,
-        max_updated_at: None,
-        updates: 0,
-        inserts: 0,
-        error: None,
-    };
-
     // Verify identity keys match
     if chunk.user_identity_key != args.identity_key {
         return Err(Error::SyncError(format!(
@@ -414,17 +406,58 @@ pub async fn process_sync_chunk_internal(
 
     // Find or create the user
     let (user, user_is_new) = storage.find_or_insert_user(&args.identity_key).await?;
-    let user_id = user.user_id;
+
+    // One chunk, one write transaction (the reference's processSyncChunk runs
+    // a page in one transaction): a chunk refused or failing part way leaves
+    // none of its rows, and no other writer's row lands between two of them.
+    // The id maps are restored with it, so a later chunk does not resolve a
+    // parent this one never wrote.
+    let saved_map = sync_map.clone();
+    let mut db_tx = storage.write_tx().await?;
+    match apply_chunk(
+        &mut db_tx,
+        user.user_id,
+        user_is_new,
+        &args,
+        &chunk,
+        sync_map,
+    )
+    .await
+    {
+        Ok(result) => {
+            super::storage_sqlx::commit(db_tx).await?;
+            Ok(result)
+        }
+        Err(e) => {
+            *sync_map = saved_map;
+            drop(db_tx);
+            Err(e)
+        }
+    }
+}
+
+async fn apply_chunk(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    user_is_new: bool,
+    args: &RequestSyncChunkArgs,
+    chunk: &SyncChunk,
+    sync_map: &mut crate::storage::SyncMap,
+) -> Result<ProcessSyncChunkResult> {
+    let mut result = ProcessSyncChunkResult {
+        done: false,
+        max_updated_at: None,
+        updates: 0,
+        inserts: 0,
+        error: None,
+    };
 
     if user_is_new {
         result.inserts += 1;
     }
 
     // Find or create sync state for tracking
-    let auth = AuthId::with_user_id(&args.identity_key, user_id);
-    let (mut _sync_state, _) = storage
-        .find_or_insert_sync_state(&auth, &args.from_storage_identity_key, "sync")
-        .await?;
+    ensure_sync_state(conn, user_id, &args.from_storage_identity_key).await?;
 
     // Track ID mappings from source to destination. Threaded across chunks via
     // `sync_map` (disjoint field borrows) so a child row resolves a parent that
@@ -457,7 +490,7 @@ pub async fn process_sync_chunk_internal(
         result.done = true;
         // Merge user if provided
         if let Some(ref chunk_user) = chunk.user {
-            let merge_result = merge_user(storage, user_id, chunk_user).await?;
+            let merge_result = merge_user(&mut *conn, user_id, chunk_user).await?;
             if merge_result.updated {
                 result.updates += 1;
             }
@@ -468,7 +501,7 @@ pub async fn process_sync_chunk_internal(
 
     // Process user if included
     if let Some(ref chunk_user) = chunk.user {
-        let merge_result = merge_user(storage, user_id, chunk_user).await?;
+        let merge_result = merge_user(&mut *conn, user_id, chunk_user).await?;
         if merge_result.updated {
             result.updates += 1;
         }
@@ -478,7 +511,7 @@ pub async fn process_sync_chunk_internal(
     // Process output baskets
     if let Some(baskets) = &chunk.output_baskets {
         for basket in baskets {
-            let upsert_result = upsert_basket(storage, user_id, basket).await?;
+            let upsert_result = upsert_basket(&mut *conn, user_id, basket).await?;
             basket_id_map.insert(basket.basket_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -492,7 +525,7 @@ pub async fn process_sync_chunk_internal(
     // Process proven tx reqs
     if let Some(reqs) = &chunk.proven_tx_reqs {
         for req in reqs {
-            let upsert_result = upsert_proven_tx_req(storage, req).await?;
+            let upsert_result = upsert_proven_tx_req(&mut *conn, req).await?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -505,7 +538,7 @@ pub async fn process_sync_chunk_internal(
     // Process proven txs
     if let Some(proven_txs) = &chunk.proven_txs {
         for ptx in proven_txs {
-            let upsert_result = upsert_proven_tx(storage, ptx).await?;
+            let upsert_result = upsert_proven_tx(&mut *conn, ptx).await?;
             if upsert_result.is_new {
                 result.inserts += 1;
             } else {
@@ -518,7 +551,7 @@ pub async fn process_sync_chunk_internal(
     // Process tx labels
     if let Some(labels) = &chunk.tx_labels {
         for label in labels {
-            let upsert_result = upsert_tx_label(storage, user_id, label).await?;
+            let upsert_result = upsert_tx_label(&mut *conn, user_id, label).await?;
             label_id_map.insert(label.label_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -532,7 +565,7 @@ pub async fn process_sync_chunk_internal(
     // Process output tags
     if let Some(tags) = &chunk.output_tags {
         for tag in tags {
-            let upsert_result = upsert_output_tag(storage, user_id, tag).await?;
+            let upsert_result = upsert_output_tag(&mut *conn, user_id, tag).await?;
             tag_id_map.insert(tag.tag_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -546,7 +579,7 @@ pub async fn process_sync_chunk_internal(
     // Process transactions
     if let Some(transactions) = &chunk.transactions {
         for tx in transactions {
-            let upsert_result = upsert_transaction(storage, user_id, tx).await?;
+            let upsert_result = upsert_transaction(&mut *conn, user_id, tx).await?;
             transaction_id_map.insert(tx.transaction_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -586,14 +619,14 @@ pub async fn process_sync_chunk_internal(
         for output in outputs {
             let local_tx_id = match transaction_id_map.get(&output.transaction_id).copied() {
                 Some(tid) => Some(tid),
-                None => find_transaction_id_for_sync(storage, user_id, &output.txid).await?,
+                None => find_transaction_id_for_sync(&mut *conn, user_id, &output.txid).await?,
             };
             let Some(tx_id) = local_tx_id else { continue };
             let local_basket_id = output
                 .basket_id
                 .and_then(|bid| basket_id_map.get(&bid).copied());
             let upsert_result =
-                upsert_output(storage, user_id, output, tx_id, local_basket_id).await?;
+                upsert_output(&mut *conn, user_id, output, tx_id, local_basket_id).await?;
             output_id_map.insert(output.output_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -610,7 +643,7 @@ pub async fn process_sync_chunk_internal(
             let local_tx_id = transaction_id_map.get(&map.transaction_id).copied();
             let local_label_id = label_id_map.get(&map.label_id).copied();
             if let (Some(tx_id), Some(label_id)) = (local_tx_id, local_label_id) {
-                let upsert_result = upsert_tx_label_map(storage, map, tx_id, label_id).await?;
+                let upsert_result = upsert_tx_label_map(&mut *conn, map, tx_id, label_id).await?;
                 if upsert_result.is_new {
                     result.inserts += 1;
                 } else {
@@ -627,7 +660,8 @@ pub async fn process_sync_chunk_internal(
             let local_output_id = output_id_map.get(&map.output_id).copied();
             let local_tag_id = tag_id_map.get(&map.tag_id).copied();
             if let (Some(output_id), Some(tag_id)) = (local_output_id, local_tag_id) {
-                let upsert_result = upsert_output_tag_map(storage, map, output_id, tag_id).await?;
+                let upsert_result =
+                    upsert_output_tag_map(&mut *conn, map, output_id, tag_id).await?;
                 if upsert_result.is_new {
                     result.inserts += 1;
                 } else {
@@ -641,7 +675,7 @@ pub async fn process_sync_chunk_internal(
     // Process certificates
     if let Some(certs) = &chunk.certificates {
         for cert in certs {
-            let upsert_result = upsert_certificate(storage, user_id, cert).await?;
+            let upsert_result = upsert_certificate(&mut *conn, user_id, cert).await?;
             certificate_id_map.insert(cert.certificate_id, upsert_result.local_id);
             if upsert_result.is_new {
                 result.inserts += 1;
@@ -658,7 +692,7 @@ pub async fn process_sync_chunk_internal(
             let local_cert_id = certificate_id_map.get(&field.certificate_id).copied();
             if let Some(cert_id) = local_cert_id {
                 let upsert_result =
-                    upsert_certificate_field(storage, user_id, field, cert_id).await?;
+                    upsert_certificate_field(&mut *conn, user_id, field, cert_id).await?;
                 if upsert_result.is_new {
                     result.inserts += 1;
                 } else {
@@ -674,7 +708,7 @@ pub async fn process_sync_chunk_internal(
         for comm in commissions {
             let local_tx_id = transaction_id_map.get(&comm.transaction_id).copied();
             if let Some(tx_id) = local_tx_id {
-                let upsert_result = upsert_commission(storage, user_id, comm, tx_id).await?;
+                let upsert_result = upsert_commission(&mut *conn, user_id, comm, tx_id).await?;
                 if upsert_result.is_new {
                     result.inserts += 1;
                 } else {
@@ -1382,21 +1416,26 @@ struct MergeResult {
 }
 
 async fn merge_user(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     chunk_user: &TableUser,
 ) -> Result<MergeResult> {
     // Get current user
-    let current = storage
-        .find_user_by_id(user_id)
-        .await?
-        .ok_or_else(|| Error::UserNotFound(user_id.to_string()))?;
+    let current: DateTime<Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM users WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or_else(|| Error::UserNotFound(user_id.to_string()))?;
 
     // Only update if chunk is newer
-    if chunk_user.updated_at > current.updated_at {
+    if chunk_user.updated_at > current {
         if let Some(ref active_storage) = chunk_user.active_storage {
-            storage
-                .update_user_active_storage(user_id, active_storage)
+            sqlx::query("UPDATE users SET active_storage = ?, updated_at = ? WHERE user_id = ?")
+                .bind(active_storage)
+                .bind(Utc::now())
+                .bind(user_id)
+                .execute(&mut *conn)
                 .await?;
         }
         return Ok(MergeResult { updated: true });
@@ -1405,8 +1444,42 @@ async fn merge_user(
     Ok(MergeResult { updated: false })
 }
 
+/// The sync state row for the chunk's source store, found or inserted on the
+/// chunk's own transaction (as `find_or_insert_sync_state_internal` does on
+/// the writer).
+async fn ensure_sync_state(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    from_storage_identity_key: &str,
+) -> Result<()> {
+    let found: Option<i64> = sqlx::query_scalar(
+        "SELECT sync_state_id FROM sync_states WHERE user_id = ? AND storage_identity_key = ?",
+    )
+    .bind(user_id)
+    .bind(from_storage_identity_key)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if found.is_none() {
+        let now = Utc::now();
+        sqlx::query(
+            r#"
+            INSERT INTO sync_states (user_id, storage_identity_key, storage_name, status, init, ref_num, sync_map, created_at, updated_at)
+            VALUES (?, ?, 'sync', 'unknown', 0, ?, '{}', ?, ?)
+            "#,
+        )
+        .bind(user_id)
+        .bind(from_storage_identity_key)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(now)
+        .bind(now)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
 async fn upsert_basket(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     basket: &TableOutputBasket,
 ) -> Result<UpsertResult> {
@@ -1419,7 +1492,7 @@ async fn upsert_basket(
     )
     .bind(user_id)
     .bind(&basket.name)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -1439,7 +1512,7 @@ async fn upsert_basket(
             .bind(basket.minimum_desired_utxo_value)
             .bind(basket.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -1461,7 +1534,7 @@ async fn upsert_basket(
         .bind(basket.minimum_desired_utxo_value)
         .bind(basket.created_at)
         .bind(basket.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -1471,7 +1544,10 @@ async fn upsert_basket(
     }
 }
 
-async fn upsert_proven_tx(storage: &StorageSqlx, ptx: &TableProvenTx) -> Result<UpsertResult> {
+async fn upsert_proven_tx(
+    conn: &mut SqliteConnection,
+    ptx: &TableProvenTx,
+) -> Result<UpsertResult> {
     // Check if exists by txid
     let existing = sqlx::query(
         r#"
@@ -1480,7 +1556,7 @@ async fn upsert_proven_tx(storage: &StorageSqlx, ptx: &TableProvenTx) -> Result<
         "#,
     )
     .bind(&ptx.txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -1504,7 +1580,7 @@ async fn upsert_proven_tx(storage: &StorageSqlx, ptx: &TableProvenTx) -> Result<
             .bind(&ptx.raw_tx)
             .bind(ptx.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -1529,7 +1605,7 @@ async fn upsert_proven_tx(storage: &StorageSqlx, ptx: &TableProvenTx) -> Result<
         .bind(&ptx.raw_tx)
         .bind(ptx.created_at)
         .bind(ptx.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -1540,7 +1616,7 @@ async fn upsert_proven_tx(storage: &StorageSqlx, ptx: &TableProvenTx) -> Result<
 }
 
 async fn upsert_proven_tx_req(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     req: &TableProvenTxReq,
 ) -> Result<UpsertResult> {
     // Check if exists by txid
@@ -1551,7 +1627,7 @@ async fn upsert_proven_tx_req(
         "#,
     )
     .bind(&req.txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     let status_str = format!("{:?}", req.status).to_lowercase();
@@ -1589,7 +1665,7 @@ async fn upsert_proven_tx_req(
             .bind(&req.batch)
             .bind(req.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -1623,7 +1699,7 @@ async fn upsert_proven_tx_req(
         .bind(&req.batch)
         .bind(req.created_at)
         .bind(req.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -1634,7 +1710,7 @@ async fn upsert_proven_tx_req(
 }
 
 async fn upsert_tx_label(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     label: &TableTxLabel,
 ) -> Result<UpsertResult> {
@@ -1647,7 +1723,7 @@ async fn upsert_tx_label(
     )
     .bind(user_id)
     .bind(&label.label)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -1663,7 +1739,7 @@ async fn upsert_tx_label(
             )
             .bind(label.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -1683,7 +1759,7 @@ async fn upsert_tx_label(
         .bind(&label.label)
         .bind(label.created_at)
         .bind(label.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -1694,7 +1770,7 @@ async fn upsert_tx_label(
 }
 
 async fn upsert_output_tag(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     tag: &TableOutputTag,
 ) -> Result<UpsertResult> {
@@ -1707,7 +1783,7 @@ async fn upsert_output_tag(
     )
     .bind(user_id)
     .bind(&tag.tag)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -1723,7 +1799,7 @@ async fn upsert_output_tag(
             )
             .bind(tag.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -1743,7 +1819,7 @@ async fn upsert_output_tag(
         .bind(&tag.tag)
         .bind(tag.created_at)
         .bind(tag.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -1754,7 +1830,7 @@ async fn upsert_output_tag(
 }
 
 async fn upsert_transaction(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     tx: &TableTransaction,
 ) -> Result<UpsertResult> {
@@ -1767,7 +1843,7 @@ async fn upsert_transaction(
     )
     .bind(user_id)
     .bind(&tx.reference)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     let status_str = tx.status.as_str();
@@ -1798,7 +1874,7 @@ async fn upsert_transaction(
             .bind(&tx.proof_txid)
             .bind(tx.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -1828,7 +1904,7 @@ async fn upsert_transaction(
         .bind(&tx.proof_txid)
         .bind(tx.created_at)
         .bind(tx.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -1852,7 +1928,7 @@ async fn upsert_transaction(
 /// `tx_label_maps`, `output_tag_maps`, `commissions`, and
 /// `certificate_fields`.
 async fn find_transaction_id_for_sync(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     txid: &str,
 ) -> Result<Option<i64>> {
@@ -1865,7 +1941,7 @@ async fn find_transaction_id_for_sync(
     )
     .bind(user_id)
     .bind(txid)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
     Ok(row.map(|r| r.get::<i64, _>("transaction_id")))
 }
@@ -1880,7 +1956,7 @@ fn stored_purpose(output: &TableOutput) -> &str {
 }
 
 async fn upsert_output(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     output: &TableOutput,
     tx_id: i64,
@@ -1918,7 +1994,7 @@ async fn upsert_output(
     .bind(user_id)
     .bind(tx_id)
     .bind(output.vout)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -1960,7 +2036,7 @@ async fn upsert_output(
             .bind(output.purpose.as_deref())
             .bind(output.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -2000,7 +2076,7 @@ async fn upsert_output(
         .bind(stored_purpose(output))
         .bind(output.created_at)
         .bind(output.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -2011,7 +2087,7 @@ async fn upsert_output(
 }
 
 async fn upsert_tx_label_map(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     map: &TableTxLabelMap,
     local_tx_id: i64,
     local_label_id: i64,
@@ -2025,7 +2101,7 @@ async fn upsert_tx_label_map(
     )
     .bind(local_tx_id)
     .bind(local_label_id)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -2041,7 +2117,7 @@ async fn upsert_tx_label_map(
             )
             .bind(map.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -2061,7 +2137,7 @@ async fn upsert_tx_label_map(
         .bind(local_label_id)
         .bind(map.created_at)
         .bind(map.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -2072,7 +2148,7 @@ async fn upsert_tx_label_map(
 }
 
 async fn upsert_output_tag_map(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     map: &TableOutputTagMap,
     local_output_id: i64,
     local_tag_id: i64,
@@ -2086,7 +2162,7 @@ async fn upsert_output_tag_map(
     )
     .bind(local_output_id)
     .bind(local_tag_id)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -2102,7 +2178,7 @@ async fn upsert_output_tag_map(
             )
             .bind(map.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -2122,7 +2198,7 @@ async fn upsert_output_tag_map(
         .bind(local_tag_id)
         .bind(map.created_at)
         .bind(map.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -2133,7 +2209,7 @@ async fn upsert_output_tag_map(
 }
 
 async fn upsert_certificate(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     cert: &TableCertificate,
 ) -> Result<UpsertResult> {
@@ -2148,7 +2224,7 @@ async fn upsert_certificate(
     .bind(&cert.cert_type)
     .bind(&cert.certifier)
     .bind(&cert.serial_number)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -2170,7 +2246,7 @@ async fn upsert_certificate(
             .bind(&cert.signature)
             .bind(cert.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -2196,7 +2272,7 @@ async fn upsert_certificate(
         .bind(&cert.signature)
         .bind(cert.created_at)
         .bind(cert.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -2207,7 +2283,7 @@ async fn upsert_certificate(
 }
 
 async fn upsert_certificate_field(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     field: &TableCertificateField,
     local_cert_id: i64,
@@ -2221,7 +2297,7 @@ async fn upsert_certificate_field(
     )
     .bind(local_cert_id)
     .bind(&field.field_name)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -2241,7 +2317,7 @@ async fn upsert_certificate_field(
             .bind(&field.master_key)
             .bind(field.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -2264,7 +2340,7 @@ async fn upsert_certificate_field(
         .bind(&field.master_key)
         .bind(field.created_at)
         .bind(field.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
@@ -2275,7 +2351,7 @@ async fn upsert_certificate_field(
 }
 
 async fn upsert_commission(
-    storage: &StorageSqlx,
+    conn: &mut SqliteConnection,
     user_id: i64,
     comm: &TableCommission,
     local_tx_id: i64,
@@ -2289,7 +2365,7 @@ async fn upsert_commission(
     )
     .bind(user_id)
     .bind(local_tx_id)
-    .fetch_optional(storage.pool())
+    .fetch_optional(&mut *conn)
     .await?;
 
     if let Some(row) = existing {
@@ -2311,7 +2387,7 @@ async fn upsert_commission(
             .bind(comm.is_redeemed)
             .bind(comm.updated_at)
             .bind(local_id)
-            .execute(&mut *storage.writer_conn().await?)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -2335,7 +2411,7 @@ async fn upsert_commission(
         .bind(comm.is_redeemed)
         .bind(comm.created_at)
         .bind(comm.updated_at)
-        .execute(&mut *storage.writer_conn().await?)
+        .execute(&mut *conn)
         .await?;
 
         Ok(UpsertResult {
