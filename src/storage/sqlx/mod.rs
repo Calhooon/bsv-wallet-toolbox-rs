@@ -55,6 +55,7 @@ mod reorg_tests;
 mod sibling_bump_tests;
 mod storage_sqlx;
 mod sync;
+mod sync_proof;
 #[cfg(test)]
 mod void_lineage_tests;
 
