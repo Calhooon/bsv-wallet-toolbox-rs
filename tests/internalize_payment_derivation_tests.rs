@@ -59,3 +59,59 @@ async fn a_full_derivation_is_admitted_at_both_doors() {
         assert_eq!((answer, stored), (Ok(true), 1));
     }
 }
+
+/// A row an earlier release wrote through the storage door: a change row
+/// with an empty derivation suffix. The host finds it by an empty prefix or
+/// suffix on a change row, and a relinquish of it from the default basket
+/// takes it out of the balance and out of coin selection.
+#[tokio::test]
+async fn a_change_row_with_an_empty_derivation_is_found_and_relinquished() {
+    let root = PrivateKey::random();
+    let sender = PrivateKey::random().public_key();
+    let (tx, txid) = paying_derived(&root, &sender, "cHJlZml4", "c3VmZml4");
+    let wallet = common::wallet("internalize-payment-derivation-tests", &root, &txid).await;
+    let args = InternalizeActionArgs {
+        tx,
+        outputs: vec![payment(0, "cHJlZml4", "c3VmZml4", &sender.to_hex())],
+        description: "a payment to check".to_string(),
+        labels: None,
+        seek_permission: None,
+    };
+    assert_eq!(
+        internalize_at("storage", &wallet, &root, args).await,
+        Ok(true)
+    );
+    let pool = wallet.storage().writer();
+    sqlx::query("UPDATE outputs SET derivation_suffix = '' WHERE txid = ?")
+        .bind(&txid)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(wallet.balance().await.unwrap().total, 9_500, "counted");
+
+    let found: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT txid, vout FROM outputs WHERE change = 1 \
+         AND (derivation_prefix = '' OR derivation_suffix = '')",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(found, vec![(txid.clone(), 0)]);
+
+    let relinquished = bsv_rs::wallet::WalletInterface::relinquish_output(
+        &wallet,
+        bsv_rs::wallet::RelinquishOutputArgs {
+            basket: "default".to_string(),
+            output: bsv_rs::wallet::Outpoint::from_string(&format!("{txid}.0")).unwrap(),
+        },
+        "test.local",
+    )
+    .await
+    .unwrap();
+    assert!(relinquished.relinquished);
+    assert_eq!(
+        wallet.balance().await.unwrap().total,
+        0,
+        "out of the balance"
+    );
+}
