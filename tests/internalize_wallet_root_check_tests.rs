@@ -24,15 +24,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bsv_rs::primitives::PrivateKey;
-use bsv_rs::script::{LockingScript, UnlockingScript};
-use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
+use bsv_rs::script::LockingScript;
 use bsv_rs::wallet::{InternalizeActionArgs, WalletInterface};
 use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
 use bsv_wallet_toolbox_rs::storage::*;
 use bsv_wallet_toolbox_rs::{StorageSqlx, Wallet, WalletServices};
 
 use common::forwarding::Forwarding;
-use common::{accepted, derived_key, p2pkh_bytes, payment, wallet_on_manager};
+use common::{accepted, beef_paying_with, derived_key, p2pkh_bytes, payment, wallet_on_manager};
 
 const PREFIX: &str = "d2FsbGV0LWRvb3I=";
 const SUFFIX: &str = "cm9vdHM=";
@@ -42,7 +41,7 @@ const NO_TRACKER: &str = "wallet error: Validation error: No chain tracker is av
 /// An AtomicBEEF paying the key `root` derives for `sender`, whose parent
 /// is carried whole with a BUMP at height 100_003.
 fn paying_with_whole_parent(root: &PrivateKey, sender: &bsv_rs::primitives::PublicKey) -> Vec<u8> {
-    paying_with_parent(root, sender, true)
+    beef_paying_with(lock(root, sender), true).0
 }
 
 /// The same payment with its parent carried by txid alone, beside the
@@ -51,46 +50,11 @@ fn paying_with_parent_by_txid_alone(
     root: &PrivateKey,
     sender: &bsv_rs::primitives::PublicKey,
 ) -> Vec<u8> {
-    paying_with_parent(root, sender, false)
+    beef_paying_with(lock(root, sender), false).0
 }
 
-fn paying_with_parent(
-    root: &PrivateKey,
-    sender: &bsv_rs::primitives::PublicKey,
-    whole: bool,
-) -> Vec<u8> {
-    let lock = LockingScript::from_binary(&p2pkh_bytes(&derived_key(root, sender, PREFIX, SUFFIX)))
-        .unwrap();
-    let mut parent = Transaction::new();
-    let mut parent_input = TransactionInput::new("33".repeat(32), 0);
-    parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(parent_input);
-    parent.outputs.push(TransactionOutput {
-        satoshis: Some(10_000),
-        locking_script: common::other_lock(),
-        change: false,
-    });
-    let parent_txid = parent.id();
-    let mut child = Transaction::new();
-    child.version = 1;
-    let mut input = TransactionInput::new(parent_txid.clone(), 0);
-    input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    child.inputs.push(input);
-    child.outputs.push(TransactionOutput {
-        satoshis: Some(9_500),
-        locking_script: lock,
-        change: false,
-    });
-    let txid = child.id();
-    let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_003));
-    if whole {
-        beef.merge_raw_tx(parent.to_binary(), Some(bump));
-    } else {
-        beef.merge_txid_only(parent_txid);
-    }
-    beef.merge_raw_tx(child.to_binary(), None);
-    beef.to_binary_atomic(&txid).unwrap()
+fn lock(root: &PrivateKey, sender: &bsv_rs::primitives::PublicKey) -> LockingScript {
+    LockingScript::from_binary(&p2pkh_bytes(&derived_key(root, sender, PREFIX, SUFFIX))).unwrap()
 }
 
 fn args_for(tx: Vec<u8>, sender: &str) -> InternalizeActionArgs {

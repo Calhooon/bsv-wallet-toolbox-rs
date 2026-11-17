@@ -23,8 +23,10 @@ pub use crate::storage::received_beef::refuse_invalid_beef_bytes;
 ///
 /// * `beef` - The parsed BEEF structure to verify (mutable for internal validation)
 /// * `chain_tracker` - ChainTracker implementation for verification
-/// * `mode` - Verification mode controlling strictness
-/// * `known_txids` - Set of txids already known to the wallet (for TrustKnown mode)
+/// * `mode` - `Disabled` checks nothing; `Strict` and `TrustKnown` both check
+///   the structure and every root
+/// * `known_txids` - Unread; kept for the public signature (no mode skips a
+///   known txid: the roots do not map to txids)
 ///
 /// # Returns
 ///
