@@ -2760,7 +2760,16 @@ where
                 },
             )?;
             for (output, sender) in args.outputs.iter().zip(senders) {
-                if let (Some(payment), Some(sender)) = (&output.payment_remittance, sender) {
+                if let Some(payment) = &output.payment_remittance {
+                    // The validator pairs a sender with every payment
+                    // remittance (`internalize_args.rs:94-101`); without
+                    // one the check cannot run, so the door stops.
+                    let Some(sender) = sender else {
+                        return Err(internal_fault(format!(
+                            "internalize output {} carries a payment remittance with no validated sender",
+                            output.output_index
+                        )));
+                    };
                     let vout = output.output_index as usize;
                     if vout >= tx.outputs().len() {
                         return Err(bsv_rs::Error::WalletRefusal {
