@@ -396,12 +396,17 @@ pub async fn process_sync_chunk_internal(
     chunk: SyncChunk,
     sync_map: &mut crate::storage::SyncMap,
 ) -> Result<ProcessSyncChunkResult> {
-    // Verify identity keys match
-    if chunk.user_identity_key != args.identity_key {
-        return Err(Error::SyncError(format!(
-            "Chunk user identity key {} does not match args identity key {}",
-            chunk.user_identity_key, args.identity_key
-        )));
+    // A chunk is bound to its request: its source, its destination and its
+    // user (the reference's runPullSession, ts-stack 11faa7d16
+    // `storage/sync/syncSession.ts` 115-121).
+    if chunk.from_storage_identity_key != args.from_storage_identity_key
+        || chunk.to_storage_identity_key != args.to_storage_identity_key
+        || chunk.user_identity_key != args.identity_key
+    {
+        return Err(Error::SyncError(
+            "The chunk parameter must be bound to this sync source, destination and wallet identity"
+                .to_string(),
+        ));
     }
 
     // The user must exist: a chunk never creates one (the reference's
