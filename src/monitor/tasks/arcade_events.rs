@@ -80,7 +80,8 @@ const HEALTHY_CONNECTION: Duration = Duration::from_secs(30);
 /// AND the block height is present — partial enrichment (best-effort upstream)
 /// must fall back to the fetch path, never latch partial data. The block hash
 /// may legitimately be absent; the ingest funnel treats it as informational
-/// (validation is root-vs-height against our own headers).
+/// (validation is root-vs-height against our own headers). One that is not
+/// 64 hexadecimal characters is taken as absent.
 fn inline_proof_material(ev: &ArcadeStatusEvent) -> Option<(Vec<u8>, u32, String)> {
     let mp_hex = ev.merkle_path.as_deref().filter(|s| !s.is_empty())?;
     let block_height = ev.block_height?;
@@ -88,7 +89,7 @@ fn inline_proof_material(ev: &ArcadeStatusEvent) -> Option<(Vec<u8>, u32, String
     Some((
         bytes,
         block_height,
-        ev.block_hash.clone().unwrap_or_default(),
+        crate::services::provider_block_hash(ev.block_hash.as_deref()),
     ))
 }
 
@@ -527,6 +528,36 @@ mod tests {
         assert_eq!(bytes, vec![0xfe, 0xa3, 0xa2, 0x0e, 0x00]);
         assert_eq!(height, 959011);
         assert!(hash.starts_with("00000000"));
+    }
+
+    /// A frame's block hash is taken only as 64 hexadecimal characters,
+    /// lowercased; any other is taken as absent.
+    #[test]
+    fn a_frames_block_hash_is_taken_only_as_64_hex_characters() {
+        let frame = |hash: &str| -> ArcadeStatusEvent {
+            serde_json::from_str(&format!(
+                r#"{{"txid":"{}","txStatus":"MINED","blockHash":"{hash}","blockHeight":7,"merklePath":"fea3a20e00"}}"#,
+                "ab".repeat(32)
+            ))
+            .unwrap()
+        };
+        let taken = |hash: &str| inline_proof_material(&frame(hash)).expect("material").2;
+        let answers = (
+            taken(&"zz".repeat(32)),
+            taken(&"BB".repeat(32)),
+            taken("bb"),
+            taken(&"cd".repeat(32)),
+        );
+        println!("WITNESS 9 arcade frame block hashes (not hex, upper, short, lower): {answers:?}");
+        assert_eq!(
+            answers,
+            (
+                String::new(),
+                "bb".repeat(32),
+                String::new(),
+                "cd".repeat(32)
+            )
+        );
     }
 
     /// Pre-v0.10.1 frames (status-only) parse unchanged and yield no inline

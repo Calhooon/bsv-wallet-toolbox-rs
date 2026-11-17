@@ -899,7 +899,10 @@ async fn fetch_proven_txs_for_sync(
             txid: row.get("txid"),
             height: row.get("height"),
             index: row.get("idx"),
-            block_hash: row.get("block_hash"),
+            // A held block hash that is not 64 hexadecimal characters (a
+            // provider's, stored by an earlier release) is sent empty, as
+            // the writer admits one.
+            block_hash: crate::services::provider_block_hash(Some(row.get("block_hash"))),
             merkle_root: row.get("merkle_root"),
             merkle_path: row.get("merkle_path"),
             raw_tx: row.get("raw_tx"),

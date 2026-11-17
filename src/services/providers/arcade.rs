@@ -846,7 +846,8 @@ impl Arcade {
         // `blockHash` may legitimately be absent (upstream enrichment is
         // `omitempty`): it is informational, validation is root-vs-height
         // against our own headers.
-        let block_hash = info.block_hash.clone().unwrap_or_default();
+        // One that is not 64 hexadecimal characters is taken as absent.
+        let block_hash = crate::services::provider_block_hash(info.block_hash.as_deref());
 
         Ok(GetMerklePathResult {
             name: Some(self.name.clone()),

@@ -4242,7 +4242,9 @@ impl StorageSqlx {
                                 (
                                     bytes,
                                     detail.block_height?,
-                                    detail.block_hash.clone().unwrap_or_default(),
+                                    crate::services::provider_block_hash(
+                                        detail.block_hash.as_deref(),
+                                    ),
                                 ),
                             ))
                         })

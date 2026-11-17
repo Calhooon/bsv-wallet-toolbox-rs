@@ -678,3 +678,38 @@ async fn a_chunk_bound_to_another_request_is_refused() {
         assert_eq!(planted, 0, "{field}");
     }
 }
+
+/// A held proof row whose block hash is not 64 hexadecimal characters (a
+/// provider's, stored by an earlier release) travels with an empty block
+/// hash, so a backup of its store completes.
+#[tokio::test]
+async fn a_held_block_hash_that_is_not_hex_travels_empty() {
+    let act = store(SRC).await;
+    let (u, _) = act.find_or_insert_user(ALICE).await.unwrap();
+    let txid = seed_all(&act, u.user_id, 'a', true, true).await;
+    exec(
+        &act,
+        "UPDATE proven_txs SET block_hash = 'not-a-block-hash'",
+    )
+    .await;
+    let backup = store(DST).await;
+    let mgr = bsv_wallet_toolbox_rs::managers::WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(act.clone() as Arc<dyn MonitorStorage>),
+        None,
+    );
+    mgr.make_available().await.unwrap();
+    let r = mgr.sync_to_writer(ALICE, backup.clone()).await;
+    let stored: Vec<String> =
+        ::sqlx::query_scalar("SELECT block_hash FROM proven_txs WHERE txid = ?")
+            .bind(&txid)
+            .fetch_all(backup.pool())
+            .await
+            .unwrap();
+    println!(
+        "WITNESS 9 held block hash not hex: backup {}; stored {stored:?}",
+        refusal(&r)
+    );
+    assert_eq!(refusal(&r), "ok");
+    assert_eq!(stored, vec![String::new()]);
+}
