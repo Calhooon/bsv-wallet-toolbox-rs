@@ -258,6 +258,9 @@ pub async fn internalize_action_internal(
                 od.existing_output_id = Some(eo.output_id);
                 od.existing_basket_id = eo.basket_id;
                 od.existing_is_change = eo.change;
+                if od.insertion.is_some() {
+                    validate_basket_merge(od.vout, eo)?;
+                }
             }
         }
     }
@@ -266,30 +269,23 @@ pub async fn internalize_action_internal(
     let mut net_satoshis: i64 = 0;
     let change_basket_id = change_basket.basket_id;
 
+    // A basket insertion has no balance effect: wallet-managed change is
+    // never reclassified as one (`validate_basket_merge`, Step 5).
     for od in &outputs_data {
-        match od.protocol.as_str() {
-            WALLET_PAYMENT_PROTOCOL => {
-                // Check if already a change output (ignore if so)
-                if od.existing_output_id.is_some()
-                    && od.existing_basket_id == Some(change_basket_id)
-                    && od.existing_is_change
-                {
-                    // Already a change output, ignore (0 satoshi change)
-                } else if od.existing_output_id.is_some() {
-                    // Converting non-change output to change
-                    net_satoshis += od.satoshis as i64;
-                } else {
-                    // New output
-                    net_satoshis += od.satoshis as i64;
-                }
-            }
-            BASKET_INSERTION_PROTOCOL
-                if od.existing_basket_id == Some(change_basket_id) && od.existing_is_change =>
+        if od.protocol == WALLET_PAYMENT_PROTOCOL {
+            // Check if already a change output (ignore if so)
+            if od.existing_output_id.is_some()
+                && od.existing_basket_id == Some(change_basket_id)
+                && od.existing_is_change
             {
-                // Converting change to custom basket - reduces balance
-                net_satoshis -= od.satoshis as i64;
+                // Already a change output, ignore (0 satoshi change)
+            } else if od.existing_output_id.is_some() {
+                // Converting non-change output to change
+                net_satoshis += od.satoshis as i64;
+            } else {
+                // New output
+                net_satoshis += od.satoshis as i64;
             }
-            _ => {}
         }
     }
 
@@ -797,7 +793,8 @@ async fn load_existing_outputs(
         SELECT output_id, user_id, transaction_id, basket_id, txid, vout,
                satoshis, locking_script, script_length, script_offset,
                type, spendable, change, derivation_prefix, derivation_suffix,
-               sender_identity_key, custom_instructions, created_at, updated_at
+               sender_identity_key, custom_instructions, provided_by, purpose,
+               created_at, updated_at
         FROM outputs
         WHERE user_id = ? AND txid = ?
         "#,
@@ -843,6 +840,39 @@ async fn load_existing_outputs(
     }
 
     Ok(outputs)
+}
+
+/// Whether `output` is wallet-managed change: it carries everything the
+/// wallet's BRC-29 signing path needs. The reference's `isManagedChangeOutput`
+/// (wallet-toolbox `src/storage/methods/managedChange.ts`, ts-stack
+/// 4d0ea63c8): `type` `P2PKH`, `change` true, `providedBy` `storage`,
+/// `purpose` `change`, and a non-empty derivation prefix and suffix. The
+/// reference writes `purpose` `change` for a wallet payment it internalizes
+/// (storage `internalizeAction.ts`, the wallet payment rows); this store
+/// writes `receive` for the same row (Step 9's wallet payment insert), so
+/// both purposes name managed change here.
+pub(crate) fn is_managed_change_output(output: &TableOutput) -> bool {
+    let non_empty = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
+    output.output_type == "P2PKH"
+        && output.change
+        && output.provided_by == "storage"
+        && matches!(output.purpose.as_deref(), Some("change") | Some("receive"))
+        && non_empty(&output.derivation_prefix)
+        && non_empty(&output.derivation_suffix)
+}
+
+/// A basket insertion over an output the transaction already holds: the
+/// reference's `validateBasketMerges` (wallet-toolbox storage
+/// `internalizeAction.ts`, ts-stack 4d0ea63c8). Wallet-managed change is
+/// never reclassified as a basket insertion.
+fn validate_basket_merge(vout: u32, existing: &TableOutput) -> Result<()> {
+    if is_managed_change_output(existing) {
+        return Err(Error::ValidationError(format!(
+            "The outputs parameter must be output {} is wallet-managed change and cannot be reclassified as a basket insertion",
+            vout
+        )));
+    }
+    Ok(())
 }
 
 /// Gets or creates a basket and returns its ID.

@@ -7,6 +7,8 @@
 //!
 //! - the default basket, in every spelling the reference's validator trims
 //!   and lowercases to `default`, is never the insertion basket;
+//! - an output the wallet already holds as its own managed change is never
+//!   reclassified as a basket insertion;
 //!
 //! A refusal writes no output row and creates no basket. Real SQLite
 //! storage, a mock broadcaster; nothing touches the network.
@@ -17,12 +19,17 @@ mod common;
 
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::LockingScript;
-use bsv_rs::wallet::{BasketInsertion, InternalizeActionArgs, InternalizeOutput, WalletInterface};
+use bsv_rs::wallet::{
+    BasketInsertion, CreateActionArgs, CreateActionOptions, CreateActionOutput,
+    InternalizeActionArgs, InternalizeOutput, WalletInterface, WalletPayment,
+};
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, Wallet, WalletStorageWriter};
 
-use common::{beef_paying, OTHER_HASH};
+use common::{beef_paying, derived_key, p2pkh_bytes, OTHER_HASH};
 
+const PREFIX: &str = "aW5zZXJ0LXByZWZpeA==";
+const SUFFIX: &str = "aW5zZXJ0LXN1ZmZpeA==";
 const NON_DEFAULT: &str = "The insertionRemittance.basket parameter must be a non-default basket";
 
 type TestWallet = Wallet<StorageSqlx, MockWalletServices>;
@@ -186,4 +193,217 @@ async fn a_basket_insertion_into_a_named_basket_is_stored() {
         .unwrap();
         assert_eq!(basket, "tokens", "{door}");
     }
+}
+
+/// A wallet funded by a payment of 9500 satoshis, then a `createAction`
+/// paying 1000 to another key into `basket` (none: no basket), so the action
+/// holds the wallet's own change; sent with no broadcast, then marked as a
+/// broadcast action is (`unproven`, its change spendable). Returns the
+/// wallet, its root, an AtomicBEEF of the action and the action's txid.
+async fn spent_wallet(
+    name: &str,
+    basket: Option<&str>,
+    script: Vec<u8>,
+) -> (TestWallet, PrivateKey, Vec<u8>, String) {
+    let root = PrivateKey::random();
+    let sender = PrivateKey::random().public_key();
+    let derived = derived_key(&root, &sender, PREFIX, SUFFIX);
+    let lock = LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap();
+    let (bytes, txid) = beef_paying(lock);
+    let wallet = common::wallet(name, &root, &txid).await;
+    wallet
+        .internalize_action(
+            args(
+                bytes.clone(),
+                InternalizeOutput {
+                    output_index: 0,
+                    protocol: "wallet payment".to_string(),
+                    payment_remittance: Some(WalletPayment {
+                        derivation_prefix: PREFIX.to_string(),
+                        derivation_suffix: SUFFIX.to_string(),
+                        sender_identity_key: sender.to_hex(),
+                    }),
+                    insertion_remittance: None,
+                },
+            ),
+            "test.local",
+        )
+        .await
+        .expect("the payment funds the wallet");
+    let created = wallet
+        .create_action(
+            CreateActionArgs {
+                description: "a payment with change".to_string(),
+                input_beef: None,
+                inputs: None,
+                outputs: Some(vec![CreateActionOutput {
+                    locking_script: script,
+                    satoshis: 1_000,
+                    output_description: "a payment".to_string(),
+                    basket: basket.map(str::to_string),
+                    custom_instructions: None,
+                    tags: None,
+                }]),
+                lock_time: None,
+                version: None,
+                labels: None,
+                options: Some(CreateActionOptions {
+                    no_send: Some(true),
+                    randomize_outputs: Some(false),
+                    ..Default::default()
+                }),
+            },
+            "test.local",
+        )
+        .await
+        .expect("createAction");
+    // The action's raw transaction, carried with the payment that funds it
+    // as an AtomicBEEF.
+    let raw = created.tx.expect("the action's transaction");
+    let txid = bsv_rs::transaction::Transaction::from_binary(&raw)
+        .expect("the action's transaction")
+        .id();
+    let mut beef = bsv_rs::transaction::Beef::from_binary(&bytes).expect("the payment's BEEF");
+    beef.merge_raw_tx(raw, None);
+    let tx = beef.to_binary_atomic(&txid).unwrap();
+    // As if the action had been sent: the transaction `unproven` and its
+    // change spendable, so the change counts in the balance.
+    for sql in [
+        "UPDATE transactions SET status = 'unproven' WHERE txid = ?",
+        "UPDATE outputs SET spendable = 1 WHERE txid = ? AND change = 1",
+    ] {
+        sqlx::query(sql)
+            .bind(&txid)
+            .execute(wallet.storage().writer())
+            .await
+            .unwrap();
+    }
+    (wallet, root, tx, txid)
+}
+
+type Row = (
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
+
+async fn row(wallet: &TestWallet, txid: &str, vout: u32) -> Row {
+    sqlx::query_as(
+        "SELECT change, type, derivation_prefix, derivation_suffix, sender_identity_key, basket_id \
+         FROM outputs WHERE txid = ? AND vout = ?",
+    )
+    .bind(txid)
+    .bind(vout)
+    .fetch_one(wallet.storage().writer())
+    .await
+    .unwrap()
+}
+
+async fn change_vout(wallet: &TestWallet, txid: &str) -> u32 {
+    sqlx::query_scalar("SELECT vout FROM outputs WHERE txid = ? AND change = 1")
+        .bind(txid)
+        .fetch_one(wallet.storage().writer())
+        .await
+        .unwrap()
+}
+
+/// The wallet's own change of an action it made, named by a basket insertion
+/// on the merge path: refused with the reference's sentence at both doors;
+/// the row keeps `change`, its type and its derivation byte for byte, and the
+/// balance does not move.
+#[tokio::test]
+async fn the_wallets_own_change_is_never_reclassified_as_a_basket_insertion() {
+    for door in ["wallet", "storage"] {
+        let (wallet, root, tx, txid) = spent_wallet(
+            "insertion-change",
+            None,
+            hex::decode(format!("76a914{OTHER_HASH}88ac")).unwrap(),
+        )
+        .await;
+        let vout = change_vout(&wallet, &txid).await;
+        let before_row = row(&wallet, &txid, vout).await;
+        let before_counts = counts(&wallet).await;
+        let before_balance = wallet.balance().await.unwrap().total;
+        let sentence = format!(
+            "Validation error: The outputs parameter must be output {vout} is wallet-managed change and cannot be reclassified as a basket insertion"
+        );
+        let refused = if door == "wallet" {
+            wallet
+                .internalize_action(args(tx, insertion(vout, "tokens")), "test.local")
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        } else {
+            wallet
+                .storage()
+                .internalize_action(
+                    &auth(&wallet, &root).await,
+                    args(tx, insertion(vout, "tokens")),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        let expected = if door == "wallet" {
+            format!("wallet error: {sentence}")
+        } else {
+            sentence
+        };
+        assert_eq!(refused, Err(expected), "{door}");
+        let after_row = row(&wallet, &txid, vout).await;
+        assert_eq!(after_row, before_row, "{door}: the change row is untouched");
+        assert_eq!(after_row.0, 1, "{door}: still change");
+        assert_eq!(
+            counts(&wallet).await,
+            before_counts,
+            "{door}: no row, no basket"
+        );
+        assert_eq!(
+            wallet.balance().await.unwrap().total,
+            before_balance,
+            "{door}: balance"
+        );
+    }
+}
+
+/// A wallet payment the wallet internalized, named again by a basket
+/// insertion: it is managed change, refused the same way.
+#[tokio::test]
+async fn a_received_payment_is_never_reclassified_as_a_basket_insertion() {
+    let root = PrivateKey::random();
+    let sender = PrivateKey::random().public_key();
+    let derived = derived_key(&root, &sender, PREFIX, SUFFIX);
+    let lock = LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap();
+    let (bytes, txid) = beef_paying(lock);
+    let wallet = common::wallet("insertion-payment", &root, &txid).await;
+    let payment = InternalizeOutput {
+        output_index: 0,
+        protocol: "wallet payment".to_string(),
+        payment_remittance: Some(WalletPayment {
+            derivation_prefix: PREFIX.to_string(),
+            derivation_suffix: SUFFIX.to_string(),
+            sender_identity_key: sender.to_hex(),
+        }),
+        insertion_remittance: None,
+    };
+    wallet
+        .internalize_action(args(bytes.clone(), payment), "test.local")
+        .await
+        .expect("the payment");
+    let before_row = row(&wallet, &txid, 0).await;
+    let before_balance = wallet.balance().await.unwrap().total;
+    let answer = wallet
+        .internalize_action(args(bytes, insertion(0, "tokens")), "test.local")
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string());
+    assert_eq!(
+        answer,
+        Err("wallet error: Validation error: The outputs parameter must be output 0 is wallet-managed change and cannot be reclassified as a basket insertion".to_string())
+    );
+    assert_eq!(row(&wallet, &txid, 0).await, before_row);
+    assert_eq!(wallet.balance().await.unwrap().total, before_balance);
 }
