@@ -2,6 +2,7 @@ use super::{
     FindProvenTxReqsArgs, ProvenTxReqStatus, Result, Row, StorageSqlx, UtxoVerdict, WalletServices,
     WalletStorageReader,
 };
+use crate::services::broadcast_memory::{BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_SEEN};
 
 /// How long a broadcast-memory row counts as another source holding a
 /// transaction one broadcaster refused (Calgooon/zanaadu-v2#357).
@@ -113,12 +114,13 @@ impl StorageSqlx {
     ) -> Result<()> {
         let services = self.get_services()?;
 
+        let mut tx = self.write_tx().await?;
         sqlx::query(
             "UPDATE proven_tx_reqs SET status = 'unmined', attempts = 0, updated_at = ? WHERE proven_tx_req_id = ?",
         )
         .bind(now)
         .bind(req_id)
-        .execute(&mut *self.writer_conn().await?)
+        .execute(&mut *tx)
         .await?;
 
         // 'completed' rows are already correct — never move them backward.
@@ -127,8 +129,17 @@ impl StorageSqlx {
         )
         .bind(now)
         .bind(txid)
-        .execute(&mut *self.writer_conn().await?)
+        .execute(&mut *tx)
         .await?;
+        // The chain evidence that recovered it, recorded in the same write.
+        super::super::held_receipts::record_take_on(
+            &mut tx,
+            txid,
+            BROADCAST_PROVIDER_CHAIN,
+            BROADCAST_STATUS_SEEN,
+        )
+        .await?;
+        super::commit(tx).await?;
 
         // Restore outputs of this transaction, but validate each against
         // chain to avoid creating ghost UTXOs (outputs already spent

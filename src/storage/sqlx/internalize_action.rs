@@ -9,6 +9,9 @@
 //! - "basket insertion" - Custom output in specified basket, no effect on balance
 
 use crate::error::{Error, Result};
+use crate::services::broadcast_memory::{
+    BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_ACCEPTED, BROADCAST_STATUS_SEEN,
+};
 use crate::storage::entities::{TableOutput, TableTransaction, TransactionStatus};
 use crate::storage::traits::{StorageInternalizeActionResult, WalletStorageReader};
 pub(super) use crate::wallet::internalize_args::{
@@ -399,12 +402,12 @@ pub async fn internalize_action_internal(
         // proof and no broadcaster's take the transaction is HELD, written
         // `sending`, the word the wallet's own untaken transaction carries:
         // the balance and `listOutputs` leave its received outputs out and
-        // no allocator offers them. Taken is one fact, read here and by
-        // migration 006 (`held_receipts::was_taken`): the txid's request is
-        // `unmined`, `callback`, `unconfirmed` or `completed`, or
-        // `broadcast_seen` holds `accepted`, `seen` or `mined`; every other
-        // request word (another user's `nosend`, `invalid`, ...) is held.
-        // The paths that move `sending` to `unproven` are listed in
+        // no allocator offers them. Taken is a recorded take or a stored
+        // proof (`held_receipts::was_taken`): `broadcast_seen` holds
+        // `accepted`, `seen` or `mined` for the txid, or a `proven_txs` row
+        // is stored for it; a request's word alone is not read. The door's
+        // own post records its take when it draws one (below). The paths
+        // that move `sending` to `unproven` are listed in
         // `src/storage/sqlx/CLAUDE.md`. A proof the LAG gate deferred
         // (`has_proof`, request `unmined`) stays `unproven`.
         let status = if proof_stored {
@@ -1610,6 +1613,15 @@ async fn broadcast_new_internalized_req(
     // req to 'unmined' so send_waiting never re-broadcasts it and
     // CheckForProofs takes ownership. Matches the send_waiting success
     // transition (req -> 'unmined', tx -> 'unproven').
+    let takers: Vec<(&str, &str)> = if success {
+        results_vec
+            .iter()
+            .filter(|r| r.is_success())
+            .map(|r| (r.name.as_str(), BROADCAST_STATUS_ACCEPTED))
+            .collect()
+    } else {
+        vec![(BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_SEEN)]
+    };
     #[cfg(test)]
     if storage.take_busy_next_status_write() {
         return Err(crate::error::Error::StoreBusy {
@@ -1634,6 +1646,13 @@ async fn broadcast_new_internalized_req(
     .bind(txid)
     .execute(&mut *tx)
     .await?;
+    // The door records the take it drew in the same write, so the row's
+    // word and the record agree whichever services a host built (the
+    // crate's `Services` records an acceptance itself; the ladder keeps
+    // that row as it is).
+    for (provider, word) in takers {
+        super::held_receipts::record_take_on(&mut tx, txid, provider, word).await?;
+    }
     super::storage_sqlx::commit(tx).await?;
 
     tracing::info!(
