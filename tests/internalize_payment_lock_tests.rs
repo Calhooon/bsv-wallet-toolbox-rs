@@ -174,10 +174,13 @@ async fn a_basket_insertion_of_a_script_that_is_not_p2pkh_is_stored() {
 }
 
 /// A basket insertion output that also carries a payment remittance is
-/// refused by the argument validator's remittance exclusivity, ahead of the
-/// script rule, and nothing is stored.
+/// refused by the argument validator's remittance exclusivity
+/// (`validate_remittance_exclusivity`, `src/wallet/internalize_args.rs`),
+/// which answers ahead of the door's script rule: this test witnesses the
+/// validator's text and class, not the rule. Nothing is stored.
 #[tokio::test]
-async fn a_basket_insertion_carrying_a_payment_remittance_is_held_to_the_rule() {
+async fn a_basket_insertion_carrying_a_payment_remittance_is_refused_by_the_remittance_exclusivity()
+{
     let (answer, before, after, _) = internalize(op_return, |sender| InternalizeOutput {
         insertion_remittance: Some(insertion()),
         protocol: "basket insertion".to_string(),

@@ -16,7 +16,7 @@
 #[path = "common/internalize_payment.rs"]
 mod common;
 
-use bsv_rs::primitives::{PrivateKey, PublicKey};
+use bsv_rs::primitives::{hash160, PrivateKey, PublicKey};
 use bsv_rs::script::LockingScript;
 use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{InternalizeActionArgs, WalletInterface};
@@ -44,49 +44,70 @@ fn payment_args(tx: Vec<u8>, sender: &PublicKey) -> InternalizeActionArgs {
     common::args(tx, common::payment(sender, PREFIX, SUFFIX))
 }
 
-/// Internalizes the sweep paying the derived key or another, and returns
-/// the answer and the number of outputs stored after it.
-async fn internalize_sweep(lock_derives: bool) -> (bsv_rs::Result<bool>, i64) {
+/// One internalization of the sweep: the answer, the number of outputs
+/// stored after it, the BEEF and its subject's txid, and the hash160 of the
+/// key the recipient derives for the remittance, hex.
+struct Swept {
+    answer: bsv_rs::Result<bool>,
+    stored: i64,
+    beef: Vec<u8>,
+    txid: String,
+    derived_hash: String,
+}
+
+/// Builds the sweep once, paying the derived key or another, and
+/// internalizes it.
+async fn internalize_sweep(lock_derives: bool) -> Swept {
     let root = PrivateKey::random();
     let sender = PrivateKey::random().public_key();
+    let derived = common::derived_key(&root, &sender, PREFIX, SUFFIX);
     let lock = if lock_derives {
         derived_lock(&root, &sender)
     } else {
         other_lock()
     };
-    let (bytes, txid) = sweep_beef(lock);
+    let (beef, txid) = sweep_beef(lock);
     let wallet = wallet(&root, &txid).await;
     let answer = wallet
-        .internalize_action(payment_args(bytes, &sender), Some("test.local"))
+        .internalize_action(payment_args(beef.clone(), &sender), Some("test.local"))
         .await
         .map(|r| r.accepted);
-    (answer, stored_outputs(&wallet).await)
+    Swept {
+        answer,
+        stored: stored_outputs(&wallet).await,
+        beef,
+        txid,
+        derived_hash: hex::encode(hash160(&derived.to_compressed())),
+    }
 }
 
 /// The sweep is past the linking door's budget, and the payment's key does
-/// not derive from its remittance: refused for the derivation.
+/// not derive from its remittance: refused for the derivation, the whole
+/// text naming the derived key's hash and the script's.
 #[tokio::test]
 async fn a_sweep_past_the_link_budget_with_a_payment_key_that_does_not_derive_is_refused() {
-    let (beef, txid) = sweep_beef(other_lock());
-    let linked = Transaction::from_beef(&beef, Some(&txid));
+    let swept = internalize_sweep(false).await;
+    let linked = Transaction::from_beef(&swept.beef, Some(&swept.txid));
     assert!(linked.is_err(), "the linking door refuses the sweep");
-    let (answer, stored) = internalize_sweep(false).await;
-    let (class, text) = refusal(answer, "the sweep");
+    let (class, text) = refusal(swept.answer, "the sweep");
     assert_eq!(class, WalletRefusalClass::InvalidParameter);
-    assert!(
-        text.starts_with("Derivation mismatch for output 0: derived "),
-        "{text}"
+    assert_eq!(
+        text,
+        format!(
+            "Derivation mismatch for output 0: derived {} != script {}",
+            swept.derived_hash,
+            common::OTHER_HASH
+        )
     );
-    assert!(text.ends_with(&format!(" != script {}", common::OTHER_HASH)));
-    assert_eq!(stored, 0, "nothing is stored");
+    assert_eq!(swept.stored, 0, "nothing is stored");
 }
 
 /// The same sweep paying the derived key: admitted, its output stored.
 #[tokio::test]
 async fn a_sweep_past_the_link_budget_with_a_payment_key_that_derives_is_stored() {
-    let (answer, stored) = internalize_sweep(true).await;
-    assert!(answer.expect("the payment is internalized"));
-    assert_eq!(stored, 1, "the payment output is stored");
+    let swept = internalize_sweep(true).await;
+    assert!(swept.answer.expect("the payment is internalized"));
+    assert_eq!(swept.stored, 1, "the payment output is stored");
 }
 
 /// Bytes with no readable subject and a payment output: refused before
