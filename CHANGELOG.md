@@ -32,8 +32,10 @@
   `accepted`), and a status source holding it at the door, at send-waiting,
   at the retire path and in the unfail task (`chain`, `seen`).
 - Migration 006 (`006_held_receipts`, one data statement, no schema
-  change), applied on `migrate()` and on `make_available()`: the balance
-  falls on open by every held receipt. Its rule is its own, for rows
+  change), applied on `migrate()` and on `make_available()`, so on every
+  open and not once: a store of any release is read by the same rule each
+  time it opens. The balance falls on open by every held receipt. Its
+  rule is its own, for rows
   written before the door recorded every take, and keeps the request's
   word for them: a received transaction a store holds as `unproven` with
   no proof whose request is `unmined`, `callback`, `unconfirmed` or
@@ -59,10 +61,16 @@ Each read from a run (`tests/internalize_held_receipt_tests.rs`,
   instance taking it lists it. At an upgrade the outputs of received
   transactions that nobody took leave their baskets' listings until a
   broadcaster takes the transaction or a proof arrives; nothing is
-  deleted. The reference lists such an output at once (it writes a
-  received transaction with no proof `unproven` and lists `unproven`
-  outputs, ts-stack@4d0ea63c8 `storage/methods/internalizeAction.ts:473`,
-  `listOutputsKnex.ts:104`); this line's answer is the owner's ruling.
+  deleted. The reference, by commit: at ts-stack@4d0ea63c8 it listed
+  such an output at once (it wrote a received transaction with no proof
+  `unproven` and listed `unproven` outputs,
+  `storage/methods/internalizeAction.ts:473`, `listOutputsKnex.ts:104`);
+  at its main of 2026-11-16 (ts-stack@11faa7d1,
+  `storage/methods/internalizeActionCore.ts:944-978`) it posts the
+  transaction at its door and stores a recipient's outputs only after
+  that post succeeds, so it does not list one either. What stays this
+  line's own, by the owner's ruling, is that the transaction is held and
+  sent again where the reference undoes it.
 - `listActions` lists the held transaction's action with status `sending`
   (before, `unproven`).
 - A held coin is offered by no rule: `createAction` with or without the
@@ -87,7 +95,8 @@ Each read from a run (`tests/internalize_held_receipt_tests.rs`,
   label, and the migration moves only the receipt's word.
 - The wallet's own `sending` action is listed and counted as before, every
   output it carries: its change, and a wallet payment merged into it
-  (3477 change and a 1000 merged payment read 4477 and two outputs).
+  (its change and a 1000-satoshi merged payment read the change plus
+  1000, and two outputs).
 - The call's answer is unchanged in this change: `internalizeAction`
   answers `accepted: true` for a held receipt, as before.
 
