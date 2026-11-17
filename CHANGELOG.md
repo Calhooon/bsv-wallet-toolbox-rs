@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-11-17
+
+A security patch on the stable line. The bsv-rs requirement moves from "0.8.0" to "0.8.11", so no build of this crate resolves to a bsv-rs release that a published bsv-rs advisory names: 0.8.11 closes eighteen of them (GHSA-67vc-6c8g-7x48, GHSA-cgp9-rj5h-jxw6, GHSA-gvmh-f5gf-5vjj, GHSA-h4m7-c6p8-725m, GHSA-qhj8-j8mj-9cgc, GHSA-vmgj-w2jr-c52x, GHSA-x3m6-jp5x-236c, GHSA-crr5-gh8p-q2h2, GHSA-w6jf-m9c7-6599, GHSA-fr33-7jw7-mwwh, GHSA-4mcm-g5xq-jv3r, GHSA-89w7-x33x-6m9c, GHSA-mj2m-jxgv-r446, GHSA-gg5p-wgff-v3hr, GHSA-84xq-3662-pvx5, GHSA-9c8r-76f3-m426, GHSA-cwxv-4866-5gq2, GHSA-j8hr-pjhm-6h27). GHSA-82g9-h6jw-r99f has no patched version; this crate is not affected by it, since nothing in it reads Extended Format bytes with `Transaction::from_ef` or `from_hex_ef` (it only writes them). A fresh resolve of 0.13.1 already takes 0.8.11; this release makes the floor binding, for a lock that holds an older bsv-rs and for a dependent that resolves this crate's requirement. No public signature of this crate moves.
+
+### Security
+
+- [GHSA-cwxv-4866-5gq2](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-cwxv-4866-5gq2) (critical): Shamir backup share recovery. This crate does not call it.
+- [GHSA-j8hr-pjhm-6h27](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-j8hr-pjhm-6h27) (high): transaction readers that kept trailing bytes, and BEEF verdicts on a raw entry that is not a transaction. This crate reads provider and caller transaction bytes with `Transaction::from_binary` and judges BEEFs with `verify_valid`; the provider readers already refused a raw transaction whose bytes do not hash to the asked txid, and the BEEFs it judges come off the wire reader, so no answer moves for a host.
+- [GHSA-gvmh-f5gf-5vjj](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-gvmh-f5gf-5vjj) (high): memory exhaustion while linking a BEEF. This crate links an overlay host's answer (the SLAP host and certificate lookups) and a caller's AtomicBEEF at `internalizeAction`'s pre-check; 0.8.11 bounds that work at 16 MiB. The storage doors that read a BEEF (`internalizeAction`, `createAction`) do not link, so the bound refuses none of the wallet's own work (`tests/beef_link_budget_tests.rs`).
+- [GHSA-h4m7-c6p8-725m](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-h4m7-c6p8-725m) (high): script verdicts on coins created before Genesis. This crate runs no script verdict door.
+- [GHSA-w6jf-m9c7-6599](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-w6jf-m9c7-6599) (high): registry resolves returned unsigned definitions. This crate does not call them.
+- [GHSA-89w7-x33x-6m9c](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-89w7-x33x-6m9c) (high): the KVStore interpreter returned unsigned tokens. This crate does not call it.
+- [GHSA-mj2m-jxgv-r446](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-mj2m-jxgv-r446) (high): the KVStore legacy signature check answered true for every token. This crate does not call it.
+- [GHSA-82g9-h6jw-r99f](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-82g9-h6jw-r99f) (high, no patched version): `Transaction::from_ef` and `from_hex_ef` allocate without a bound over the transaction. Not affected: this crate writes Extended Format bytes for ARC and Arcade and never reads them outside its tests, which read bytes they wrote. A host that reads Extended Format bytes from a party it does not trust calls `from_ef_bounded` itself.
+- [GHSA-cgp9-rj5h-jxw6](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-cgp9-rj5h-jxw6) (medium): the authenticated HTTP transport's readers dropped trailing bytes. `StorageClient` (feature `remote`) reads a storage server's response through `HttpResponse::from_payload`; a response with bytes after the message is now refused (Hosts, below).
+- [GHSA-9c8r-76f3-m426](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-9c8r-76f3-m426) (medium): `Signature::from_der` read malformed encodings as a valid signature. `verifySignature`, the storage client's response signature check and certificate issuance's certifier check now refuse them (Hosts, below).
+- [GHSA-gg5p-wgff-v3hr](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-gg5p-wgff-v3hr) (medium): `Transaction::to_beef` wrote a BEEF that ended with another transaction. This crate does not call it.
+- [GHSA-84xq-3662-pvx5](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-84xq-3662-pvx5) (medium): `Transaction::from_json` held a malformed input txid. This crate does not call it.
+- [GHSA-vmgj-w2jr-c52x](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-vmgj-w2jr-c52x) (medium): script template classifiers accepted non-minimal pushes. This crate does not call them; its own P2PKH checks compare the 25 bytes exactly.
+- [GHSA-fr33-7jw7-mwwh](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-fr33-7jw7-mwwh) (medium): the default script mode skipped a P2SH coin's redeem script. This crate runs no script verdict door.
+- [GHSA-x3m6-jp5x-236c](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-x3m6-jp5x-236c) (medium): BIP-276 decoding and identity key abbreviation panicked on multi-byte text. This crate does not call them.
+- [GHSA-67vc-6c8g-7x48](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-67vc-6c8g-7x48) (low): `sighash::parse_transaction` dropped trailing bytes. This crate does not call it.
+- [GHSA-qhj8-j8mj-9cgc](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-qhj8-j8mj-9cgc) (low): bsv-rs's WhatsOnChain and ARC broadcasters reported the service's text as the txid. This crate broadcasts through its own providers, not those.
+- [GHSA-crr5-gh8p-q2h2](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-crr5-gh8p-q2h2) (low): `LivePolicy::refresh` panicked on a zero fee-policy size. This crate does not call it.
+- [GHSA-4mcm-g5xq-jv3r](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-4mcm-g5xq-jv3r) (low): KVStore token signatures did not bind the key. This crate does not call the KVStore.
+
+### Hosts
+
+Each answer below was an acceptance on bsv-rs 0.8.3 (the version the 0.13.1 crate file's lock holds) and is a refusal on 0.8.11, read from a run:
+
+- `StorageClient` given a storage server response with one byte after the message: `Storage error: Failed to parse response: authentication error: Authenticated response contains trailing bytes.` (0.8.3 read the message and dropped the byte).
+- `verifySignature` given a valid DER signature followed by one byte: `invalid signature: Signature DER invalid` (0.8.3 answered `valid: true`). The storage client's check of a server's response signature answers the same refusal as `Access denied: Signature verification failed: invalid signature: Signature DER invalid`.
+- Certificate issuance given a certificate whose certifier signature carries one byte after it: `Validation error: Failed to verify certificate signature: invalid signature: Signature DER invalid` (0.8.3 answered the signature valid).
+
+One more, by reading and by the linking door's own run (`tests/beef_link_budget_tests.rs`), not driven through the lookup: an overlay SLAP host or certificate whose BEEF re-materializes more than 16 MiB while linking is skipped, as an unparseable answer was; an honest answer of that size sweeps more than about 702 P2PKH outputs of one parent.
+
+No other answer of this crate moves: the full suite, unit and integration, answers as on 0.13.1.
+
 ### CI
 
 - `bench.yml`, `dependents.yml` and `fuzz.yml` are registered on main as copies of
