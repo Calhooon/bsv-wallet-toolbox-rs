@@ -14,6 +14,8 @@ mod sync_support;
 use sync_support::double::Double;
 use sync_support::*;
 
+const THIRD: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+
 /// A store named `name` whose settings declare `chain`.
 async fn chain_store(sik: &str, name: &str, chain: &str) -> StorageSqlx {
     let s = StorageSqlx::in_memory().await.unwrap();
@@ -165,4 +167,102 @@ async fn an_answer_that_carries_an_error_is_a_failed_sync() {
         "Sync error: the writer refused the page"
     );
     assert_eq!(refusal(&backups), "Sync error: the writer refused the page");
+}
+
+/// The users rows of the stores and what the manager answers about them.
+async fn active_rows(stores: &[&StorageSqlx]) -> Vec<Option<String>> {
+    let mut out = Vec::new();
+    for s in stores {
+        out.push(active_storage_of(s, ALICE).await);
+    }
+    out
+}
+
+/// A `set_active` whose call fails at a store part way leaves the manager
+/// not available: its next call reads every store again before anything is
+/// written, and answers by what the stores now hold.
+#[tokio::test]
+async fn a_set_active_that_fails_part_way_reads_every_store_again() {
+    let a = store(SRC).await;
+    let b = Double::new((*store(DST).await).clone());
+    b.fail_set_active.store(true, Ordering::SeqCst);
+    let b_inner = b.inner.clone();
+    let a_inner = (*a).clone();
+    name_active(&[&a_inner, &b_inner], SRC).await;
+    let b = Arc::new(b);
+    let mgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(a.clone() as Arc<dyn MonitorStorage>),
+        Some(vec![b.clone() as Arc<dyn MonitorStorage>]),
+    );
+    // Both rows name A: A is the enabled active, B its backup.
+    mgr.make_available().await.unwrap();
+    let before = active_rows(&[&a_inner, &b_inner]).await;
+
+    let failed = mgr.set_active(DST).await;
+    let rows = active_rows(&[&a_inner, &b_inner]).await;
+    let available = mgr.is_available().await;
+    let next = mgr.update_backups().await;
+    let enabled = mgr.is_active_enabled().await;
+    println!(
+        "WITNESS M7 set_active(B) failing at B: {}; rows (A, B) {before:?} -> {rows:?}; available after it {available}; next update_backups {}; active enabled {enabled}",
+        refusal(&failed),
+        refusal(&next)
+    );
+    assert_eq!(refusal(&failed), "Storage error: rows refused set_active");
+    assert_eq!(rows, vec![Some(DST.to_string()), Some(SRC.to_string())]);
+    assert!(!available);
+    assert_eq!(
+        refusal(&next),
+        "Access denied: Operation requires active storage"
+    );
+    assert!(!enabled);
+}
+
+/// Two `set_active` calls at once run one after the other: no store's
+/// `set_active` call of one runs between two of the other's.
+#[tokio::test]
+async fn two_set_active_calls_do_not_interleave() {
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut doubles = Vec::new();
+    for sik in [SRC, DST, THIRD] {
+        let s = StorageSqlx::in_memory().await.unwrap();
+        s.migrate(&sik[..1], sik).await.unwrap();
+        s.make_available().await.unwrap();
+        name_active(&[&s], SRC).await;
+        let mut d = Double::new(s);
+        d.set_active_delay_ms = 50;
+        d.events = events.clone();
+        doubles.push(Arc::new(d));
+    }
+    let mgr = Arc::new(WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(doubles[0].clone()),
+        Some(vec![doubles[1].clone(), doubles[2].clone()]),
+    ));
+    mgr.make_available().await.unwrap();
+
+    let (m1, m2) = (mgr.clone(), mgr.clone());
+    let one = tokio::spawn(async move { m1.set_active(DST).await });
+    let two = tokio::spawn(async move { m2.set_active(THIRD).await });
+    let (one, two) = (one.await.unwrap(), two.await.unwrap());
+    let seen = events.lock().unwrap().clone();
+    // Each call's calls name its key; a run of one key never breaks.
+    let mut runs = Vec::new();
+    for e in &seen {
+        let key = e.rsplit(' ').next().unwrap().to_string();
+        if runs.last() != Some(&key) {
+            runs.push(key);
+        }
+    }
+    println!(
+        "WITNESS M7b two set_active at once: {} / {}; key runs {}; calls {seen:?}",
+        refusal(&one),
+        refusal(&two),
+        runs.len()
+    );
+    assert_eq!(refusal(&one), "ok");
+    assert_eq!(refusal(&two), "ok");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(seen.len(), 12);
 }

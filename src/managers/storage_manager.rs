@@ -156,6 +156,9 @@ pub struct WalletStorageManager {
     /// Lock queue for storage provider operations.
     #[allow(dead_code)]
     provider_locks: LockQueue,
+
+    /// One `set_active` transition at a time; no other operation waits on it.
+    set_active_lock: tokio::sync::Mutex<()>,
 }
 
 const ENTITY_NAMES: [&str; 12] = [
@@ -327,6 +330,7 @@ impl WalletStorageManager {
             writer_locks: Arc::new(tokio::sync::Semaphore::new(1)),
             sync_locks: Arc::new(tokio::sync::Semaphore::new(1)),
             provider_locks: Arc::new(tokio::sync::Semaphore::new(1)),
+            set_active_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -890,7 +894,14 @@ impl WalletStorageManager {
     }
 
     /// Sets a new active storage from among the current stores.
+    ///
+    /// One transition at a time: a second call waits for the first, on a
+    /// lock no other operation of the manager takes. A transition that fails
+    /// part way leaves the manager not available, with no cached user row of
+    /// any store, so its next call reads every store again before anything
+    /// is written (the reference's setActive).
     pub async fn set_active(&self, storage_identity_key: &str) -> Result<String> {
+        let _transition = self.set_active_lock.lock().await;
         if !*self.is_available.read().await {
             self.make_available().await?;
         }
@@ -921,6 +932,28 @@ impl WalletStorageManager {
 
         drop(stores);
 
+        match self.set_active_transition(storage_identity_key).await {
+            Ok(log) => Ok(log),
+            Err(e) => {
+                self.discard_partition().await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Forget the partition and every store's cached user row: the stores
+    /// may disagree on the active store after a transition failed part way.
+    async fn discard_partition(&self) {
+        *self.is_available.write().await = false;
+        self.auth_id.write().await.is_active = Some(false);
+        let mut stores = self.stores.write().await;
+        for store in stores.iter_mut() {
+            store.is_available = false;
+            store.user = None;
+        }
+    }
+
+    async fn set_active_transition(&self, storage_identity_key: &str) -> Result<String> {
         let mut log = format!("setActive to {}\n", storage_identity_key);
 
         // Update backups first, then switch active
