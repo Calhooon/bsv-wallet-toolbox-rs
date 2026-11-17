@@ -169,9 +169,14 @@ async fn funded(root: &PrivateKey) -> (TestWallet, Vec<u8>) {
 }
 
 /// A transaction the wallet makes from its own change: one 1000-satoshi
-/// output to another key, the change back to the wallet, not sent. Answers
-/// its atomic BEEF, its txid and its change output's index.
-async fn own_change(wallet: &TestWallet, funding: &[u8]) -> (Vec<u8>, String, u32) {
+/// output locked by `lock` (another key's when `None`), the change back to
+/// the wallet, not sent. Answers its atomic BEEF, its txid, the index of
+/// its change output and of the 1000-satoshi output.
+async fn made(
+    wallet: &TestWallet,
+    funding: &[u8],
+    lock: Option<Vec<u8>>,
+) -> (Vec<u8>, String, u32, u32) {
     let made = wallet
         .create_action(
             CreateActionArgs {
@@ -179,7 +184,7 @@ async fn own_change(wallet: &TestWallet, funding: &[u8]) -> (Vec<u8>, String, u3
                 input_beef: None,
                 inputs: None,
                 outputs: Some(vec![CreateActionOutput {
-                    locking_script: other_lock().to_binary(),
+                    locking_script: lock.unwrap_or_else(|| other_lock().to_binary()),
                     satoshis: 1_000,
                     output_description: "a payment".to_string(),
                     basket: None,
@@ -199,18 +204,59 @@ async fn own_change(wallet: &TestWallet, funding: &[u8]) -> (Vec<u8>, String, u3
         .await
         .expect("createAction");
     let txid = hex::encode(made.txid.expect("txid"));
-    let vout: i64 = sqlx::query_scalar("SELECT vout FROM outputs WHERE txid = ? AND change = 1")
-        .bind(&txid)
-        .fetch_one(wallet.storage().writer())
-        .await
-        .expect("the change output");
+    let vout_where = |change: i64| {
+        sqlx::query_scalar::<_, i64>("SELECT vout FROM outputs WHERE txid = ? AND change = ?")
+            .bind(txid.clone())
+            .bind(change)
+            .fetch_one(wallet.storage().writer())
+    };
+    let change = vout_where(1).await.expect("the change output");
+    let paid = vout_where(0).await.expect("the payment output");
     // The noSend answer is the raw transaction; its atomic BEEF carries the
     // payment it spends and that payment's proven parent.
     let mut beef = Beef::from_binary(funding).expect("the payment's BEEF");
     beef.merge_raw_tx(made.tx.expect("the raw transaction"), None)
         .unwrap();
     let atomic = beef.to_binary_atomic(&txid).unwrap();
-    (atomic, txid, u32::try_from(vout).unwrap())
+    let index = |vout: i64| u32::try_from(vout).unwrap();
+    (atomic, txid, index(change), index(paid))
+}
+
+/// [`made`] with the payment to another key: its atomic BEEF, its txid and
+/// its change output's index.
+async fn own_change(wallet: &TestWallet, funding: &[u8]) -> (Vec<u8>, String, u32) {
+    let (atomic, txid, change, _) = made(wallet, funding, None).await;
+    (atomic, txid, change)
+}
+
+/// Every column of the stored row of `txid.vout`, quoted, in one string.
+async fn every_column(wallet: &TestWallet, txid: &str, vout: u32) -> String {
+    sqlx::query_scalar(
+        "SELECT quote(output_id) || '|' || quote(user_id) || '|' || quote(transaction_id)          || '|' || quote(basket_id) || '|' || quote(spendable) || '|' || quote(change)          || '|' || quote(vout) || '|' || quote(satoshis) || '|' || quote(provided_by)          || '|' || quote(purpose) || '|' || quote(type) || '|' || quote(output_description)          || '|' || quote(txid) || '|' || quote(sender_identity_key)          || '|' || quote(derivation_prefix) || '|' || quote(derivation_suffix)          || '|' || quote(custom_instructions) || '|' || quote(spent_by)          || '|' || quote(sequence_number) || '|' || quote(spending_description)          || '|' || quote(script_length) || '|' || quote(script_offset)          || '|' || quote(locking_script) || '|' || quote(created_at)          || '|' || quote(updated_at) FROM outputs WHERE txid = ? AND vout = ?",
+    )
+    .bind(txid)
+    .bind(vout)
+    .fetch_one(wallet.storage().writer())
+    .await
+    .unwrap()
+}
+
+/// The stored `provided_by` and `purpose` of `txid.vout`.
+async fn origin(wallet: &TestWallet, txid: &str, vout: u32) -> (String, String) {
+    sqlx::query_as("SELECT provided_by, purpose FROM outputs WHERE txid = ? AND vout = ?")
+        .bind(txid)
+        .bind(vout)
+        .fetch_one(wallet.storage().writer())
+        .await
+        .unwrap()
+}
+
+/// The refusal of a basket insertion naming wallet-managed change.
+fn managed_change_refusal(vout: u32) -> String {
+    format!(
+        "Validation error: The outputs parameter must be output {vout} is wallet-managed \
+         change and cannot be reclassified as a basket insertion"
+    )
 }
 
 /// A basket insertion naming `default`, in each spelling the reference's
@@ -332,6 +378,95 @@ async fn a_received_payment_is_not_reclassified_as_a_basket_insertion() {
     );
     assert_eq!(row(&wallet, &txid, 0).await, kept);
     assert_eq!((balance(&wallet).await, counts(&wallet).await), before);
+}
+
+/// An output of the wallet's own `createAction` (`provided_by` `you`,
+/// purpose empty) converted to change by a wallet payment merge, then named
+/// by a basket insertion, at each door. The merge writes the managed-change
+/// fields a new wallet payment row gets (`provided_by` `storage`, purpose
+/// `receive`, the port's spelling of the reference's `change`). The same
+/// row as a merge before 0.14.0-beta.1 left it (the two fields as they
+/// were) holds the derivation the wallet signs with too. Each is refused
+/// with the wallet-managed change sentence, the row byte for byte as it
+/// was, the balance, outputs and baskets unmoved.
+#[tokio::test]
+async fn an_output_a_wallet_payment_merge_made_change_is_not_reclassified() {
+    for (door, as_before) in [
+        ("wallet", false),
+        ("storage", false),
+        ("wallet", true),
+        ("storage", true),
+    ] {
+        let case = format!("{door} door, as before 0.14.0-beta.1: {as_before}");
+        let root = PrivateKey::random();
+        let (wallet, funding) = funded(&root).await;
+        let me = root.public_key();
+        let lock = p2pkh_bytes(&common::derived_key(&root, &me, PREFIX, SUFFIX));
+        let (bytes, txid, _, vout) = made(&wallet, &funding, Some(lock)).await;
+        let created = row(&wallet, &txid, vout).await;
+        assert_eq!((created.2, created.3.as_deref()), (0, None), "{case}");
+        assert_eq!(
+            origin(&wallet, &txid, vout).await,
+            ("you".to_string(), String::new()),
+            "{case}: createAction's output"
+        );
+
+        let mut merge = common::payment(&me, PREFIX, SUFFIX);
+        merge.output_index = vout;
+        assert_eq!(
+            at_wallet(&wallet, args(bytes.clone(), merge)).await,
+            Ok(true)
+        );
+        let merged = row(&wallet, &txid, vout).await;
+        assert_eq!(
+            (merged.0.as_deref(), merged.1.as_str(), merged.2),
+            (Some("default"), "P2PKH", 1),
+            "{case}: merged to change"
+        );
+        assert_eq!(
+            (merged.3.as_deref(), merged.4.as_deref()),
+            (Some(PREFIX), Some(SUFFIX)),
+            "{case}: the derivation"
+        );
+        assert_eq!(
+            origin(&wallet, &txid, vout).await,
+            ("storage".to_string(), "receive".to_string()),
+            "{case}: the managed-change fields"
+        );
+        if as_before {
+            sqlx::query(
+                "UPDATE outputs SET provided_by = 'you', purpose = '' WHERE txid = ? AND vout = ?",
+            )
+            .bind(&txid)
+            .bind(vout)
+            .execute(wallet.storage().writer())
+            .await
+            .unwrap();
+        }
+        let kept = every_column(&wallet, &txid, vout).await;
+        let before = (balance(&wallet).await, counts(&wallet).await);
+
+        let args = args(bytes, insertion(vout, "tokens"));
+        let answer = match door {
+            "wallet" => at_wallet(&wallet, args).await,
+            _ => at_storage(&wallet, args).await,
+        };
+        assert_eq!(
+            answer.map_err(|(_, text)| text),
+            Err(managed_change_refusal(vout)),
+            "{case}"
+        );
+        assert_eq!(
+            every_column(&wallet, &txid, vout).await,
+            kept,
+            "{case}: the row"
+        );
+        assert_eq!(
+            (balance(&wallet).await, counts(&wallet).await),
+            before,
+            "{case}: balance, outputs and baskets"
+        );
+    }
 }
 
 /// An output already in one application basket, named by a basket
