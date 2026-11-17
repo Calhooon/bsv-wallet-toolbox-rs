@@ -96,7 +96,7 @@ fn sdk_fault_display_keeps_its_wrapper() {
 
 #[test]
 fn sdk_refusals_display_their_original_message() {
-    for class in WalletRefusalClass::ALL {
+    for &class in WalletRefusalClass::ALL {
         let wrapped = Error::SdkError(bsv_rs::Error::WalletRefusal {
             class,
             message: "sdk refusal text".into(),
