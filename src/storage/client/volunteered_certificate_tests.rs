@@ -68,17 +68,17 @@ fn key(n: u8) -> PrivateKey {
 fn end(n: u8) -> End {
     let (sent, received) = mpsc::unbounded_channel();
     let callback = Callback::default();
-    let peer = Peer::new(PeerOptions {
-        wallet: ProtoWallet::new(Some(key(n))),
-        transport: Wire {
-            sent,
-            callback: callback.clone(),
-        },
-        certificates_to_request: None,
-        session_manager: None,
-        auto_persist_last_session: false,
-        originator: Some(ORIGINATOR.into()),
-    });
+    let peer = Peer::new(
+        PeerOptions::new(
+            ProtoWallet::new(Some(key(n))),
+            Wire {
+                sent,
+                callback: callback.clone(),
+            },
+        )
+        .with_auto_persist_last_session(false)
+        .with_originator(Some(ORIGINATOR.into())),
+    );
     peer.start();
     End {
         peer,

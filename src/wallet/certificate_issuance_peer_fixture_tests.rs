@@ -42,14 +42,10 @@ async fn peer_run(answer: Answer) -> (PeerCertifier, bsv_rs::Result<(PublicKey, 
         .expect(1)
         .create_async()
         .await;
-    let peer = Peer::new(PeerOptions {
-        wallet: ProtoWallet::new(Some(key(37))),
-        transport: SimplifiedFetchTransport::new(&server.url()),
-        certificates_to_request: None,
-        session_manager: None,
-        auto_persist_last_session: true,
-        originator: None,
-    });
+    let peer = Peer::new(PeerOptions::new(
+        ProtoWallet::new(Some(key(37))),
+        SimplifiedFetchTransport::new(&server.url()),
+    ));
     peer.start();
     let (tx, rx) = oneshot::channel();
     let tx = Arc::new(Mutex::new(Some(tx)));
