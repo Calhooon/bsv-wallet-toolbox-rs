@@ -36,7 +36,7 @@ use bsv_wallet_toolbox_rs::{
 };
 use chrono::{DateTime, Utc};
 
-use common::{accepted, derived_key, p2pkh_bytes, paying_derived, payment};
+use common::{accepted, derived_key, p2pkh_bytes, payment};
 
 const PREFIX: &str = "d2FsbGV0LWRvb3I=";
 const SUFFIX: &str = "cm9vdHM=";
@@ -276,6 +276,23 @@ impl WalletStorageProvider for NotLocal {
 /// An AtomicBEEF paying the key `root` derives for `sender`, whose parent
 /// is carried whole with a BUMP at height 100_003.
 fn paying_with_whole_parent(root: &PrivateKey, sender: &bsv_rs::primitives::PublicKey) -> Vec<u8> {
+    paying_with_parent(root, sender, true)
+}
+
+/// The same payment with its parent carried by txid alone, beside the
+/// parent's BUMP.
+fn paying_with_parent_by_txid_alone(
+    root: &PrivateKey,
+    sender: &bsv_rs::primitives::PublicKey,
+) -> Vec<u8> {
+    paying_with_parent(root, sender, false)
+}
+
+fn paying_with_parent(
+    root: &PrivateKey,
+    sender: &bsv_rs::primitives::PublicKey,
+    whole: bool,
+) -> Vec<u8> {
     let lock = LockingScript::from_binary(&p2pkh_bytes(&derived_key(root, sender, PREFIX, SUFFIX)))
         .unwrap();
     let mut parent = Transaction::new();
@@ -301,7 +318,11 @@ fn paying_with_whole_parent(root: &PrivateKey, sender: &bsv_rs::primitives::Publ
     let txid = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_003));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    if whole {
+        beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    } else {
+        beef.merge_txid_only(parent_txid);
+    }
     beef.merge_raw_tx(child.to_binary(), None);
     beef.to_binary_atomic(&txid).unwrap()
 }
@@ -338,7 +359,7 @@ async fn on_not_local<V: WalletServices + Send + Sync + 'static>(
     let tx = if whole_parent {
         paying_with_whole_parent(&root, &sender)
     } else {
-        paying_derived(&root, &sender, PREFIX, SUFFIX).0
+        paying_with_parent_by_txid_alone(&root, &sender)
     };
     let internalized = Arc::new(AtomicUsize::new(0));
     let storage = NotLocal {
@@ -406,7 +427,9 @@ async fn not_local_storage_refuses_an_entry_carried_by_txid_alone() {
 
 /// A wallet on its own local store: one internalize reads the services'
 /// chain tracker once (at the storage door), as at 0.13.4, refuted or
-/// confirmed, whole parent or txid-only parent.
+/// confirmed, whole parent or txid-only parent. The storage door admits
+/// only a BEEF whose every transaction is whole and whose roots the tracker
+/// confirms.
 #[tokio::test]
 async fn a_local_store_reads_the_tracker_as_before() {
     for (roots_valid, whole_parent) in [(true, true), (false, true), (true, false), (false, false)]
@@ -416,7 +439,7 @@ async fn a_local_store_reads_the_tracker_as_before() {
         let tx = if whole_parent {
             paying_with_whole_parent(&root, &sender)
         } else {
-            paying_derived(&root, &sender, PREFIX, SUFFIX).0
+            paying_with_parent_by_txid_alone(&root, &sender)
         };
         let storage = local_store(&root).await;
         let wallet = Wallet::new(Some(root), storage, mock_services(roots_valid))
@@ -433,6 +456,14 @@ async fn a_local_store_reads_the_tracker_as_before() {
             "local store, roots_valid {roots_valid}, whole parent {whole_parent}: {answer:?}, tracker reads {reads}"
         );
         assert_eq!(reads, 1, "one read of the tracker per internalize");
-        assert_eq!(answer.is_ok(), roots_valid, "{answer:?}");
+        assert_eq!(answer.is_ok(), roots_valid && whole_parent, "{answer:?}");
+        if !whole_parent {
+            assert!(
+                answer
+                    .as_ref()
+                    .is_err_and(|e| e.ends_with(" is carried by txid alone")),
+                "{answer:?}"
+            );
+        }
     }
 }

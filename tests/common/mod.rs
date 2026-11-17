@@ -156,7 +156,7 @@ pub fn sweep_beef(lock: LockingScript) -> (Vec<u8>, String) {
 }
 
 /// An AtomicBEEF of a child with one output locked by `lock`, spending a
-/// txid-only parent proven by a BUMP the BEEF carries.
+/// parent the BEEF carries whole with its BUMP.
 pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
     let mut parent = Transaction::new();
     let mut parent_input = TransactionInput::new("22".repeat(32), 0);
@@ -180,8 +180,8 @@ pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
     });
     let txid = child.id();
     let mut beef = Beef::new();
-    beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_003));
-    beef.merge_txid_only(parent_txid);
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_003));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_raw_tx(child.to_binary(), None);
     (beef.to_binary_atomic(&txid).unwrap(), txid)
 }
