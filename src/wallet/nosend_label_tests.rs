@@ -85,8 +85,8 @@ fn spend_to(outpoint: String, satoshis: u64, lock: &str) -> bsv_rs::transaction:
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(outpoint, 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(satoshis),
         locking_script: LockingScript::from_hex(lock).unwrap(),
         change: false,

@@ -167,8 +167,8 @@ async fn return_txid_only_immediate_posts_stored_beef() {
             .await
             .unwrap();
     let signed = Transaction::from_binary(&raw).unwrap();
-    assert_eq!(signed.inputs.len(), 1);
-    assert!(!signed.inputs[0]
+    assert_eq!(signed.inputs().len(), 1);
+    assert!(!signed.inputs()[0]
         .unlocking_script
         .as_ref()
         .unwrap()

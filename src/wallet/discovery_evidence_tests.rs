@@ -117,7 +117,7 @@ async fn a_host_resolvers_outputs_meet_the_evidence() {
     let bare = revealed(&key(9), &key(8), [2; 32], &[("name", "Alice")]).await;
     let mut unproven = bsv_rs::transaction::Transaction::new();
     unproven
-        .outputs
+        .outputs_mut()
         .push(bsv_rs::transaction::TransactionOutput {
             satoshis: Some(1),
             locking_script: token(&key(8), record_json(&bare)),

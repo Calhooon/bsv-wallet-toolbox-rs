@@ -150,8 +150,8 @@ async fn scene(verifier: Arc<dyn SpendVerifier>, count: usize) -> Scene {
     let mut parent = Transaction::new();
     let mut input = TransactionInput::new("00".repeat(32), u32::MAX);
     input.unlocking_script = Some(UnlockingScript::from_binary(&[0]).unwrap());
-    parent.inputs.push(input);
-    parent.outputs = vec![
+    parent.inputs_mut().push(input);
+    *parent.outputs_mut() = vec![
         TransactionOutput {
             satoshis: Some(SATOSHIS),
             locking_script: LockingScript::from_binary(&lock).unwrap(),
@@ -395,9 +395,9 @@ fn caller_input(scene: &Scene, script: Option<Vec<u8>>) -> CreateActionInput {
 fn caller_script(scene: &Scene, bad: bool) -> Vec<u8> {
     let mut draft = Transaction::new();
     draft
-        .inputs
+        .inputs_mut()
         .push(TransactionInput::new(scene.parent.id(), 0));
-    let lock = Script::from_binary(&scene.parent.outputs[0].locking_script.to_binary()).unwrap();
+    let lock = Script::from_binary(&scene.parent.outputs()[0].locking_script.to_binary()).unwrap();
     let mut script = P2PKH::unlock(&scene.key, SignOutputs::None, true)
         .sign(&SigningContext::new(&draft.to_binary(), 0, SATOSHIS, &lock))
         .unwrap()
@@ -510,7 +510,7 @@ async fn batched_signing(defer: bool) {
         assert_eq!(spend.satoshis, SATOSHIS);
         assert_eq!(
             &*spend.script,
-            scene.parent.outputs[0].locking_script.to_binary()
+            scene.parent.outputs()[0].locking_script.to_binary()
         );
     }
     interpreter(&scene, &batches[0][0].0.body.raw).unwrap();
@@ -562,20 +562,19 @@ async fn create_caller_input_beef_uses_host_before_signing() {
     let scene = scene(host.clone(), 1).await;
     let mut child = Transaction::new();
     child
-        .inputs
+        .inputs_mut()
         .push(TransactionInput::new(scene.parent.id(), 0));
-    child.outputs.push(TransactionOutput {
+    child.outputs_mut().push(TransactionOutput {
         satoshis: Some(SATOSHIS - 1_000),
-        locking_script: scene.parent.outputs[0].locking_script.clone(),
+        locking_script: scene.parent.outputs()[0].locking_script.clone(),
         change: false,
     });
-    let lock = Script::from_binary(&scene.parent.outputs[0].locking_script.to_binary()).unwrap();
-    child.inputs[0].unlocking_script = Some(
+    let lock = Script::from_binary(&scene.parent.outputs()[0].locking_script.to_binary()).unwrap();
+    child.inputs()[0].unlocking_script = Some(
         P2PKH::unlock(&scene.key, SignOutputs::All, false)
             .sign(&SigningContext::new(&child.to_binary(), 0, SATOSHIS, &lock))
             .unwrap(),
     );
-    child.invalidate_caches();
     interpreter(&scene, &child.to_binary()).unwrap();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&scene.parent.id(), HEIGHT));

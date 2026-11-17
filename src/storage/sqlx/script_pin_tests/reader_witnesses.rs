@@ -101,7 +101,7 @@ fn copies(dups: usize) -> (Transaction, Transaction) {
     let mut unlock = vec![0x4e];
     unlock.extend(u32::try_from(PUSH).unwrap().to_le_bytes());
     unlock.extend(std::iter::repeat_n(0x01, PUSH));
-    child.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
+    child.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
     (parent, child)
 }
 
@@ -182,8 +182,8 @@ fn the_door_memory_figure_declines_the_stack_past_it() {
             )),
             input_index: 0,
             source_satoshis: 100,
-            locking_script: parent.outputs[0].locking_script.clone(),
-            unlocking_script: child.inputs[0].unlocking_script.clone().unwrap(),
+            locking_script: parent.outputs()[0].locking_script.clone(),
+            unlocking_script: child.inputs()[0].unlocking_script.clone().unwrap(),
             memory_limit: Some(DOOR_STACK_MEMORY_BYTES),
             work_limit: Some(1 << 31),
         })

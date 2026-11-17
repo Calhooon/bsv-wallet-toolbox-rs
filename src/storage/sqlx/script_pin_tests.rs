@@ -20,19 +20,19 @@ const HEIGHT: u32 = ProtocolEra::MAINNET_GENESIS_HEIGHT + 100;
 
 fn payment(lock: &str) -> (Transaction, Transaction) {
     let mut parent = Transaction::new();
-    parent.version = 1;
+    parent.set_version(1);
     let mut input = TransactionInput::new("11".repeat(32), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(input);
-    parent.outputs.push(TransactionOutput {
+    parent.inputs_mut().push(input);
+    parent.outputs_mut().push(TransactionOutput {
         satoshis: Some(100),
         locking_script: LockingScript::from_hex(lock).unwrap(),
         change: false,
     });
     let mut child = Transaction::new();
-    child.version = 1;
-    child.inputs.push(TransactionInput::new(parent.id(), 0));
-    child.outputs.push(TransactionOutput {
+    child.set_version(1);
+    child.inputs_mut().push(TransactionInput::new(parent.id(), 0));
+    child.outputs_mut().push(TransactionOutput {
         satoshis: Some(90),
         locking_script: LockingScript::from_hex("51").unwrap(),
         change: false,
@@ -195,7 +195,7 @@ async fn internalize_verifier_uses_standard_version_one_signature_words() {
 #[tokio::test]
 async fn internalize_verifier_uses_standard_nonminimal_number_words() {
     let (parent, mut child) = payment("8b5287");
-    child.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("020100").unwrap());
+    child.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex("020100").unwrap());
     script_words(
         verify(parent, child).await,
         "Invalid script number: script execution error: Non-minimally encoded script number",
@@ -218,9 +218,9 @@ fn word_verdict(
     let mut spend = Spend::with_transaction(TxSpendParams {
         transaction,
         input_index: 0,
-        source_satoshis: parent.outputs[0].satoshis.unwrap(),
-        locking_script: parent.outputs[0].locking_script.clone(),
-        unlocking_script: child.inputs[0].unlocking_script.clone().unwrap(),
+        source_satoshis: parent.outputs()[0].satoshis.unwrap(),
+        locking_script: parent.outputs()[0].locking_script.clone(),
+        unlocking_script: child.inputs()[0].unlocking_script.clone().unwrap(),
         memory_limit: None,
         work_limit: None,
     })
@@ -234,7 +234,7 @@ fn word_verdict(
 #[tokio::test]
 async fn post_chronicle_version_one_substr_passes_both_modes() {
     let (parent, mut child) = payment("0052b302616287");
-    child.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("03616263").unwrap());
+    child.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex("03616263").unwrap());
     assert_eq!(
         word_verdict(&parent, &child, ProtocolEra::PostChronicle),
         Ok(true)
@@ -328,7 +328,7 @@ impl ChainTracker for FixtureTracker {
 fn sign_input(parent: &Transaction, child: &mut Transaction, index: usize, scope: u8) {
     let key = PrivateKey::from_hex(&format!("{:064x}", 7)).unwrap();
     let raw = parse_transaction(&child.to_binary()).unwrap();
-    let script = parent.outputs[0].locking_script.to_binary();
+    let script = parent.outputs()[0].locking_script.to_binary();
     let digest = compute_sighash_original_for_signing(&SighashParams {
         version: raw.version,
         inputs: &raw.inputs,
@@ -336,15 +336,14 @@ fn sign_input(parent: &Transaction, child: &mut Transaction, index: usize, scope
         locktime: raw.locktime,
         input_index: index,
         subscript: &script,
-        satoshis: parent.outputs[0].satoshis.unwrap(),
+        satoshis: parent.outputs()[0].satoshis.unwrap(),
         scope: u32::from(scope),
     });
     let mut sig = key.sign(&digest).unwrap().to_der();
     sig.push(scope);
     let mut unlock = vec![u8::try_from(sig.len()).unwrap()];
     unlock.extend(sig);
-    child.inputs[index].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
-    child.invalidate_caches();
+    child.inputs_mut()[index].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
 }
 
 async fn verify_entries(
@@ -396,8 +395,8 @@ fn spend_refusal(result: crate::Result<()>) -> SpendRefusal {
 async fn word_checks_an_unproven_ancestor_of_the_subject() {
     let (root, bad_parent) = signed_payment(0x01);
     let (_, mut subject) = payment("51");
-    subject.inputs[0].source_txid = Some(bad_parent.id());
-    subject.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    subject.inputs_mut()[0].source_txid = Some(bad_parent.id());
+    subject.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
     let parent_id = bad_parent.id();
     let bump = proof(&root, HEIGHT);
     let result = verify_entries(
@@ -422,7 +421,7 @@ async fn word_checks_an_unproven_ancestor_of_the_subject() {
 async fn word_preserves_value_checks_after_default_script_refusal() {
     let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
     let (parent, mut child) = signed_payment(0x61);
-    child.outputs[0].satoshis = Some(101);
+    child.outputs_mut()[0].satoshis = Some(101);
     sign_input(&parent, &mut child, 0, 0x61);
     assert_eq!(
         spend_refusal(verify_at_height(parent, child, height).await),
@@ -435,9 +434,9 @@ async fn word_preserves_later_transactions_after_default_script_refusal() {
     let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
     let (root, parent) = signed_payment(0x61);
     let (_, mut subject) = payment("51");
-    subject.inputs[0].source_txid = Some(parent.id());
-    subject.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
-    subject.outputs[0].satoshis = Some(91);
+    subject.inputs_mut()[0].source_txid = Some(parent.id());
+    subject.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    subject.outputs_mut()[0].satoshis = Some(91);
     let subject_id = subject.id();
     let bump = proof(&root, height);
     let result = verify_entries(
@@ -472,7 +471,7 @@ async fn word_keeps_structural_refusals_final() {
     let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
     let (root, child) = signed_payment(0x61);
     let (_, mut absent_parent) = payment("51");
-    absent_parent.inputs[0].source_txid = Some("55".repeat(32));
+    absent_parent.inputs_mut()[0].source_txid = Some("55".repeat(32));
     let bump = proof(&root, height);
     let result = verify_entries(
         vec![(root, Some(0)), (child, None), (absent_parent, None)],
@@ -495,13 +494,13 @@ async fn word_preserves_later_mining_refusals_after_default_script_refusal() {
     let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
     let (root, parent) = signed_payment(0x61);
     let (_, mut nonfinal) = payment("51");
-    nonfinal.inputs[0].source_txid = Some(parent.id());
-    nonfinal.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
-    nonfinal.inputs[0].sequence = u32::MAX - 1;
-    nonfinal.lock_time = height + 7;
+    nonfinal.inputs_mut()[0].source_txid = Some(parent.id());
+    nonfinal.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    nonfinal.inputs_mut()[0].sequence = u32::MAX - 1;
+    nonfinal.set_lock_time(height + 7);
     let mut p2sh = nonfinal.clone();
-    p2sh.lock_time = 0;
-    p2sh.outputs[0].locking_script =
+    p2sh.set_lock_time(0);
+    p2sh.outputs_mut()[0].locking_script =
         LockingScript::from_hex(&format!("a914{}87", "22".repeat(20))).unwrap();
     for (subject, expected) in [
         (
@@ -533,10 +532,10 @@ async fn word_preserves_spent_outputs_after_default_script_refusal() {
     let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
     let (root, parent) = signed_payment(0x61);
     let (_, mut spend) = payment("51");
-    spend.inputs[0].source_txid = Some(parent.id());
-    spend.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
+    spend.inputs_mut()[0].source_txid = Some(parent.id());
+    spend.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
     let mut respend = spend.clone();
-    respend.outputs[0].satoshis = Some(80);
+    respend.outputs_mut()[0].satoshis = Some(80);
     let bump = proof(&root, height);
     let result = verify_entries(
         vec![
@@ -563,10 +562,9 @@ async fn word_accepts_a_chronicle_signature_on_a_pre_chronicle_coin() {
     let height = ProtocolEra::MAINNET_CHRONICLE_HEIGHT;
     let (new_coin, mut child) = signed_payment(0x61);
     let mut old_coin = new_coin.clone();
-    old_coin.inputs[0].source_output_index = 1;
-    old_coin.invalidate_caches();
-    child.inputs.push(TransactionInput::new(old_coin.id(), 0));
-    child.outputs[0].satoshis = Some(190);
+    old_coin.inputs_mut()[0].source_output_index = 1;
+    child.inputs_mut().push(TransactionInput::new(old_coin.id(), 0));
+    child.outputs_mut()[0].satoshis = Some(190);
     sign_input(&new_coin, &mut child, 0, 0x61);
     sign_input(&old_coin, &mut child, 1, 0x61);
     let bumps = vec![proof(&new_coin, height), proof(&old_coin, height - 1)];
@@ -583,7 +581,7 @@ async fn word_accepts_a_chronicle_signature_on_a_pre_chronicle_coin() {
 
 async fn opcode_spend(lock: &str, unlock: &str, coin_height: u32) -> crate::Result<()> {
     let (parent, mut child) = payment(lock);
-    child.inputs[0].unlocking_script = Some(UnlockingScript::from_hex(unlock).unwrap());
+    child.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex(unlock).unwrap());
     let bump = proof(&parent, coin_height);
     verify_entries(
         vec![(parent, Some(0)), (child, None)],
@@ -646,13 +644,12 @@ async fn regtest_post_genesis_tip_refuses_a_chronicle_signature() {
 async fn word_uses_the_next_block_for_an_unproven_coin() {
     let (parent, subject) = signed_payment(0x61);
     let (mut root, _) = payment("51");
-    root.outputs[0].satoshis = Some(110);
+    root.outputs_mut()[0].satoshis = Some(110);
     let mut parent = parent;
-    parent.inputs[0].source_txid = Some(root.id());
-    parent.inputs[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
-    parent.invalidate_caches();
+    parent.inputs_mut()[0].source_txid = Some(root.id());
+    parent.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex("").unwrap());
     let mut subject = subject;
-    subject.inputs[0].source_txid = Some(parent.id());
+    subject.inputs_mut()[0].source_txid = Some(parent.id());
     sign_input(&parent, &mut subject, 0, 0x61);
     let bump = proof(&root, HEIGHT);
     // The block after this tip is Chronicle's: the mempool parent and its

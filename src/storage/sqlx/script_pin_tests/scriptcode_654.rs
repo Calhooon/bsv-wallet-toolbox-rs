@@ -40,9 +40,9 @@ async fn verdict(
     height: u32,
 ) -> crate::Result<()> {
     let (mut parent, mut child) = payment(&hex::encode(LOCK));
-    parent.version = 2;
-    child.inputs[0].source_txid = Some(parent.id());
-    child.version = 2;
+    parent.set_version(2);
+    child.inputs_mut()[0].source_txid = Some(parent.id());
+    child.set_version(2);
     let raw = parse_transaction(&child.to_binary()).unwrap();
     let digest = compute_sighash_dispatched_for_signing(&SighashParams {
         version: raw.version,
@@ -51,13 +51,12 @@ async fn verdict(
         locktime: raw.locktime,
         input_index: 0,
         subscript: code,
-        satoshis: parent.outputs[0].satoshis.unwrap(),
+        satoshis: parent.outputs()[0].satoshis.unwrap(),
         scope,
     });
     let signature = TransactionSignature::new(key().sign(&digest).unwrap(), scope);
     let unlocking = unlock(&signature.to_checksig_format());
-    child.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&unlocking).unwrap());
-    child.invalidate_caches();
+    child.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_binary(&unlocking).unwrap());
     verify_at_height(parent, child, height).await
 }
 

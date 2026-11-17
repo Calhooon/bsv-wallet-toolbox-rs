@@ -108,7 +108,7 @@ async fn an_output_without_its_chain_in_its_beef_is_dropped() {
     beef.merge_raw_tx(orphan.to_binary(), None);
     only_the_good_output(at(beef.to_binary(), 0), &tracker()).await;
     let mut bare = transaction(alices_token(&record));
-    bare.inputs.clear();
+    bare.inputs_mut().clear();
     only_the_good_output(at(bare.to_beef(true).unwrap(), 0), &tracker()).await;
     only_the_good_output(at(vec![], 0), &tracker()).await;
 }
@@ -293,7 +293,7 @@ async fn an_unproven_output_is_kept_only_when_its_spend_verifies() {
         let mut child = transaction(alices_token(&good));
         let mut input = TransactionInput::new(parent.id(), 0);
         input.set_unlocking_script(bsv_rs::script::UnlockingScript::from_hex(unlocking).unwrap());
-        child.inputs = vec![input];
+        *child.inputs_mut() = vec![input];
         let mut beef = Beef::from_binary(&proven(&parent, HEIGHT)).unwrap();
         beef.merge_raw_tx(child.to_binary(), None);
         answer.push(kept(vec![at(beef.to_binary(), 0)], &tracker()).await.len());
@@ -305,7 +305,7 @@ async fn an_unproven_output_is_kept_only_when_its_spend_verifies() {
 /// `parent` (each `OP_EQUAL`) with `1 1`, unproven, beside its proven parent.
 async fn spending(parent: &bsv_rs::transaction::Transaction, inputs: u32) -> OutputListItem {
     let mut child = transaction(alices_token(&alice(2).await));
-    child.inputs = (0..inputs)
+    *child.inputs_mut() = (0..inputs)
         .map(|vout| {
             let mut input = TransactionInput::new(parent.id(), vout);
             input.set_unlocking_script(bsv_rs::script::UnlockingScript::from_hex("5151").unwrap());
@@ -337,7 +337,8 @@ async fn kept_under(output: OutputListItem, limit: u64) -> usize {
 #[tokio::test]
 async fn an_output_past_the_transaction_work_budget_is_dropped() {
     let mut parent = transaction(LockingScript::from_hex("87").unwrap());
-    parent.outputs.push(parent.outputs[0].clone());
+    let first = parent.outputs()[0].clone();
+    parent.outputs_mut().push(first);
     let fits = {
         let mut limit = 0;
         while kept_under(spending(&parent, 1).await, limit).await == 0 {

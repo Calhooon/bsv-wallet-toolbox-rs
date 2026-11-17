@@ -104,8 +104,8 @@ pub(super) async fn fund_tagged(
     let mut parent = Transaction::new();
     let mut input = TransactionInput::new(format!("{tag:064x}"), 0xffff_ffff);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(input);
-    parent.outputs.push(TransactionOutput {
+    parent.inputs_mut().push(input);
+    parent.outputs_mut().push(TransactionOutput {
         satoshis: Some(100_000),
         locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
         change: false,
@@ -255,8 +255,8 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
     let mut parent = Transaction::new();
     let mut parent_input = TransactionInput::new("11".repeat(32), 0);
     parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(parent_input);
-    parent.outputs.push(TransactionOutput {
+    parent.inputs_mut().push(parent_input);
+    parent.outputs_mut().push(TransactionOutput {
         satoshis: Some(20_000),
         locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
@@ -265,8 +265,8 @@ async fn internalize_action_on_a_busy_store_is_wallet_busy() {
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(parent_txid.clone(), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(10_000),
         locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
         change: false,
@@ -400,8 +400,8 @@ async fn pending(wallet: &Wallet<StorageSqlx, MockWalletServices>, reference: &s
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(tag.repeat(32), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(1_000),
         locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
         change: false,
@@ -1076,8 +1076,8 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
     let mut parent = Transaction::new();
     let mut parent_input = TransactionInput::new("33".repeat(32), 0);
     parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    parent.inputs.push(parent_input);
-    parent.outputs.push(TransactionOutput {
+    parent.inputs_mut().push(parent_input);
+    parent.outputs_mut().push(TransactionOutput {
         satoshis: Some(20_000),
         locking_script: LockingScript::from_hex("7551").unwrap(),
         change: false,
@@ -1086,8 +1086,8 @@ async fn a_busy_status_write_after_an_internalize_broadcast_is_its_success_and_s
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(parent_txid.clone(), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(10_000),
         locking_script: LockingScript::from_binary(&pay_lock()).unwrap(),
         change: false,

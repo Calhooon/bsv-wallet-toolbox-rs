@@ -1228,7 +1228,7 @@ async fn create_proven_tx_req(
 /// only inputs that carry a source txid participate; inputs without one are
 /// skipped (they cannot name an outpoint to look up).
 pub(crate) fn extract_input_outpoints(tx: &Transaction) -> Vec<(String, u32)> {
-    tx.inputs
+    tx.inputs()
         .iter()
         .filter_map(|i| {
             i.source_txid
@@ -1679,13 +1679,13 @@ mod tests {
     ) -> (Vec<u8>, String, u64) {
         // Create a simple transaction
         let mut tx = Transaction::new();
-        tx.version = 1;
-        tx.lock_time = 0;
+        tx.set_version(1);
+        tx.set_lock_time(0);
 
         // Add the input spending the requested outpoint
         let mut input = TransactionInput::new(source_txid.to_string(), source_vout);
         input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-        tx.inputs.push(input);
+        tx.inputs_mut().push(input);
 
         // Add a P2PKH output with 10000 satoshis
         let satoshis = 10000u64;
@@ -1697,7 +1697,7 @@ mod tests {
             .unwrap(),
             change: false,
         };
-        tx.outputs.push(output);
+        tx.outputs_mut().push(output);
 
         let txid = tx.id();
 
@@ -2357,14 +2357,14 @@ mod tests {
 
         // Create a transaction with multiple outputs
         let mut tx = Transaction::new();
-        tx.version = 1;
-        tx.lock_time = 0;
+        tx.set_version(1);
+        tx.set_lock_time(0);
 
         let mut input = TransactionInput::new(test_parent().1, 0);
         input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-        tx.inputs.push(input);
+        tx.inputs_mut().push(input);
 
-        tx.outputs.push(TransactionOutput {
+        tx.outputs_mut().push(TransactionOutput {
             satoshis: Some(10000),
             locking_script: LockingScript::from_hex(
                 "76a914000000000000000000000000000000000000000088ac",
@@ -2373,7 +2373,7 @@ mod tests {
             change: false,
         });
 
-        tx.outputs.push(TransactionOutput {
+        tx.outputs_mut().push(TransactionOutput {
             satoshis: Some(5000),
             locking_script: LockingScript::from_hex(
                 "76a914010101010101010101010101010101010101010188ac",
@@ -2482,18 +2482,18 @@ mod tests {
     /// is the txid itself and the leaf offset is 0 — both deterministic.
     fn create_proven_atomic_beef() -> (Vec<u8>, String, u64, MerklePath, CountingTracker) {
         let mut tx = Transaction::new();
-        tx.version = 1;
-        tx.lock_time = 0;
+        tx.set_version(1);
+        tx.set_lock_time(0);
 
         let mut input = TransactionInput::new(
             "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
             0,
         );
         input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-        tx.inputs.push(input);
+        tx.inputs_mut().push(input);
 
         let satoshis = 10000u64;
-        tx.outputs.push(TransactionOutput {
+        tx.outputs_mut().push(TransactionOutput {
             satoshis: Some(satoshis),
             locking_script: LockingScript::from_hex(
                 "76a914000000000000000000000000000000000000000088ac",
@@ -3549,10 +3549,10 @@ mod tests {
     #[test]
     fn test_extract_input_outpoints_skips_missing_source_txid() {
         let mut tx = Transaction::new();
-        tx.inputs.push(TransactionInput::new("aa".repeat(32), 3));
+        tx.inputs_mut().push(TransactionInput::new("aa".repeat(32), 3));
         let mut missing = TransactionInput::new("bb".repeat(32), 1);
         missing.source_txid = None;
-        tx.inputs.push(missing);
+        tx.inputs_mut().push(missing);
 
         let outpoints = extract_input_outpoints(&tx);
         assert_eq!(outpoints, vec![("aa".repeat(32), 3)]);
@@ -3743,11 +3743,11 @@ mod tests {
     /// parent's root.
     fn payment_spending_abcd(unlocking: &str) -> (Vec<u8>, String, MockChainTracker) {
         let mut parent = Transaction::new();
-        parent.version = 1;
+        parent.set_version(1);
         let mut funding = TransactionInput::new("11".repeat(32), 0);
         funding.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-        parent.inputs.push(funding);
-        parent.outputs.push(TransactionOutput {
+        parent.inputs_mut().push(funding);
+        parent.outputs_mut().push(TransactionOutput {
             satoshis: Some(20_000),
             locking_script: LockingScript::from_hex(ABCD_EQUAL).unwrap(),
             change: false,
@@ -3755,11 +3755,11 @@ mod tests {
         let parent_txid = parent.id();
 
         let mut payment = Transaction::new();
-        payment.version = 1;
+        payment.set_version(1);
         let mut input = TransactionInput::new(parent_txid.clone(), 0);
         input.unlocking_script = Some(UnlockingScript::from_hex(unlocking).unwrap());
-        payment.inputs.push(input);
-        payment.outputs.push(TransactionOutput {
+        payment.inputs_mut().push(input);
+        payment.outputs_mut().push(TransactionOutput {
             satoshis: Some(10_000),
             locking_script: LockingScript::from_hex(
                 "76a914000000000000000000000000000000000000000088ac",
@@ -3908,11 +3908,10 @@ mod tests {
             let (bytes, _, tracker) = payment_spending_abcd("02abcd");
             let incoming = read_incoming_payment(&bytes).unwrap();
             let mut payment = Transaction::from_binary(&incoming.body.unwrap().raw).unwrap();
-            payment.lock_time = lock_time;
-            payment.inputs[0].sequence = 0;
-            payment.invalidate_caches();
+            payment.set_lock_time(lock_time);
+            payment.inputs_mut()[0].sequence = 0;
             let txid = payment.id();
-            let parent_id = payment.inputs[0].source_txid.as_ref().unwrap();
+            let parent_id = payment.inputs()[0].source_txid.as_ref().unwrap();
             let original = Beef::from_binary(&bytes).unwrap();
             let parent = original
                 .find_txid(parent_id)

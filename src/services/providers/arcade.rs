@@ -1168,7 +1168,7 @@ pub fn beef_to_ef_batch_skipping(beef: &[u8], skip: &HashSet<String>) -> Result<
         })?;
 
         let mut tx = tx.clone();
-        for input in &mut tx.inputs {
+        for input in tx.inputs_mut() {
             if input.source_transaction.is_some() {
                 continue;
             }

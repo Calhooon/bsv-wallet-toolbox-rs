@@ -391,9 +391,11 @@ impl StorageSqlx {
                     _ => None,
                 };
                 let raw_inputs = match raw_tx {
-                    Some(raw_tx) => std::mem::take(
-                        &mut bsv_rs::transaction::Transaction::from_binary(&raw_tx)?.inputs,
-                    ),
+                    Some(raw_tx) => {
+                        bsv_rs::transaction::Transaction::from_binary(&raw_tx)?
+                            .into_parts()
+                            .inputs
+                    }
                     None => Vec::new(),
                 };
 

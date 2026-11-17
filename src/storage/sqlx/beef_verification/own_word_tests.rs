@@ -44,8 +44,8 @@ fn source(lock: &[u8]) -> Transaction {
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(format!("{:064x}", 7), 0);
     input.unlocking_script = Some(UnlockingScript::from_binary(&[0x51]).unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(SATOSHIS),
         locking_script: LockingScript::from_binary(lock).unwrap(),
         change: false,
@@ -57,8 +57,8 @@ fn spend(parent: &Transaction, vout: u32, unlock: Option<&[u8]>) -> Transaction 
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(parent.id(), vout);
     input.unlocking_script = unlock.map(|u| UnlockingScript::from_binary(u).unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(SATOSHIS - 200),
         locking_script: LockingScript::from_binary(&[0x51]).unwrap(),
         change: false,
@@ -178,8 +178,8 @@ fn a_coin_mined_before_genesis_is_left_to_the_node() {
 #[test]
 fn a_coinbase_source_supplies_its_output() {
     let mut parent = source(&[0x8d, 0x52, 0x87]);
-    parent.inputs[0] = TransactionInput::new(format!("{:064x}", 0), u32::MAX);
-    parent.inputs[0].unlocking_script = Some(UnlockingScript::from_binary(&[0x51]).unwrap());
+    parent.inputs_mut()[0] = TransactionInput::new(format!("{:064x}", 0), u32::MAX);
+    parent.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_binary(&[0x51]).unwrap());
     let refused = spend(&parent, 0, Some(&[0x52]));
     assert!(matches!(
         judge(&refused, &parent, Some(CHRONICLE)),

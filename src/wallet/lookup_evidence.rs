@@ -224,7 +224,7 @@ fn parse(bytes: &[u8], output_index: u32) -> std::result::Result<Parsed, Refused
         .get(&txid)
         .ok_or(Dropped("its transaction not in its BEEF"))?;
     let locking_script = tx
-        .outputs
+        .outputs()
         .get(output_index as usize)
         .ok_or(Dropped("an output index past its transaction's outputs"))?
         .locking_script
@@ -259,17 +259,17 @@ fn unconfirmed_graph(
         }
         let tx = txs.get(&txid).ok_or(Dropped("a parent not in its BEEF"))?;
         script_bytes += tx
-            .outputs
+            .outputs()
             .iter()
             .map(|o| o.locking_script.to_binary().len())
             .sum::<usize>();
         script_bytes += tx
-            .inputs
+            .inputs()
             .iter()
             .filter_map(|i| i.unlocking_script.as_ref())
             .map(|s| s.to_binary().len())
             .sum::<usize>();
-        inputs += tx.inputs.len();
+        inputs += tx.inputs().len();
         if inputs > INPUTS || script_bytes > SCRIPT_BYTES {
             return Err(Limit);
         }
@@ -279,10 +279,10 @@ fn unconfirmed_graph(
             }
             continue;
         }
-        if tx.inputs.is_empty() {
+        if tx.inputs().is_empty() {
             return Err(Dropped("an unproven transaction with no input"));
         }
-        for input in &tx.inputs {
+        for input in tx.inputs() {
             let source = input
                 .get_source_txid()
                 .map_err(|_| Dropped("an input with no source"))?;

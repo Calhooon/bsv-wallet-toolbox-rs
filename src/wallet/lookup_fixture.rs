@@ -140,8 +140,8 @@ pub(crate) fn transaction(script: LockingScript) -> Transaction {
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new("11".repeat(32), 0);
     input.set_unlocking_script(UnlockingScript::new());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(1),
         locking_script: script,
         change: false,

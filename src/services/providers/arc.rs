@@ -882,7 +882,7 @@ impl Arc {
                         match new_tx_cloned {
                             Some(mut new_tx) => {
                                 let mut hydrated = true;
-                                for input in &mut new_tx.inputs {
+                                for input in new_tx.inputs_mut() {
                                     if let Ok(parent_txid) = input.get_source_txid() {
                                         if let Some(parent_btx) =
                                             beef_parsed.find_txid(&parent_txid)
@@ -904,7 +904,7 @@ impl Arc {
                                             tracing::debug!(
                                                 name = %self.name,
                                                 ef_len = ef_hex.len(),
-                                                num_inputs = new_tx.inputs.len(),
+                                                num_inputs = new_tx.inputs().len(),
                                                 "Posting as EF (all ancestors proven)"
                                             );
                                             result

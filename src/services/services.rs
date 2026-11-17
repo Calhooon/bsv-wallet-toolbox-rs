@@ -1725,7 +1725,7 @@ impl Services {
         };
         let names_the_outpoint = bsv_rs::transaction::Transaction::from_binary(&raw_tx)
             .map(|tx| {
-                tx.inputs.iter().any(|input| {
+                tx.inputs().iter().any(|input| {
                     input.source_output_index == vout
                         && input
                             .get_source_txid()

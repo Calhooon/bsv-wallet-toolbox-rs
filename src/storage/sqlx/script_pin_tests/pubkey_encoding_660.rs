@@ -32,11 +32,10 @@ const ERAS: [u32; 2] = [
 /// transactions at `version`, the parent proven at `height`.
 async fn door(lock: &str, unlock: &str, version: u32, height: u32) -> crate::Result<()> {
     let (mut parent, mut child) = payment(lock);
-    parent.version = version;
-    child.inputs[0].source_txid = Some(parent.id());
-    child.version = version;
-    child.inputs[0].unlocking_script = Some(UnlockingScript::from_hex(unlock).unwrap());
-    child.invalidate_caches();
+    parent.set_version(version);
+    child.inputs_mut()[0].source_txid = Some(parent.id());
+    child.set_version(version);
+    child.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_hex(unlock).unwrap());
     verify_at_height(parent, child, height).await
 }
 

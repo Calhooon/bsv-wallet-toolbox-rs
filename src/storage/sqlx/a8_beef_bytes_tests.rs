@@ -68,8 +68,8 @@ pub(crate) fn census_beef_signed_by(bytes: usize, signer: u8) -> (Vec<u8>, Strin
     let mut parent = Transaction::new();
     let mut funding = TransactionInput::new("11".repeat(32), 0);
     funding.unlocking_script = Some(UnlockingScript::from_binary(&[0x51]).expect("push"));
-    parent.inputs.push(funding);
-    parent.outputs.push(TransactionOutput {
+    parent.inputs_mut().push(funding);
+    parent.outputs_mut().push(TransactionOutput {
         satoshis: Some(CENSUS_COIN),
         locking_script: LockingScript::from_binary(&lock).expect("lock"),
         change: false,
@@ -78,9 +78,9 @@ pub(crate) fn census_beef_signed_by(bytes: usize, signer: u8) -> (Vec<u8>, Strin
 
     let mut child = Transaction::new();
     child
-        .inputs
+        .inputs_mut()
         .push(TransactionInput::new(parent_id.clone(), 0));
-    child.outputs.push(TransactionOutput {
+    child.outputs_mut().push(TransactionOutput {
         satoshis: Some(10_000),
         locking_script: LockingScript::from_binary(&lock).expect("lock"),
         change: false,
@@ -89,7 +89,7 @@ pub(crate) fn census_beef_signed_by(bytes: usize, signer: u8) -> (Vec<u8>, Strin
     data.extend([0x00, 0x6a, 0x4e]);
     data.extend(u32::try_from(bytes).expect("data length").to_le_bytes());
     data.extend((0..=250u8).cycle().take(bytes));
-    child.outputs.push(TransactionOutput {
+    child.outputs_mut().push(TransactionOutput {
         satoshis: Some(0),
         locking_script: LockingScript::from_binary(&data).expect("data"),
         change: false,
@@ -101,8 +101,7 @@ pub(crate) fn census_beef_signed_by(bytes: usize, signer: u8) -> (Vec<u8>, Strin
     let unlock = P2PKH::unlock(&signer, SignOutputs::All, false)
         .sign(&context)
         .expect("sign");
-    child.inputs[0].unlocking_script = Some(unlock);
-    child.invalidate_caches();
+    child.inputs_mut()[0].unlocking_script = Some(unlock);
     let child_id = child.id();
 
     let mut beef = Beef::new();

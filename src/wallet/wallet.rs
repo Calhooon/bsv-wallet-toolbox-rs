@@ -1599,7 +1599,7 @@ where
                                 }
                                 if let Some(&idx) = by_id.get(&id) {
                                     if let Some(tx) = beef.txs[idx].tx() {
-                                        for inp in &tx.inputs {
+                                        for inp in tx.inputs() {
                                             if let Ok(src) = inp.get_source_txid() {
                                                 if by_id.contains_key(&src) {
                                                     stack.push(src);
@@ -2720,17 +2720,17 @@ where
             for (output, sender) in args.outputs.iter().zip(senders) {
                 if let (Some(payment), Some(sender)) = (&output.payment_remittance, sender) {
                     let vout = output.output_index as usize;
-                    if vout >= tx.outputs.len() {
+                    if vout >= tx.outputs().len() {
                         return Err(bsv_rs::Error::WalletRefusal {
                             class: bsv_rs::WalletRefusalClass::InvalidParameter,
                             message: format!(
                                 "output_index {} exceeds transaction output count {}",
                                 vout,
-                                tx.outputs.len()
+                                tx.outputs().len()
                             ),
                         });
                     }
-                    let script = tx.outputs[vout].locking_script.as_script().to_binary();
+                    let script = tx.outputs()[vout].locking_script.as_script().to_binary();
                     // Only validate P2PKH (25 bytes: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG)
                     if script.len() == 25
                         && script[0] == 0x76

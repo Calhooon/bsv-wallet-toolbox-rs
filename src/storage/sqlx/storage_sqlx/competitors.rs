@@ -172,12 +172,12 @@ impl StorageSqlx {
             return None;
         }
         let lost: Vec<(String, u32)> = ours
-            .inputs
+            .inputs()
             .iter()
             .filter_map(|ours_in| {
                 let source = ours_in.get_source_txid().ok()?;
                 theirs
-                    .inputs
+                    .inputs()
                     .iter()
                     .any(|theirs_in| {
                         theirs_in.source_output_index == ours_in.source_output_index

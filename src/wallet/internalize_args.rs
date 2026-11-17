@@ -255,8 +255,8 @@ mod tests {
             let mut tx = Transaction::new();
             let mut input = TransactionInput::new(outpoint, 0);
             input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-            tx.inputs.push(input);
-            tx.outputs.push(TransactionOutput {
+            tx.inputs_mut().push(input);
+            tx.outputs_mut().push(TransactionOutput {
                 satoshis: Some(1_000),
                 locking_script: LockingScript::from_hex("7551").unwrap(),
                 change: false,

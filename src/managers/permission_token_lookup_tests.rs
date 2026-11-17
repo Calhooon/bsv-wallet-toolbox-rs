@@ -208,8 +208,8 @@ async fn store_token(wallet: &FullWallet, script: LockingScript, basket: &str, t
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(format!("{tag:064x}"), 0xffff_ffff);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(1),
         locking_script: script.clone(),
         change: false,
