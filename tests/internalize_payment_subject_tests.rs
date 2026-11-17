@@ -4,8 +4,8 @@
 //! A payment output is admitted only when the key derived from its
 //! remittance is the key its P2PKH script pays. The check reads the subject
 //! transaction's own outputs (`Transaction::from_beef_subject`), so it runs
-//! whatever the ancestry's size or shape: a sweep of one parent past bsv-rs
-//! 0.8.11's default link budget, or a parent carried as a txid-only entry
+//! whatever the ancestry's size or shape: a sweep of one parent past bsv-rs's
+//! default link bounds, or a parent carried as a txid-only entry
 //! (whose payment the derivation refuses before storage is called).
 //! A BEEF with a payment output and no readable subject is refused before
 //! anything is stored.
