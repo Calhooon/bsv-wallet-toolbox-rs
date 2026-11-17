@@ -98,7 +98,8 @@ fn build_parent_child_beef_with_output(
     // Add parent as proven (with merkle path)
     let bump = MerklePath::from_coinbase_txid(&parent_txid, 800_000);
     let bump_idx = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent_tx.to_binary(), Some(bump_idx)).unwrap();
+    beef.merge_raw_tx(parent_tx.to_binary(), Some(bump_idx))
+        .unwrap();
 
     // Add child as unproven (no bump)
     beef.merge_raw_tx(child_tx.to_binary(), None).unwrap();
@@ -235,7 +236,8 @@ async fn test_post_beef_trim_removes_deep_ancestors() {
     // Add a "grandparent" proven tx (same bytes, different bump height)
     let bump_gp = MerklePath::from_coinbase_txid(&txid, 799_999);
     let bump_gp_idx = beef.merge_bump(bump_gp);
-    beef.merge_raw_tx(tx_bytes.clone(), Some(bump_gp_idx)).unwrap();
+    beef.merge_raw_tx(tx_bytes.clone(), Some(bump_gp_idx))
+        .unwrap();
 
     let count_before = beef.txs.len();
     assert_eq!(count_before, 1, "Should have 1 tx before trim");

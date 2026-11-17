@@ -334,7 +334,10 @@ impl StorageSqlx {
                 match beef.to_binary() {
                     Ok(bytes) => bytes,
                     Err(e) => {
-                        tracing::warn!("send_waiting: the BEEF for {} is not writable: {e}", req.txid);
+                        tracing::warn!(
+                            "send_waiting: the BEEF for {} is not writable: {e}",
+                            req.txid
+                        );
                         continue;
                     }
                 }

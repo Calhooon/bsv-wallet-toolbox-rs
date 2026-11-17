@@ -56,7 +56,8 @@ async fn verdict(
     });
     let signature = TransactionSignature::new(key().sign(&digest).unwrap(), scope);
     let unlocking = unlock(&signature.to_checksig_format());
-    child.inputs_mut()[0].unlocking_script = Some(UnlockingScript::from_binary(&unlocking).unwrap());
+    child.inputs_mut()[0].unlocking_script =
+        Some(UnlockingScript::from_binary(&unlocking).unwrap());
     verify_at_height(parent, child, height).await
 }
 

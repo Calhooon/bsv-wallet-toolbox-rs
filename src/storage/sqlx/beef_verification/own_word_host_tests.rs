@@ -129,7 +129,10 @@ fn host_true_receives_the_input_and_both_words() {
     assert_eq!(spend.body.raw, child.to_binary());
     assert_eq!(spend.vin, 0);
     assert_eq!(spend.satoshis, SATOSHIS);
-    assert_eq!(&*spend.script, parent.outputs()[0].locking_script.to_binary());
+    assert_eq!(
+        &*spend.script,
+        parent.outputs()[0].locking_script.to_binary()
+    );
     assert_eq!(context.proven_height, Some(u64::from(GENESIS)));
     assert_eq!(
         context.word,

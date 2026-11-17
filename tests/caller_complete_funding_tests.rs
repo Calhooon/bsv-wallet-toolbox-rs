@@ -297,7 +297,10 @@ async fn anyonecanpay_shortfall_is_funded_and_the_callers_bytes_are_untouched() 
 
     // The caller's outputs are vout 0 and 1, byte for byte.
     assert_eq!(signed.outputs()[0].satoshis, Some(1));
-    assert_eq!(signed.outputs()[0].locking_script.to_binary(), COVENANT_LOCK);
+    assert_eq!(
+        signed.outputs()[0].locking_script.to_binary(),
+        COVENANT_LOCK
+    );
     assert_eq!(signed.outputs()[1].satoshis, Some(1_000));
     assert_eq!(signed.outputs()[1].locking_script.to_binary(), fee_lock());
 

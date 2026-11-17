@@ -42,7 +42,9 @@ fn p2pkh_spends(count: u32) -> (Transaction, Transaction) {
     *parent.outputs_mut() = vec![parent.outputs()[0].clone(); count as usize];
     let mut child = spend(&parent, 0, None);
     for vout in 1..count {
-        child.inputs_mut().push(TransactionInput::new(parent.id(), vout));
+        child
+            .inputs_mut()
+            .push(TransactionInput::new(parent.id(), vout));
     }
     let unsigned = child.to_binary();
     for vin in 0..count as usize {

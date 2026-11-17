@@ -64,9 +64,15 @@ fn build_three_level_beef() -> (Vec<u8>, String, String, String) {
     // beef_to_ef_batch re-sorts parents before children.
     beef.merge_transaction(child_tx);
     beef.merge_transaction(parent_tx);
-    beef.merge_raw_tx(root_tx.to_binary(), Some(bump_idx)).unwrap();
+    beef.merge_raw_tx(root_tx.to_binary(), Some(bump_idx))
+        .unwrap();
 
-    (beef.to_binary().unwrap(), root_txid, parent_txid, child_txid)
+    (
+        beef.to_binary().unwrap(),
+        root_txid,
+        parent_txid,
+        child_txid,
+    )
 }
 
 /// Build a BEEF with a proven parent and one unproven child.
@@ -83,7 +89,8 @@ fn build_proven_parent_beef() -> (Vec<u8>, String, String) {
 
     let mut beef = Beef::with_version(BEEF_V1);
     let bump_idx = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent_tx.to_binary(), Some(bump_idx)).unwrap();
+    beef.merge_raw_tx(parent_tx.to_binary(), Some(bump_idx))
+        .unwrap();
     beef.merge_transaction(child_tx);
 
     (beef.to_binary().unwrap(), parent_txid, child_txid)
@@ -169,7 +176,8 @@ mod ef_conversion {
         let bump_idx = beef.merge_bump(bump);
         beef.merge_raw_tx(tx.to_binary(), Some(bump_idx)).unwrap();
 
-        let (efs, subject) = beef_to_ef_batch(&beef.to_binary().unwrap()).expect("conversion succeeds");
+        let (efs, subject) =
+            beef_to_ef_batch(&beef.to_binary().unwrap()).expect("conversion succeeds");
         assert!(efs.is_empty(), "nothing unproven to submit");
         assert_eq!(subject, txid);
     }
@@ -743,7 +751,13 @@ mod proof_ingestion {
         storage.set_chain_tracker(Arc::new(tracker)).await;
 
         let outcome = storage
-            .ingest_merkle_proof(&txid, &bump.to_binary().unwrap(), height, &"b".repeat(64), None)
+            .ingest_merkle_proof(
+                &txid,
+                &bump.to_binary().unwrap(),
+                height,
+                &"b".repeat(64),
+                None,
+            )
             .await
             .expect("ingest call ok");
 
@@ -1448,7 +1462,11 @@ mod triage_inline_proofs {
                         txid: txid.clone(),
                         status: "mined".to_string(),
                         depth: Some(1),
-                        merkle_path: Some(MerklePath::from_coinbase_txid(&other, height).to_hex().unwrap()),
+                        merkle_path: Some(
+                            MerklePath::from_coinbase_txid(&other, height)
+                                .to_hex()
+                                .unwrap(),
+                        ),
                         block_height: Some(height),
                         block_hash: Some("bb".repeat(32)),
                     }],

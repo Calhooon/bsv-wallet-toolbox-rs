@@ -294,7 +294,9 @@ async fn test_m19_429_planted_stale_proof_spend_rides_raw_leg_and_heals() {
     // is attached (the pre-R1 path the fix removes).
     let mut control = Beef::new();
     let idx = control.merge_bump(stale_bump.clone());
-    control.merge_raw_tx(funding_raw.clone(), Some(idx)).unwrap();
+    control
+        .merge_raw_tx(funding_raw.clone(), Some(idx))
+        .unwrap();
     let control_err = verify_like_create_action(&mut control, &tracker)
         .await
         .expect_err("an attached orphan bump is rejected by the same check");
@@ -484,7 +486,13 @@ async fn test_walk_keeps_the_closure_of_the_inputs_when_the_stored_beef_lacks_it
     stored.merge_raw_tx(parent_raw, Some(parent_bump)).unwrap();
     let stray_bump = stored.merge_bump(synth_bump(965_001, &stray));
     stored.merge_raw_tx(stray_raw, Some(stray_bump)).unwrap();
-    seed_unproven_tx(&storage, &subject, &subject_raw, Some(&stored.to_binary().unwrap())).await;
+    seed_unproven_tx(
+        &storage,
+        &subject,
+        &subject_raw,
+        Some(&stored.to_binary().unwrap()),
+    )
+    .await;
 
     let beef = super::beef_walk_ancestry::walk_from(&storage, &subject, None).await;
 

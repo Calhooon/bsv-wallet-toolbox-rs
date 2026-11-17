@@ -61,7 +61,13 @@ async fn seed_known(storage: &StorageSqlx, user_id: i64, tx: &Transaction, prove
     let txid = tx.id();
     let raw = tx.to_binary();
     if proven {
-        seed_proven_tx(storage, &txid, &raw, &bump_for(&txid, 900).to_binary().unwrap()).await;
+        seed_proven_tx(
+            storage,
+            &txid,
+            &raw,
+            &bump_for(&txid, 900).to_binary().unwrap(),
+        )
+        .await;
     }
     let now = Utc::now();
     let row = sqlx::query(
@@ -167,7 +173,13 @@ async fn seed_change_coin(
     let txid = funding.id();
     let raw = funding.to_binary();
     if proven {
-        seed_proven_tx(storage, &txid, &raw, &bump_for(&txid, 900).to_binary().unwrap()).await;
+        seed_proven_tx(
+            storage,
+            &txid,
+            &raw,
+            &bump_for(&txid, 900).to_binary().unwrap(),
+        )
+        .await;
     }
     let now = Utc::now();
     let row = sqlx::query(

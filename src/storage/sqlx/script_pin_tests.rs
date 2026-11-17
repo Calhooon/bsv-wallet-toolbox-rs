@@ -31,7 +31,9 @@ fn payment(lock: &str) -> (Transaction, Transaction) {
     });
     let mut child = Transaction::new();
     child.set_version(1);
-    child.inputs_mut().push(TransactionInput::new(parent.id(), 0));
+    child
+        .inputs_mut()
+        .push(TransactionInput::new(parent.id(), 0));
     child.outputs_mut().push(TransactionOutput {
         satoshis: Some(90),
         locking_script: LockingScript::from_hex("51").unwrap(),
@@ -343,7 +345,8 @@ fn sign_input(parent: &Transaction, child: &mut Transaction, index: usize, scope
     sig.push(scope);
     let mut unlock = vec![u8::try_from(sig.len()).unwrap()];
     unlock.extend(sig);
-    child.inputs_mut()[index].unlocking_script = Some(UnlockingScript::from_binary(&unlock).unwrap());
+    child.inputs_mut()[index].unlocking_script =
+        Some(UnlockingScript::from_binary(&unlock).unwrap());
 }
 
 async fn verify_entries(
@@ -563,7 +566,9 @@ async fn word_accepts_a_chronicle_signature_on_a_pre_chronicle_coin() {
     let (new_coin, mut child) = signed_payment(0x61);
     let mut old_coin = new_coin.clone();
     old_coin.inputs_mut()[0].source_output_index = 1;
-    child.inputs_mut().push(TransactionInput::new(old_coin.id(), 0));
+    child
+        .inputs_mut()
+        .push(TransactionInput::new(old_coin.id(), 0));
     child.outputs_mut()[0].satoshis = Some(190);
     sign_input(&new_coin, &mut child, 0, 0x61);
     sign_input(&old_coin, &mut child, 1, 0x61);

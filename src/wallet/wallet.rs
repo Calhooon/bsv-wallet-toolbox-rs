@@ -2496,7 +2496,10 @@ where
                         let beef_bytes = match broadcast_beef.to_binary() {
                             Ok(bytes) => bytes,
                             Err(e) => {
-                                break 'post Err(format!("Failed to write the broadcast BEEF: {}", e))
+                                break 'post Err(format!(
+                                    "Failed to write the broadcast BEEF: {}",
+                                    e
+                                ))
                             }
                         };
                         let txid_strings = vec![txid.clone()];

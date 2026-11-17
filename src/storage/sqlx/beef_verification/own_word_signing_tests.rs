@@ -578,7 +578,8 @@ async fn create_caller_input_beef_uses_host_before_signing() {
     interpreter(&scene, &child.to_binary()).unwrap();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&scene.parent.id(), HEIGHT));
-    beef.merge_raw_tx(scene.parent.to_binary(), Some(bump)).unwrap();
+    beef.merge_raw_tx(scene.parent.to_binary(), Some(bump))
+        .unwrap();
     beef.merge_raw_tx(child.to_binary(), None).unwrap();
     let mut args = payment(1_000);
     args.input_beef = Some(beef.to_binary().unwrap());

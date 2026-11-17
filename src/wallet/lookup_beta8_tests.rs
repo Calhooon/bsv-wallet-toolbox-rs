@@ -113,7 +113,10 @@ async fn identity_lookup(
         .create_async()
         .await;
     let resolver = HttpLookupResolver::new(&server.url());
-    let outputs = resolver.lookup_by_identity_key("subject", &[]).await.unwrap();
+    let outputs = resolver
+        .lookup_by_identity_key("subject", &[])
+        .await
+        .unwrap();
     drop(slap_mock);
     let asked = if identity.matched_async().await { 1 } else { 0 };
     (outputs.len(), asked)

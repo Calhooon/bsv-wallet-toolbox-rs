@@ -81,11 +81,18 @@ async fn create_pre_check_holds_for_the_proofs_want_of_headers() {
     let p2pkh = "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac";
     for header in [Header::Off, Header::None] {
         let (parent, mut beef, tracker) = lineage(false, p2pkh);
-        let (storage, created) = create_with(header, &parent, &beef.to_binary().unwrap(), &tracker).await;
+        let (storage, created) =
+            create_with(header, &parent, &beef.to_binary().unwrap(), &tracker).await;
         assert_held(header, &storage, created).await;
     }
     let (parent, mut beef, tracker) = lineage(false, p2pkh);
-    let (_, created) = create_with(Header::Tracker, &parent, &beef.to_binary().unwrap(), &tracker).await;
+    let (_, created) = create_with(
+        Header::Tracker,
+        &parent,
+        &beef.to_binary().unwrap(),
+        &tracker,
+    )
+    .await;
     created.unwrap();
 }
 
@@ -113,7 +120,8 @@ fn proven_only(root: bool) -> (Transaction, Beef, MockChainTracker) {
 async fn create_holds_a_caller_root_no_tracker_can_check() {
     for header in [Header::Off, Header::None] {
         let (proven, mut beef, tracker) = proven_only(false);
-        let (storage, created) = create_with(header, &proven, &beef.to_binary().unwrap(), &tracker).await;
+        let (storage, created) =
+            create_with(header, &proven, &beef.to_binary().unwrap(), &tracker).await;
         assert_held(header, &storage, created).await;
     }
 }
@@ -123,8 +131,13 @@ async fn create_holds_a_caller_root_no_tracker_can_check() {
 #[tokio::test]
 async fn create_with_a_tracker_refuses_the_wrong_root_and_admits_the_right_one() {
     let (proven, mut beef, tracker) = proven_only(false);
-    let (storage, created) =
-        create_with(Header::Tracker, &proven, &beef.to_binary().unwrap(), &tracker).await;
+    let (storage, created) = create_with(
+        Header::Tracker,
+        &proven,
+        &beef.to_binary().unwrap(),
+        &tracker,
+    )
+    .await;
     let error = created.unwrap_err();
     eprintln!("wrong root: {error}");
     assert!(
@@ -134,7 +147,13 @@ async fn create_with_a_tracker_refuses_the_wrong_root_and_admits_the_right_one()
     );
     assert_eq!(action_rows(&storage).await, 0);
     let (proven, mut beef, tracker) = proven_only(true);
-    let (_, created) = create_with(Header::Tracker, &proven, &beef.to_binary().unwrap(), &tracker).await;
+    let (_, created) = create_with(
+        Header::Tracker,
+        &proven,
+        &beef.to_binary().unwrap(),
+        &tracker,
+    )
+    .await;
     created.unwrap();
 }
 

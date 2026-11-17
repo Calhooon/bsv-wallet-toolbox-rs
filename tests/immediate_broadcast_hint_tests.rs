@@ -557,7 +557,8 @@ fn incoming_atomic_beef() -> (Vec<u8>, String) {
         &parent_txid,
         ProtocolEra::MAINNET_GENESIS_HEIGHT + 101,
     ));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump_index)).unwrap();
+    beef.merge_raw_tx(parent.to_binary(), Some(bump_index))
+        .unwrap();
     beef.merge_transaction(tx);
     (beef.to_binary_atomic(&txid).unwrap(), txid)
 }
