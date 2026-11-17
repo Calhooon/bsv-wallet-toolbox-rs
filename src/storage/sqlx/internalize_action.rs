@@ -180,16 +180,20 @@ pub async fn internalize_action_internal(
             }
         };
     {
-        // Get known txids for TrustKnown mode (transactions already in wallet)
-        let known_txids = get_known_txids(storage, user_id).await?;
+        // Every transaction the BEEF carries must be whole: an entry carried
+        // by txid alone is refused whether or not this store holds it (the
+        // reference's `ab.verify(chainTracker, false)`), before any row is
+        // written. The tracker is resolved before this refusal, as the
+        // reference reads it before it verifies.
+        crate::wallet::received_beef::refuse_entries_carried_by_txid_alone(&beef)?;
 
-        // Verify the BEEF merkle proofs against the chain
-        // Default to Strict mode for internalize_action
+        // Verify the BEEF merkle proofs against the chain (Strict: every
+        // root). The known-txids argument is not read by the verifier.
         let _is_valid = verify_beef_merkle_proofs(
             &mut beef,
             chain_tracker,
             BeefVerificationMode::Strict,
-            &known_txids,
+            &HashSet::new(),
         )
         .await?;
         // Note: verify_beef_merkle_proofs returns Err on invalid proofs,
@@ -1382,28 +1386,6 @@ async fn insert_proven_tx_from_bump(
             Ok(None)
         }
     }
-}
-
-/// Gets known txids for a user (for TrustKnown BEEF verification mode).
-///
-/// Returns all txids from transactions owned by the user that are in
-/// "completed" or "unproven" status. These are transactions the wallet
-/// already knows about and can trust.
-///
-/// NOTE: This function runs outside the SQL transaction (before `begin()`),
-/// using the pool directly. It is only called during BEEF verification.
-async fn get_known_txids(storage: &StorageSqlx, user_id: i64) -> Result<HashSet<String>> {
-    let rows: Vec<String> = sqlx::query_scalar(
-        r#"
-        SELECT txid FROM transactions
-        WHERE user_id = ? AND status IN ('completed', 'unproven')
-        "#,
-    )
-    .bind(user_id)
-    .fetch_all(storage.pool())
-    .await?;
-
-    Ok(rows.into_iter().collect())
 }
 
 /// Creates a proven transaction request for an internalized transaction.

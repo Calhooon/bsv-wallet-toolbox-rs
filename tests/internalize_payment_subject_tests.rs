@@ -5,7 +5,8 @@
 //! remittance is the key its P2PKH script pays. The check reads the subject
 //! transaction's own outputs (`Transaction::from_beef_subject`), so it runs
 //! whatever the ancestry's size or shape: a sweep of one parent past bsv-rs
-//! 0.8.11's default link budget, or a parent carried as a txid-only entry.
+//! 0.8.11's default link budget, or a parent carried as a txid-only entry
+//! (whose payment the derivation refuses before storage is called).
 //! A BEEF with a payment output and no readable subject is refused before
 //! anything is stored.
 //!
@@ -43,6 +44,18 @@ fn txid_only_parent_beef(lock: LockingScript) -> (Vec<u8>, String) {
     let mut beef = Beef::new();
     beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_002));
     beef.merge_txid_only(parent_txid);
+    beef.merge_raw_tx(child.to_binary(), None);
+    (beef.to_binary_atomic(&txid).unwrap(), txid)
+}
+
+/// The same subject with its one parent carried whole, with its BUMP.
+fn whole_parent_beef(lock: LockingScript) -> (Vec<u8>, String) {
+    let parent = proven_parent(1);
+    let child = child(&parent.id(), 1, lock);
+    let txid = child.id();
+    let mut beef = Beef::new();
+    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent.id(), 100_002));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump));
     beef.merge_raw_tx(child.to_binary(), None);
     (beef.to_binary_atomic(&txid).unwrap(), txid)
 }
@@ -138,10 +151,12 @@ async fn a_txid_only_parent_with_a_payment_key_that_does_not_derive_is_refused()
     assert_derivation_mismatch(answer, stored);
 }
 
-/// The same shape paying the derived key: admitted, its output stored.
+/// The same subject paying the derived key, its parent carried whole with
+/// its BUMP (the storage door reads an AtomicBEEF only when every
+/// transaction it carries is whole): admitted, its output stored.
 #[tokio::test]
-async fn a_txid_only_parent_with_a_payment_key_that_derives_is_stored() {
-    let (answer, stored) = internalize(true, txid_only_parent_beef).await;
+async fn a_proven_parent_with_a_payment_key_that_derives_is_stored() {
+    let (answer, stored) = internalize(true, whole_parent_beef).await;
     assert!(answer.expect("the payment is internalized"));
     assert_eq!(stored, 1, "the payment output is stored");
 }

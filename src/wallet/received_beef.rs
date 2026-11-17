@@ -24,6 +24,20 @@ use crate::error::{Error, Result};
 pub(crate) const NO_CHAIN_TRACKER_REFUSAL: &str =
     "No chain tracker is available to verify the BEEF: install one on the storage or configure the services' chain tracker";
 
+/// Refuses a received AtomicBEEF that carries any transaction by txid alone,
+/// as the reference reads one at both of its doors (`ab.verify(chainTracker,
+/// false)`): whether or not a store holds that transaction, the BEEF must
+/// carry it whole. The wallet door and the storage door answer this sentence.
+pub(crate) fn refuse_entries_carried_by_txid_alone(beef: &Beef) -> Result<()> {
+    match beef.txs.iter().find(|t| t.is_txid_only()) {
+        Some(entry) => Err(Error::ValidationError(format!(
+            "The tx parameter must be valid AtomicBEEF: transaction {} is carried by txid alone",
+            entry.txid()
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Verifies `beef_bytes`' merkle roots with `tracker`, as the reference's
 /// wallet does (`ab.verify(chainTracker, false)`): the BEEF must be an
 /// AtomicBEEF, every transaction it carries must be whole (an entry carried
@@ -46,12 +60,7 @@ pub(crate) async fn verify_received_beef_roots(
             "BEEF structure is invalid".to_string(),
         ));
     }
-    if let Some(entry) = beef.txs.iter().find(|t| t.is_txid_only()) {
-        return Err(Error::ValidationError(format!(
-            "The tx parameter must be valid AtomicBEEF: transaction {} is carried by txid alone",
-            entry.txid()
-        )));
-    }
+    refuse_entries_carried_by_txid_alone(&beef)?;
     let validation = beef.verify_valid(false);
     if !validation.valid {
         return Err(Error::ValidationError(
