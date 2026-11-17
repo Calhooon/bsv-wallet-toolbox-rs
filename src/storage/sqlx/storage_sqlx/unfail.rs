@@ -2,7 +2,6 @@ use super::{
     FindProvenTxReqsArgs, ProvenTxReqStatus, Result, Row, StorageSqlx, UtxoVerdict, WalletServices,
     WalletStorageReader,
 };
-use crate::services::broadcast_memory::{BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_SEEN};
 
 /// How long a broadcast-memory row counts as another source holding a
 /// transaction one broadcaster refused (Calgooon/zanaadu-v2#357).
@@ -132,13 +131,7 @@ impl StorageSqlx {
         .execute(&mut *tx)
         .await?;
         // The chain evidence that recovered it, recorded in the same write.
-        super::super::held_receipts::record_take_on(
-            &mut tx,
-            txid,
-            BROADCAST_PROVIDER_CHAIN,
-            BROADCAST_STATUS_SEEN,
-        )
-        .await?;
+        super::super::held_receipts::record_chain_seen_on(&mut tx, txid).await?;
         super::commit(tx).await?;
 
         // Restore outputs of this transaction, but validate each against
