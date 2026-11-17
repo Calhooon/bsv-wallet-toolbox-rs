@@ -52,7 +52,11 @@ async fn create_under(
     let p2pkh = "76a914dbc0a7c84983c5bf199b7b2d41b3acf0408ee5aa88ac";
     let (parent, mut beef, tracker) = lineage(bad, p2pkh);
     let tracker = tip.tracker(tracker);
-    let args = caller_args(&parent, &beef.to_binary().unwrap(), txid_only);
+    let bytes = match beef.to_binary() {
+        Ok(bytes) => bytes,
+        Err(e) => return (storage, parent, Err(e.into())),
+    };
+    let args = caller_args(&parent, &bytes, txid_only);
     let created = create_action_internal(&storage, Some(tracker.as_ref()), user_id, args)
         .await
         .map(|_| ());
