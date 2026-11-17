@@ -79,9 +79,9 @@ async fn state(wallet: &W, txid: &str) -> State {
 #[tokio::test]
 async fn a_payment_and_an_insertion_of_one_held_output_are_refused_in_either_order() {
     for door in ["wallet", "storage"] {
-        for payment_first in [true, false] {
+        for payment_leads in [true, false] {
             let (wallet, root, tx, txid, pay) = held().await;
-            let outputs = if payment_first {
+            let outputs = if payment_leads {
                 vec![pay, insertion("tokens")]
             } else {
                 vec![insertion("tokens"), pay]
@@ -89,7 +89,7 @@ async fn a_payment_and_an_insertion_of_one_held_output_are_refused_in_either_ord
             let before = state(&wallet, &txid).await;
             let balance = wallet.balance().await.unwrap().total;
             let answer = common::internalize_at(door, &wallet, &root, args(tx, outputs)).await;
-            println!("{door}, payment first {payment_first}: {answer:?}");
+            println!("{door}, payment leads {payment_leads}: {answer:?}");
             let expected = match door {
                 "wallet" => format!("wallet error: Validation error: {UNIQUE}"),
                 _ => format!("Validation error: {UNIQUE}"),
