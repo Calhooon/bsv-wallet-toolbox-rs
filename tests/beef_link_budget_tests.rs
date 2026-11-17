@@ -32,10 +32,11 @@ use bsv_wallet_toolbox_rs::{
     AuthId, StorageSqlx, WalletServices, WalletStorageProvider, WalletStorageWriter,
 };
 
-use common::{accepted, other_lock, sweep_beef, sweep_beef_of};
+use common::{accepted, other_lock, p2pkh_sweep_beef_of, sweep_beef};
 
-/// A proven parent of `common::SWEPT` P2PKH outputs and an unmined child
-/// spending every one of them into a single output, as an AtomicBEEF.
+/// A proven parent of `common::SWEPT` outputs locked by `common::anyone_lock`
+/// and an unmined child spending every one of them into a single output, as
+/// an AtomicBEEF (its input scripts pass at the storage door).
 fn sweep_atomic_beef() -> (Vec<u8>, String) {
     sweep_beef(other_lock())
 }
@@ -61,11 +62,11 @@ fn the_linking_door_refuses_the_sweep_by_default() {
 /// RED on bsv-rs 0.8.11, whose wire budget alone links 587.
 #[test]
 fn the_linking_door_takes_586_swept_outputs_and_refuses_587() {
-    let (beef, txid) = sweep_beef_of(586, other_lock());
+    let (beef, txid) = p2pkh_sweep_beef_of(586, other_lock());
     if let Err(e) = Transaction::from_beef(&beef, Some(&txid)) {
         panic!("refused a sweep of 586 outputs: {e}");
     }
-    let (beef, txid) = sweep_beef_of(587, other_lock());
+    let (beef, txid) = p2pkh_sweep_beef_of(587, other_lock());
     match Transaction::from_beef(&beef, Some(&txid)) {
         Err(e @ bsv_rs::Error::BeefResourceLimit(_)) => assert!(
             e.to_string().contains("heap bytes"),
