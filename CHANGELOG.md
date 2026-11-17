@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-11-17
+
+A patch on the stable line: `internalizeAction`'s basket insertion takes the reference's rules. The default basket is never a basket insertion's basket, in any spelling that trims and lowercases to `default`; wallet-managed change is never reclassified as a basket insertion; an output in an application basket is never moved into another. Each is refused at the wallet door and at the storage door before anything is written. No public signature of this crate moves, and the bsv-rs requirement stays at "0.8.11" (no 0.8.12 is published).
+
 ### Fixed
 
 - `internalizeAction` refuses a basket insertion that names the default basket, in every spelling the reference's validator trims and lowercases to `default` (`Default`, `DEFAULT`, ` default `, a leading U+FEFF and so on), at the wallet door (`Wallet::internalize_action`) and at the storage door (`internalize_action` of `StorageSqlx`, so of `WalletStorageManager` and of a storage server built on this crate), before any output row is written and before any basket is created, as the reference's `setupBasketInsertionForOutput` and `getBasket` do. Before, the output was written into the default basket under whatever script the transaction carried and counted in `Wallet::balance` (`tests/internalize_insertion_tests.rs`).
