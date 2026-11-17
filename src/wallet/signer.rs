@@ -145,15 +145,7 @@ impl WalletSigner {
             })?;
 
             // Determine the counterparty from sender_identity_key
-            let counterparty = if let Some(ref sender_key) = input.sender_identity_key {
-                // If there's a sender key, use it as counterparty
-                let pubkey = bsv_rs::primitives::PublicKey::from_hex(sender_key)
-                    .map_err(|e| Error::ValidationError(format!("Invalid sender key: {}", e)))?;
-                Counterparty::Other(pubkey)
-            } else {
-                // Default to self
-                Counterparty::Self_
-            };
+            let counterparty = counterparty_of(input.sender_identity_key.as_deref())?;
 
             // Derive the private key for signing using BRC-29 (SABPPP) protocol
             // BRC-29 uses:
@@ -257,13 +249,7 @@ impl WalletSigner {
             ))
         })?;
 
-        let counterparty = if let Some(ref sender_key) = input.sender_identity_key {
-            let pubkey = bsv_rs::primitives::PublicKey::from_hex(sender_key)
-                .map_err(|e| Error::ValidationError(format!("Invalid sender key: {}", e)))?;
-            Counterparty::Other(pubkey)
-        } else {
-            Counterparty::Self_
-        };
+        let counterparty = counterparty_of(input.sender_identity_key.as_deref())?;
 
         // Derive the private key using BRC-29 (SABPPP) protocol
         // Same as sign_transaction: SecurityLevel::Counterparty, protocol "3241645161d8"
@@ -420,6 +406,19 @@ impl WalletSigner {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// The counterparty a stored row's sender identity key names for its key
+/// derivation: the wallet itself for none, and for an empty string (the
+/// wallet itself, as an earlier release stored an empty sender); else the
+/// key, which must parse.
+fn counterparty_of(sender_identity_key: Option<&str>) -> Result<Counterparty> {
+    match sender_identity_key.filter(|key| !key.is_empty()) {
+        Some(key) => bsv_rs::primitives::PublicKey::from_hex(key)
+            .map(Counterparty::Other)
+            .map_err(|e| Error::ValidationError(format!("Invalid sender key: {}", e))),
+        None => Ok(Counterparty::Self_),
+    }
+}
 
 /// Computes the sighash for a transaction input.
 ///
@@ -844,6 +843,24 @@ pub fn set_input_sequence(tx_data: &[u8], input_index: u32, sequence: u32) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stored_sender_names_its_counterparty() {
+        let key = PrivateKey::random().public_key();
+        assert!(matches!(counterparty_of(None), Ok(Counterparty::Self_)));
+        assert!(matches!(counterparty_of(Some("")), Ok(Counterparty::Self_)));
+        assert!(matches!(
+            counterparty_of(Some(&key.to_hex())),
+            Ok(Counterparty::Other(other)) if other == key
+        ));
+        for not_a_key in [" ", "zz", "02"] {
+            let refused = counterparty_of(Some(not_a_key)).map(|_| ()).unwrap_err();
+            assert!(
+                refused.to_string().contains("Invalid sender key"),
+                "{not_a_key:?}: {refused}"
+            );
+        }
+    }
 
     #[test]
     fn test_from_var_int() {

@@ -219,6 +219,27 @@ async fn a_self_payment_with_an_empty_sender_is_stored_with_no_sender_and_signs(
     }
 }
 
+#[tokio::test]
+async fn a_row_holding_an_empty_sender_signs() {
+    for deferred in [false, true] {
+        let root = PrivateKey::random();
+        let identity = root.public_key().to_hex();
+        let (wallet, txid, lock) = self_paid(&root, &identity).await;
+        // The row as an earlier release wrote it for an empty sender.
+        sqlx::query("UPDATE outputs SET sender_identity_key = '' WHERE txid = ? AND vout = 0")
+            .bind(&txid)
+            .execute(wallet.storage().writer())
+            .await
+            .unwrap();
+        let signed = spend(&wallet, deferred).await;
+        println!(
+            "stored empty sender, deferred={deferred}: {:?}",
+            signed.as_ref().map(|_| "signed")
+        );
+        assert!(verify_spend(&signed.unwrap(), &txid, 0, 9_500, &lock));
+    }
+}
+
 /// A wallet whose one spendable coin is the change of an action it made,
 /// the change row reclassified the way an earlier release wrote a basket
 /// insertion (custom, not change, derivation and sender cleared). The
