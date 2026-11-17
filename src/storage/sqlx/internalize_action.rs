@@ -399,13 +399,17 @@ pub async fn internalize_action_internal(
         // proof and no broadcaster's take the transaction is HELD, written
         // `sending`, the word the wallet's own untaken transaction carries:
         // the balance and `listOutputs` leave its received outputs out and
-        // no allocator offers them. Every path that learns of a take moves
-        // `sending` to `unproven` (the post below, send-waiting, the push,
-        // `review_status`, `promote_if_alive`). A proof the LAG gate
-        // deferred (`has_proof`, request `unmined`) stays `unproven`.
+        // no allocator offers them. Taken is one fact, read here and by
+        // migration 006 (`held_receipts::was_taken`): the txid's request is
+        // `unmined`, `callback`, `unconfirmed` or `completed`, or
+        // `broadcast_seen` holds `accepted`, `seen` or `mined`; every other
+        // request word (another user's `nosend`, `invalid`, ...) is held.
+        // The paths that move `sending` to `unproven` are listed in
+        // `src/storage/sqlx/CLAUDE.md`. A proof the LAG gate deferred
+        // (`has_proof`, request `unmined`) stays `unproven`.
         let status = if proof_stored {
             "completed"
-        } else if !has_proof && held_by_request(&mut tx, &txid).await? {
+        } else if !has_proof && !super::held_receipts::was_taken(&mut tx, &txid).await? {
             "sending"
         } else {
             "unproven"
@@ -674,19 +678,6 @@ pub async fn internalize_action_internal(
 // =============================================================================
 // Helper Functions
 // =============================================================================
-
-/// Is a new received transaction with no proof held: no request for its
-/// txid yet (the door creates it `unsent`), or one still `unsent` or
-/// `sending`? A request another user's internalize already moved past
-/// those words was taken, and the transaction is `unproven`.
-async fn held_by_request(conn: &mut SqliteConnection, txid: &str) -> Result<bool> {
-    let req: Option<String> =
-        sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *conn)
-            .await?;
-    Ok(matches!(req.as_deref(), None | Some("unsent" | "sending")))
-}
 
 /// Finds an existing transaction by user and txid.
 async fn find_existing_transaction(
