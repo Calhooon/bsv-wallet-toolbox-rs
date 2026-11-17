@@ -454,11 +454,15 @@ pub async fn internalize_action_internal(
 
                 if let Some(output_id) = od.existing_output_id {
                     // Conversion keeps the same received origin as a new payment.
+                    // `spendable` stays as the row has it: a row this store
+                    // holds as spent stays spent, as the reference's
+                    // `mergeWalletPaymentForOutput` leaves it
+                    // (ts-stack@4d0ea63c8 storage/methods/internalizeAction.ts:795-810).
                     let now = Utc::now();
                     sqlx::query(
                         r#"
                         UPDATE outputs
-                        SET basket_id = ?, type = 'P2PKH', change = 1, spendable = 1,
+                        SET basket_id = ?, type = 'P2PKH', change = 1,
                             provided_by = 'storage', purpose = 'receive',
                             derivation_prefix = ?, derivation_suffix = ?,
                             sender_identity_key = ?, custom_instructions = NULL, updated_at = ?
