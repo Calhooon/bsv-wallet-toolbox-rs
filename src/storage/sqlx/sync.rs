@@ -1499,22 +1499,13 @@ async fn merge_user(
     identity_key: &str,
     chunk_user: &TableUser,
 ) -> Result<MergeResult> {
-    // The user row is merged for the user the chunk is for. A row naming
-    // another user this store holds is refused, as the reference's
-    // EntityUser.mergeFind refuses it; a row naming a user this store does
-    // not hold is not merged.
+    // The user row is merged for the user the chunk is for: a row naming
+    // any other identity refuses the chunk, as the reference's
+    // EntityUser.mergeFind and mergeNew refuse it.
     if chunk_user.identity_key != identity_key {
-        let other: Option<i64> =
-            sqlx::query_scalar("SELECT user_id FROM users WHERE identity_key = ?")
-                .bind(&chunk_user.identity_key)
-                .fetch_optional(&mut *conn)
-                .await?;
-        if other.is_some() {
-            return Err(Error::SyncError(
-                "sync chunk user row names another user of this store".to_string(),
-            ));
-        }
-        return Ok(MergeResult { updated: false });
+        return Err(Error::SyncError(
+            "sync chunk user row names an identity other than the chunk's".to_string(),
+        ));
     }
     // Get current user
     let current: DateTime<Utc> =
