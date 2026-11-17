@@ -131,7 +131,8 @@ pub struct MockCallRecord {
 // Mock Chain Tracker
 // =============================================================================
 
-/// A mock ChainTracker that returns configurable height and always validates roots.
+/// A mock ChainTracker that returns a configurable height and answers
+/// `roots_valid` for every root (true unless the builder sets it).
 struct MockChainTracker {
     height: u32,
     roots_valid: bool,

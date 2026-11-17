@@ -1,13 +1,8 @@
-//! Two runs behind notes for hosts on rows earlier releases wrote.
-//!
-//! - A received wallet payment an earlier release reclassified as a basket
-//!   insertion (derivation and sender cleared) is restored by a wallet
-//!   payment naming its prefix, its suffix AND the sender identity key the
-//!   row held: the door derives with the remittance's sender as counterparty
-//!   (the wallet itself when it is empty), so the prefix and suffix alone
-//!   derive another key and are refused.
-//! - `createAction` with an output whose basket is `default`: what this
-//!   line answers and the row it writes.
+//! A run behind a note for hosts on rows earlier releases wrote:
+//! `createAction` with an output whose basket is `default`, what this line
+//! answers and the row it writes. (The restore of a received wallet payment
+//! with its sender is run through a signed spend in
+//! `internalize_sender_spend_tests.rs`.)
 //!
 //! Real SQLite storage, a mock broadcaster; nothing touches the network.
 
@@ -37,57 +32,7 @@ fn args(tx: Vec<u8>, sender: &str) -> InternalizeActionArgs {
 }
 
 #[tokio::test]
-async fn a_reclassified_received_payment_is_restored_only_with_its_sender() {
-    let root = PrivateKey::random();
-    let sender_key = PrivateKey::random().public_key();
-    let sender = sender_key.to_hex();
-    let (tx, txid) = paying_derived(&root, &sender_key, PREFIX, SUFFIX);
-    let wallet = common::wallet("internalize-restore-notes-tests", &root, &txid).await;
-    wallet
-        .internalize_action(args(tx.clone(), &sender), "test.local")
-        .await
-        .expect("the payment");
-    assert_eq!(wallet.balance().await.unwrap().total, 9_500);
-    let pool = wallet.storage().writer();
-    // The row an earlier release wrote for a basket insertion into "tokens".
-    sqlx::query(
-        "INSERT INTO output_baskets (user_id, name, created_at, updated_at) \
-         SELECT user_id, 'tokens', created_at, updated_at FROM output_baskets WHERE name = 'default'",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE outputs SET basket_id = (SELECT basket_id FROM output_baskets WHERE name = 'tokens'), \
-         type = 'custom', change = 0, derivation_prefix = NULL, derivation_suffix = NULL, \
-         sender_identity_key = NULL WHERE txid = ? AND vout = 0",
-    )
-    .bind(&txid)
-    .execute(pool)
-    .await
-    .unwrap();
-    assert_eq!(wallet.balance().await.unwrap().total, 0);
-
-    let without_sender = wallet
-        .internalize_action(args(tx.clone(), ""), "test.local")
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string());
-    println!("prefix and suffix, no sender: {without_sender:?}");
-    assert!(without_sender
-        .as_ref()
-        .is_err_and(|e| e.starts_with("wallet error: Derivation mismatch for output 0")));
-
-    let restored = wallet
-        .internalize_action(args(tx, &sender), "test.local")
-        .await
-        .expect("prefix, suffix and sender restore it");
-    assert!(restored.accepted);
-    assert_eq!(wallet.balance().await.unwrap().total, 9_500);
-}
-
-#[tokio::test]
-async fn create_action_with_an_output_in_the_default_basket() {
+async fn create_action_admits_an_output_into_default_as_a_custom_row() {
     let root = PrivateKey::random();
     let sender = PrivateKey::random().public_key();
     let (tx, txid) = paying_derived(&root, &sender, PREFIX, SUFFIX);

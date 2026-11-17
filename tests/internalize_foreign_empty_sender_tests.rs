@@ -136,9 +136,25 @@ async fn a_received_coin_with_an_empty_stored_sender_is_refused_before_any_broad
             wallet.services().call_count("post_beef") - posts,
             wallet.balance().await.unwrap().total
         );
+        let call = if deferred {
+            "signAction"
+        } else {
+            "createAction"
+        };
         assert!(
-            answer.is_err(),
-            "a coin the derived key cannot unlock is not spent"
+            answer.as_ref().is_err_and(|e| e.starts_with(&format!(
+                "{call}: wallet error: Signing failed: Signing error: Derived pubkey hash160 "
+            ))),
+            "refused at signing"
+        );
+        let actions: Vec<String> = if deferred {
+            vec!["failed".into()]
+        } else {
+            vec![]
+        };
+        assert_eq!(
+            after.1, actions,
+            "nothing written, or the deferred action failed"
         );
         assert_eq!(
             wallet.services().call_count("post_beef"),

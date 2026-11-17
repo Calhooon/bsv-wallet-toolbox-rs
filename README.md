@@ -35,8 +35,8 @@ fails if an embedded store comes back.
 
 The `WalletPermissionsManager` of the 0.13 line does not run every permission
 check the reference's manager runs on every wallet call. `internalizeAction`
-asks it for the basket insertion permission and refuses the reserved basket and
-label names; the manager's other calls are as they were. A host must not rely
+asks it for the basket insertion permission and refuses basket and label names
+starting with `admin` or `p `; the manager's other calls are as they were. A host must not rely
 on the 0.13 manager to isolate one originator from another; the 0.14 line
 carries the manager's work against the reference.
 

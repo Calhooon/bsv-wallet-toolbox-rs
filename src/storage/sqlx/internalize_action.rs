@@ -111,7 +111,7 @@ pub async fn internalize_action_internal(
     // other pair), a wallet payment with an empty derivation prefix or
     // suffix (a change row nothing could sign), and a wallet payment whose
     // sender is neither empty nor a compressed key. The request alone is
-    // read: no tracker, service or row is asked first.
+    // read: it comes before any tracker, service or row is asked.
     if args.outputs.is_empty() {
         return Err(Error::ValidationError(NO_OUTPUTS_REFUSAL.to_string()));
     }
@@ -796,7 +796,6 @@ pub async fn internalize_action_internal(
 fn sender_is_empty_or_a_key(sender_identity_key: &str) -> bool {
     sender_identity_key.is_empty()
         || (sender_identity_key.len() == 66
-            && (sender_identity_key.starts_with("02") || sender_identity_key.starts_with("03"))
             && bsv_rs::primitives::PublicKey::from_hex(sender_identity_key).is_ok())
 }
 
@@ -1857,10 +1856,10 @@ mod tests {
     };
     use bsv_rs::wallet::{BasketInsertion, InternalizeOutput, WalletPayment};
 
-    /// Helper to create test storage.
     /// A sender identity key: a compressed public key (the generator's).
     const SENDER: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
+    /// Helper to create test storage.
     async fn create_test_storage() -> StorageSqlx {
         let storage = StorageSqlx::in_memory().await.unwrap();
         storage
@@ -3228,8 +3227,8 @@ mod tests {
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
     }
 
-    /// With NO ChainTracker wired the wallet cannot verify an incoming BEEF's
-    /// BUMP, so it must NOT be stored or asserted. The tx stays 'unproven' and
+    /// With NO ChainTracker on the storage (the services' tracker verifies
+    /// the roots) the BUMP is not stored or asserted. The tx stays 'unproven' and
     /// gets a req the CheckForProofs backstop will actually reach — the txid is
     /// never left in a state nothing can advance.
     #[tokio::test]
@@ -3349,8 +3348,8 @@ mod tests {
         assert_eq!(count_selectable_coins(&storage, user_id).await, 1);
     }
 
-    /// Merge into a 'nosend' tx whose BUMP cannot be verified (no
-    /// ChainTracker): fall back to the unproven hand-off rather than retiring
+    /// Merge into a 'nosend' tx whose BUMP is not stored (no ChainTracker on
+    /// the storage; the services' tracker verifies the roots): fall back to the unproven hand-off rather than retiring
     /// the req to a terminal 'completed' with nothing linked.
     #[tokio::test]
     async fn test_merge_nosend_unverifiable_bump_falls_back_to_unmined() {
