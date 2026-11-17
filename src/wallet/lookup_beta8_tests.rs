@@ -13,6 +13,7 @@
 
 use super::HttpLookupResolver;
 use super::OverlayLookupResolver;
+use bsv_rs::overlay::OutputListItem;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::templates::PushDrop;
 use bsv_rs::transaction::Transaction;
@@ -89,10 +90,10 @@ fn output_list(outputs: &serde_json::Value) -> String {
 /// A tracker and host on one loopback server: the tracker's SLAP answer, the
 /// host's identity answer; the identity lookup's outputs and how many
 /// identity questions the host was asked.
-async fn identity_lookup(
+async fn identity_outputs(
     slap_answer: impl FnOnce(&str) -> String,
     identity_answer: String,
-) -> (usize, usize) {
+) -> (Vec<OutputListItem>, usize) {
     let mut server = mockito::Server::new_async().await;
     let slap_mock = server
         .mock("POST", "/lookup")
@@ -119,6 +120,15 @@ async fn identity_lookup(
         .unwrap();
     drop(slap_mock);
     let asked = usize::from(identity.matched_async().await);
+    (outputs, asked)
+}
+
+/// [`identity_outputs`], the outputs counted.
+async fn identity_lookup(
+    slap_answer: impl FnOnce(&str) -> String,
+    identity_answer: String,
+) -> (usize, usize) {
+    let (outputs, asked) = identity_outputs(slap_answer, identity_answer).await;
     (outputs.len(), asked)
 }
 
@@ -146,11 +156,16 @@ fn identity_answer(hint: Option<serde_json::Value>) -> String {
 }
 
 #[tokio::test]
-async fn an_answer_with_a_string_hint_is_read_735() {
-    let hint = Some(serde_json::json!("ab".repeat(32)));
+async fn an_answer_with_a_string_hint_carries_the_hint_735() {
+    let txid = "ab".repeat(32);
+    let hint = Some(serde_json::json!(txid));
+    let (outputs, asked) =
+        identity_outputs(slap_answer(1, hint.clone()), identity_answer(hint)).await;
+    assert_eq!((outputs.len(), asked), (1, 1));
     assert_eq!(
-        identity_lookup(slap_answer(1, hint.clone()), identity_answer(hint)).await,
-        (1, 1)
+        outputs[0].txid,
+        Some(txid),
+        "the host's hint is on the output as the host sent it"
     );
 }
 
@@ -174,13 +189,26 @@ async fn a_tracker_answer_whose_hint_is_no_string_names_no_host_735() {
     );
 }
 
+/// An advertisement in a transaction spending `fan` outputs of one parent
+/// names its host, and the host is asked.
+async fn assert_advertisement_is_read(fan: u32) {
+    assert_eq!(
+        identity_lookup(slap_answer(fan, None), identity_answer(None)).await,
+        (1, 1),
+        "an advertisement in a transaction spending {fan} outputs of one parent"
+    );
+}
+
+/// The control: a fan of 2 is within the default link budget, so this passes
+/// at either pin and with either reader.
 #[tokio::test]
-async fn an_advertisement_spending_many_outputs_of_one_parent_is_read_749() {
-    for fan in [2, 800] {
-        assert_eq!(
-            identity_lookup(slap_answer(fan, None), identity_answer(None)).await,
-            (1, 1),
-            "an advertisement in a transaction spending {fan} outputs of one parent"
-        );
-    }
+async fn control_an_advertisement_within_the_link_budget_is_read_749() {
+    assert_advertisement_is_read(2).await;
+}
+
+/// The witness: a fan of 800 re-materializes its parent past the default link
+/// budget, so a linking reader refuses this advertisement at the pin.
+#[tokio::test]
+async fn witness_an_advertisement_past_the_link_budget_is_read_749() {
+    assert_advertisement_is_read(800).await;
 }
