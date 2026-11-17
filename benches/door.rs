@@ -231,8 +231,8 @@ fn main() {
 async fn verify_signed(store: &Store, bytes: &[u8], expected_txid: &[u8]) {
     let tx = Transaction::from_binary(bytes).expect("signed transaction parses");
     let txid = tx.id();
-    assert!(!tx.inputs.is_empty());
-    for input in &tx.inputs {
+    assert!(!tx.inputs().is_empty());
+    for input in tx.inputs() {
         assert!(
             input
                 .unlocking_script

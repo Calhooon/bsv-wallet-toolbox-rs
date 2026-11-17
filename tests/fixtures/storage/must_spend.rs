@@ -276,7 +276,7 @@ async fn under_the_rule_the_named_receipt_is_spent_and_the_proven_coin_left() ->
         .await?;
     let tx = Transaction::from_binary(&signed.tx.context("signed tx")?)?;
     let inputs: Vec<(String, u32)> = tx
-        .inputs
+        .inputs()
         .iter()
         .map(|i| {
             (
@@ -286,7 +286,7 @@ async fn under_the_rule_the_named_receipt_is_spent_and_the_proven_coin_left() ->
         })
         .collect();
     assert_eq!(inputs, [outpoint(&replay, "receipt.0")]);
-    assert!(tx.inputs[0].unlocking_script.is_some());
+    assert!(tx.inputs()[0].unlocking_script.is_some());
     let unspent: Vec<i64> = sqlx::query_scalar(
         "SELECT output_id FROM outputs WHERE spent_by IS NULL AND output_id IN (?, ?) ORDER BY output_id",
     )

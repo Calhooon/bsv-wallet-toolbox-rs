@@ -70,8 +70,8 @@ pub fn funding_transaction(tag: usize, script: &[u8]) -> Transaction {
     let mut tx = Transaction::new();
     let mut input = TransactionInput::new(format!("{tag:064x}"), u32::MAX);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").expect("fixture unlock"));
-    tx.inputs.push(input);
-    tx.outputs.push(TransactionOutput {
+    tx.inputs_mut().push(input);
+    tx.outputs_mut().push(TransactionOutput {
         satoshis: Some(SATOSHIS),
         locking_script: LockingScript::from_binary(script).expect("fixture lock"),
         change: false,
@@ -312,7 +312,7 @@ pub async fn seed_shared(count: usize) -> Store {
     let root = PrivateKey::from_hex(&format!("{:064x}", 1)).expect("synthetic key");
     let script = funding_lock(root);
     let mut parent = funding_transaction(1 << 24, &script);
-    parent.outputs = vec![parent.outputs[0].clone(); count];
+    *parent.outputs_mut() = vec![parent.outputs()[0].clone(); count];
     let txid = parent.id();
     let user_id = store.auth.user_id.expect("user");
     let mut writer = store.wallet.storage().write_tx().await.expect("seed");

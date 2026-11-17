@@ -378,7 +378,7 @@ async fn host_storage_internalize_refuses_before_writes_through_a_clone() {
 #[tokio::test]
 async fn host_live_pass_preserves_value_refusals() {
     let (mut child, mut beef, tracker) = proven_beef();
-    child.outputs()[0].satoshis = Some(SATOSHIS + 1);
+    child.outputs_mut()[0].satoshis = Some(SATOSHIS + 1);
     // Only the proven source and this overspending child belong in the frame.
     beef.txs.pop();
     beef.merge_raw_tx(child.to_binary(), None);

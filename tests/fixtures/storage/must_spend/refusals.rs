@@ -89,7 +89,7 @@ async fn a_caller_input_signed_over_the_whole_transaction_refuses_the_list() -> 
 async fn a_named_coin_whose_beef_cannot_be_built_is_the_refusal() -> Result<()> {
     let replay = seeded().await?;
     let (txid, _) = outpoint(&replay, "funding.3");
-    let parent = replay.seeds["funding"].tx.inputs[0]
+    let parent = replay.seeds["funding"].tx.inputs()[0]
         .source_txid
         .clone()
         .unwrap_or_default();

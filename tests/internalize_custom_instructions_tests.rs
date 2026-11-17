@@ -42,15 +42,15 @@ fn child_beef(vout: u32) -> Vec<u8> {
     let mut a0 = Transaction::new();
     let mut input = TransactionInput::new("11".repeat(32), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    a0.inputs.push(input);
-    a0.outputs
+    a0.inputs_mut().push(input);
+    a0.outputs_mut()
         .extend([op_true_output(20_000), op_true_output(20_000)]);
     let a0_txid = a0.id();
     let mut child = Transaction::new();
     let mut input = TransactionInput::new(a0_txid.clone(), vout);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
-    child.inputs.push(input);
-    child.outputs.push(op_true_output(9_999));
+    child.inputs_mut().push(input);
+    child.outputs_mut().push(op_true_output(9_999));
     let txid = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(

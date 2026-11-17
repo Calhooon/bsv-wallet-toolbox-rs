@@ -570,7 +570,7 @@ async fn create_caller_input_beef_uses_host_before_signing() {
         change: false,
     });
     let lock = Script::from_binary(&scene.parent.outputs()[0].locking_script.to_binary()).unwrap();
-    child.inputs()[0].unlocking_script = Some(
+    child.inputs_mut()[0].unlocking_script = Some(
         P2PKH::unlock(&scene.key, SignOutputs::All, false)
             .sign(&SigningContext::new(&child.to_binary(), 0, SATOSHIS, &lock))
             .unwrap(),
