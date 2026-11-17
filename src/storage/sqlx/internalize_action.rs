@@ -502,14 +502,19 @@ pub async fn internalize_action_internal(
                 }
 
                 if let Some(output_id) = od.existing_output_id {
-                    // Update existing output
+                    // Update existing output: managed change, with the
+                    // `provided_by` and `purpose` the new wallet payment row
+                    // below gets (the reference's `mergeWalletPaymentForOutput`
+                    // writes `providedBy` `storage`, `purpose` `change`;
+                    // this store spells the purpose `receive`).
                     let now = Utc::now();
                     sqlx::query(
                         r#"
                         UPDATE outputs
                         SET basket_id = ?, type = 'P2PKH', change = 1, spendable = 1,
                             derivation_prefix = ?, derivation_suffix = ?,
-                            sender_identity_key = ?, custom_instructions = NULL, updated_at = ?
+                            sender_identity_key = ?, custom_instructions = NULL,
+                            provided_by = 'storage', purpose = 'receive', updated_at = ?
                         WHERE output_id = ?
                         "#,
                     )
@@ -851,20 +856,19 @@ async fn load_existing_outputs(
 }
 
 /// Whether `output` is wallet-managed change: it carries everything the
-/// wallet's BRC-29 signing path needs. The reference's `isManagedChangeOutput`
-/// (wallet-toolbox `src/storage/methods/managedChange.ts`, ts-stack
-/// 4d0ea63c8): `type` `P2PKH`, `change` true, `providedBy` `storage`,
-/// `purpose` `change`, and a non-empty derivation prefix and suffix. The
-/// reference writes `purpose` `change` for a wallet payment it internalizes
-/// (storage `internalizeAction.ts`, the wallet payment rows); this store
-/// writes `receive` for the same row (Step 9's wallet payment insert), so
-/// both purposes name managed change here.
+/// wallet's BRC-29 signing path needs, a `P2PKH` type, `change`, and a
+/// non-empty derivation prefix and suffix. The reference's
+/// `isManagedChangeOutput` (wallet-toolbox `src/storage/methods/managedChange.ts`,
+/// ts-stack 4d0ea63c8) also requires `providedBy` `storage` and `purpose`
+/// `change`. This store's coin selection takes every `change` row of the
+/// default basket whatever its `provided_by` and `purpose`, and a wallet
+/// payment merged over an existing output kept that output's `provided_by`
+/// and `purpose` before 0.13.3, so a change row with a full derivation is
+/// managed change here whatever those two columns hold.
 pub(crate) fn is_managed_change_output(output: &TableOutput) -> bool {
     let non_empty = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
     output.output_type == "P2PKH"
         && output.change
-        && output.provided_by == "storage"
-        && matches!(output.purpose.as_deref(), Some("change") | Some("receive"))
         && non_empty(&output.derivation_prefix)
         && non_empty(&output.derivation_suffix)
 }

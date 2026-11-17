@@ -214,7 +214,16 @@ async fn spent_wallet(
     basket: Option<&str>,
     script: Vec<u8>,
 ) -> (TestWallet, PrivateKey, Vec<u8>, String) {
-    let root = PrivateKey::random();
+    spent_wallet_of(PrivateKey::random(), name, basket, script).await
+}
+
+/// `spent_wallet` for a given root key.
+async fn spent_wallet_of(
+    root: PrivateKey,
+    name: &str,
+    basket: Option<&str>,
+    script: Vec<u8>,
+) -> (TestWallet, PrivateKey, Vec<u8>, String) {
     let sender = PrivateKey::random().public_key();
     let derived = derived_key(&root, &sender, PREFIX, SUFFIX);
     let lock = LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap();
@@ -374,6 +383,114 @@ async fn the_wallets_own_change_is_never_reclassified_as_a_basket_insertion() {
             wallet.balance().await.unwrap().total,
             before_balance,
             "{door}: balance"
+        );
+    }
+}
+
+/// An output of the wallet's own `createAction`, then converted to change
+/// by a wallet payment merge: the row carries the managed-change columns a
+/// new wallet payment row gets (`provided_by` `storage`, `purpose`
+/// `receive`), and a basket insertion naming it is refused with the
+/// reference's sentence at both doors, the row byte for byte unchanged. The
+/// same for a row such a merge wrote before 0.13.3 (its `provided_by` and
+/// `purpose` those of the `createAction` output): change with a full
+/// derivation is managed change whatever those two columns hold.
+#[tokio::test]
+async fn an_output_a_wallet_payment_merge_made_change_is_never_reclassified() {
+    const MERGE_PREFIX: &str = "bWVyZ2UtcHJlZml4";
+    const MERGE_SUFFIX: &str = "bWVyZ2Utc3VmZml4";
+    for (door, written_before) in [
+        ("wallet", false),
+        ("storage", false),
+        ("wallet", true),
+        ("storage", true),
+    ] {
+        let root = PrivateKey::random();
+        let sender = PrivateKey::random().public_key();
+        let script = p2pkh_bytes(&derived_key(&root, &sender, MERGE_PREFIX, MERGE_SUFFIX));
+        let (wallet, root, tx, txid) =
+            spent_wallet_of(root, "insertion-merged", None, script).await;
+        let auth = auth(&wallet, &root).await;
+        let payment = InternalizeOutput {
+            output_index: 0,
+            protocol: "wallet payment".to_string(),
+            payment_remittance: Some(WalletPayment {
+                derivation_prefix: MERGE_PREFIX.to_string(),
+                derivation_suffix: MERGE_SUFFIX.to_string(),
+                sender_identity_key: sender.to_hex(),
+            }),
+            insertion_remittance: None,
+        };
+        let internalize = |output: InternalizeOutput| {
+            let tx = tx.clone();
+            let wallet = &wallet;
+            let auth = auth.clone();
+            async move {
+                if door == "wallet" {
+                    wallet
+                        .internalize_action(args(tx, output), "test.local")
+                        .await
+                        .map(|r| r.accepted)
+                        .map_err(|e| e.to_string())
+                } else {
+                    wallet
+                        .storage()
+                        .internalize_action(&auth, args(tx, output))
+                        .await
+                        .map(|r| r.base.accepted)
+                        .map_err(|e| e.to_string())
+                }
+            }
+        };
+        assert_eq!(internalize(payment).await, Ok(true), "{door}: the merge");
+        let managed: (String, String) =
+            sqlx::query_as("SELECT provided_by, purpose FROM outputs WHERE txid = ? AND vout = 0")
+                .bind(&txid)
+                .fetch_one(wallet.storage().writer())
+                .await
+                .unwrap();
+        if written_before {
+            // The row as a merge left it before 0.13.3: the `createAction`
+            // output's own `provided_by` and `purpose`.
+            sqlx::query(
+                "UPDATE outputs SET provided_by = 'you', purpose = '' WHERE txid = ? AND vout = 0",
+            )
+            .bind(&txid)
+            .execute(wallet.storage().writer())
+            .await
+            .unwrap();
+        }
+        let door = format!("{door}, written before: {written_before}");
+        let before_row = row(&wallet, &txid, 0).await;
+        let before_counts = counts(&wallet).await;
+        let refused = internalize(insertion(0, "tokens")).await;
+        let after_row = row(&wallet, &txid, 0).await;
+        let sentence = "Validation error: The outputs parameter must be output 0 is wallet-managed change and cannot be reclassified as a basket insertion";
+        let expected = if door.starts_with("wallet") {
+            format!("wallet error: {sentence}")
+        } else {
+            sentence.to_string()
+        };
+        assert_eq!(
+            (refused, after_row),
+            (Err(expected), before_row.clone()),
+            "{door}: refused, the row untouched"
+        );
+        assert_eq!(before_row.0, 1, "{door}: change");
+        assert_eq!(
+            (before_row.2.as_deref(), before_row.3.as_deref()),
+            (Some(MERGE_PREFIX), Some(MERGE_SUFFIX)),
+            "{door}: the derivation"
+        );
+        assert_eq!(
+            counts(&wallet).await,
+            before_counts,
+            "{door}: no row, no basket"
+        );
+        assert_eq!(
+            (managed.0.as_str(), managed.1.as_str()),
+            ("storage", "receive"),
+            "{door}: the merge writes the managed-change columns"
         );
     }
 }
