@@ -102,10 +102,12 @@ pub(crate) fn validate_internalize_action_args(
 /// there when its second `outputs` row meets the table's unique key
 /// (`transactionId`, `vout`, `userId`; `KnexMigrations.ts:765`, the inserts
 /// at `:764-792` and `:829-866`): on a merge inside the call's one
-/// transaction (`:610`), so nothing is written; on a new transaction in the
-/// outputs transaction (`:728-739`), after the transaction row, its spent
-/// inputs and its proof request were committed (`:663-698`) and, where the
-/// BEEF carried no proof of it, the transaction was broadcast (`:700-721`).
+/// transaction (`:610`), so nothing is written; on a new transaction only
+/// after the reference recorded the transaction (with its proven-transaction
+/// row where the BEEF carried a proof and its proof request where it did
+/// not, and the inputs it spends marked spent; `:663-692`) and, where that
+/// proof request was new, broadcast it (`:697-721`), in the outputs
+/// transaction (`:728-739`).
 /// This port answers every pair with the one sentence, before any of that.
 fn validate_unique_output_indexes(args: &InternalizeActionArgs) -> Result<()> {
     let mut seen = std::collections::HashSet::with_capacity(args.outputs.len());

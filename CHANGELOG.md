@@ -30,9 +30,11 @@
   store error. The reference answers a payment and an insertion of one
   existing output with this sentence and every other pair with a store
   error: on a transaction it holds nothing is written; on a new
-  transaction the error comes after the transaction row and its proof
-  request were recorded and, where the BEEF carried no proof, the
-  transaction broadcast. The one sentence for every pair, ahead of any
+  transaction it meets the outputs table's unique key only after it
+  recorded the transaction (with its proven-transaction row where the
+  BEEF carried a proof and its proof request where it did not, and the
+  inputs it spends marked spent) and, where that proof request was new,
+  broadcast it. The one sentence for every pair, ahead of any
   record or broadcast, is this port's choice.
   The check reads the request alone, before the BEEF is read, so a
   request that repeats an index answers this sentence ahead of the
