@@ -593,7 +593,7 @@ pub async fn internalize_action_internal(
                     .bind(change_basket_id)
                     .bind(&payment.derivation_prefix)
                     .bind(&payment.derivation_suffix)
-                    .bind(&payment.sender_identity_key)
+                    .bind(stored_sender(&payment.sender_identity_key))
                     .bind(now)
                     .bind(output_id)
                     .execute(&mut *tx)
@@ -622,7 +622,7 @@ pub async fn internalize_action_internal(
                     .bind(od.locking_script.len() as i32)
                     .bind(&payment.derivation_prefix)
                     .bind(&payment.derivation_suffix)
-                    .bind(&payment.sender_identity_key)
+                    .bind(stored_sender(&payment.sender_identity_key))
                     .bind(now)
                     .bind(now)
                     .execute(&mut *tx)
@@ -783,6 +783,13 @@ pub async fn internalize_action_internal(
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/// The sender identity key a wallet payment's row holds: none for an empty
+/// sender (the wallet itself), as the wallet's own change rows hold none,
+/// else the key as given.
+fn stored_sender(sender_identity_key: &str) -> Option<&str> {
+    Some(sender_identity_key).filter(|key| !key.is_empty())
+}
 
 /// Finds an existing transaction by user and txid.
 async fn find_existing_transaction(
