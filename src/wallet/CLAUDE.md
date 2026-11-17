@@ -83,7 +83,7 @@ from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
 | Permission module's own refusal or unparsable answer (#726) | `InvalidParameter` | the module's `Error`, unwrapped | the module's text, or `P-module <key> for <method> is invalid` / `must be an object`, no prefix |
 | `internalize_action` basket or label permission (`AccessDenied`) | `Unauthorized` | plain `Error` (ts-stack@4d0ea63c8 `WalletPermissionsManager.ts:1589,1807`), or the user's refusal | `Access denied: Basket "<basket>" is admin-only.`, `Access denied: Label "<label>" is admin-only.`, or the handler's refusal as `create_action`'s basket check answers it |
 | `internalize_action` empty outputs (`ValidationError`), both doors | `InvalidParameter` | `WERR_INVALID_PARAMETER` (sdk `validationHelpers.ts:1061-1066`) | `Validation error: The outputs parameter must be at least one output to internalize from the transaction` |
-| `internalize_action` merge, one existing output named by a payment and an insertion (`ValidationError`), the storage door | `InvalidParameter` | `WERR_INVALID_PARAMETER` (`storage/methods/internalizeAction.ts:345-359`) | `Validation error: The outputs parameter must be unique outputIndex values` |
+| `internalize_action`, one `outputIndex` named more than once, any protocols, new or merge (`ValidationError`, `internalize_args.rs`), both doors | `InvalidParameter` | `WERR_INVALID_PARAMETER` for the mixed pair on a merge (`storage/methods/internalizeAction.ts:345-359`); a store error for every other pair | `Validation error: The outputs parameter must be unique outputIndex values` |
 
 Neither reference supplies dedicated not-found, duplicate, unspendable-coin,
 failed-ancestor or storage-not-available classes. The nearest classes describe

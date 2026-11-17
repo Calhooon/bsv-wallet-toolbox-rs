@@ -18,12 +18,19 @@
   balance. An unspent one becomes spendable managed change as before.
 - `internalizeAction` refuses an empty outputs list at both doors, before
   anything is recorded or broadcast.
-- `internalizeAction` on a transaction the store already holds refuses one
-  existing output named by both a wallet payment and a basket insertion,
-  before any row moves. Two payments or two insertions of one output are
-  admitted, as the reference admits them: two payments of one existing
-  custom output report its satoshis twice (9000 for a 4500-satoshi output)
-  and convert the one row.
+- `internalizeAction` refuses a request whose `outputs` name one
+  `outputIndex` more than once, whatever the protocols, on a new
+  transaction and on one the store holds, at both doors, before anything is
+  written or broadcast (`one_output_named_twice_is_refused_whatever_the_protocols`,
+  `tests/internalize_merge_tests.rs`). Before, on a transaction the store
+  held, two payments of one output were admitted and reported its
+  satoshis twice (9000 for a 4500-satoshi output), and two insertions were
+  admitted; on a new transaction every pair failed with a store error
+  (`UNIQUE constraint failed: outputs.transaction_id, outputs.vout,
+  outputs.user_id`), nothing written. The reference answers the payment
+  and insertion of one existing output with this sentence and every other
+  pair with a store error, writing nothing; the one sentence for every pair
+  is this port's choice.
 - `createAction` and `signAction` sign a stored coin whose sender identity
   key is an empty string as the wallet's own coin, the wallet itself the
   counterparty, as for a coin whose row holds no sender. Before, the call
@@ -50,10 +57,15 @@ The new refusals, each read from a run here and at the base:
 - `outputs: []`: `Validation error: The outputs parameter must be at least
   one output to internalize from the transaction`, class
   `InvalidParameter`, at both doors. Before, admitted.
-- the merge path, one existing output named by a payment and an insertion
-  in either order: `Validation error: The outputs parameter must be unique
-  outputIndex values`, class `InvalidParameter` through the wallet. Before,
-  admitted, the order deciding the row.
+- one `outputIndex` named more than once, any two protocols in either
+  order, on a new transaction or one the store holds: `Validation error:
+  The outputs parameter must be unique outputIndex values`, class
+  `InvalidParameter` through the wallet, the storage door's
+  `Error::ValidationError` with the same text when reached without the
+  wallet. Before, on a held transaction a payment and an insertion
+  answered the same sentence, two payments or two insertions were
+  admitted; on a new transaction every pair answered the store error above
+  (through the wallet a `WalletFault` of family `Storage`).
 
 What a host holds from before. A spent output a wallet payment merge made
 spendable is managed change in the default basket with `spendable = 1`.
