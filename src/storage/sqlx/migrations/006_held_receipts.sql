@@ -10,15 +10,18 @@
 --
 -- The migration's own rule, apart from the door's. The door reads a
 -- recorded take (broadcast_seen 'accepted', 'seen' or 'mined') or a stored
--- proof, never a request's word (held_receipts.rs). Rows this statement
--- reads were written when no record was kept of every take, so it keeps
--- the request's word for them: a row whose request is 'unmined',
+-- proof whose root was checked (a proven_txs row that proof_root_checks
+-- records at its height with its root, migration 005, which runs ahead of
+-- this one), never a request's word (held_receipts.rs). Rows this
+-- statement reads were written when no record was kept of every take, so
+-- it keeps the request's word for them: a row whose request is 'unmined',
 -- 'callback', 'unconfirmed' or 'completed' is left as it is, and so is a
--- row with a record of a take (the same broadcast_seen words the door
--- reads; a unit test holds them equal); a row whose request carries any
--- other word ('unsent', 'sending', another user's 'nosend', 'invalid', ...)
--- and no record moves. A row with no request at all is the proof path's
--- adoption to take up, not this statement's.
+-- row with a record of a take or a stored proof whose root was checked
+-- (the same evidence the door reads; a unit test holds them equal); a row
+-- whose request carries any other word ('unsent', 'sending', another
+-- user's 'nosend', 'invalid', ...) and neither moves. A row with no
+-- request at all is the proof path's adoption to take up, not this
+-- statement's.
 --
 -- Only the transaction's status moves: its outputs, its request and a coin
 -- the wallet's own action already spent stay as they are.
@@ -35,4 +38,6 @@ WHERE is_outgoing = 0
   AND proven_tx_id IS NULL
   AND txid IN (SELECT txid FROM proven_tx_reqs)
   AND txid NOT IN (SELECT txid FROM proven_tx_reqs WHERE status IN ('unmined', 'callback', 'unconfirmed', 'completed'))
-  AND txid NOT IN (SELECT txid FROM broadcast_seen WHERE status IN ('accepted', 'seen', 'mined'));
+  AND txid NOT IN (SELECT txid FROM broadcast_seen WHERE status IN ('accepted', 'seen', 'mined'))
+  AND txid NOT IN (SELECT p.txid FROM proven_txs p JOIN proof_root_checks c
+                   ON c.txid = p.txid AND c.height = p.height AND c.merkle_root = lower(p.merkle_root));

@@ -567,3 +567,69 @@ async fn the_per_user_review_status_heals_the_wallets_own_outgoing_row_on_its_re
         .unwrap();
     assert_eq!(status, "unproven");
 }
+
+/// Witness 8. A checked stored proof for T (user A's internalize of T with
+/// a BUMP the mock tracker confirms, through the store funnel); the
+/// funnel's `mined` record taken out (its write is logged, never returned),
+/// so the proof alone is the evidence. B's internalize of T with no proof
+/// reads it taken (green at the base, which read any proof row); then the
+/// store is opened again and migration 006 leaves B's row as the door
+/// wrote it (RED at the base: the statement read no stored proof).
+#[tokio::test]
+async fn a_checked_stored_proof_makes_a_receipt_taken_and_migration_006_agrees() {
+    let root_a = PrivateKey::random();
+    let sender = PrivateKey::random().public_key();
+    let suffix = "Y2hlY2s=";
+    let key = common::derived_key(&root_a, &sender, PREFIX, suffix);
+    let lock = LockingScript::from_binary(&common::p2pkh_bytes(&key)).unwrap();
+    let (beef, txid) = common::beef_paying(lock.clone());
+    let (proven, same) = common::proven_beef_paying(lock);
+    assert_eq!(txid, same);
+    let wallet_a = common::wallet_posting("taken-record", &root_a, no_answer()).await;
+    // The proof gate open, so the funnel stores the proof now.
+    bsv_wallet_toolbox_rs::MonitorStorage::set_max_acceptable_proof_height(
+        wallet_a.storage(),
+        u32::MAX,
+    )
+    .await
+    .unwrap();
+    internalize(
+        &wallet_a,
+        args(proven, common::payment(&sender, PREFIX, suffix)),
+    )
+    .await;
+    assert_eq!(status_of(&wallet_a, &root_a, &txid).await, "completed");
+    let checked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM proven_txs p JOIN proof_root_checks c \
+         ON c.txid = p.txid AND c.height = p.height AND c.merkle_root = lower(p.merkle_root) \
+         WHERE p.txid = ?",
+    )
+    .bind(&txid)
+    .fetch_one(wallet_a.storage().pool())
+    .await
+    .unwrap();
+    assert_eq!(checked, 1, "the funnel recorded the proof as checked");
+    println!(
+        "the funnel's records: {:?}",
+        records(&wallet_a, &txid).await
+    );
+    sql(
+        &wallet_a,
+        "DELETE FROM broadcast_seen WHERE txid = ?",
+        &txid,
+    )
+    .await;
+
+    let root_b = PrivateKey::random();
+    let wallet_b = beside(&wallet_a, &root_b, no_answer()).await;
+    internalize(&wallet_b, args(beef, insertion(0))).await;
+    let door = status_of(&wallet_b, &root_b, &txid).await;
+    let request = request_word(&wallet_b, &txid).await;
+    println!("B at the door: status {door} request {request}");
+    assert_eq!(door, "unproven");
+
+    wallet_b.storage().make_available().await.expect("open");
+    let reopened = status_of(&wallet_b, &root_b, &txid).await;
+    println!("B after migration 006: status {reopened}");
+    assert_eq!(reopened, "unproven", "migration 006 agrees with the door");
+}
