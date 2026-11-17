@@ -261,6 +261,11 @@ async fn drain_sync_chunks(
         let result = writer
             .process_sync_chunk_mapped(args, chunk, &mut sync_map)
             .await?;
+        // A failure the writer returns is read ahead of its counts and its
+        // `done` (the reference's throwSyncResultError).
+        if let Some(error) = result.error {
+            return Err(Error::SyncError(error));
+        }
         // An unfinished answer must advance the offsets: a chunk that carried
         // no row cannot be followed by another (the reference's
         // assertSyncProgress).
