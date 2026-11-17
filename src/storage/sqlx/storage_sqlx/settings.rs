@@ -99,6 +99,8 @@ impl StorageSqlx {
             self.ensure_locked_inputs_schema().await?;
             super::monitor_state::ensure_monitor_state_schema(self.writer()).await?;
             super::proof_root_checks::ensure_proof_root_checks_schema(self.writer()).await?;
+            // Held receipts written `unproven` before 006 move to `sending`.
+            crate::storage::sqlx::held_receipts::move_held_receipts(self.writer()).await?;
             self.cache_settings(&settings)?;
             Ok(settings)
         } else {
@@ -241,7 +243,7 @@ mod tests {
             .migrate("test-storage", "0".repeat(64).as_str())
             .await
             .unwrap();
-        assert_eq!(version, "005_proof_root_checks");
+        assert_eq!(version, "006_held_receipts");
 
         // Make available
         let settings = storage.make_available().await.unwrap();
