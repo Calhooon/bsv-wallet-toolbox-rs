@@ -1644,6 +1644,23 @@ async fn upsert_proven_tx(
     // Global by txid, as the reference's EntityProvenTx.mergeFind.
     let existing = super::sync_proof::held_proof(&mut *conn, &ptx.txid).await?;
 
+    // A replacement was validated against the row the preflight read: inside
+    // the write transaction that row must still be there, unchanged (the
+    // reference's commitSyncChunk, ts-stack 11faa7d16
+    // `storage/StorageProvider.ts` 1683-1693).
+    let authorized = decisions.replacement_authorized.get(&ptx.txid);
+    if let Some(authorized) = authorized {
+        let still = existing
+            .as_ref()
+            .is_some_and(|now| super::sync_proof::unchanged(now, &authorized.held));
+        if !still {
+            return Err(Error::SyncError(format!(
+                "sync chunk proof {} is refused: proof changed during sync preparation; retry synchronization",
+                ptx.txid
+            )));
+        }
+    }
+
     if let Some(held) = existing {
         let local_id = held.proven_tx_id;
         let same = super::sync_proof::same_proof(&held, ptx);
@@ -1651,7 +1668,7 @@ async fn upsert_proven_tx(
         // not written; a different one replaces the held row only when the
         // preflight validated it.
         if !same {
-            let Some(block_hash) = decisions.replacement_authorized.get(&ptx.txid) else {
+            let Some(authorized) = authorized else {
                 let why = if decisions.insert_only.contains(&ptx.txid) {
                     "a concurrent proof row appeared; retry synchronization"
                 } else {
@@ -1662,6 +1679,14 @@ async fn upsert_proven_tx(
                     ptx.txid
                 )));
             };
+            // A local correction is stamped so that a later reader of this
+            // store's changes finds it: the greatest of now, the chunk row's
+            // stamp and the held row's stamp plus one millisecond (the
+            // reference's syncProofUpdatedAt, ts-stack 11faa7d16
+            // `storage/methods/validateSyncProof.ts` 33-37).
+            let stamp = Utc::now()
+                .max(ptx.updated_at)
+                .max(held.updated_at + chrono::Duration::milliseconds(1));
             sqlx::query(
                 r#"
                 UPDATE proven_txs
@@ -1671,11 +1696,11 @@ async fn upsert_proven_tx(
             )
             .bind(ptx.height)
             .bind(ptx.index)
-            .bind(block_hash)
+            .bind(&authorized.block_hash)
             .bind(&ptx.merkle_root)
             .bind(&ptx.merkle_path)
             .bind(&ptx.raw_tx)
-            .bind(ptx.updated_at)
+            .bind(stamp)
             .bind(local_id)
             .execute(&mut *conn)
             .await?;
