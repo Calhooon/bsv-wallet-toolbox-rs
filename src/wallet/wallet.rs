@@ -2287,49 +2287,62 @@ where
                         )));
                     }
                     let script = tx.outputs[vout].locking_script.as_script().to_binary();
-                    // Only validate P2PKH (25 bytes: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG)
-                    if script.len() == 25
-                        && script[0] == 0x76
-                        && script[1] == 0xa9
-                        && script[2] == 0x14
-                        && script[23] == 0x88
-                        && script[24] == 0xac
-                    {
-                        let counterparty = if !payment.sender_identity_key.is_empty() {
-                            Counterparty::Other(
-                                PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
-                                    bsv_rs::Error::WalletError(format!(
-                                        "Invalid sender_identity_key: {}",
-                                        e
-                                    ))
-                                })?,
-                            )
-                        } else {
-                            Counterparty::Self_
-                        };
-                        let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
-                        let key_id = format!(
-                            "{} {}",
-                            payment.derivation_prefix, payment.derivation_suffix
-                        );
-                        let derived = self
-                            .proto_wallet
-                            .key_deriver()
-                            .derive_public_key(&protocol, &key_id, &counterparty, true)
-                            .map_err(|e| {
+                    let counterparty = if !payment.sender_identity_key.is_empty() {
+                        Counterparty::Other(
+                            PublicKey::from_hex(&payment.sender_identity_key).map_err(|e| {
                                 bsv_rs::Error::WalletError(format!(
-                                    "BRC-29 key derivation failed: {}",
+                                    "Invalid sender_identity_key: {}",
                                     e
                                 ))
-                            })?;
-                        if derived.hash160()[..] != script[3..23] {
+                            })?,
+                        )
+                    } else {
+                        Counterparty::Self_
+                    };
+                    let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+                    let key_id = format!(
+                        "{} {}",
+                        payment.derivation_prefix, payment.derivation_suffix
+                    );
+                    let derived = self
+                        .proto_wallet
+                        .key_deriver()
+                        .derive_public_key(&protocol, &key_id, &counterparty, true)
+                        .map_err(|e| {
+                            bsv_rs::Error::WalletError(format!(
+                                "BRC-29 key derivation failed: {}",
+                                e
+                            ))
+                        })?;
+                    // The output must be locked by the P2PKH of the derived
+                    // key, byte for byte, whatever its script's shape (the
+                    // reference's `setupWalletPaymentForOutput`).
+                    let derived_hash = derived.hash160();
+                    let mut expected = Vec::with_capacity(25);
+                    expected.extend_from_slice(&[0x76, 0xa9, 0x14]);
+                    expected.extend_from_slice(&derived_hash);
+                    expected.extend_from_slice(&[0x88, 0xac]);
+                    if script != expected {
+                        // A 25-byte P2PKH (OP_DUP OP_HASH160 <20> OP_EQUALVERIFY
+                        // OP_CHECKSIG) paying another key names both hashes.
+                        let is_p2pkh = script.len() == 25
+                            && script[0] == 0x76
+                            && script[1] == 0xa9
+                            && script[2] == 0x14
+                            && script[23] == 0x88
+                            && script[24] == 0xac;
+                        if is_p2pkh {
                             return Err(bsv_rs::Error::WalletError(format!(
                                 "Derivation mismatch for output {}: derived {} != script {}",
                                 vout,
-                                hex::encode(derived.hash160()),
+                                hex::encode(derived_hash),
                                 hex::encode(&script[3..23])
                             )));
                         }
+                        return Err(bsv_rs::Error::WalletError(
+                            "The paymentRemittance parameter must be locked by script conforming to BRC-29"
+                                .to_string(),
+                        ));
                     }
                 }
             }

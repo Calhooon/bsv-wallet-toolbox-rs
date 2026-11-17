@@ -31,6 +31,7 @@ A security patch on the stable line. The bsv-rs requirement moves from "0.8.0" t
 ### Fixed
 
 - `Wallet::internalize_action`'s BRC-29 derivation check on a wallet payment output reads the AtomicBEEF's subject transaction with `Transaction::from_beef_subject`, which parses the BEEF and links none of its ancestry, so the check runs whatever the ancestry's size or shape: a subject sweeping more outputs of one parent than bsv-rs 0.8.11's link budget takes, or a parent carried as a txid-only entry, is checked like any other, and a payment output whose script does not pay the derived key is refused with the `Derivation mismatch` text. A BEEF carrying a payment output whose subject cannot be read is refused before anything is stored (`tests/internalize_payment_subject_tests.rs`).
+- `Wallet::internalize_action` admits a wallet payment output only when its locking script is the P2PKH of the key its remittance derives, byte for byte, whatever the script's shape, as the reference's `internalizeAction` requires (`setupWalletPaymentForOutput`). A 25-byte P2PKH paying another key keeps the `Derivation mismatch` text; a script of any other shape (a P2PK lock of the derived key, an OP_RETURN script, the derived key's P2PKH with bytes after it, an empty script) is refused with the reference's sentence, and nothing is stored. A basket insertion output is not held to the rule (`tests/internalize_payment_lock_tests.rs`).
 
 ### Hosts
 
@@ -47,7 +48,11 @@ One more, by reading and by the linking door's own run (`tests/beef_link_budget_
 - bytes that are not a BEEF (`deadbeef`): `Cannot read the BEEF's subject transaction to check payment outputs: BEEF error: Invalid BEEF version: 0xEFBEADDE` (was `Invalid BEEF at byte 0: BadVersion`).
 - an AtomicBEEF naming a subject it does not carry: `Cannot read the BEEF's subject transaction to check payment outputs: transaction error: Transaction <txid> not found in BEEF` (was `Validation error: BEEF structure is invalid`).
 
-The same door now refuses, with `Derivation mismatch for output <n>: derived <hash> != script <hash>`, a payment output in a subject that sweeps more outputs of one parent than the link budget takes when the output's script does not pay the derived key; on the tree before it, that output was stored. A payment output that does pay the derived key is stored as before. No other answer of this crate moves: the full suite, unit and integration, answers as on 0.13.1.
+The same door now refuses, with `Derivation mismatch for output <n>: derived <hash> != script <hash>`, a payment output in a subject that sweeps more outputs of one parent than the link budget takes when the output's script does not pay the derived key; on the tree before it, that output was stored. A payment output that does pay the derived key is stored as before.
+
+The same door refuses a wallet payment output whose locking script is not a 25-byte P2PKH and is not the P2PKH of the derived key, with `The paymentRemittance parameter must be locked by script conforming to BRC-29`; on the tree before it, that output was admitted and stored, read from a run. A host that had such an output admitted before holds it in the default basket as change the wallet cannot sign for.
+
+No other answer of this crate moves: the full suite, unit and integration, answers as on 0.13.1.
 
 ### CI
 
