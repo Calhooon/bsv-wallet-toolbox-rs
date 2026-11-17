@@ -14,6 +14,10 @@
 //! - an output in the default basket that is not managed change may be swept
 //!   into a named basket (the reference's legacy-recovery state).
 //!
+//! The last two tests run what a host does about rows an earlier release
+//! wrote: an output inserted into the default basket, and a change row whose
+//! derivation a basket insertion cleared.
+//!
 //! A refusal writes no output row and creates no basket. Real SQLite
 //! storage, a mock broadcaster; nothing touches the network.
 
@@ -25,7 +29,8 @@ use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::LockingScript;
 use bsv_rs::wallet::{
     BasketInsertion, CreateActionArgs, CreateActionOptions, CreateActionOutput,
-    InternalizeActionArgs, InternalizeOutput, WalletInterface, WalletPayment,
+    InternalizeActionArgs, InternalizeOutput, ListOutputsArgs, Outpoint, RelinquishOutputArgs,
+    WalletInterface, WalletPayment,
 };
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, Wallet, WalletStorageWriter};
@@ -535,4 +540,212 @@ async fn an_output_in_an_application_basket_is_never_moved_into_another() {
             "{door}: still in staging"
         );
     }
+}
+
+fn default_basket() -> ListOutputsArgs {
+    ListOutputsArgs {
+        basket: "default".to_string(),
+        tags: None,
+        tag_query_mode: None,
+        include: None,
+        include_custom_instructions: None,
+        include_tags: None,
+        include_labels: None,
+        limit: None,
+        offset: None,
+        seek_permission: None,
+    }
+}
+
+async fn listed_in_default(wallet: &TestWallet) -> Vec<String> {
+    wallet
+        .list_outputs(default_basket(), "test.local")
+        .await
+        .expect("listOutputs")
+        .outputs
+        .iter()
+        .map(|o| o.outpoint.to_string())
+        .collect()
+}
+
+/// A wallet holding the row an earlier release wrote for a basket insertion
+/// naming `default`: `custom`, not change, in the default basket. Returns
+/// the wallet, its root, the insertion's AtomicBEEF and the outpoint.
+async fn inserted_into_default(name: &str) -> (TestWallet, PrivateKey, Vec<u8>, String) {
+    let (wallet, root, bytes) = fresh(name).await;
+    wallet
+        .internalize_action(args(bytes.clone(), insertion(0, "tokens")), "test.local")
+        .await
+        .expect("the insertion");
+    sqlx::query(
+        "UPDATE outputs SET basket_id = (SELECT basket_id FROM output_baskets WHERE name = 'default')",
+    )
+    .execute(wallet.storage().writer())
+    .await
+    .unwrap();
+    let txid: String = sqlx::query_scalar("SELECT txid FROM outputs")
+        .fetch_one(wallet.storage().writer())
+        .await
+        .unwrap();
+    (wallet, root, bytes, format!("{txid}.0"))
+}
+
+/// The remedy for an output an earlier release inserted into the default
+/// basket: `listOutputs` on "default" lists it and the balance counts it,
+/// though change selection does not take it;
+/// a basket insertion of the same output into a named basket (the
+/// reference's legacy-recovery sweep) takes it out, as `relinquishOutput`
+/// on "default" does.
+#[tokio::test]
+async fn an_output_inserted_into_the_default_basket_leaves_it_by_a_sweep_or_a_relinquish() {
+    let (wallet, root, bytes, outpoint) = inserted_into_default("remedy-sweep").await;
+    assert_eq!(listed_in_default(&wallet).await, vec![outpoint.clone()]);
+    assert_eq!(wallet.balance().await.unwrap().total, 9_500);
+    assert_eq!(
+        needs_change(&wallet, &root).await,
+        Err("Insufficient funds: need 1005, have 0".to_string()),
+        "not selected as change"
+    );
+    let swept = wallet
+        .internalize_action(args(bytes, insertion(0, "tokens")), "test.local")
+        .await
+        .expect("the sweep");
+    assert!(swept.accepted);
+    assert!(listed_in_default(&wallet).await.is_empty());
+    assert_eq!(wallet.balance().await.unwrap().total, 0);
+
+    let (wallet, _, _, outpoint) = inserted_into_default("remedy-relinquish").await;
+    let relinquished = wallet
+        .relinquish_output(
+            RelinquishOutputArgs {
+                basket: "default".to_string(),
+                output: Outpoint::from_string(&outpoint).unwrap(),
+            },
+            "test.local",
+        )
+        .await
+        .expect("relinquishOutput");
+    assert!(relinquished.relinquished);
+    assert!(listed_in_default(&wallet).await.is_empty());
+    assert_eq!(wallet.balance().await.unwrap().total, 0);
+}
+
+/// A change row an earlier release reclassified as a basket insertion holds
+/// no derivation and is not change: the balance no longer counts it and
+/// change selection does not take it.
+/// Internalizing the same output again as a wallet payment
+/// restores it only with the derivation the row held; any other derivation
+/// is refused with the derivation mismatch text.
+#[tokio::test]
+async fn a_change_row_whose_derivation_was_cleared_returns_only_with_its_derivation() {
+    let (wallet, root, tx, txid) = spent_wallet(
+        "remedy-change",
+        None,
+        hex::decode(format!("76a914{OTHER_HASH}88ac")).unwrap(),
+    )
+    .await;
+    let vout = change_vout(&wallet, &txid).await;
+    let held = row(&wallet, &txid, vout).await;
+    let balance = wallet.balance().await.unwrap().total;
+    let pool = wallet.storage().writer();
+    // The row an earlier release wrote for a basket insertion into "tokens".
+    sqlx::query(
+        "INSERT INTO output_baskets (user_id, name, created_at, updated_at) \
+         SELECT user_id, 'tokens', created_at, updated_at FROM output_baskets WHERE name = 'default'",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE outputs SET basket_id = (SELECT basket_id FROM output_baskets WHERE name = 'tokens'), \
+         type = 'custom', change = 0, custom_instructions = NULL, derivation_prefix = NULL, \
+         derivation_suffix = NULL, sender_identity_key = NULL WHERE txid = ? AND vout = ?",
+    )
+    .bind(&txid)
+    .bind(vout)
+    .execute(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        wallet.balance().await.unwrap().total,
+        balance - held_satoshis(&wallet, &txid, vout).await
+    );
+    assert_eq!(
+        needs_change(&wallet, &root).await,
+        Err("Insufficient funds: need 1005, have 0".to_string()),
+        "not selected as change"
+    );
+    let payment = |prefix: &str, suffix: &str| InternalizeOutput {
+        output_index: vout,
+        protocol: "wallet payment".to_string(),
+        payment_remittance: Some(WalletPayment {
+            derivation_prefix: prefix.to_string(),
+            derivation_suffix: suffix.to_string(),
+            sender_identity_key: String::new(),
+        }),
+        insertion_remittance: None,
+    };
+    let guessed = wallet
+        .internalize_action(args(tx.clone(), payment(PREFIX, SUFFIX)), "test.local")
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string());
+    assert!(
+        guessed
+            .as_ref()
+            .is_err_and(|e| e.starts_with("wallet error: Derivation mismatch for output")),
+        "{guessed:?}"
+    );
+    let (prefix, suffix) = (held.2.clone().unwrap(), held.3.clone().unwrap());
+    let restored = wallet
+        .internalize_action(args(tx, payment(&prefix, &suffix)), "test.local")
+        .await
+        .expect("the held derivation restores it");
+    assert!(restored.accepted);
+    let (change, kind, p, s, _, _) = row(&wallet, &txid, vout).await;
+    assert_eq!((change, kind.as_str()), (1, "P2PKH"));
+    assert_eq!((p, s), (held.2, held.3));
+    assert_eq!(wallet.balance().await.unwrap().total, balance);
+}
+
+/// A storage `createAction` for 1000 satoshis to another key, which needs
+/// change to fund it: `Ok` when change covered it, else the refusal's text.
+async fn needs_change(wallet: &TestWallet, root: &PrivateKey) -> Result<(), String> {
+    let args = CreateActionArgs {
+        description: "a payment funded by change".to_string(),
+        input_beef: None,
+        inputs: None,
+        outputs: Some(vec![CreateActionOutput {
+            locking_script: hex::decode(format!("76a914{OTHER_HASH}88ac")).unwrap(),
+            satoshis: 1_000,
+            output_description: "a payment".to_string(),
+            basket: None,
+            custom_instructions: None,
+            tags: None,
+        }]),
+        lock_time: None,
+        version: None,
+        labels: None,
+        options: Some(CreateActionOptions {
+            sign_and_process: Some(false),
+            no_send: Some(true),
+            ..Default::default()
+        }),
+    };
+    wallet
+        .storage()
+        .create_action(&auth(wallet, root).await, args)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+async fn held_satoshis(wallet: &TestWallet, txid: &str, vout: u32) -> u64 {
+    let sats: i64 = sqlx::query_scalar("SELECT satoshis FROM outputs WHERE txid = ? AND vout = ?")
+        .bind(txid)
+        .bind(vout)
+        .fetch_one(wallet.storage().writer())
+        .await
+        .unwrap();
+    sats as u64
 }
