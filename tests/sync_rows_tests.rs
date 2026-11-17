@@ -646,3 +646,35 @@ async fn a_proof_link_naming_another_txid_is_not_stored() {
     assert_eq!(links, (None, None));
     assert_eq!(status, "unproven");
 }
+
+/// A chunk whose source storage key, destination storage key or user
+/// identity key differs from its request's is refused and writes nothing.
+#[tokio::test]
+async fn a_chunk_bound_to_another_request_is_refused() {
+    let text = "Sync error: The chunk parameter must be bound to this sync source, destination and wallet identity";
+    let nine = "9".repeat(64);
+    let mut answers = Vec::new();
+    for field in ["from", "to", "user"] {
+        let s = store(DST).await;
+        s.find_or_insert_user(ALICE).await.unwrap();
+        let mut chunk = chunk_for(ALICE);
+        match field {
+            "from" => chunk.from_storage_identity_key = nine.clone(),
+            "to" => chunk.to_storage_identity_key = nine.clone(),
+            _ => chunk.user_identity_key = BOB.to_string(),
+        }
+        chunk.output_baskets = Some(vec![basket(1, "planted")]);
+        let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+        let planted = count(
+            &s,
+            "SELECT COUNT(*) FROM output_baskets WHERE name = 'planted'",
+        )
+        .await;
+        answers.push((field, refusal(&r), planted));
+    }
+    println!("WITNESS M5 a chunk bound to another request: {answers:?}");
+    for (field, answer, planted) in answers {
+        assert_eq!(answer, text, "{field}");
+        assert_eq!(planted, 0, "{field}");
+    }
+}
