@@ -1,7 +1,8 @@
 //! The stored permission token is read from its BEEF entry (GHSA-gvmh-f5gf-5vjj,
 //! bsv-rs #749): a token transaction that spends many outputs of one parent is
-//! read as any other. bsv-rs 0.9.0-beta.8's linking doors refuse such a BEEF past
-//! their default link budget (16 MiB of re-materialized parents); the token's
+//! read as any other. bsv-rs's linking doors refuse such a BEEF past their
+//! default link budget (16 MiB of re-materialized parents' wire, 56 MiB of
+//! their heap, since 0.9.0-beta.8 and 0.9.0-beta.9); the token's
 //! reader takes only its outputs and its id, so it links nothing.
 
 use super::token_source;

@@ -24,7 +24,7 @@ cd fuzz && cargo +nightly fuzz run <target> -- -max_total_time=60 -timeout=10  #
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
 
-**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.8` on beta since the beta.8 re-pin (#533), which carries the stable line's 0.8.6 to 0.8.11 security fixes; `=0.9.0-beta.7` from #812, `=0.9.0-beta.6` from #566, `=0.9.0-beta.3` from #419, `=0.9.0-beta.1` from #184; main asks `0.8.0`, a caret range, until beta merges into it) with `full` and `http` features. The pin is the owner's word (epic #80).
+**bsv-rs dependency:** crates.io `bsv-rs` pinned exactly (`=0.9.0-beta.9` on beta since the beta.9 re-pin (#533), which carries the stable line's 0.8.12 fix of GHSA-33fm-jcm5-4m3m; `=0.9.0-beta.8` from the beta.8 re-pin, which carries the stable line's 0.8.6 to 0.8.11 security fixes; `=0.9.0-beta.7` from #812, `=0.9.0-beta.6` from #566, `=0.9.0-beta.3` from #419, `=0.9.0-beta.1` from #184; main asks `0.8.0`, a caret range, until beta merges into it) with `full` and `http` features. The pin is the owner's word (epic #80).
 
 ## Architecture
 
@@ -106,7 +106,7 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 - The live internalize verifier's word per input (#422) is the spend era's transaction-level bits (`ScriptFlags::standard`, minus the UTXO bits) with the coin era's `UTXO_AFTER_GENESIS`/`UTXO_AFTER_CHRONICLE`, joined by `from_bits` (`input_eras`, `input_word`); mainnet: every unmined spend at tip+1, the block it would be mined in, a mined parent's coin at its proof height's era for the UTXO bits, an unproven parent's coin at tip+1's; testnet/regtest use the spend's era for the coin pending bsv-rs #440. Keep the interim second evaluation's structural/proof and non-script refusals intact when replacing it with #440's hook.
 - `StorageSqlx::pool()` is the READER pool (`query_only`): writes go to `writer()` (one connection) or `write_tx()` (`BEGIN IMMEDIATE`); never await a service or tracker while holding either. `clippy.toml` bans every other `begin` (bsv-wallet-cli #44)
 - One store per file per process: give a `Wallet` and a `Monitor` clones of ONE `StorageSqlx` (`impl Clone` shares the pools and every field); never open the same file twice in one process (two writer pools meet on SQLite's busy handler)
-- Since the beta.8 pin bsv-rs's linking doors (`Transaction::from_beef`, `from_atomic_beef`, `Beef::find_atomic_transaction`) refuse a BEEF whose shared parents would re-materialize past 16 MiB (`BeefLinkLimits`, GHSA-gvmh-f5gf-5vjj). A reader of one output reads the subject unlinked (`Transaction::from_beef_subject`, or the entry's own `tx()`), as the SLAP host reader and the permission token reader do; `BeefLinkLimits::unbounded` only on the wallet's own stored bytes, with the reason at the site
+- Since the beta.8 pin bsv-rs's linking doors (`Transaction::from_beef`, `from_atomic_beef`, `Beef::find_atomic_transaction`) refuse a BEEF whose shared parents would re-materialize past 16 MiB of wire (`BeefLinkLimits`, GHSA-gvmh-f5gf-5vjj), and since the beta.9 pin past 56 MiB of heap beside it (`max_link_heap_bytes`, GHSA-33fm-jcm5-4m3m): a plain single-parent sweep links at 586 outputs and is refused at 587 (`tests/beef_link_onset_tests.rs`). No library door of this crate links with them. A reader of one output reads the subject unlinked (`Transaction::from_beef_subject`, or the entry's own `tx()`), as the SLAP host reader and the permission token reader do; `BeefLinkLimits::unbounded` only on the wallet's own stored bytes, with the reason at the site
 - `ChainTrackerError` must be imported separately: `use bsv_sdk::transaction::ChainTrackerError;`
 - `target >= u128::MAX` triggers clippy `absurd_extreme_comparisons` - use `==` instead
 - `WalletPermissionsManager` provides full BRC-98/99 permission enforcement (1978 lines)
@@ -147,7 +147,7 @@ Shared: test vectors, entity field names (camelCase), API method signatures, sta
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `bsv-rs` | =0.9.0-beta.8 (crates.io, `full` + `http`) | Primitives, transactions, WalletInterface trait |
+| `bsv-rs` | =0.9.0-beta.9 (crates.io, `full` + `http`) | Primitives, transactions, WalletInterface trait |
 | `tokio` | 1 | Async runtime (full features) |
 | `sqlx` | 0.8 | SQLite/MySQL database |
 | `reqwest` | 0.12 | HTTP client |
