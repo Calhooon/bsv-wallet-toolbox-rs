@@ -266,3 +266,47 @@ async fn two_set_active_calls_do_not_interleave() {
     assert_eq!(runs.len(), 2);
     assert_eq!(seen.len(), 12);
 }
+
+/// Every sync entry of the manager that takes an identity refuses one that
+/// is not the manager's, before it reads or writes a store.
+#[tokio::test]
+async fn every_manager_sync_entry_refuses_another_identity() {
+    let text = "Access denied: Identity key mismatch";
+    let act = store(SRC).await;
+    act.find_or_insert_user(ALICE).await.unwrap();
+    let (bob, _) = act.find_or_insert_user(BOB).await.unwrap();
+    seed_all(&act, bob.user_id, 'b', true, true).await;
+    let other = store(DST).await;
+    let mgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(act.clone() as Arc<dyn MonitorStorage>),
+        None,
+    );
+    mgr.make_available().await.unwrap();
+
+    let to_writer = mgr.sync_to_writer(BOB, other.clone()).await;
+    let other_rows = (
+        users(&other).await,
+        count(&other, "SELECT COUNT(*) FROM transactions").await,
+    );
+    let from_reader = mgr.sync_from_reader(BOB, other.clone()).await;
+    let bob_auth = AuthId::with_user_id(BOB, bob.user_id);
+    let state = mgr.find_or_insert_sync_state(&bob_auth, DST, "other").await;
+    let states = count(&act, "SELECT COUNT(*) FROM sync_states").await;
+    let set_active = WalletStorageSync::set_active(&mgr, &bob_auth, DST).await;
+    let bob_active = active_storage_of(&act, BOB).await;
+    println!(
+        "WITNESS M1 manager for alice, bob named: sync_to_writer {} (other store users, transactions {other_rows:?}); sync_from_reader {}; find_or_insert_sync_state {} (sync states {states}); set_active {} (bob's active {bob_active:?})",
+        refusal(&to_writer),
+        refusal(&from_reader),
+        refusal(&state),
+        refusal(&set_active)
+    );
+    assert_eq!(refusal(&to_writer), text);
+    assert_eq!(other_rows, (0, 0));
+    assert_eq!(refusal(&from_reader), text);
+    assert_eq!(refusal(&state), text);
+    assert_eq!(states, 0);
+    assert_eq!(refusal(&set_active), text);
+    assert_ne!(bob_active.as_deref(), Some(DST));
+}

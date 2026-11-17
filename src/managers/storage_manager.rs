@@ -770,8 +770,9 @@ impl WalletStorageManager {
             .collect()
     }
 
-    /// The manager's sync surface serves its own identity alone, as the
-    /// reference's StorageSyncReader refuses another identity.
+    /// The manager's sync entries serve its own identity alone, as the
+    /// reference's StorageSyncReader and syncToWriter refuse another
+    /// identity: every entry that takes an identity calls this first.
     async fn check_sync_identity(&self, identity_key: &str) -> Result<()> {
         if identity_key != self.auth_id.read().await.identity_key {
             return Err(Error::AccessDenied("Identity key mismatch".to_string()));
@@ -792,10 +793,8 @@ impl WalletStorageManager {
         identity_key: &str,
         reader: Arc<dyn MonitorStorage>,
     ) -> Result<SyncResult> {
-        let auth = self.get_auth(false).await?;
-        if identity_key != auth.identity_key {
-            return Err(Error::AccessDenied("Identity key mismatch".to_string()));
-        }
+        self.check_sync_identity(identity_key).await?;
+        self.get_auth(false).await?;
 
         let reader_settings = reader.make_available().await?;
         let mut log = String::new();
@@ -861,6 +860,7 @@ impl WalletStorageManager {
         identity_key: &str,
         writer: Arc<dyn MonitorStorage>,
     ) -> Result<SyncResult> {
+        self.check_sync_identity(identity_key).await?;
         let writer_settings = writer.make_available().await?;
         let mut log = String::new();
 
@@ -1305,6 +1305,7 @@ impl WalletStorageSync for WalletStorageManager {
         storage_identity_key: &str,
         storage_name: &str,
     ) -> Result<(TableSyncState, bool)> {
+        self.check_sync_identity(&auth.identity_key).await?;
         self.run_as_sync(|active| async move {
             active
                 .find_or_insert_sync_state(auth, storage_identity_key, storage_name)
@@ -1318,6 +1319,7 @@ impl WalletStorageSync for WalletStorageManager {
         auth: &AuthId,
         new_active_storage_identity_key: &str,
     ) -> Result<i64> {
+        self.check_sync_identity(&auth.identity_key).await?;
         self.run_as_sync(|active| async move {
             active
                 .set_active(auth, new_active_storage_identity_key)
