@@ -1679,7 +1679,7 @@ async fn upsert_proven_tx(
         // not written; a different one replaces the held row only when the
         // preflight validated it.
         if !same {
-            if !decisions.replacement_authorized.contains(&ptx.txid) {
+            let Some(block_hash) = decisions.replacement_authorized.get(&ptx.txid) else {
                 let why = if decisions.insert_only.contains(&ptx.txid) {
                     "a concurrent proof row appeared; retry synchronization"
                 } else {
@@ -1689,7 +1689,7 @@ async fn upsert_proven_tx(
                     "sync chunk proof {} is refused: {why}",
                     ptx.txid
                 )));
-            }
+            };
             sqlx::query(
                 r#"
                 UPDATE proven_txs
@@ -1699,7 +1699,7 @@ async fn upsert_proven_tx(
             )
             .bind(ptx.height)
             .bind(ptx.index)
-            .bind(&ptx.block_hash)
+            .bind(block_hash)
             .bind(&ptx.merkle_root)
             .bind(&ptx.merkle_path)
             .bind(&ptx.raw_tx)

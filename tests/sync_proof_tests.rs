@@ -159,3 +159,110 @@ async fn a_proof_row_with_a_malformed_txid_is_refused() {
     assert!(r.is_err());
     assert_eq!(rows, 0);
 }
+
+/// A store of this line holding a completed transaction linked to a proof
+/// row with no block hash, its manager, and that proof's txid.
+async fn wallet_with_a_proof_without_block_hash() -> (
+    Arc<StorageSqlx>,
+    bsv_wallet_toolbox_rs::managers::WalletStorageManager,
+    String,
+) {
+    let act = store(SRC).await;
+    let (u, _) = act.find_or_insert_user(ALICE).await.unwrap();
+    let txid = seed_all(&act, u.user_id, 'a', true, true).await;
+    exec(&act, "UPDATE proven_txs SET block_hash = ''").await;
+    let mgr = bsv_wallet_toolbox_rs::managers::WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(act.clone() as Arc<dyn MonitorStorage>),
+        None,
+    );
+    mgr.make_available().await.unwrap();
+    (act, mgr, txid)
+}
+
+async fn block_hash_of(s: &StorageSqlx, txid: &str) -> String {
+    ::sqlx::query_scalar("SELECT block_hash FROM proven_txs WHERE txid = ?")
+        .bind(txid)
+        .fetch_one(s.pool())
+        .await
+        .unwrap()
+}
+
+/// A backup of a store holding a proof row with no block hash completes, and
+/// the backup's transaction is linked to its row of that proof; a later
+/// backup after the source's row has its block hash completes against a
+/// backup store with no services, its row unchanged.
+#[tokio::test]
+async fn a_backup_of_a_proof_row_without_block_hash_completes() {
+    let (act, mgr, txid) = wallet_with_a_proof_without_block_hash().await;
+    let backup = store(DST).await;
+    let first = mgr.sync_to_writer(ALICE, backup.clone()).await;
+    let linked = stored_link(&backup, "transactions", &txid).await;
+    let after_first = block_hash_of(&backup, &txid).await;
+    exec(
+        &act,
+        &format!(
+            "UPDATE proven_txs SET block_hash = '{}', updated_at = datetime('now')",
+            "e".repeat(64)
+        ),
+    )
+    .await;
+    let second = mgr.sync_to_writer(ALICE, backup.clone()).await;
+    let after_second = block_hash_of(&backup, &txid).await;
+    println!(
+        "WITNESS 0 backup with an empty block hash: {}, link {linked:?}, hash {after_first:?}; \
+         after the source's is filled: {}, hash {after_second:?}",
+        verdict(&first),
+        verdict(&second)
+    );
+    assert_eq!(verdict(&first), "ok");
+    assert_eq!(linked, Some(txid.clone()));
+    assert_eq!(after_first, "");
+    assert_eq!(verdict(&second), "ok");
+    assert_eq!(after_second, "");
+}
+
+/// A backup whose own proof row has a block hash, of a source whose row has
+/// none, completes and keeps the backup's block hash.
+#[tokio::test]
+async fn a_backup_keeps_its_block_hash_when_the_source_has_none() {
+    let (_act, mgr, txid) = wallet_with_a_proof_without_block_hash().await;
+    let backup = store(DST).await;
+    mgr.sync_to_writer(ALICE, backup.clone()).await.unwrap();
+    let filled = "9".repeat(64);
+    exec(
+        &backup,
+        &format!("UPDATE proven_txs SET block_hash = '{filled}'"),
+    )
+    .await;
+    let r = mgr.sync_to_writer(ALICE, backup.clone()).await;
+    let kept = block_hash_of(&backup, &txid).await;
+    println!(
+        "WITNESS 0 source empty, backup filled: {}, hash {kept:?}",
+        verdict(&r)
+    );
+    assert_eq!(verdict(&r), "ok");
+    assert_eq!(kept, filled);
+}
+
+/// A replacement proof row with no block hash is validated as any other, and
+/// the block hash stored is the active header's at its height.
+#[tokio::test]
+async fn a_replacement_without_block_hash_stores_the_headers_hash() {
+    let (mut good, header) = mined_at(200);
+    good.block_hash = String::new();
+    good.updated_at = at(5);
+    let active = MockWalletServices::builder().roots_valid(true).build();
+    active.set_header_for_height(header.clone());
+    let s = held_store(active).await;
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_txs = Some(vec![good]);
+    let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+    let held = held_height(&s).await;
+    println!(
+        "WITNESS 0 replacement with no block hash: {}; held {held:?}",
+        verdict(&r)
+    );
+    assert_eq!(verdict(&r), "ok");
+    assert_eq!(held, (200, header.hash.clone()));
+}
