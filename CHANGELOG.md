@@ -18,22 +18,35 @@
   `unproven` with an `unmined` request as before. How often and to whom
   the monitor posts a held transaction is unchanged (one post at the door,
   one per due send-waiting tick).
-- Taken means one thing at the door and in migration 006: the
-  transaction's request is `unmined`, `callback`, `unconfirmed` or
-  `completed`, or the store recorded an instance accepting it, a status
-  source or push seeing it, or a block mining it. Any other request word,
-  such as another user's `nosend` or `invalid` request for the same
-  transaction on a shared store, leaves the receipt held.
+- What makes a new receipt taken at the door: a broadcaster's take the
+  store recorded (an instance accepting it, a status source or push seeing
+  it, a block mining it), the door's own post drawing an acceptance, or a
+  proof stored for the transaction. A request's word alone does not: a receipt beside any request with no recorded take and no
+  stored proof is held. The per-user `review_status` moves a held receipt
+  to `unproven` only on the same evidence, and to `completed` only with
+  its proof linked.
+- Every take the wallet observes is recorded in `broadcast_seen` in the
+  same write that moves the transaction to `unproven`, whichever services
+  a host built (a host's own `WalletServices` records nothing): the door's
+  post and the send-waiting task's post (each accepting instance's name,
+  `accepted`), and a status source holding it at the door, at send-waiting,
+  at the retire path and in the unfail task (`chain`, `seen`).
 - Migration 006 (`006_held_receipts`, one data statement, no schema
   change), applied on `migrate()` and on `make_available()`: the balance
-  falls on open by every held receipt. A received transaction a store holds
-  as `unproven` with no proof and a request that was not taken moves to
-  `sending`. `migrate()` reports `006_held_receipts`.
+  falls on open by every held receipt. Its rule is its own, for rows
+  written before the door recorded every take, and keeps the request's
+  word for them: a received transaction a store holds as `unproven` with
+  no proof whose request is `unmined`, `callback`, `unconfirmed` or
+  `completed`, or whose take is recorded, is left as it is; one whose
+  request carries any other word (`unsent`, `sending`, another user's
+  `nosend`, ...) and no recorded take moves to `sending`. `migrate()`
+  reports `006_held_receipts`.
 
 ### Hosts
 
 Each read from a run (`tests/internalize_held_receipt_tests.rs`,
-`tests/internalize_held_word_tests.rs`), at this change and at
+`tests/internalize_held_word_tests.rs`,
+`tests/internalize_taken_record_tests.rs`), at this change and at
 0.14.0-beta.8.1:
 - `Wallet::balance`, `balance_and_utxos` and `listOutputs` no longer count
   or list a received payment no broadcaster has taken: a 4500-satoshi
@@ -59,9 +72,12 @@ Each read from a run (`tests/internalize_held_receipt_tests.rs`,
   spendable: its transaction is sending` (before, taken).
 - Once an instance takes it or a proof arrives, the payment is counted
   (4500) and offered under the action's `underReceivedRule` label, as
-  before. In this change a proof arrives through the monitor's proof path;
-  a repeated `internalizeAction` bringing a proof is not yet read (the
-  transaction stays `sending`, no proof stored).
+  before. In this change a proof arrives through the monitor's proof path
+  once a broadcaster has taken the transaction: the path asks requests in
+  `unmined`, `unknown`, `callback`, `sending` or `unconfirmed`, and a held
+  receipt's request is `unsent` between posts. A repeated
+  `internalizeAction` bringing a proof is not yet read (the transaction
+  stays `sending`, no proof stored).
 - A store written by 0.14.0-beta.8 or 0.14.0-beta.8.1 moves each held
   receipt from `unproven` to `sending` on open; a receipt an instance took
   is not touched; opening again changes nothing.
