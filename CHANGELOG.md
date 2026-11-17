@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `internalizeAction` with a permissions manager configured asks it, as the
+  reference's manager does, for each basket insertion's basket (insertion
+  usage) and then each label (the level-1 protocol `action label <label>`),
+  the request's description the reason, before the arguments are validated
+  and the permission modules run. A basket or label starting `admin` (and
+  the basket `default`) is refused as admin-only; the admin originator is
+  admitted; a `p <scheme>` basket or label stays its module's. Nothing
+  changes with no manager.
+- `internalizeAction`'s wallet payment merge leaves the output's
+  `spendable` flag as the row has it: an existing custom output the store
+  holds as spent becomes managed change and stays spent, out of the
+  balance. An unspent one becomes spendable managed change as before.
+- `internalizeAction` refuses an empty outputs list at both doors, before
+  anything is recorded or broadcast.
+- `internalizeAction` on a transaction the store already holds refuses one
+  existing output named by both a wallet payment and a basket insertion,
+  before any row moves. Two payments or two insertions of one output are
+  admitted, as the reference admits them: two payments of one existing
+  custom output report its satoshis twice (9000 for a 4500-satoshi output)
+  and convert the one row.
+
+### Hosts
+
+The new refusals, each read from a run here and at the base:
+- with a permissions manager whose handler refuses, an originator with no
+  grant inserting into a named basket: `WalletRefusal` of class
+  `Unauthorized`, the handler's refusal as `createAction`'s basket check
+  answers it (`Access denied: refused by the user` for a handler refusing
+  with `Error::AccessDenied("refused by the user")`), nothing stored;
+  into an `admin ...` basket: `Access denied: Basket "admin secrets" is
+  admin-only.` with no prompt; a label with no grant: the handler's refusal
+  after a protocol prompt for `action label <label>`; an `admin ...` label:
+  `Access denied: Label "admin label" is admin-only.` Before, each was
+  admitted with no prompt and stored. A host whose handler grants sees one
+  more prompt per new basket and label.
+- `outputs: []`: `Validation error: The outputs parameter must be at least
+  one output to internalize from the transaction`, class
+  `InvalidParameter`, at both doors. Before, admitted.
+- the merge path, one existing output named by a payment and an insertion
+  in either order: `Validation error: The outputs parameter must be unique
+  outputIndex values`, class `InvalidParameter` through the wallet. Before,
+  admitted, the order deciding the row.
+
+What a host holds from before. A spent output a wallet payment merge made
+spendable is managed change in the default basket with `spendable = 1`.
+Where the store recorded its spender, the row's `spent_by` is set, and the
+storage reader finds it with `spendable = 1 AND spent_by IS NOT NULL`;
+`Wallet::balance` counts it, and `relinquishOutput` with `basket:
+"default"` and its outpoint takes it out of the balance
+(`a_host_finds_and_relinquishes_a_spendable_row_whose_spender_is_set`,
+`tests/internalize_insertion_host_tests.rs`: 4500 before, 0 after). A row
+spent where the store recorded no spender carries no such mark: only a
+check of the outpoint on chain finds it. An internalize of `outputs: []`
+admitted before recorded the transaction with no output of its own, a
+proof request and a broadcast, and marked spent the wallet's own coins
+it spends (read from the base's door, not run here): a host finds it as a
+transaction row with no `outputs` row; the coins it spent are spent on
+chain once the network accepted it, so nothing is restored.
+
 ## [0.14.0-beta.8] - 2026-11-17
 
 The version moves for the `bsv-rs` `=0.9.0-beta.8` pin, the 0.9.0
@@ -244,6 +305,17 @@ script <hash>`. A host that holds neither (a copy of the row taken before,
 or a backup store that synced the row before the reclassification, unrun
 here) cannot restore the row, and the coin is lost to the wallet's own
 signing.
+
+Added after 0.14.0-beta.8: restoring a reclassified received payment needs
+the sender identity key the row held as well as its prefix and suffix,
+since the door derives with the remittance's sender as the counterparty
+(the wallet's own key for its own change, whose row holds no sender); the
+same prefix and suffix under the wallet's own key answers `Derivation
+mismatch for output <vout>` (`a_reclassified_received_payment_is_restored_only_with_its_sender`).
+A custom output also reaches the default basket through `createAction`
+with an output whose basket is `default`, which this line admits, storing
+the output in the default basket as `custom`, `change = 0`
+(`create_action_with_an_output_into_the_default_basket`).
 
 ## [0.14.0-beta.7] - 2026-11-04
 
