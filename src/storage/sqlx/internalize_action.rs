@@ -2246,7 +2246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_internalize_switch_from_change_to_custom_basket() {
+    async fn test_internalize_received_payment_stays_change_under_a_basket_insertion() {
         let storage = create_test_storage().await;
         let user_id = create_test_user(&storage).await;
 
@@ -2295,13 +2295,23 @@ mod tests {
             seek_permission: None,
         };
 
-        let result2 = internalize_action_internal(&storage, user_id, args2)
+        // The reference refuses wallet-managed change named by a basket
+        // insertion (ts-stack@4d0ea63c8 storage/methods/internalizeAction.ts:
+        // 385-390): the received payment stays change.
+        let refused = internalize_action_internal(&storage, user_id, args2)
             .await
-            .unwrap();
-
-        assert!(result2.is_merge);
-        // Switching from change to custom removes from balance
-        assert_eq!(result2.satoshis, -(satoshis as i64));
+            .unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "Validation error: The outputs parameter must be output 0 is wallet-managed change \
+             and cannot be reclassified as a basket insertion"
+        );
+        let (kind, change): (String, i64) =
+            sqlx::query_as("SELECT type, change FROM outputs WHERE vout = 0")
+                .fetch_one(storage.writer())
+                .await
+                .unwrap();
+        assert_eq!((kind.as_str(), change), ("P2PKH", 1));
     }
 
     #[tokio::test]
