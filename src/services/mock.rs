@@ -134,6 +134,7 @@ pub struct MockCallRecord {
 /// A mock ChainTracker that returns configurable height and always validates roots.
 struct MockChainTracker {
     height: u32,
+    roots_valid: bool,
 }
 
 #[async_trait]
@@ -143,7 +144,7 @@ impl ChainTracker for MockChainTracker {
         _root: &str,
         _height: u32,
     ) -> std::result::Result<bool, ChainTrackerError> {
-        Ok(true)
+        Ok(self.roots_valid)
     }
 
     async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
@@ -338,6 +339,7 @@ impl Default for MockWalletServices {
 /// Builder for constructing `MockWalletServices` with configurable responses.
 pub struct MockWalletServicesBuilder {
     height: u32,
+    roots_valid: bool,
     post_beef_response: MockResponse<Vec<PostBeefResult>>,
     get_raw_tx_response: MockResponse<GetRawTxResult>,
     get_merkle_path_response: MockResponse<GetMerklePathResult>,
@@ -355,6 +357,7 @@ impl Default for MockWalletServicesBuilder {
     fn default() -> Self {
         Self {
             height: 880_000,
+            roots_valid: true,
             post_beef_response: MockResponse::Success(vec![PostBeefResult {
                 name: "MockProvider".to_string(),
                 status: "success".to_string(),
@@ -408,6 +411,13 @@ impl MockWalletServicesBuilder {
     /// Set the blockchain height to return.
     pub fn height(mut self, height: u32) -> Self {
         self.height = height;
+        self
+    }
+
+    /// Set what the chain tracker answers for every merkle root (default:
+    /// `true`, every root is valid).
+    pub fn roots_valid(mut self, valid: bool) -> Self {
+        self.roots_valid = valid;
         self
     }
 
@@ -588,6 +598,7 @@ impl MockWalletServicesBuilder {
         MockWalletServices {
             chain_tracker: MockChainTracker {
                 height: self.height,
+                roots_valid: self.roots_valid,
             },
             height: self.height,
             post_beef_response: Mutex::new(self.post_beef_response),
