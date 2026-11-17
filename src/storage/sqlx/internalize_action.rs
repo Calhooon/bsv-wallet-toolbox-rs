@@ -40,6 +40,11 @@ const BASKET_INSERTION_PROTOCOL: &str = "basket insertion";
 pub(crate) const NO_OUTPUTS_REFUSAL: &str =
     "The outputs parameter must be at least one output to internalize from the transaction";
 
+/// The refusal of one existing output named by both a wallet payment and a
+/// basket insertion on the merge path (the reference's `linkExistingOutputs`).
+pub(crate) const REPEATED_OUTPUT_INDEX_REFUSAL: &str =
+    "The outputs parameter must be unique outputIndex values";
+
 /// The refusal of an AtomicBEEF when neither the storage nor its services
 /// has a chain tracker to verify its merkle roots.
 pub(crate) const NO_CHAIN_TRACKER_REFUSAL: &str =
@@ -286,6 +291,21 @@ pub async fn internalize_action_internal(
     // Step 5: If merging, load existing outputs
     if is_merge {
         let existing_outputs = load_existing_outputs(&mut tx, user_id, &txid).await?;
+        // One existing output named by both a wallet payment and a basket
+        // insertion is refused before any row is written (the reference's
+        // `linkExistingOutputs`).
+        for eo in &existing_outputs {
+            let named_as = |protocol: &str| {
+                outputs_data
+                    .iter()
+                    .any(|od| od.vout as i32 == eo.vout && od.protocol == protocol)
+            };
+            if named_as(WALLET_PAYMENT_PROTOCOL) && named_as(BASKET_INSERTION_PROTOCOL) {
+                return Err(Error::ValidationError(
+                    REPEATED_OUTPUT_INDEX_REFUSAL.to_string(),
+                ));
+            }
+        }
         for od in &mut outputs_data {
             if let Some(eo) = existing_outputs.iter().find(|o| o.vout == od.vout as i32) {
                 od.existing_output_id = Some(eo.output_id);
