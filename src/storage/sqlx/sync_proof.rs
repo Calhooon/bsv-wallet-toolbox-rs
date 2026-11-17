@@ -22,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 
 use bsv_rs::primitives::{sha256d, to_hex};
 use bsv_rs::transaction::{MerklePath, Transaction};
+use chrono::{DateTime, Utc};
 use sqlx::Row;
 
 use crate::error::{Error, Result};
@@ -35,9 +36,16 @@ use super::StorageSqlx;
 pub(super) struct ProofDecisions {
     /// No row of this txid was held: insert only.
     pub insert_only: HashSet<String>,
-    /// A held row differs and the incoming row was validated: replace,
-    /// with the block hash of the active header the validation read.
-    pub replacement_authorized: HashMap<String, String>,
+    /// A held row differs and the incoming row was validated: replace.
+    pub replacement_authorized: HashMap<String, Authorized>,
+}
+
+/// A validated replacement: the block hash of the active header its
+/// validation read, and the held row it was validated against, which the
+/// write transaction must find unchanged.
+pub(super) struct Authorized {
+    pub block_hash: String,
+    pub held: HeldProof,
 }
 
 fn refused(txid: &str, why: &str) -> Error {
@@ -83,6 +91,20 @@ pub(super) struct HeldProof {
     raw_tx: Vec<u8>,
     block_hash: String,
     merkle_root: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The held row is the row seen before: the same id and the same authority
+/// fields, compared exactly.
+pub(super) fn unchanged(now: &HeldProof, before: &HeldProof) -> bool {
+    now.proven_tx_id == before.proven_tx_id
+        && now.txid == before.txid
+        && now.height == before.height
+        && now.index == before.index
+        && now.merkle_path == before.merkle_path
+        && now.raw_tx == before.raw_tx
+        && now.block_hash == before.block_hash
+        && now.merkle_root == before.merkle_root
 }
 
 /// The held proof row of `txid` (proof rows are global by txid, as the
@@ -93,7 +115,8 @@ where
 {
     let row = sqlx::query(
         r#"
-        SELECT proven_tx_id, txid, height, idx, merkle_path, raw_tx, block_hash, merkle_root
+        SELECT proven_tx_id, txid, height, idx, merkle_path, raw_tx, block_hash, merkle_root,
+               updated_at
         FROM proven_txs WHERE txid = ?
         "#,
     )
@@ -109,6 +132,7 @@ where
         raw_tx: row.get("raw_tx"),
         block_hash: row.get("block_hash"),
         merkle_root: row.get("merkle_root"),
+        updated_at: row.get("updated_at"),
     }))
 }
 
@@ -242,7 +266,7 @@ pub(super) async fn preflight(
                     let block_hash = validate(storage, p).await?;
                     decisions
                         .replacement_authorized
-                        .insert(p.txid.clone(), block_hash);
+                        .insert(p.txid.clone(), Authorized { block_hash, held });
                 }
             }
         }

@@ -313,3 +313,84 @@ async fn a_proof_row_that_appears_meanwhile_refuses_the_chunk() {
     );
     assert_eq!(after, 7);
 }
+
+/// A held proof that a replacement was validated against, rewritten by
+/// another writer between the validation and the chunk's write, refuses the
+/// chunk; the other writer's row stays. The test holds the store's one
+/// writer connection until the validation has read its header, so the
+/// rewrite lands before the chunk's write transaction, with no sleep.
+#[tokio::test]
+async fn a_held_proof_rewritten_after_its_validation_refuses_the_chunk() {
+    let (mut good, header) = mined_at(200);
+    good.updated_at = at(5);
+    let txid = good.txid.clone();
+    let services = Arc::new(MockWalletServices::builder().roots_valid(true).build());
+    services.set_header_for_height(header);
+    let s = store(DST).await;
+    s.set_services(services.clone());
+    s.find_or_insert_user(ALICE).await.unwrap();
+    let mut seed = chunk_for(ALICE);
+    seed.proven_txs = Some(vec![mined_at(100).0]);
+    s.process_sync_chunk(args_for(ALICE), seed).await.unwrap();
+
+    let mut held = s.writer().acquire().await.unwrap();
+    let s2 = s.clone();
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_txs = Some(vec![good]);
+    let task = tokio::spawn(async move { s2.process_sync_chunk(args_for(ALICE), chunk).await });
+    while services.call_count("get_header_for_height") == 0 {
+        tokio::task::yield_now().await;
+    }
+    ::sqlx::query("UPDATE proven_txs SET height = 300 WHERE txid = ?")
+        .bind(&txid)
+        .execute(&mut *held)
+        .await
+        .unwrap();
+    drop(held);
+    let r = task.await.unwrap();
+    let after = held_height(&s).await.0;
+    println!(
+        "WITNESS P3 held proof rewritten after its validation: {}; held height {after}",
+        verdict(&r)
+    );
+    assert_eq!(
+        verdict(&r),
+        format!("Sync error: sync chunk proof {txid} is refused: proof changed during sync preparation; retry synchronization")
+    );
+    assert_eq!(after, 300);
+}
+
+/// A validated replacement is stamped the greatest of now, its chunk row's
+/// stamp and the held row's stamp plus one millisecond, so a reader of this
+/// store's changes since the held row's stamp finds it.
+#[tokio::test]
+async fn a_validated_replacement_is_stamped_after_the_held_row() {
+    let (mut good, header) = mined_at(200);
+    good.updated_at = at(-10);
+    let services = MockWalletServices::builder().roots_valid(true).build();
+    services.set_header_for_height(header);
+    let s = held_store(services).await;
+    let held_stamp: chrono::DateTime<chrono::Utc> =
+        ::sqlx::query_scalar("SELECT updated_at FROM proven_txs")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+    let before = chrono::Utc::now();
+    let mut chunk = chunk_for(ALICE);
+    chunk.proven_txs = Some(vec![good]);
+    let r = s.process_sync_chunk(args_for(ALICE), chunk).await;
+    let stamp: chrono::DateTime<chrono::Utc> =
+        ::sqlx::query_scalar("SELECT updated_at FROM proven_txs")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+    println!(
+        "WITNESS P2 replacement stamp: {}; held {held_stamp}, chunk row {}, stored {stamp}",
+        verdict(&r),
+        at(-10)
+    );
+    assert_eq!(verdict(&r), "ok");
+    assert_eq!(held_height(&s).await.0, 200);
+    assert!(stamp >= before);
+    assert!(stamp > held_stamp);
+}
