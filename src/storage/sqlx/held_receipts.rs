@@ -19,8 +19,9 @@
 //! request is `unmined`, `callback`, `unconfirmed` or `completed`, whose
 //! txid has a record of a take, or whose txid has a stored proof whose root
 //! was checked, is left as it is; one whose request carries any other word
-//! (`unsent`, `sending`, ...) and neither moves to `sending`. Running it again changes nothing; a coin the wallet's own
-//! action already spent stays spent.
+//! (`unsent`, `sending`, ...) and neither moves to `sending`. Running it
+//! again changes nothing; a coin the wallet's own action already spent
+//! stays spent.
 
 use sqlx::{Pool, Sqlite, SqliteConnection};
 
@@ -106,8 +107,9 @@ pub(crate) const MIGRATION_006_HELD_RECEIPTS_SQL: &str =
 pub(crate) const MIGRATION_006_HELD_RECEIPTS_NAME: &str = "006_held_receipts";
 
 /// Move every held receipt a store holds as `unproven` to `sending`
-/// (migration 006; idempotent). Called on `make_available()`, after 002,
-/// whose `broadcast_seen` the statement reads.
+/// (migration 006; idempotent). Called on `make_available()`, after 002
+/// and 005, whose `broadcast_seen` and `proof_root_checks` the statement
+/// reads.
 pub(crate) async fn move_held_receipts(pool: &Pool<Sqlite>) -> Result<()> {
     super::broadcast_seen::apply_migration_sql(
         pool,

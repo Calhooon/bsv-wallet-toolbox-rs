@@ -29,7 +29,7 @@
   per-user `review_status` moves a held receipt to `unproven` only on the
   same evidence, and to `completed` only with its proof linked; the
   wallet's own outgoing `sending` row heals on its request's word as
-  before.
+  before (to `completed` only with its proof linked).
 - These paths record the take they see in `broadcast_seen` in the same
   write that moves the transaction to `unproven`, whichever services a
   host built (a host's own `WalletServices` records nothing): the door's
