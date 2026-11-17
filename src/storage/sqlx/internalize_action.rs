@@ -207,6 +207,9 @@ pub async fn internalize_action_internal(
                 od.existing_output_id = Some(eo.output_id);
                 od.existing_basket_id = eo.basket_id;
                 od.existing_is_change = eo.change;
+                if od.insertion.is_some() {
+                    validate_basket_merge(od.vout, eo)?;
+                }
             }
         }
     }
@@ -216,29 +219,24 @@ pub async fn internalize_action_internal(
     let change_basket_id = change_basket.basket_id;
 
     for od in &outputs_data {
-        match od.protocol.as_str() {
-            WALLET_PAYMENT_PROTOCOL => {
-                // Check if already a change output (ignore if so)
-                if od.existing_output_id.is_some()
-                    && od.existing_basket_id == Some(change_basket_id)
-                    && od.existing_is_change
-                {
-                    // Already a change output, ignore (0 satoshi change)
-                } else if od.existing_output_id.is_some() {
-                    // Converting non-change output to change
-                    net_satoshis += od.satoshis as i64;
-                } else {
-                    // New output
-                    net_satoshis += od.satoshis as i64;
-                }
-            }
-            BASKET_INSERTION_PROTOCOL
-                if od.existing_basket_id == Some(change_basket_id) && od.existing_is_change =>
-            {
-                // Converting change to custom basket - reduces balance
-                net_satoshis -= od.satoshis as i64;
-            }
-            _ => {}
+        // A basket insertion moves no balance (ts-stack@4d0ea63c8
+        // storage/methods/internalizeAction.ts:169, the merge rule 3;
+        // computeWalletPaymentBalance at 408-420 counts payments alone).
+        if od.protocol != WALLET_PAYMENT_PROTOCOL {
+            continue;
+        }
+        // Check if already a change output (ignore if so)
+        if od.existing_output_id.is_some()
+            && od.existing_basket_id == Some(change_basket_id)
+            && od.existing_is_change
+        {
+            // Already a change output, ignore (0 satoshi change)
+        } else if od.existing_output_id.is_some() {
+            // Converting non-change output to change
+            net_satoshis += od.satoshis as i64;
+        } else {
+            // New output
+            net_satoshis += od.satoshis as i64;
         }
     }
 
@@ -764,6 +762,36 @@ async fn load_existing_outputs(
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     Ok(outputs)
+}
+
+/// The reference's `isManagedChangeOutput` (ts-stack@4d0ea63c8
+/// `storage/methods/managedChange.ts:10-34`): `type` `P2PKH`, `change`,
+/// `providedBy` `storage`, `purpose` `change`, and a non-empty derivation
+/// prefix and suffix. The port spells a received wallet payment's purpose
+/// `receive` where the reference spells it `change` (#169), so both are
+/// read as `MANAGED_CHANGE_CLAUSE` reads them.
+fn is_managed_change_output(output: &TableOutput) -> bool {
+    let non_empty = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.is_empty());
+    output.output_type == "P2PKH"
+        && output.change
+        && output.provided_by == "storage"
+        && matches!(output.purpose.as_deref(), Some("change" | "receive"))
+        && non_empty(&output.derivation_prefix)
+        && non_empty(&output.derivation_suffix)
+}
+
+/// The reference's `validateBasketMerges` (ts-stack@4d0ea63c8
+/// `storage/methods/internalizeAction.ts:360-406`) for one basket insertion
+/// naming an output the wallet already holds, before any row is written:
+/// wallet-managed change is never reclassified.
+fn validate_basket_merge(vout: u32, existing: &TableOutput) -> Result<()> {
+    if is_managed_change_output(existing) {
+        return Err(Error::ValidationError(format!(
+            "The outputs parameter must be output {vout} is wallet-managed change and cannot be \
+             reclassified as a basket insertion"
+        )));
+    }
+    Ok(())
 }
 
 /// Gets or creates a basket and returns its ID.

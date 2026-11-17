@@ -25,12 +25,19 @@
 mod common;
 
 use bsv_rs::primitives::PrivateKey;
-use bsv_rs::wallet::{BasketInsertion, InternalizeActionArgs, InternalizeOutput, WalletInterface};
+use bsv_rs::transaction::Beef;
+use bsv_rs::wallet::{
+    BasketInsertion, CreateActionArgs, CreateActionOptions, CreateActionOutput,
+    InternalizeActionArgs, InternalizeOutput, WalletInterface,
+};
 use bsv_rs::WalletRefusalClass;
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, Wallet, WalletStorageWriter};
 
-use common::{args, beef_paying, other_lock, refusal};
+use common::{args, beef_paying, other_lock, p2pkh_bytes, refusal};
+
+const PREFIX: &str = "aW5zZXJ0LXByZWZpeA==";
+const SUFFIX: &str = "aW5zZXJ0LXN1ZmZpeA==";
 
 /// The reference's sentence for `default` as the insertion basket.
 const NON_DEFAULT: &str = "The insertionRemittance.basket parameter must be a non-default basket";
@@ -111,6 +118,10 @@ async fn row(wallet: &TestWallet, txid: &str, vout: u32) -> Row {
     .unwrap()
 }
 
+async fn balance(wallet: &TestWallet) -> u64 {
+    wallet.balance().await.unwrap().total
+}
+
 /// The two doors, each answering the class and message of a refusal.
 async fn at_wallet(
     wallet: &TestWallet,
@@ -131,6 +142,71 @@ async fn at_storage(
         Ok(r) => Ok(r.base.accepted),
         Err(e) => Err((WalletRefusalClass::InvalidParameter, e.to_string())),
     }
+}
+
+/// Funds a wallet of `root` with a received payment of 4500 satoshis and
+/// answers it with the payment's atomic BEEF.
+async fn funded(root: &PrivateKey) -> (TestWallet, Vec<u8>) {
+    let sender = PrivateKey::random().public_key();
+    let derived = common::derived_key(root, &sender, PREFIX, SUFFIX);
+    let lock = bsv_rs::script::LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap();
+    let (bytes, txid) = beef_paying(lock);
+    let wallet = wallet(root, &txid).await;
+    let paid = wallet
+        .internalize_action(
+            args(bytes.clone(), common::payment(&sender, PREFIX, SUFFIX)),
+            Some("test.local"),
+        )
+        .await
+        .expect("the payment is internalized");
+    assert!(paid.accepted);
+    assert_eq!(balance(&wallet).await, 4500);
+    (wallet, bytes)
+}
+
+/// A transaction the wallet makes from its own change: one 1000-satoshi
+/// output to another key, the change back to the wallet, not sent. Answers
+/// its atomic BEEF, its txid and its change output's index.
+async fn own_change(wallet: &TestWallet, funding: &[u8]) -> (Vec<u8>, String, u32) {
+    let made = wallet
+        .create_action(
+            CreateActionArgs {
+                description: "a payment with change".to_string(),
+                input_beef: None,
+                inputs: None,
+                outputs: Some(vec![CreateActionOutput {
+                    locking_script: other_lock().to_binary(),
+                    satoshis: 1_000,
+                    output_description: "a payment".to_string(),
+                    basket: None,
+                    custom_instructions: None,
+                    tags: None,
+                }]),
+                lock_time: None,
+                version: None,
+                labels: Some(vec!["underReceivedRule".to_string()]),
+                options: Some(CreateActionOptions {
+                    no_send: Some(true),
+                    ..Default::default()
+                }),
+            },
+            Some("test.local"),
+        )
+        .await
+        .expect("createAction");
+    let txid = hex::encode(made.txid.expect("txid"));
+    let vout: i64 = sqlx::query_scalar("SELECT vout FROM outputs WHERE txid = ? AND change = 1")
+        .bind(&txid)
+        .fetch_one(wallet.storage().writer())
+        .await
+        .expect("the change output");
+    // The noSend answer is the raw transaction; its atomic BEEF carries the
+    // payment it spends and that payment's proven parent.
+    let mut beef = Beef::from_binary(funding).expect("the payment's BEEF");
+    beef.merge_raw_tx(made.tx.expect("the raw transaction"), None)
+        .unwrap();
+    let atomic = beef.to_binary_atomic(&txid).unwrap();
+    (atomic, txid, vout as u32)
 }
 
 /// A basket insertion naming `default`, in each spelling the reference's
@@ -183,4 +259,73 @@ async fn a_basket_insertion_into_a_named_basket_is_stored() {
             "{door}"
         );
     }
+}
+
+/// The wallet's own change of a transaction it made, named by a basket
+/// insertion on the merge path, at each door: refused with the reference's
+/// sentence; the row keeps its basket, type, change flag and derivation,
+/// the balance does not move and the requested basket is not created.
+#[tokio::test]
+async fn the_wallets_own_change_is_not_reclassified_as_a_basket_insertion() {
+    for door in ["wallet", "storage"] {
+        let root = PrivateKey::random();
+        let (wallet, funding) = funded(&root).await;
+        let (bytes, txid, vout) = own_change(&wallet, &funding).await;
+        let kept = row(&wallet, &txid, vout).await;
+        assert_eq!((kept.1.as_str(), kept.2), ("P2PKH", 1), "{door}: change");
+        assert!(kept.3.is_some() && kept.4.is_some(), "{door}: derived");
+        let before = (balance(&wallet).await, counts(&wallet).await);
+
+        let args = args(bytes, insertion(vout, "tokens"));
+        let answer = match door {
+            "wallet" => at_wallet(&wallet, args).await,
+            _ => at_storage(&wallet, args).await,
+        };
+        let expected = format!(
+            "Validation error: The outputs parameter must be output {vout} is wallet-managed \
+             change and cannot be reclassified as a basket insertion"
+        );
+        assert_eq!(
+            answer,
+            Err((WalletRefusalClass::InvalidParameter, expected)),
+            "{door}"
+        );
+        assert_eq!(row(&wallet, &txid, vout).await, kept, "{door}: the row");
+        assert_eq!(
+            (balance(&wallet).await, counts(&wallet).await),
+            before,
+            "{door}: balance, outputs and baskets"
+        );
+    }
+}
+
+/// A received wallet payment, wallet-managed change, named by a basket
+/// insertion: refused as the wallet's own change is, the row unchanged.
+#[tokio::test]
+async fn a_received_payment_is_not_reclassified_as_a_basket_insertion() {
+    let root = PrivateKey::random();
+    let sender = PrivateKey::random().public_key();
+    let derived = common::derived_key(&root, &sender, PREFIX, SUFFIX);
+    let lock = bsv_rs::script::LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap();
+    let (bytes, txid) = beef_paying(lock);
+    let wallet = wallet(&root, &txid).await;
+    let paid = at_storage(
+        &wallet,
+        args(bytes.clone(), common::payment(&sender, PREFIX, SUFFIX)),
+    )
+    .await;
+    assert_eq!(paid, Ok(true));
+    let kept = row(&wallet, &txid, 0).await;
+    let before = (balance(&wallet).await, counts(&wallet).await);
+    let answer = at_storage(&wallet, args(bytes, insertion(0, "tokens"))).await;
+    assert_eq!(
+        answer.map_err(|(_, text)| text),
+        Err(
+            "Validation error: The outputs parameter must be output 0 is wallet-managed change \
+             and cannot be reclassified as a basket insertion"
+                .to_string()
+        )
+    );
+    assert_eq!(row(&wallet, &txid, 0).await, kept);
+    assert_eq!((balance(&wallet).await, counts(&wallet).await), before);
 }
