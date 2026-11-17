@@ -528,12 +528,15 @@ pub async fn internalize_action_internal(
                     // `provided_by` and `purpose` the new wallet payment row
                     // below gets (the reference's `mergeWalletPaymentForOutput`
                     // writes `providedBy` `storage`, `purpose` `change`;
-                    // this store spells the purpose `receive`).
+                    // this store spells the purpose `receive`). `spendable`
+                    // and `spent_by` stay as the row holds them, as the
+                    // reference's update leaves them: a spent output stays
+                    // spent.
                     let now = Utc::now();
                     sqlx::query(
                         r#"
                         UPDATE outputs
-                        SET basket_id = ?, type = 'P2PKH', change = 1, spendable = 1,
+                        SET basket_id = ?, type = 'P2PKH', change = 1,
                             derivation_prefix = ?, derivation_suffix = ?,
                             sender_identity_key = ?, custom_instructions = NULL,
                             provided_by = 'storage', purpose = 'receive', updated_at = ?
