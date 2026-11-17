@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.8.1] - 2026-11-17
+
+This prerelease stays on `bsv-rs` `=0.9.0-beta.8` and says so by its
+number: `beta.8.1` is a later prerelease on the pin `beta.8` named. It is
+the `internalizeAction` door read whole against the reference: the
+permissions manager asked for each insertion basket and each label, a
+wallet payment merge leaving a spent row spent, an empty `outputs` and a
+repeated `outputIndex` refused, and a stored empty sender signing as the
+wallet's own. A host of the beta line moves to it from 0.14.0-beta.8.
+
 ### Fixed
 
 - `internalizeAction` with a permissions manager configured asks it, as the
