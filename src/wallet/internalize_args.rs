@@ -269,7 +269,7 @@ mod tests {
         let mut beef = Beef::new();
         // Height unjudged: `validate_internalize_action_args` refuses before any script.
         let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent.id(), 100_001));
-        beef.merge_raw_tx(parent.to_binary(), Some(bump));
+        beef.merge_raw_tx(parent.to_binary(), Some(bump)).unwrap();
         beef.merge_transaction(child);
         beef.to_binary_atomic(&txid).unwrap()
     }

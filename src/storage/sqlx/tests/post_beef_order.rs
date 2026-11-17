@@ -60,7 +60,7 @@ async fn assert_restored_ancestor_order(trimmed: bool) {
     .bind(PROOF_HEIGHT)
     .bind("00".repeat(32))
     .bind(&ancestor_txid)
-    .bind(proof.to_binary())
+    .bind(proof.to_binary().unwrap())
     .bind(&ancestor_raw)
     .bind(recorded_at)
     .bind(recorded_at)
@@ -73,14 +73,14 @@ async fn assert_restored_ancestor_order(trimmed: bool) {
         input_beef.merge_bump(proof);
         input_beef.merge_txid_only(ancestor_txid.clone());
     }
-    input_beef.merge_raw_tx(parent_raw, None);
+    input_beef.merge_raw_tx(parent_raw, None).unwrap();
     let post = StoredPost {
         txid: child_txid.clone(),
         transaction_id: None,
         request_id: None,
         status: "sending",
         raw_tx: Some(child_raw),
-        input_beef: Some(input_beef.to_binary()),
+        input_beef: Some(input_beef.to_binary().unwrap()),
     };
     let emitted = stored_post_beef(&post_storage, &[post]).await.unwrap();
     let mut received = Beef::from_binary(&emitted).unwrap();

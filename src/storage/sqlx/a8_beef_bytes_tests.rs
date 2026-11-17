@@ -106,8 +106,8 @@ pub(crate) fn census_beef_signed_by(bytes: usize, signer: u8) -> (Vec<u8>, Strin
 
     let mut beef = Beef::new();
     let index = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_id, CENSUS_HEIGHT));
-    beef.merge_raw_tx(parent.to_binary(), Some(index));
-    beef.merge_raw_tx(child.to_binary(), None);
+    beef.merge_raw_tx(parent.to_binary(), Some(index)).unwrap();
+    beef.merge_raw_tx(child.to_binary(), None).unwrap();
     let atomic = beef.to_binary_atomic(&child_id).expect("atomic");
     (atomic, child_id, parent_id)
 }

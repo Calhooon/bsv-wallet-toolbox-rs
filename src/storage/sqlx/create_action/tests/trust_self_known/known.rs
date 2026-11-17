@@ -107,7 +107,7 @@ async fn an_unknown_txid_only_entry_is_refused() {
     let unproven = tx_spending(Some(&stranger.id()), 0xbb, 5_000);
 
     let mut beef = Beef::from_binary(&caller_beef(&external, &[stranger.id()])).unwrap();
-    beef.merge_raw_tx(unproven.to_binary(), None);
+    beef.merge_raw_tx(unproven.to_binary(), None).unwrap();
 
     let tracker = AlwaysValidChainTracker::new(100_000);
     let err = create_action_internal(
@@ -116,7 +116,7 @@ async fn an_unknown_txid_only_entry_is_refused() {
         user_id,
         args(
             vec![input(&external.id()), input(&unproven.id())],
-            beef.to_binary(),
+            beef.to_binary().unwrap(),
         ),
     )
     .await

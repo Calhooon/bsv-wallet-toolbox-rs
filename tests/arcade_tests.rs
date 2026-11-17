@@ -64,9 +64,9 @@ fn build_three_level_beef() -> (Vec<u8>, String, String, String) {
     // beef_to_ef_batch re-sorts parents before children.
     beef.merge_transaction(child_tx);
     beef.merge_transaction(parent_tx);
-    beef.merge_raw_tx(root_tx.to_binary(), Some(bump_idx));
+    beef.merge_raw_tx(root_tx.to_binary(), Some(bump_idx)).unwrap();
 
-    (beef.to_binary(), root_txid, parent_txid, child_txid)
+    (beef.to_binary().unwrap(), root_txid, parent_txid, child_txid)
 }
 
 /// Build a BEEF with a proven parent and one unproven child.
@@ -83,10 +83,10 @@ fn build_proven_parent_beef() -> (Vec<u8>, String, String) {
 
     let mut beef = Beef::with_version(BEEF_V1);
     let bump_idx = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent_tx.to_binary(), Some(bump_idx));
+    beef.merge_raw_tx(parent_tx.to_binary(), Some(bump_idx)).unwrap();
     beef.merge_transaction(child_tx);
 
-    (beef.to_binary(), parent_txid, child_txid)
+    (beef.to_binary().unwrap(), parent_txid, child_txid)
 }
 
 // =============================================================================
@@ -167,9 +167,9 @@ mod ef_conversion {
 
         let mut beef = Beef::with_version(BEEF_V1);
         let bump_idx = beef.merge_bump(bump);
-        beef.merge_raw_tx(tx.to_binary(), Some(bump_idx));
+        beef.merge_raw_tx(tx.to_binary(), Some(bump_idx)).unwrap();
 
-        let (efs, subject) = beef_to_ef_batch(&beef.to_binary()).expect("conversion succeeds");
+        let (efs, subject) = beef_to_ef_batch(&beef.to_binary().unwrap()).expect("conversion succeeds");
         assert!(efs.is_empty(), "nothing unproven to submit");
         assert_eq!(subject, txid);
     }
@@ -181,7 +181,7 @@ mod ef_conversion {
         let mut beef = Beef::with_version(BEEF_V1);
         beef.merge_transaction(child);
 
-        let err = beef_to_ef_batch(&beef.to_binary());
+        let err = beef_to_ef_batch(&beef.to_binary().unwrap());
         assert!(err.is_err(), "missing source must be an error");
         let msg = format!("{}", err.unwrap_err());
         assert!(
@@ -461,13 +461,13 @@ mod arcade_submit {
         let bump = MerklePath::from_coinbase_txid(&txid, height);
         let mut beef = Beef::with_version(BEEF_V1);
         let bump_idx = beef.merge_bump(bump);
-        beef.merge_raw_tx(tx.to_binary(), Some(bump_idx));
+        beef.merge_raw_tx(tx.to_binary(), Some(bump_idx)).unwrap();
 
         let server = mockito::Server::new_async().await;
         let arcade = Arcade::new(server.url(), None, None).unwrap();
 
         let result = arcade
-            .post_beef(&beef.to_binary(), std::slice::from_ref(&txid))
+            .post_beef(&beef.to_binary().unwrap(), std::slice::from_ref(&txid))
             .await
             .unwrap();
         assert_eq!(result.status, "success");
@@ -694,7 +694,7 @@ mod proof_ingestion {
         // Synthetic BUMP that actually validates: coinbase-style single-tx
         // block, so computed root == txid.
         let bump = MerklePath::from_coinbase_txid(&txid, height);
-        let bump_bytes = bump.to_binary();
+        let bump_bytes = bump.to_binary().unwrap();
         let root = bump.compute_root(Some(&txid)).unwrap();
 
         let mut tracker = MockChainTracker::new(height + 1);
@@ -743,7 +743,7 @@ mod proof_ingestion {
         storage.set_chain_tracker(Arc::new(tracker)).await;
 
         let outcome = storage
-            .ingest_merkle_proof(&txid, &bump.to_binary(), height, &"b".repeat(64), None)
+            .ingest_merkle_proof(&txid, &bump.to_binary().unwrap(), height, &"b".repeat(64), None)
             .await
             .expect("ingest call ok");
 
@@ -799,7 +799,7 @@ mod proof_ingestion {
         let outcome = storage
             .ingest_merkle_proof(
                 &txid,
-                &bump.to_binary(),
+                &bump.to_binary().unwrap(),
                 height,
                 &"e".repeat(64),
                 Some(&root),
@@ -920,7 +920,7 @@ mod arcade_reads {
             .mock("GET", format!("/tx/{}", txid).as_str())
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(mined_body(&txid, height, &bump.to_hex()))
+            .with_body(mined_body(&txid, height, &bump.to_hex().unwrap()))
             .create_async()
             .await;
 
@@ -957,7 +957,7 @@ mod arcade_reads {
             .match_header("authorization", "Bearer squirrel")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(mined_body(&txid, height, &bump.to_hex()))
+            .with_body(mined_body(&txid, height, &bump.to_hex().unwrap()))
             .create_async()
             .await;
 
@@ -1083,7 +1083,7 @@ mod arcade_reads {
             .mock("GET", format!("/tx/{}", mined).as_str())
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(mined_body(&mined, height, &bump.to_hex()))
+            .with_body(mined_body(&mined, height, &bump.to_hex().unwrap()))
             .create_async()
             .await;
         let _m2 = server
@@ -1116,7 +1116,7 @@ mod arcade_reads {
         assert_eq!(result.results[0].block_height, Some(height));
         assert_eq!(
             result.results[0].merkle_path.as_deref(),
-            Some(bump.to_hex().as_str())
+            Some(bump.to_hex().unwrap().as_str())
         );
 
         assert_eq!(result.results[1].status, "known");
@@ -1137,7 +1137,7 @@ mod arcade_reads {
             .mock("GET", format!("/tx/{}", good).as_str())
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(mined_body(&good, height, &bump.to_hex()))
+            .with_body(mined_body(&good, height, &bump.to_hex().unwrap()))
             .create_async()
             .await;
         let _bad = server
@@ -1290,7 +1290,7 @@ mod triage_inline_proofs {
             txid: txid.to_string(),
             status: "mined".to_string(),
             depth: Some(1),
-            merkle_path: Some(bump.to_hex()),
+            merkle_path: Some(bump.to_hex().unwrap()),
             block_height: Some(height),
             block_hash: Some("bb".repeat(32)),
         }
@@ -1448,14 +1448,14 @@ mod triage_inline_proofs {
                         txid: txid.clone(),
                         status: "mined".to_string(),
                         depth: Some(1),
-                        merkle_path: Some(MerklePath::from_coinbase_txid(&other, height).to_hex()),
+                        merkle_path: Some(MerklePath::from_coinbase_txid(&other, height).to_hex().unwrap()),
                         block_height: Some(height),
                         block_hash: Some("bb".repeat(32)),
                     }],
                 }))
                 .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
                     name: Some("WhatsOnChain".to_string()),
-                    merkle_path: Some(honest.to_hex()),
+                    merkle_path: Some(honest.to_hex().unwrap()),
                     header: Some(BlockHeader {
                         height,
                         hash: "cc".repeat(32),

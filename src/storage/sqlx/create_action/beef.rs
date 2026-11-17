@@ -41,7 +41,7 @@ async fn resolve_known_txid_only_entries(
     }
     // Decided before any await: no borrow of a `BeefTx` (not `Sync`) may
     // live across one.
-    let (kept, from_storage) = split_txid_only_entries(&user_beef, roots);
+    let (kept, from_storage) = split_txid_only_entries(&user_beef, roots)?;
     for txid in &from_storage {
         if get_tx_with_proof(&mut *conn, txid).await?.is_none() {
             return Err(Error::ValidationError(format!(
@@ -57,9 +57,9 @@ async fn resolve_known_txid_only_entries(
 
 /// The caller's BEEF without the txid-only entries storage must answer for,
 /// and their txids (`resolve_known_txid_only_entries`).
-fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<String>) {
+fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> Result<(Beef, Vec<String>)> {
     if !user_beef.txs.iter().any(|tx| tx.is_txid_only()) {
-        return (user_beef.clone(), Vec::new());
+        return Ok((user_beef.clone(), Vec::new()));
     }
 
     let txids: Vec<String> = user_beef.txs.iter().map(|tx| tx.txid()).collect();
@@ -79,15 +79,15 @@ fn split_txid_only_entries(user_beef: &Beef, roots: &[String]) -> (Beef, Vec<Str
                 from_storage.push(txid.clone());
             }
         } else if let Some(raw) = tx.raw_tx() {
-            kept.merge_raw_tx(raw.to_vec(), None);
+            kept.merge_raw_tx(raw.to_vec(), None)?;
         } else if let Some(t) = tx.tx() {
             // The entry alone: since bsv-rs 0.9.0-beta.7 (#764)
             // `merge_transaction` walks the sources an in-memory transaction
             // links, which this split must not add.
-            kept.merge_raw_tx(t.to_binary(), None);
+            kept.merge_raw_tx(t.to_binary(), None)?;
         }
     }
-    (kept, from_storage)
+    Ok((kept, from_storage))
 }
 
 /// Builds input BEEF containing all input transactions with their merkle proofs.
@@ -197,7 +197,7 @@ pub(super) async fn assemble_input_beef(
                     // P0-1d: a proven transaction the BEEF carries as a
                     // sibling hash is linked here; the walk never revisits
                     // a txid the caller's BEEF supplied.
-                    merge_beef_linked(&mut beef, &user_beef);
+                    merge_beef_linked(&mut beef, &user_beef)?;
                     caller_roots.extend(user_beef.bumps.iter().filter_map(|bump| {
                         let root = bump.compute_root(None).ok()?;
                         Some((bump.block_height, root))
@@ -237,7 +237,7 @@ pub(super) async fn assemble_input_beef(
     // One root transaction plus only its recursive proof dependencies: drop
     // everything a merged BEEF dragged along that no root reaches through an
     // unproven transaction.
-    prune_beef_to_roots(&mut beef, &root_txids);
+    prune_beef_to_roots(&mut beef, &root_txids)?;
 
     // Validate every assembly before trimming known txids, including bodies
     // without BUMPs and calls with no tracker. Missing ancestry is an error,
@@ -290,7 +290,7 @@ pub(super) async fn assemble_input_beef(
     }
 
     // Serialize BEEF to binary
-    let beef_bytes = beef.to_binary();
+    let beef_bytes = beef.to_binary()?;
 
     // Only return BEEF if it contains data beyond the header
     // BEEF V2 header is 4 bytes (0x0100EFBE for V1 or 0x0200EFBE for V2)
@@ -610,7 +610,7 @@ pub(super) async fn change_coin_gap(
         Err(Error::TransactionError(_)) => return Ok(Some(vec![txid.to_string()])),
         Err(e) => return Err(e),
     }
-    prune_beef_to_roots(&mut beef, &[txid.to_string()]);
+    prune_beef_to_roots(&mut beef, &[txid.to_string()])?;
     // Judged in the order `to_binary` writes, as the assembly above is.
     beef.sort_txs();
     if beef.verify_valid(true).valid {

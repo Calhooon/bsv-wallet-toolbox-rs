@@ -37,7 +37,7 @@ fn cases(surface: &str) -> Vec<Value> {
 }
 
 fn coinbase_bump_hex(txid: &str, height: u32) -> String {
-    MerklePath::from_coinbase_txid(txid, height).to_hex()
+    MerklePath::from_coinbase_txid(txid, height).to_hex().unwrap()
 }
 
 /// The case's body with its placeholders filled.
@@ -79,9 +79,9 @@ fn one_tx_beef() -> (Vec<u8>, Transaction, String) {
     let child_txid = child.id();
     let mut beef = Beef::with_version(BEEF_V1);
     let idx = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, HEIGHT));
-    beef.merge_raw_tx(parent.to_binary(), Some(idx));
+    beef.merge_raw_tx(parent.to_binary(), Some(idx)).unwrap();
     beef.merge_transaction(child.clone());
-    (beef.to_binary(), child, child_txid)
+    (beef.to_binary().unwrap(), child, child_txid)
 }
 
 /// The outcome word of one per-txid broadcast result (the vector's

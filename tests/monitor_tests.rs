@@ -283,7 +283,7 @@ mod monitor_integration {
 
         // Build a valid BUMP (coinbase-style single-tx merkle path) and hex-encode it.
         let bump = MerklePath::from_coinbase_txid(&txid, height);
-        let bump_hex = hex::encode(bump.to_binary());
+        let bump_hex = hex::encode(bump.to_binary().unwrap());
         // For a single-tx block the merkle root equals the txid.
         let merkle_root = bump
             .compute_root(Some(&txid))
@@ -390,7 +390,7 @@ mod monitor_integration {
         let height = 851_234u32;
 
         let bump = MerklePath::from_coinbase_txid(&txid, height);
-        let bump_hex = hex::encode(bump.to_binary());
+        let bump_hex = hex::encode(bump.to_binary().unwrap());
         let merkle_root = bump.compute_root(Some(&txid)).expect("compute_root");
 
         let mock = MockWalletServices::builder()
@@ -769,7 +769,7 @@ mod monitor_integration {
         use bsv_wallet_toolbox_rs::{GetMerklePathResult, GetStatusForTxidsResult};
 
         let bump = MerklePath::from_coinbase_txid(txid, height);
-        let bump_hex = hex::encode(bump.to_binary());
+        let bump_hex = hex::encode(bump.to_binary().unwrap());
         let merkle_root = bump.compute_root(Some(txid)).expect("compute_root");
         let mock = MockWalletServices::builder()
             .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
@@ -1131,8 +1131,8 @@ mod monitor_integration {
         let child_txid = child.id();
         let child_raw = child.to_binary();
         let mut beef = Beef::new();
-        beef.merge_raw_tx(parent_raw.clone(), None);
-        let input_beef = beef.to_binary();
+        beef.merge_raw_tx(parent_raw.clone(), None).unwrap();
+        let input_beef = beef.to_binary().unwrap();
 
         let old = chrono::Utc::now() - chrono::Duration::minutes(10);
         let parent_id: i64 = sqlx::query_scalar(

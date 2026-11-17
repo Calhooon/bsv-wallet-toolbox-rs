@@ -107,7 +107,7 @@ async fn insert_req(s: &StorageSqlx, txid: &str, status: &str, raw: &[u8], beef:
     .bind(txid)
     .bind(status)
     .bind(raw)
-    .bind(beef.to_binary())
+    .bind(beef.to_binary().unwrap())
     .bind(old)
     .bind(old)
     .execute(s.writer())
@@ -142,7 +142,7 @@ async fn seed(s: &StorageSqlx, child: Option<&str>) -> Lineage {
     )
     .await;
     let mut beef = Beef::new();
-    beef.merge_raw_tx(coinbase, None);
+    beef.merge_raw_tx(coinbase, None).unwrap();
     insert_req(s, &p, "unsent", &p_raw, &mut beef).await;
     let mut d = None;
     let p0;
@@ -153,7 +153,7 @@ async fn seed(s: &StorageSqlx, child: Option<&str>) -> Lineage {
         p0 = insert_change(s, user_id, basket_id, p_id, &p, false, Some(d_id)).await;
         let d0 = insert_change(s, user_id, basket_id, d_id, &d_txid, true, None).await;
         let mut d_beef = Beef::new();
-        d_beef.merge_raw_tx(p_raw.clone(), None);
+        d_beef.merge_raw_tx(p_raw.clone(), None).unwrap();
         insert_req(s, &d_txid, "unmined", &d_raw, &mut d_beef).await;
         d = Some((d_txid, d_id, d0));
     } else {

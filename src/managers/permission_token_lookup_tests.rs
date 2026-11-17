@@ -223,7 +223,7 @@ async fn store_token(wallet: &FullWallet, script: LockingScript, basket: &str, t
         .await
         .unwrap();
     sqlx::query("INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx) VALUES (?, ?, 0, ?, ?, ?, ?)")
-        .bind(&txid).bind(height).bind("bb".repeat(32)).bind(&txid).bind(bump.to_binary()).bind(&raw)
+        .bind(&txid).bind(height).bind("bb".repeat(32)).bind(&txid).bind(bump.to_binary().unwrap()).bind(&raw)
         .execute(db).await.unwrap();
     let transaction = sqlx::query("INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx) VALUES (?, 'completed', ?, 1, 1, 1, 0, 'a permission token', ?, ?)")
         .bind(user).bind(format!("token-{txid}")).bind(&txid).bind(&raw)

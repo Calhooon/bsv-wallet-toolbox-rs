@@ -69,7 +69,7 @@ fn frame(
         tip: Some(tip()),
         roots: beef_roots(&beef).into_iter().collect(),
     };
-    (beef.to_binary(), tracker, headers)
+    (beef.to_binary().unwrap(), tracker, headers)
 }
 
 /// The live door's word pass over `child` with its proven `parent`.

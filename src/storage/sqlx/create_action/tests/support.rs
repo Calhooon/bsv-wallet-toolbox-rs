@@ -127,9 +127,9 @@ pub(super) fn build_test_beef_with_bump(height: u32, _fake_root: &str) -> (Vec<u
         }]],
     };
     let bump_idx = beef.merge_bump(mp);
-    beef.merge_raw_tx(raw_tx, Some(bump_idx));
+    beef.merge_raw_tx(raw_tx, Some(bump_idx)).unwrap();
 
-    (beef.to_binary(), txid.to_string())
+    (beef.to_binary().unwrap(), txid.to_string())
 }
 
 /// Helper: seed a transaction with input_beef in the DB (simulates stored ancestor BEEF).
@@ -533,7 +533,7 @@ pub(super) async fn seed_proven_chain_tx(
     .bind(height as i64)
     .bind(format!("block_{}", height))
     .bind(txid)
-    .bind(bump.to_binary())
+    .bind(bump.to_binary().unwrap())
     .bind(raw_tx)
     .bind(now)
     .bind(now)
@@ -619,8 +619,8 @@ pub(super) async fn l2_23_assembly(
     let chain = synth_chain(3);
     seed_proven_chain_tx(&s, &chain[0].1, &chain[0].0, 100).await;
     let mut stub = Beef::new();
-    stub.merge_raw_tx(chain[1].0.clone(), None);
-    seed_unproven_tx(&s, &chain[1].1, &chain[1].0, Some(&stub.to_binary())).await;
+    stub.merge_raw_tx(chain[1].0.clone(), None).unwrap();
+    seed_unproven_tx(&s, &chain[1].1, &chain[1].0, Some(&stub.to_binary().unwrap())).await;
     seed_unproven_tx(&s, &chain[2].1, &chain[2].0, None).await;
     let mut t = MockChainTracker::new(101);
     t.add_root(100, chain[0].1.clone());
@@ -669,6 +669,6 @@ pub(super) fn linked_in_memory_entry() -> (Beef, [String; 3]) {
     let u = synth_chain(1).pop().unwrap();
     let mut beef = Beef::new();
     beef.txs.push(bsv_rs::transaction::BeefTx::from_tx(c, None));
-    beef.merge_raw_tx(u.0, None);
+    beef.merge_raw_tx(u.0, None).unwrap();
     (beef, [chain[1].1.clone(), chain[2].1.clone(), u.1])
 }

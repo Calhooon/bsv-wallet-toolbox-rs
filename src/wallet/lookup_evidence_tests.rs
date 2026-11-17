@@ -106,8 +106,8 @@ async fn an_output_without_its_chain_in_its_beef_is_dropped() {
     let record = alice(2).await;
     let orphan = transaction(alices_token(&record));
     let mut beef = Beef::new();
-    beef.merge_raw_tx(orphan.to_binary(), None);
-    only_the_good_output(at(beef.to_binary(), 0), &tracker()).await;
+    beef.merge_raw_tx(orphan.to_binary(), None).unwrap();
+    only_the_good_output(at(beef.to_binary().unwrap(), 0), &tracker()).await;
     let mut bare = transaction(alices_token(&record));
     bare.inputs_mut().clear();
     only_the_good_output(at(bare.to_beef(true).unwrap(), 0), &tracker()).await;
@@ -296,8 +296,8 @@ async fn an_unproven_output_is_kept_only_when_its_spend_verifies() {
         input.set_unlocking_script(bsv_rs::script::UnlockingScript::from_hex(unlocking).unwrap());
         *child.inputs_mut() = vec![input];
         let mut beef = Beef::from_binary(&proven(&parent, HEIGHT)).unwrap();
-        beef.merge_raw_tx(child.to_binary(), None);
-        answer.push(kept(vec![at(beef.to_binary(), 0)], &tracker()).await.len());
+        beef.merge_raw_tx(child.to_binary(), None).unwrap();
+        answer.push(kept(vec![at(beef.to_binary().unwrap(), 0)], &tracker()).await.len());
     }
     assert_eq!(answer, vec![1, 0]);
 }
@@ -314,8 +314,8 @@ async fn spending(parent: &bsv_rs::transaction::Transaction, inputs: u32) -> Out
         })
         .collect();
     let mut beef = Beef::from_binary(&proven(parent, HEIGHT)).unwrap();
-    beef.merge_raw_tx(child.to_binary(), None);
-    at(beef.to_binary(), 0)
+    beef.merge_raw_tx(child.to_binary(), None).unwrap();
+    at(beef.to_binary().unwrap(), 0)
 }
 
 /// How many of `output` the door keeps with the doors' policy's

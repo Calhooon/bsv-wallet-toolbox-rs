@@ -147,9 +147,9 @@ fn a_beef() -> (Vec<u8>, String) {
     let mut beef = Beef::new();
     let bump = MerklePath::from_coinbase_txid(&parent_txid, 100_000);
     let proof = beef.merge_bump(bump);
-    beef.merge_raw_tx(hex::decode(parent).unwrap(), Some(proof));
-    beef.merge_raw_tx(hex::decode(child).unwrap(), None);
-    (beef.to_binary(), txid)
+    beef.merge_raw_tx(hex::decode(parent).unwrap(), Some(proof)).unwrap();
+    beef.merge_raw_tx(hex::decode(child).unwrap(), None).unwrap();
+    (beef.to_binary().unwrap(), txid)
 }
 
 #[tokio::test]

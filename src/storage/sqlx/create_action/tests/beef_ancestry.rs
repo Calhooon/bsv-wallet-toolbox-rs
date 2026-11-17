@@ -21,7 +21,7 @@ async fn test_build_input_beef_recursive_ancestor() {
         ).unwrap();
     let txid1_owned = txid_of(&raw_tx1);
     let txid1 = txid1_owned.as_str();
-    let merkle_path1 = synth_bump(100_000, txid1).to_binary();
+    let merkle_path1 = synth_bump(100_000, txid1).to_binary().unwrap();
     seed_proven_tx(&storage, txid1, &raw_tx1, &merkle_path1).await;
 
     // Create an unproven transaction (txid2) that spends from txid1
@@ -129,7 +129,7 @@ async fn test_build_beef_includes_unconfirmed_parent() {
     )
     .unwrap();
     let parent_txid = compute_txid(&parent_raw_tx);
-    let parent_merkle_path = synth_bump(100_000, &parent_txid).to_binary();
+    let parent_merkle_path = synth_bump(100_000, &parent_txid).to_binary().unwrap();
     seed_proven_tx(&storage, &parent_txid, &parent_raw_tx, &parent_merkle_path).await;
 
     // 2. Create an unconfirmed child tx that spends from parent
@@ -419,15 +419,15 @@ async fn test_input_beef_with_a_bump_carrying_its_txid_unflagged_is_linked_not_r
     let x = siblings();
     let mut user = Beef::new();
     user.merge_bump(path_flagging(&x.a.1, &x.b.1, &x.a.1));
-    user.merge_raw_tx(x.b.0.clone(), None);
-    user.merge_raw_tx(x.t.0.clone(), None);
+    user.merge_raw_tx(x.b.0.clone(), None).unwrap();
+    user.merge_raw_tx(x.t.0.clone(), None).unwrap();
     for tx in user.txs.iter_mut().filter(|tx| tx.txid() == x.b.1) {
         tx.set_bump_index(None);
     }
     for leaf in &mut user.bumps[0].path[0] {
         leaf.txid = leaf.hash.as_deref() == Some(x.a.1.as_str());
     }
-    let user_bytes = user.to_binary();
+    let user_bytes = user.to_binary().unwrap();
     let soak = Beef::from_binary(&user_bytes).unwrap();
     assert!(
         soak.find_txid(&x.b.1).unwrap().bump_index().is_none() && !leaf_flagged(&soak, &x.b.1),
@@ -562,12 +562,12 @@ async fn test_build_input_beef_ten_hops_stops_at_the_proven_hop() {
             // Every hop stored the whole ancestry it saw at build time.
             let mut stored = Beef::new();
             for (r, _) in chain.iter().take(i) {
-                stored.merge_raw_tx(r.clone(), None);
+                stored.merge_raw_tx(r.clone(), None).unwrap();
             }
             let stored_bytes = if i == 0 {
                 None
             } else {
-                Some(stored.to_binary())
+                Some(stored.to_binary().unwrap())
             };
             seed_unproven_tx(&storage, txid, raw, stored_bytes.as_deref()).await;
         }
@@ -617,7 +617,7 @@ async fn test_build_input_beef_ten_hops_stops_at_the_proven_hop() {
 fn the_txid_only_split_keeps_an_in_memory_entry_alone_764() {
     let (mut beef, [b, c, _]) = linked_in_memory_entry();
     beef.merge_txid_only("ee".repeat(32));
-    let (kept, _) = super::split_txid_only_entries(&beef, std::slice::from_ref(&c));
+    let (kept, _) = super::split_txid_only_entries(&beef, std::slice::from_ref(&c)).unwrap();
     let kept_txids = beef_txids(&kept);
     assert!(kept_txids.contains(&c), "{kept_txids:?}");
     assert!(

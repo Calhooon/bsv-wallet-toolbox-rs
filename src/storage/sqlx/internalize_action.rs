@@ -1093,7 +1093,7 @@ fn extract_bump_claim(bump: Option<&MerklePath>, txid: &str) -> Option<BumpClaim
         height: bump.block_height,
         idx,
         computed_root,
-        merkle_path: bump.to_binary(),
+        merkle_path: bump.to_binary().ok()?,
     })
 }
 
@@ -1667,7 +1667,7 @@ mod tests {
     fn merge_test_parent(beef: &mut Beef) {
         let (raw, txid) = test_parent();
         let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&txid, PROVEN_HEIGHT));
-        beef.merge_raw_tx(raw, Some(bump));
+        beef.merge_raw_tx(raw, Some(bump)).unwrap();
     }
 
     /// Variant of `create_test_atomic_beef` whose single input spends the
@@ -1951,7 +1951,7 @@ mod tests {
 
         let (raw, txid) = raw_tx_spending(&[], 1_000);
         let mut beef = Beef::new();
-        beef.merge_raw_tx(raw, None);
+        beef.merge_raw_tx(raw, None).unwrap();
         let bytes = beef.to_binary_atomic(&txid).unwrap();
 
         let err = internalize_action_internal(
@@ -2024,7 +2024,7 @@ mod tests {
         let (anchor, anchor_txid) = raw_tx_spending(&[(&"11".repeat(32), 0)], 50_000);
         let mut beef = Beef::new();
         let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&anchor_txid, 900_000));
-        beef.merge_raw_tx(anchor, Some(bump));
+        beef.merge_raw_tx(anchor, Some(bump)).unwrap();
         let mut tracker = MockChainTracker::new(900_006);
         tracker.add_root(900_000, anchor_txid.clone());
         storage
@@ -2033,7 +2033,7 @@ mod tests {
         let mut parent = anchor_txid;
         for i in 0..1_000u64 {
             let (raw, txid) = raw_tx_spending(&[(&parent, 0)], 49_000 - i);
-            beef.merge_raw_tx(raw, None);
+            beef.merge_raw_tx(raw, None).unwrap();
             parent = txid;
         }
         let bytes = beef.to_binary_atomic(&parent).unwrap();
@@ -2510,7 +2510,7 @@ mod tests {
 
         let mut beef = Beef::new();
         let bump_index = beef.merge_bump(bump.clone());
-        beef.merge_raw_tx(raw_tx, Some(bump_index));
+        beef.merge_raw_tx(raw_tx, Some(bump_index)).unwrap();
 
         let beef_bytes = beef.to_binary_atomic(&txid).unwrap();
 
@@ -2965,7 +2965,7 @@ mod tests {
         assert_eq!(height, PROVEN_HEIGHT as i64);
         assert_eq!(idx, 0, "single-leaf BUMP puts the txid at offset 0");
         assert_eq!(merkle_root, bump.compute_root(Some(&txid)).unwrap());
-        assert_eq!(merkle_path, bump.to_binary());
+        assert_eq!(merkle_path, bump.to_binary().unwrap());
         assert!(!raw_tx.is_empty(), "proven_txs.raw_tx must be populated");
 
         // A proven tx needs no req (nothing left to fetch) — TS parity:
@@ -3165,7 +3165,7 @@ mod tests {
         stub.merge_raw_tx(
             beef.find_txid(&txid).unwrap().tx().unwrap().to_binary(),
             None,
-        );
+        ).unwrap();
         let args = wallet_payment_args(stub.to_binary_atomic(&txid).unwrap(), "missing ancestry");
         let result = internalize_action_internal(&storage, user_id, args).await;
         assert!(matches!(
@@ -3190,7 +3190,7 @@ mod tests {
         assert_eq!(claim.height, PROVEN_HEIGHT);
         assert_eq!(claim.idx, 0);
         assert_eq!(claim.computed_root, bump.compute_root(Some(&txid)).unwrap());
-        assert_eq!(claim.merkle_path, bump.to_binary());
+        assert_eq!(claim.merkle_path, bump.to_binary().unwrap());
 
         let (plain_bytes, plain_txid, _s) = create_test_atomic_beef();
         let complete = Beef::from_binary(&plain_bytes).unwrap();
@@ -3203,7 +3203,7 @@ mod tests {
                 .unwrap()
                 .to_binary(),
             None,
-        );
+        ).unwrap();
         assert!(extract_bump_claim(plain.find_bump(&plain_txid), &plain_txid).is_none());
     }
 
@@ -3773,7 +3773,7 @@ mod tests {
         let root = bump.compute_root(Some(&parent_txid)).unwrap();
         let mut beef = Beef::new();
         let bump_index = beef.merge_bump(bump);
-        beef.merge_raw_tx(parent.to_binary(), Some(bump_index));
+        beef.merge_raw_tx(parent.to_binary(), Some(bump_index)).unwrap();
         beef.merge_transaction(payment);
         let bytes = beef.to_binary_atomic(&txid).unwrap();
 
@@ -3921,7 +3921,7 @@ mod tests {
                 .to_binary();
             let mut beef = Beef::new();
             let bump = beef.merge_bump(original.bumps[0].clone());
-            beef.merge_raw_tx(parent, Some(bump));
+            beef.merge_raw_tx(parent, Some(bump)).unwrap();
             beef.merge_transaction(payment);
             let bytes = beef.to_binary_atomic(&txid).unwrap();
             let storage = create_test_storage().await;

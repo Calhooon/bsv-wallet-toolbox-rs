@@ -76,9 +76,9 @@ async fn a_pre_genesis_spend_is_not_judged_by_the_word_pass_alone() {
         tracker.add_root(COIN, bump.compute_root(None).unwrap());
         let mut beef = Beef::new();
         let index = beef.merge_bump(bump);
-        beef.merge_raw_tx(parent.to_binary(), Some(index));
-        beef.merge_raw_tx(child.to_binary(), None);
-        let bytes = beef.to_binary();
+        beef.merge_raw_tx(parent.to_binary(), Some(index)).unwrap();
+        beef.merge_raw_tx(child.to_binary(), None).unwrap();
+        let bytes = beef.to_binary().unwrap();
         let roots = beef_roots(&beef);
         let headers = VerificationHeaders {
             tip: tracker.mining_tip().await.unwrap(),

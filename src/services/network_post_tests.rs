@@ -21,9 +21,9 @@ fn sample() -> (Vec<u8>, Vec<String>) {
     let mut beef = Beef::new();
     // Height unjudged: the post path judges no script; `check_url` refuses its requests.
     let proof = beef.merge_bump(MerklePath::from_coinbase_txid(&parent.id(), 100_000));
-    beef.merge_raw_tx(parent.to_binary(), Some(proof));
-    let txid = beef.merge_raw_tx(hex::decode(child).unwrap(), None).txid();
-    (beef.to_binary(), vec![txid])
+    beef.merge_raw_tx(parent.to_binary(), Some(proof)).unwrap();
+    let txid = beef.merge_raw_tx(hex::decode(child).unwrap(), None).unwrap().txid();
+    (beef.to_binary().unwrap(), vec![txid])
 }
 
 /// Options whose broadcaster is a non-loopback placeholder host: Arcade, the

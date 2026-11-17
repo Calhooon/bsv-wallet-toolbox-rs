@@ -94,7 +94,7 @@ async fn internalize_reads_the_stored_network_before_writing_received_outputs() 
     let child_id = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(proof(&parent, height));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump)).unwrap();
     beef.merge_transaction(child);
     let bytes = beef.to_binary_atomic(&child_id).unwrap();
     let mut root: [u8; 32] = hex::decode(parent.id()).unwrap().try_into().unwrap();

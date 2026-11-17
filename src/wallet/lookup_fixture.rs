@@ -165,8 +165,8 @@ pub(crate) fn proven_at(tx: &Transaction, height: u32, offset: u64) -> Vec<u8> {
     let bump = MerklePath::new(height, vec![leaves]).unwrap();
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(tx.to_binary(), Some(index));
-    beef.to_binary()
+    beef.merge_raw_tx(tx.to_binary(), Some(index)).unwrap();
+    beef.to_binary().unwrap()
 }
 
 /// A transaction whose output 0 is `script`, proven at `HEIGHT`, as BEEF.

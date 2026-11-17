@@ -57,7 +57,7 @@ fn child_beef(vout: u32) -> Vec<u8> {
         &a0_txid,
         ProtocolEra::MAINNET_GENESIS_HEIGHT + 100,
     ));
-    beef.merge_raw_tx(a0.to_binary(), Some(bump));
+    beef.merge_raw_tx(a0.to_binary(), Some(bump)).unwrap();
     beef.merge_transaction(child);
     beef.to_binary_atomic(&txid).unwrap()
 }

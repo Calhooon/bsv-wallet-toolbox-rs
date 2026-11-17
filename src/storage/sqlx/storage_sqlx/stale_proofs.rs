@@ -128,9 +128,9 @@ impl StorageSqlx {
             let mut conn = self.pool().acquire().await?;
             rebuild_beef_for_broadcast(&mut conn, self.writer(), &input_txids, Some(self)).await?
         };
-        beef.merge_raw_tx(raw_tx, None);
+        beef.merge_raw_tx(raw_tx, None)?;
         let results = services
-            .post_beef(&beef.to_binary(), &[txid.to_string()])
+            .post_beef(&beef.to_binary()?, &[txid.to_string()])
             .await?;
         let outcome = classify_broadcast_results(&results);
         let word = match &outcome {

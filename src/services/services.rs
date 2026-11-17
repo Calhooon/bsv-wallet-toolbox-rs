@@ -3140,7 +3140,7 @@ impl WalletServices for Services {
 
         // Add the main transaction to BEEF
         // Use merge_raw_tx with bump_index if we have a proof
-        beef.merge_raw_tx(raw_tx.clone(), bump_index);
+        beef.merge_raw_tx(raw_tx.clone(), bump_index)?;
 
         // Process inputs - for known txids, add as TxIDOnly
         // For this implementation, we just add known txids as references
@@ -3151,7 +3151,7 @@ impl WalletServices for Services {
         }
 
         // Serialize BEEF to bytes
-        let beef_bytes = beef.to_binary();
+        let beef_bytes = beef.to_binary()?;
 
         Ok(GetBeefResult {
             name: "Services".to_string(),
@@ -4347,7 +4347,7 @@ mod tests {
     fn build_valid_bump(txid: &str, height: u32) -> (String, String) {
         use bsv_rs::transaction::MerklePath;
         let bump = MerklePath::from_coinbase_txid(txid, height);
-        let bump_hex = bump.to_hex();
+        let bump_hex = bump.to_hex().unwrap();
         let merkle_root = bump
             .compute_root(Some(txid))
             .expect("compute_root for coinbase bump");

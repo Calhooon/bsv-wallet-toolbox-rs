@@ -90,7 +90,7 @@ async fn store_proof(conn: &mut sqlx::SqliteConnection, tx: &Transaction) {
     .bind(i64::from(HEIGHT))
     .bind("ab".repeat(32))
     .bind(&txid)
-    .bind(bump.to_binary())
+    .bind(bump.to_binary().unwrap())
     .bind(tx.to_binary())
     .execute(&mut *conn)
     .await
@@ -250,7 +250,9 @@ pub async fn seed(count: usize) -> Store {
         .map(|i| {
             let tx = funding_transaction(i, &script);
             let txid = tx.id();
-            let proof = MerklePath::from_coinbase_txid(&txid, HEIGHT).to_binary();
+            let proof = MerklePath::from_coinbase_txid(&txid, HEIGHT)
+                .to_binary()
+                .expect("a coinbase path writes");
             (int(i) + 1, txid, tx.to_binary(), proof)
         })
         .collect();
@@ -416,7 +418,8 @@ impl Store {
         let txid = tx.id();
         let mut beef = Beef::new();
         let index = beef.merge_bump(MerklePath::from_coinbase_txid(&txid, HEIGHT));
-        beef.merge_raw_tx(tx.to_binary(), Some(index));
+        beef.merge_raw_tx(tx.to_binary(), Some(index))
+            .expect("one transaction");
         InternalizeActionArgs {
             tx: beef.to_binary_atomic(&txid).expect("atomic proof"),
             outputs: vec![InternalizeOutput {

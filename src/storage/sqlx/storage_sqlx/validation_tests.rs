@@ -86,8 +86,8 @@ mod tests {
 
         let mut beef = Beef::new();
         let bump_index = beef.merge_bump(parent_bump);
-        beef.merge_raw_tx(parent_raw, Some(bump_index)); // parent (proven)
-        beef.merge_raw_tx(child_raw, None); // child (unproven leaf)
+        beef.merge_raw_tx(parent_raw, Some(bump_index)).unwrap(); // parent (proven)
+        beef.merge_raw_tx(child_raw, None).unwrap(); // child (unproven leaf)
 
         // Validation should pass: 1 unproven leaf whose input parent is in the BEEF
         let result = validate_beef_for_broadcast(&beef, &child_txid);
@@ -110,7 +110,7 @@ mod tests {
 
         let mut beef = Beef::new();
         let bump_index = beef.merge_bump(bump);
-        beef.merge_raw_tx(raw_tx, Some(bump_index)); // proven — no unproven leaves
+        beef.merge_raw_tx(raw_tx, Some(bump_index)).unwrap(); // proven — no unproven leaves
 
         let result = validate_beef_for_broadcast(&beef, &txid);
         assert!(
@@ -152,7 +152,7 @@ mod tests {
         let child_txid = test_compute_txid(&child_raw);
 
         let mut beef = Beef::new();
-        beef.merge_raw_tx(child_raw, None); // child only, no parent
+        beef.merge_raw_tx(child_raw, None).unwrap(); // child only, no parent
 
         let result = validate_beef_for_broadcast(&beef, &child_txid);
         assert!(

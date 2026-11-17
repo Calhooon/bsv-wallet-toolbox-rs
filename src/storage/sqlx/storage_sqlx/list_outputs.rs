@@ -363,9 +363,9 @@ impl StorageSqlx {
             )
             .await?;
 
-            prune_beef_to_roots(&mut beef_struct, &unique_txids);
+            prune_beef_to_roots(&mut beef_struct, &unique_txids)?;
 
-            let beef_bytes = beef_struct.to_binary();
+            let beef_bytes = beef_struct.to_binary()?;
             // Only return BEEF if it contains data beyond the 4-byte header
             if beef_bytes.len() > 4 {
                 Some(beef_bytes)

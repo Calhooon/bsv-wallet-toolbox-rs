@@ -232,7 +232,7 @@ async fn seed_transaction(replay: &mut Replay, seed: &SeedTransaction, index: us
         let proven_id = if let Some(proof) = &proof {
             Some(sqlx::query("INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx) VALUES (?, ?, 0, ?, ?, ?, ?)")
                 .bind(&txid).bind(i64::from(proof.block_height)).bind("aa".repeat(32)).bind(&txid)
-                .bind(proof.to_binary()).bind(tx.to_binary()).execute(replay.storage.writer()).await?.last_insert_rowid())
+                .bind(proof.to_binary().unwrap()).bind(tx.to_binary()).execute(replay.storage.writer()).await?.last_insert_rowid())
         } else {
             None
         };
@@ -302,7 +302,7 @@ impl Replay {
                 }
             }
             let bump = seed.proof.as_ref().map(|p| beef.merge_bump(p.clone()));
-            beef.merge_raw_tx(seed.tx.to_binary(), bump);
+            beef.merge_raw_tx(seed.tx.to_binary(), bump).unwrap();
             Ok(())
         }
         let mut beef = Beef::new();

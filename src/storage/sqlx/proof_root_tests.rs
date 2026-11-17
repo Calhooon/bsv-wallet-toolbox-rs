@@ -406,7 +406,7 @@ async fn compaction_checks_an_unchecked_proof_once() {
     let raw = hex::decode(COINBASE_HEX).unwrap();
     let stored_beef = || {
         let mut b = Beef::new();
-        b.merge_raw_tx(raw.clone(), None);
+        b.merge_raw_tx(raw.clone(), None).unwrap();
         b
     };
     let attached = |b: &Beef| {
@@ -503,7 +503,7 @@ async fn compaction_attaches_no_unchecked_proof_without_a_tracker_answer() {
         )
         .await;
         let mut beef = Beef::new();
-        beef.merge_raw_tx(raw.clone(), None);
+        beef.merge_raw_tx(raw.clone(), None).unwrap();
         let mut conn = s.pool().acquire().await.unwrap();
         compact_stored_beef(&mut conn, Some(s.writer()), &mut beef, tracker)
             .await
@@ -575,9 +575,9 @@ async fn the_monitors_compaction_with_no_tracker_stores_no_unchecked_proof() {
     )
     .await;
     let mut stored = Beef::new();
-    stored.merge_raw_tx(parent_raw.clone(), None);
-    stored.merge_raw_tx(unreached_filler(), None);
-    let stored_bytes = stored.to_binary();
+    stored.merge_raw_tx(parent_raw.clone(), None).unwrap();
+    stored.merge_raw_tx(unreached_filler(), None).unwrap();
+    let stored_bytes = stored.to_binary().unwrap();
     assert!(
         stored_bytes.len() > 1000,
         "precondition: above the threshold"

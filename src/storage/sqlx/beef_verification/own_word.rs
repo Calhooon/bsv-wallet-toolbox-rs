@@ -31,8 +31,8 @@ pub(crate) struct SourceTx {
 /// `raw` read by bsv-rs's streaming reader, its offsets rebased onto `raw`.
 fn read_tx(raw: &[u8]) -> Result<(Hash32, TxBody)> {
     let mut beef = Beef::with_version(BEEF_V1);
-    beef.merge_raw_tx(raw.to_vec(), None);
-    let bytes = beef.to_binary();
+    beef.merge_raw_tx(raw.to_vec(), None)?;
+    let bytes = beef.to_binary()?;
     for element in BeefStream::new(&bytes[..]) {
         if let Element::Tx {
             offset,

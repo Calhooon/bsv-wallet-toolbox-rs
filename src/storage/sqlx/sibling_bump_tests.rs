@@ -44,7 +44,7 @@ async fn walk_and_prune(
 ) -> Beef {
     let mut beef = Beef::new();
     walk_into(s, &mut beef, roots, tracker).await;
-    prune_beef_to_roots(&mut beef, roots);
+    prune_beef_to_roots(&mut beef, roots).unwrap();
     beef
 }
 
@@ -153,9 +153,9 @@ pub(super) fn leaf_flagged(beef: &Beef, txid: &str) -> bool {
 /// What the next `createAction` does with this BEEF as its `inputBEEF`:
 /// parse the bytes and merge them (`build_input_beef`, create_action.rs).
 pub(super) fn as_next_input_beef(beef: &mut Beef) -> Beef {
-    let parsed = Beef::from_binary(&beef.to_binary()).unwrap();
+    let parsed = Beef::from_binary(&beef.to_binary().unwrap()).unwrap();
     let mut next = Beef::new();
-    next.merge_beef(&parsed);
+    next.merge_beef(&parsed).unwrap();
     next
 }
 
@@ -167,7 +167,7 @@ pub(super) async fn soak_storage(x: &Siblings) -> StorageSqlx {
     s.make_available().await.unwrap();
     let (user_id, _) = seed_user(&s).await;
     for (raw, txid) in [&x.a, &x.b] {
-        let path = path_flagging(&x.a.1, &x.b.1, &x.a.1).to_binary();
+        let path = path_flagging(&x.a.1, &x.b.1, &x.a.1).to_binary().unwrap();
         let now = Utc::now();
         let proven_tx_id: i64 = sqlx::query_scalar(
             "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING proven_tx_id",
@@ -229,7 +229,7 @@ async fn compaction_flags_the_leaf_it_links() {
     let tracker = tracker_with(&[(HEIGHT, &x.root)]);
     // A stored input BEEF from before `b` was mined: `b` rides raw.
     let mut stored = Beef::new();
-    stored.merge_raw_tx(x.b.0.clone(), None);
+    stored.merge_raw_tx(x.b.0.clone(), None).unwrap();
     let mut conn = s.pool().acquire().await.unwrap();
     compact_stored_beef(
         &mut conn,
@@ -351,7 +351,7 @@ async fn replay_p0_1d_soak_walk() {
         println!(
             "replay ({name}): walk {} same bytes as the daemon's stored input BEEF: {}",
             describe_shape(&beef),
-            beef.to_binary() == stored
+            beef.to_binary().unwrap() == stored
         );
         let mut next = as_next_input_beef(&mut beef);
         let linked = next.find_txid(&root).and_then(|t| t.bump_index()).is_some();
@@ -374,9 +374,9 @@ async fn replay_p0_1d_soak_walk() {
             .fetch_one(s.pool())
             .await
             .unwrap();
-            let mut t_beef = Beef::from_binary(&beef.to_binary()).unwrap();
-            t_beef.merge_raw_tx(template, None);
-            println!("P0_1D_TEMPLATE_BEEF {}", hex::encode(t_beef.to_binary()));
+            let mut t_beef = Beef::from_binary(&beef.to_binary().unwrap()).unwrap();
+            t_beef.merge_raw_tx(template, None).unwrap();
+            println!("P0_1D_TEMPLATE_BEEF {}", hex::encode(t_beef.to_binary().unwrap()));
         }
         assert!(
             leaf_flagged(&beef, &root),
@@ -397,9 +397,9 @@ async fn the_monitors_compaction_stores_the_leaf_flagged() {
     let s = soak_storage(&x).await;
     super::reorg_tests::insert_req(&s, &x.t.1, &x.t.0, "completed", 0, None, Utc::now()).await;
     let mut stored = Beef::new();
-    stored.merge_raw_tx(x.b.0.clone(), None);
-    stored.merge_raw_tx(super::proof_root_tests::unreached_filler(), None);
-    let stored_bytes = stored.to_binary();
+    stored.merge_raw_tx(x.b.0.clone(), None).unwrap();
+    stored.merge_raw_tx(super::proof_root_tests::unreached_filler(), None).unwrap();
+    let stored_bytes = stored.to_binary().unwrap();
     assert!(
         stored_bytes.len() > 1000,
         "precondition: above the threshold"
@@ -488,7 +488,7 @@ fn the_linker_takes_the_last_bump_holding_a_txid_765() {
     let mut beef = Beef::new();
     beef.merge_bump(path_flagging(&x.a.1, &x.b.1, &x.a.1));
     beef.merge_bump(second_proof_of(&x.b.1));
-    beef.merge_raw_tx(x.b.0.clone(), None);
+    beef.merge_raw_tx(x.b.0.clone(), None).unwrap();
     for tx in &mut beef.txs {
         tx.set_bump_index(None);
     }

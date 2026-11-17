@@ -319,7 +319,7 @@ async fn a_beef_v2_is_posted_as_written() {
     let subject = subject_of(plain);
     let mut v2 = Beef::from_binary(plain).expect("the row parses");
     v2.version = 0xEFBE_0002;
-    let v2 = v2.to_binary();
+    let v2 = v2.to_binary().unwrap();
     assert_eq!(
         hex::encode(&v2[..4]),
         "0200beef",

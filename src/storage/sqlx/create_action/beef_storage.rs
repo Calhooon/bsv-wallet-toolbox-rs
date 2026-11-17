@@ -211,7 +211,7 @@ pub(in crate::storage::sqlx) async fn get_tx_with_proof(
                         if let Some(raw) = beef_tx.raw_tx() {
                             return Ok(Some(BeefTxData {
                                 raw_tx: raw.to_vec(),
-                                merkle_path: Some(bump.to_binary()),
+                                merkle_path: Some(bump.to_binary()?),
                             }));
                         }
                     }
@@ -263,7 +263,7 @@ pub(in crate::storage::sqlx) async fn get_tx_with_proof(
                         if let Some(raw) = beef_tx.raw_tx() {
                             return Ok(Some(BeefTxData {
                                 raw_tx: raw.to_vec(),
-                                merkle_path: Some(bump.to_binary()),
+                                merkle_path: Some(bump.to_binary()?),
                             }));
                         }
                     }

@@ -110,7 +110,7 @@ pub(super) fn atomic_beef_paying_at(lock: &str, height: u32) -> Vec<u8> {
     let txid = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, height));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump));
+    beef.merge_raw_tx(parent.to_binary(), Some(bump)).unwrap();
     beef.merge_transaction(child);
     beef.to_binary_atomic(&txid).unwrap()
 }

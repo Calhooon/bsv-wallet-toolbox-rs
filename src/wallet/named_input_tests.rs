@@ -295,7 +295,7 @@ pub(super) fn caller_script(scene: &NamedInputScene, signable: &SignableTransact
 pub(super) async fn forget_source_bytes(scene: &NamedInputScene, reference: &str) {
     let writer = scene.wallet.storage().writer();
     sqlx::query("UPDATE transactions SET input_beef = ? WHERE reference = ?")
-        .bind(Beef::new().to_binary())
+        .bind(Beef::new().to_binary().unwrap())
         .bind(reference)
         .execute(writer)
         .await

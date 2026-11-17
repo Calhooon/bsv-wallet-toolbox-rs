@@ -780,7 +780,7 @@ fn trim_known_txids(untrimmed: &[u8], known_txids: &[String]) -> Result<Vec<u8>>
     for known_txid in known_txids {
         beef.make_txid_only(known_txid);
     }
-    Ok(beef.to_binary())
+    Ok(beef.to_binary()?)
 }
 
 // =============================================================================

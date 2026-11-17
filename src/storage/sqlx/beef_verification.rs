@@ -535,7 +535,7 @@ mod tests {
 
         let mut beef = Beef::new();
         let bump_index = beef.merge_bump(bump);
-        beef.merge_raw_tx(raw_tx, Some(bump_index));
+        beef.merge_raw_tx(raw_tx, Some(bump_index)).unwrap();
 
         (beef, txid, merkle_root)
     }
@@ -778,7 +778,7 @@ mod tests {
         let raw_tx = MINIMAL_TX_BYTES.to_vec();
 
         let mut beef = Beef::new();
-        beef.merge_raw_tx(raw_tx, None); // No bump index
+        beef.merge_raw_tx(raw_tx, None).unwrap(); // No bump index
 
         let tracker = AlwaysValidChainTracker;
         let known = HashSet::new();
@@ -842,7 +842,7 @@ mod tests {
         // Build valid BEEF binary then truncate it
         let height = 800_000u32;
         let (mut beef, _, _) = build_single_proven_beef(height);
-        let binary = beef.to_binary();
+        let binary = beef.to_binary().unwrap();
 
         // Truncate to half the data
         let truncated = &binary[..binary.len() / 2];
@@ -859,7 +859,7 @@ mod tests {
     async fn test_malformed_beef_extra_bytes() {
         let height = 800_000u32;
         let (mut beef, _, merkle_root) = build_single_proven_beef(height);
-        let mut binary = beef.to_binary();
+        let mut binary = beef.to_binary().unwrap();
 
         // Append garbage bytes
         binary.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF]);
@@ -911,8 +911,8 @@ mod tests {
         let bump_index = beef.merge_bump(bump);
 
         // Add the same raw tx twice
-        beef.merge_raw_tx(raw_tx.clone(), Some(bump_index));
-        beef.merge_raw_tx(raw_tx.clone(), Some(bump_index));
+        beef.merge_raw_tx(raw_tx.clone(), Some(bump_index)).unwrap();
+        beef.merge_raw_tx(raw_tx.clone(), Some(bump_index)).unwrap();
 
         // BEEF should de-duplicate: only one tx entry
         assert_eq!(
@@ -992,8 +992,8 @@ mod tests {
 
         let mut beef = Beef::new();
         let bump_index = beef.merge_bump(parent_bump);
-        beef.merge_raw_tx(parent_raw, Some(bump_index)); // parent (proven)
-        beef.merge_raw_tx(child_raw, None); // child (unproven, chains to parent)
+        beef.merge_raw_tx(parent_raw, Some(bump_index)).unwrap(); // parent (proven)
+        beef.merge_raw_tx(child_raw, None).unwrap(); // child (unproven, chains to parent)
 
         assert_eq!(beef.txs.len(), 2, "Should have two transactions");
 
@@ -1151,7 +1151,7 @@ mod tests {
         let (mut beef, _txid, merkle_root) = build_single_proven_beef(height);
 
         // Serialize and deserialize
-        let binary = beef.to_binary();
+        let binary = beef.to_binary().unwrap();
         let mut beef2 = Beef::from_binary(&binary).expect("Should parse BEEF from binary");
 
         let mut tracker = MockChainTracker::new(height + 1);
@@ -1223,8 +1223,8 @@ mod tests {
         let mut beef = Beef::new();
         let bi1 = beef.merge_bump(bump1);
         let bi2 = beef.merge_bump(bump2);
-        beef.merge_raw_tx(raw_tx1, Some(bi1));
-        beef.merge_raw_tx(raw_tx2, Some(bi2));
+        beef.merge_raw_tx(raw_tx1, Some(bi1)).unwrap();
+        beef.merge_raw_tx(raw_tx2, Some(bi2)).unwrap();
 
         assert_eq!(beef.bumps.len(), 2);
         assert_eq!(beef.txs.len(), 2);
@@ -1264,8 +1264,8 @@ mod tests {
         let mut beef = Beef::new();
         let bi1 = beef.merge_bump(bump1);
         let bi2 = beef.merge_bump(bump2);
-        beef.merge_raw_tx(raw_tx1, Some(bi1));
-        beef.merge_raw_tx(raw_tx2, Some(bi2));
+        beef.merge_raw_tx(raw_tx1, Some(bi1)).unwrap();
+        beef.merge_raw_tx(raw_tx2, Some(bi2)).unwrap();
 
         // Only add root1, NOT root2
         let mut tracker = MockChainTracker::new(height2 + 1);

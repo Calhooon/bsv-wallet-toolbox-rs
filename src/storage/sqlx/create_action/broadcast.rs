@@ -255,7 +255,7 @@ pub(in crate::storage::sqlx) async fn rebuild_beef_for_broadcast(
     )
     .await?;
 
-    prune_beef_to_roots(&mut beef, &root_txids);
+    prune_beef_to_roots(&mut beef, &root_txids)?;
 
     Ok(beef)
 }

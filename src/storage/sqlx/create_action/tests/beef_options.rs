@@ -17,7 +17,7 @@ async fn test_build_input_beef_with_known_txids() {
     let raw_tx = hex::decode(
             "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
         ).unwrap();
-    let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary();
+    let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary().unwrap();
     let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
 
     seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;
@@ -82,8 +82,8 @@ async fn test_build_input_beef_with_user_input_beef() {
     let mut tracker = bsv_rs::transaction::MockChainTracker::new(100_000);
     tracker.add_root(100_000, bump.compute_root(None).unwrap());
     let idx = user_beef.merge_bump(bump);
-    user_beef.merge_raw_tx(user_raw_tx, Some(idx));
-    let user_beef_bytes = user_beef.to_binary();
+    user_beef.merge_raw_tx(user_raw_tx, Some(idx)).unwrap();
+    let user_beef_bytes = user_beef.to_binary().unwrap();
 
     // Input references the tx from user BEEF (not in storage)
     let extended_inputs = vec![ExtendedInput {
@@ -183,9 +183,9 @@ async fn test_create_action_refuses_a_transaction_with_no_input_at_its_offset() 
     raw.extend_from_slice(&[1, 0x51]);
     raw.extend_from_slice(&0u32.to_le_bytes());
     let mut beef = Beef::new();
-    beef.merge_raw_tx(raw, None);
+    beef.merge_raw_tx(raw, None).unwrap();
 
-    let err = create_action_internal(&storage, None, user_id, envelope_args(beef.to_binary()))
+    let err = create_action_internal(&storage, None, user_id, envelope_args(beef.to_binary().unwrap()))
         .await
         .expect_err("a transaction with no input is invalid bytes");
     // The version (4), the two counts (1 + 1), the format byte (1).
@@ -332,7 +332,7 @@ async fn test_build_input_beef_valid_structure_without_tracker() {
     let raw_tx = hex::decode(
             "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
         ).unwrap();
-    let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary();
+    let merkle_path = synth_bump(100_000, &txid_of(&raw_tx)).to_binary().unwrap();
     let txid = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
 
     seed_proven_tx(&storage, txid, &raw_tx, &merkle_path).await;

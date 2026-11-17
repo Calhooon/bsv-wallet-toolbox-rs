@@ -164,7 +164,7 @@ async fn scene(verifier: Arc<dyn SpendVerifier>, count: usize) -> Scene {
     let now = chrono::Utc::now();
     sqlx::query("INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)")
         .bind(&txid).bind(HEIGHT).bind("aa".repeat(32)).bind(&txid)
-        .bind(MerklePath::from_coinbase_txid(&txid, HEIGHT).to_binary()).bind(&raw).bind(now).bind(now)
+        .bind(MerklePath::from_coinbase_txid(&txid, HEIGHT).to_binary().unwrap()).bind(&raw).bind(now).bind(now)
         .execute(storage.writer()).await.unwrap();
     let id = sqlx::query("INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, version, lock_time, description, txid, raw_tx, created_at, updated_at) VALUES (?, 'completed', 'funding', 0, ?, 1, 0, 'funding', ?, ?, ?, ?)")
         .bind(user.user_id).bind(i64::try_from(SATOSHIS * u64::try_from(count).unwrap()).unwrap()).bind(&txid).bind(&raw).bind(now).bind(now)
@@ -578,10 +578,10 @@ async fn create_caller_input_beef_uses_host_before_signing() {
     interpreter(&scene, &child.to_binary()).unwrap();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&scene.parent.id(), HEIGHT));
-    beef.merge_raw_tx(scene.parent.to_binary(), Some(bump));
-    beef.merge_raw_tx(child.to_binary(), None);
+    beef.merge_raw_tx(scene.parent.to_binary(), Some(bump)).unwrap();
+    beef.merge_raw_tx(child.to_binary(), None).unwrap();
     let mut args = payment(1_000);
-    args.input_beef = Some(beef.to_binary());
+    args.input_beef = Some(beef.to_binary().unwrap());
     args.inputs = Some(vec![CreateActionInput {
         outpoint: Outpoint {
             txid: hex::decode(child.id()).unwrap().try_into().unwrap(),

@@ -58,7 +58,7 @@ fn atomic_payment(
     root_bytes.reverse();
     let mut beef = Beef::new();
     let index = beef.merge_bump(bump);
-    beef.merge_raw_tx(parent.to_binary(), Some(index));
+    beef.merge_raw_tx(parent.to_binary(), Some(index)).unwrap();
     beef.merge_transaction(child);
     let bytes = beef.to_binary_atomic(&child_id).unwrap();
     (bytes, (u64::from(height), root_bytes))
@@ -375,7 +375,7 @@ async fn verify_entries(
         .map(|(tx, bump)| BeefTx::from_tx(tx, bump))
         .collect();
     let mut writer = Writer::new();
-    beef.to_writer(&mut writer);
+    beef.to_writer(&mut writer).unwrap();
     let tracker = FixtureTracker { roots, tip };
     verify_beef_spends(&writer.into_bytes(), &tracker.roots, &tracker, network).await
 }
