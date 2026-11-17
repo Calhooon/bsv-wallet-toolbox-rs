@@ -2773,40 +2773,48 @@ where
                         });
                     }
                     let script = tx.outputs()[vout].locking_script.as_script().to_binary();
-                    // Only validate P2PKH (25 bytes: OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG)
-                    if script.len() == 25
-                        && script[0] == 0x76
-                        && script[1] == 0xa9
-                        && script[2] == 0x14
-                        && script[23] == 0x88
-                        && script[24] == 0xac
-                    {
-                        // The counterparty is the validated sender, trimmed as
-                        // the reference's vargs carry it (internalizeAction.ts:86).
-                        let counterparty = Counterparty::Other(sender);
-                        let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
-                        let key_id = format!(
-                            "{} {}",
-                            payment.derivation_prefix, payment.derivation_suffix
-                        );
-                        let derived = self
-                            .proto_wallet
-                            .key_deriver()
-                            .derive_public_key(&protocol, &key_id, &counterparty, true)
-                            .map_err(|e| {
-                                internal_fault(format!("BRC-29 key derivation failed: {}", e))
-                            })?;
-                        if derived.hash160()[..] != script[3..23] {
-                            return Err(bsv_rs::Error::WalletRefusal {
-                                class: bsv_rs::WalletRefusalClass::InvalidParameter,
-                                message: format!(
-                                    "Derivation mismatch for output {}: derived {} != script {}",
-                                    vout,
-                                    hex::encode(derived.hash160()),
-                                    hex::encode(&script[3..23])
-                                ),
-                            });
-                        }
+                    // The counterparty is the validated sender, trimmed as
+                    // the reference's vargs carry it (internalizeAction.ts:86).
+                    let counterparty = Counterparty::Other(sender);
+                    let protocol = Protocol::new(SecurityLevel::Counterparty, "3241645161d8");
+                    let key_id = format!(
+                        "{} {}",
+                        payment.derivation_prefix, payment.derivation_suffix
+                    );
+                    let derived = self
+                        .proto_wallet
+                        .key_deriver()
+                        .derive_public_key(&protocol, &key_id, &counterparty, true)
+                        .map_err(|e| {
+                            internal_fault(format!("BRC-29 key derivation failed: {}", e))
+                        })?;
+                    // The output must be locked by the P2PKH of the derived
+                    // key, byte for byte, whatever its script's shape (the
+                    // reference's `setupWalletPaymentForOutput`).
+                    let derived_hash = derived.hash160();
+                    let expected = [&[0x76, 0xa9, 0x14][..], &derived_hash, &[0x88, 0xac]].concat();
+                    if script != expected {
+                        // A 25-byte P2PKH (OP_DUP OP_HASH160 <20> OP_EQUALVERIFY
+                        // OP_CHECKSIG) paying another key names both hashes.
+                        let is_p2pkh = script.len() == 25
+                            && script[..3] == [0x76, 0xa9, 0x14]
+                            && script[23..] == [0x88, 0xac];
+                        let message = if is_p2pkh {
+                            format!(
+                                "Derivation mismatch for output {}: derived {} != script {}",
+                                vout,
+                                hex::encode(derived_hash),
+                                hex::encode(&script[3..23])
+                            )
+                        } else {
+                            "The paymentRemittance parameter must be locked by script \
+                             conforming to BRC-29"
+                                .to_string()
+                        };
+                        return Err(bsv_rs::Error::WalletRefusal {
+                            class: bsv_rs::WalletRefusalClass::InvalidParameter,
+                            message,
+                        });
                     }
                 }
             }
