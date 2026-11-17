@@ -137,14 +137,18 @@ async fn a_spent_row_an_earlier_merge_made_spendable_is_found_and_relinquished()
     .unwrap();
     assert_eq!(wallet.balance().await.unwrap().total, 9_500, "counted");
 
-    let found: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT txid, vout FROM outputs WHERE spendable = 1 AND spent_by IS NOT NULL",
+    let found: Vec<(i64, String, i64)> = sqlx::query_as(
+        "SELECT user_id, txid, vout FROM outputs WHERE spendable = 1 AND spent_by IS NOT NULL",
     )
     .fetch_all(pool)
     .await
     .unwrap();
     println!("found: {found:?}");
-    assert_eq!(found, vec![(txid.clone(), 0)]);
+    let (user_id,): (i64,) = sqlx::query_as("SELECT user_id FROM users")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(found, vec![(user_id, txid.clone(), 0)]);
 
     let relinquished = wallet
         .relinquish_output(

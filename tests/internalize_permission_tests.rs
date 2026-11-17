@@ -345,6 +345,9 @@ async fn a_named_basket_with_no_handler_is_refused() {
         .map(|r| r.accepted)
         .map_err(|e| e.to_string());
     println!("no handler: {answer:?}");
-    assert!(answer.is_err());
+    assert_eq!(
+        answer,
+        Err("wallet error: Access denied: No permission request handler registered. Cannot request user consent.".into())
+    );
     assert_eq!(stored_outputs(&wallet).await, 0);
 }

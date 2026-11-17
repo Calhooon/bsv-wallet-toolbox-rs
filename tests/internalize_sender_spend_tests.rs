@@ -436,6 +436,10 @@ async fn a_reclassified_received_payment_restored_with_its_sender_signs() {
     );
     assert!(verify_spend(&signed.unwrap(), &txid, 0, 9_500, &lock));
 }
+
+const INVALID_SENDER: &str =
+    "Wallet payment outputs require a sender_identity_key that is empty or a compressed public key";
+
 #[tokio::test]
 async fn the_storage_door_refuses_a_sender_that_is_not_a_key() {
     let root = PrivateKey::random();
@@ -444,7 +448,15 @@ async fn the_storage_door_refuses_a_sender_that_is_not_a_key() {
     let wallet = common::wallet("internalize-sender-spend-tests", &root, &txid).await;
     let off_curve = format!("02{}", "00".repeat(32));
     let uncompressed = hex::encode(root.public_key().to_uncompressed());
-    for sender in ["not a key", "02", off_curve.as_str(), uncompressed.as_str()] {
+    // 66 hex characters of a point's x with the uncompressed prefix.
+    let prefix_04 = format!("04{}", &root.public_key().to_hex()[2..]);
+    for sender in [
+        "not a key",
+        "02",
+        off_curve.as_str(),
+        uncompressed.as_str(),
+        prefix_04.as_str(),
+    ] {
         let storage = common::internalize_at(
             "storage",
             &wallet,
@@ -488,6 +500,3 @@ async fn the_storage_door_refuses_a_sender_that_is_not_a_key() {
         assert_eq!(common::stored_outputs(&wallet).await, 0);
     }
 }
-
-const INVALID_SENDER: &str =
-    "Wallet payment outputs require a sender_identity_key that is empty or a compressed public key";

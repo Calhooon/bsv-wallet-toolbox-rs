@@ -68,7 +68,12 @@ async fn a_bump_the_services_tracker_refutes_is_refused_and_nothing_is_stored() 
     let (wallet, args) = setup(false).await;
     let answer = wallet.internalize_action(args, "test.local").await;
     println!("refuted root, default Wallet::new: {answer:?}");
-    assert!(answer.is_err(), "a root no chain holds is refused");
+    let text = answer.map(|r| r.accepted).map_err(|e| e.to_string());
+    assert!(
+        text.as_ref()
+            .is_err_and(|e| e.starts_with("wallet error: Validation error: Invalid merkle root ")),
+        "a root no chain holds is refused: {text:?}"
+    );
     assert_eq!(stored_outputs(&wallet).await, 0);
     assert_eq!(stored_transactions(&wallet).await, 0);
     assert_eq!(wallet.balance().await.unwrap().total, 0);
@@ -100,7 +105,12 @@ async fn the_storages_own_tracker_is_asked_before_the_services() {
     wallet.storage().set_chain_tracker(Arc::new(liar)).await;
     let answer = wallet.internalize_action(args, "test.local").await;
     println!("own tracker refutes: {answer:?}");
-    assert!(answer.is_err());
+    let text = answer.map(|r| r.accepted).map_err(|e| e.to_string());
+    assert!(
+        text.as_ref()
+            .is_err_and(|e| e.starts_with("wallet error: Validation error: Invalid merkle root ")),
+        "{text:?}"
+    );
     assert_eq!(stored_outputs(&wallet).await, 0);
 }
 
@@ -190,7 +200,7 @@ async fn a_wallet_whose_services_have_no_tracker_refuses() {
 }
 
 /// A `bhs_url` alone gives the services no chain tracker: refused the same
-/// way. Nothing is asked of the header service (the refusal comes first).
+/// way. Nothing is asked of the header service (the refusal comes before).
 #[tokio::test]
 async fn a_wallet_whose_services_have_a_bhs_url_alone_refuses() {
     let options =
