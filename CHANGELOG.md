@@ -9,51 +9,64 @@
   usage) and then each label (the level-1 protocol `action label <label>`),
   the request's description the reason, before the arguments are validated
   and the permission modules run. A basket or label starting `admin` (and
-  the basket `default`) is refused as admin-only; the admin originator is
-  admitted; a `p <scheme>` basket or label stays its module's. Nothing
-  changes with no manager.
+  the basket `default`) is refused as admin-only whatever the config; the
+  admin originator is admitted; a `p <scheme>` basket or label stays its
+  module's. Nothing changes with no manager.
 - `internalizeAction`'s wallet payment merge leaves the output's
   `spendable` flag as the row has it: an existing custom output the store
   holds as spent becomes managed change and stays spent, out of the
   balance. An unspent one becomes spendable managed change as before.
+  Before, the merge set the row spendable.
 - `internalizeAction` refuses an empty outputs list at both doors, before
-  anything is recorded or broadcast.
+  anything is recorded or broadcast. Before, it was admitted.
 - `internalizeAction` refuses a request whose `outputs` name one
   `outputIndex` more than once, whatever the protocols, on a new
   transaction and on one the store holds, at both doors, before anything is
   written or broadcast (`one_output_named_twice_is_refused_whatever_the_protocols`,
   `tests/internalize_merge_tests.rs`). Before, on a transaction the store
   held, two payments of one output were admitted and reported its
-  satoshis twice (9000 for a 4500-satoshi output), and two insertions were
-  admitted; on a new transaction every pair failed with a store error
-  (`UNIQUE constraint failed: outputs.transaction_id, outputs.vout,
-  outputs.user_id`), nothing written. The reference answers the payment
-  and insertion of one existing output with this sentence and every other
-  pair with a store error, writing nothing; the one sentence for every pair
-  is this port's choice.
+  satoshis twice (9000 for a 4500-satoshi output), and two insertions of
+  one output were admitted; on a new transaction every pair failed with a
+  store error. The reference answers a payment and an insertion of one
+  existing output with this sentence and every other pair with a store
+  error, writing nothing; the one sentence for every pair is this port's
+  choice.
 - `createAction` and `signAction` sign a stored coin whose sender identity
   key is an empty string as the wallet's own coin, the wallet itself the
   counterparty, as for a coin whose row holds no sender. Before, the call
-  answered `Signing failed: Validation error: Invalid sender key: invalid
-  public key: ...` for every action that selected it. A stored key that is
-  not empty and does not parse is refused as before; `internalizeAction`
-  still refuses an empty sender on a new request
-  (`tests/internalize_restore_spend_tests.rs`).
+  answered `wallet error: Signing failed: Validation error: Invalid sender
+  key: invalid public key: ... Transaction aborted and UTXOs released.` for
+  every action that selected it. A stored key that is not empty and does
+  not parse is refused as before; `internalizeAction` still refuses an
+  empty sender on a new request (`tests/internalize_restore_spend_tests.rs`).
 
 ### Hosts
 
 The new refusals, each read from a run here and at the base:
-- with a permissions manager whose handler refuses, an originator with no
-  grant inserting into a named basket: `WalletRefusal` of class
-  `Unauthorized`, the handler's refusal as `createAction`'s basket check
-  answers it (`Access denied: refused by the user` for a handler refusing
-  with `Error::AccessDenied("refused by the user")`), nothing stored;
-  into an `admin ...` basket: `Access denied: Basket "admin secrets" is
-  admin-only.` with no prompt; a label with no grant: the handler's refusal
-  after a protocol prompt for `action label <label>`; an `admin ...` label:
-  `Access denied: Label "admin label" is admin-only.` Before, each was
-  admitted with no prompt and stored. A host whose handler grants sees one
-  more prompt per new basket and label.
+- with a permissions manager, an originator with no grant, the handler
+  refusing every prompt (`each_flag_decides_whether_its_name_is_asked`,
+  `tests/internalize_permission_tests.rs`): under
+  `WalletPermissionsManagerConfig::default()` (both flags below off) an
+  insertion into a named basket with a label is admitted unasked, as
+  before; with `seek_basket_insertion_permissions` on, the basket is asked
+  and the call refused, `WalletRefusal` of class `Unauthorized`, the
+  handler's refusal as `createAction`'s basket check answers it (`Access
+  denied: refused by the user` for a handler refusing with
+  `Error::AccessDenied("refused by the user")`), nothing stored; with
+  `seek_permission_when_applying_action_labels` on, the label is asked as
+  `action label <label>` and refused the same way. Whatever the flags, an
+  `admin ...` basket answers `Access denied: Basket "admin secrets" is
+  admin-only.`, an `admin ...` label `Access denied: Label "admin label" is
+  admin-only.`, and an insertion into `default` `Access denied: Basket
+  "default" is admin-only.`, each `Unauthorized` with no prompt
+  (`an_insertion_into_default_under_a_manager_is_admin_only`); a wallet with
+  no manager answers `default` with `Validation error: The
+  insertionRemittance.basket parameter must be a non-default basket`, class
+  `InvalidParameter`. Before, a named or `admin ...` basket and any label
+  were admitted with no prompt and stored, and `default` answered the
+  validator's sentence. A host whose handler grants sees one more prompt
+  per new basket with `seek_basket_insertion_permissions` on, and per new
+  label with `seek_permission_when_applying_action_labels` on.
 - `outputs: []`: `Validation error: The outputs parameter must be at least
   one output to internalize from the transaction`, class
   `InvalidParameter`, at both doors. Before, admitted.
@@ -63,9 +76,10 @@ The new refusals, each read from a run here and at the base:
   `InvalidParameter` through the wallet, the storage door's
   `Error::ValidationError` with the same text when reached without the
   wallet. Before, on a held transaction a payment and an insertion
-  answered the same sentence, two payments or two insertions were
-  admitted; on a new transaction every pair answered the store error above
-  (through the wallet a `WalletFault` of family `Storage`).
+  answered the same sentence and two payments or two insertions were
+  admitted; on a new transaction every pair answered `UNIQUE constraint
+  failed: outputs.transaction_id, outputs.vout, outputs.user_id` (through
+  the wallet a `WalletFault` of family `Storage`).
 
 What a host holds from before. A spent output a wallet payment merge made
 spendable is managed change in the default basket with `spendable = 1`.
@@ -77,11 +91,9 @@ storage reader finds it with `spendable = 1 AND spent_by IS NOT NULL`;
 `tests/internalize_insertion_host_tests.rs`: 4500 before, 0 after). A row
 spent where the store recorded no spender carries no such mark: only a
 check of the outpoint on chain finds it. An internalize of `outputs: []`
-admitted before recorded the transaction with no output of its own, a
-proof request and a broadcast, and marked spent the wallet's own coins
-it spends (read from the base's door, not run here): a host finds it as a
-transaction row with no `outputs` row; the coins it spent are spent on
-chain once the network accepted it, so nothing is restored.
+admitted before left, at either door, a transaction row (`unproven`, 0
+satoshis) with no `outputs` row, a proof request (`unmined`) and one
+broadcast: a host finds it as a transaction row with no `outputs` row.
 
 Restoring a reclassified row, each step read from a run that ends in a
 signed spend whose unlocking script is checked against the coin's P2PKH
@@ -90,29 +102,45 @@ earlier basket insertion reclassified (`custom`, `change = 0`, its
 derivation prefix, suffix and sender NULL): internalize the transaction
 again as a wallet payment of that output with the prefix and suffix the
 row held and the wallet's own identity key (`Wallet::identity_key`) as
-`senderIdentityKey`; the row returns to `default` as `P2PKH` change with
-that key stored as its sender, and the next `createAction` that selects it
-signs it. An empty `senderIdentityKey`, the stable line's 0.13.3 restore,
+`senderIdentityKey`; the row returns to `default` as `P2PKH` change,
+purpose `receive`, with that key stored as its sender. An action selects
+it once its transaction is completed, or while unproven only under the
+action's `underReceivedRule` label: an action without the label answers
+`Insufficient funds: need 1005, have 0` where the coin is the wallet's
+only one. An empty `senderIdentityKey`, the stable line's 0.13.3 restore,
 is refused on this line with `Validation error: The senderIdentityKey
 parameter must be hexadecimal string.`, class `InvalidParameter`, nothing
 stored. A received payment reclassified the same way: the prefix, the
 suffix and the sender identity key the row held, which the host must have
-kept, since the reclassification cleared all three; then it spends as any
-received coin (an unproven one under the action's `underReceivedRule`
-label). Correction of 0.14.0-beta.8's Hosts section: its restore of the
-wallet's own change was not run through a spend there, and its "the sender
-the remittance's" is the wallet's own identity key for that restore.
+kept, since the reclassification cleared all three; the same prefix and
+suffix under the wallet's own key answers `Derivation mismatch for output
+<vout>: derived <hash> != script <hash>`
+(`a_restored_received_payment_with_its_sender_is_spent`); restored, it is
+selected as any received coin (an unproven one only under the action's
+`underReceivedRule` label). Correction of 0.14.0-beta.8's Hosts section:
+its restore of the wallet's own change was not run through a spend there,
+and for the wallet's own change the sender is the wallet's own identity
+key.
 
 A store holding a coin whose sender identity key is an empty string (the
 stable line's door stores an empty sender as given, the 0.13.3 restore
 among them, as can a sync from such a store): the balance counts the coin
 and `createAction` selects it. Before this change the action that selected
-it was refused with `Signing failed: Validation error: Invalid sender key:
-...`; through `createAction` with signing nothing was recorded and the
-coin stayed spendable, and through a deferred action `signAction` answered
-the same text, the action aborted and the coin released. After this change
-the coin signs with the wallet as its counterparty; the row is not
-rewritten.
+it answered `wallet error: Signing failed: Validation error: Invalid
+sender key: invalid public key: ... Transaction aborted and UTXOs
+released.`; through `createAction` with signing nothing was recorded and
+the coin stayed spendable, and through a deferred action `signAction`
+answered the same text, the action aborted and the coin released. After
+this change the coin signs with the wallet as its counterparty; the row is
+not rewritten. Where the coin was derived for another counterparty (a
+received payment's row whose stored sender is empty), the signer refuses
+it: `wallet error: Signing failed: Signing error: Derived pubkey hash160
+<hash> does not match locking script hash160 <hash>. Transaction aborted
+and UTXOs released.`, nothing broadcast, the coin spendable with no
+spender; through `createAction` nothing is recorded, through a deferred
+action `signAction` fails the action
+(`a_received_coin_with_an_empty_sender_is_refused_by_create_action`,
+`..._by_sign_action`).
 
 ## [0.14.0-beta.8] - 2026-11-17
 
@@ -357,12 +385,9 @@ or a backup store that synced the row before the reclassification, unrun
 here) cannot restore the row, and the coin is lost to the wallet's own
 signing.
 
-Added after 0.14.0-beta.8: restoring a reclassified received payment needs
-the sender identity key the row held as well as its prefix and suffix,
-since the door derives with the remittance's sender as the counterparty
-(the wallet's own key for its own change, whose row holds no sender); the
-same prefix and suffix under the wallet's own key answers `Derivation
-mismatch for output <vout>` (`a_reclassified_received_payment_is_restored_only_with_its_sender`).
+Added after 0.14.0-beta.8: restoring a reclassified received payment, and
+the wallet's own change, through to a spend is under `## [Unreleased]`,
+Hosts.
 A custom output also reaches the default basket through `createAction`
 with an output whose basket is `default`, which this line admits, storing
 the output in the default basket as `custom`, `change = 0`
