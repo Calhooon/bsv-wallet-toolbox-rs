@@ -93,7 +93,8 @@ async fn spend(wallet: &W, deferred: bool) -> Result<(), String> {
                 }]),
                 lock_time: None,
                 version: None,
-                labels: None,
+                // The coin is a received payment whose transaction is unproven.
+                labels: Some(vec!["underReceivedRule".to_string()]),
                 options: Some(CreateActionOptions {
                     sign_and_process: Some(!deferred),
                     accept_delayed_broadcast: Some(false),
