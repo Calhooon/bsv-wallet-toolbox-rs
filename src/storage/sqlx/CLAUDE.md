@@ -412,6 +412,7 @@ With `sign_and_process` the template is signed and processed inside the create s
 - Validation: description, labels, inputs, outputs, noSendChange
 - Fee calculation with accurate transaction size estimation
 - Change generation with automatic UTXO management
+- The received rule (the wallet charter's R1 (d)): both selection queries (`count_change_inputs_under_rule`, `allocate_change_input_by`) carry `RECEIVED_COIN_CLAUSE`, so a received coin (purpose `receive`) whose transaction is not `completed` is counted and picked only when one of the action's labels, trimmed and lowercased, is `underreceivedrule`; the tests' `allocate_change_input` binds it off. `StorageSqlx::allocate_change_input` and `count_change_inputs` (public, no door calls them) do not carry it
 - Full input/output database state management
 - Labels and tags for transaction/output organization
 
