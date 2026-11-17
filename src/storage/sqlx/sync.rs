@@ -1086,19 +1086,20 @@ async fn fetch_transactions_for_sync(
 ) -> Result<Vec<TableTransaction>> {
     let mut sql = String::from(
         r#"
-        SELECT transaction_id, user_id, txid, status, reference, description, satoshis,
-               version, lock_time, raw_tx, input_beef, is_outgoing, proven_tx_id,
-               created_at, updated_at
-        FROM transactions
-        WHERE user_id = ?
+        SELECT t.transaction_id, t.user_id, t.txid, t.status, t.reference, t.description,
+               t.satoshis, t.version, t.lock_time, t.raw_tx, t.input_beef, t.is_outgoing,
+               p.txid AS proof_txid, t.created_at, t.updated_at
+        FROM transactions t
+        LEFT JOIN proven_txs p ON p.proven_tx_id = t.proven_tx_id
+        WHERE t.user_id = ?
         "#,
     );
 
     if since.is_some() {
-        sql.push_str(" AND updated_at > ?");
+        sql.push_str(" AND t.updated_at > ?");
     }
 
-    sql.push_str(" ORDER BY updated_at ASC LIMIT ? OFFSET ?");
+    sql.push_str(" ORDER BY t.updated_at ASC LIMIT ? OFFSET ?");
 
     let mut query = sqlx::query(&sql).bind(user_id);
     if let Some(s) = since {
@@ -1138,7 +1139,10 @@ async fn fetch_transactions_for_sync(
                 raw_tx: row.get("raw_tx"),
                 input_beef: row.get("input_beef"),
                 is_outgoing: row.get("is_outgoing"),
-                proof_txid: row.get("proven_tx_id"),
+                // The proof a transaction is linked to travels as that
+                // proof's txid (the field's own meaning): a proof row is
+                // global by txid, and the writer finds its own row by it.
+                proof_txid: row.get("proof_txid"),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             }
