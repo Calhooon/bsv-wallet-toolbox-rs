@@ -460,7 +460,10 @@ async fn the_storage_door_refuses_a_sender_that_is_not_a_key() {
         );
         assert_eq!(common::stored_outputs(&wallet).await, 0);
     }
-    for sender in ["not a key", off_curve.as_str()] {
+    // The wallet door's own parse refuses what is not a point; an
+    // uncompressed key parses and derives the coin's key, and is refused
+    // at the storage door it reaches.
+    for sender in ["not a key", off_curve.as_str(), uncompressed.as_str()] {
         let at_wallet = common::internalize_at(
             "wallet",
             &wallet,
@@ -469,9 +472,20 @@ async fn the_storage_door_refuses_a_sender_that_is_not_a_key() {
         )
         .await;
         println!("wallet door, sender {sender:?}: {at_wallet:?}");
-        assert!(at_wallet
-            .as_ref()
-            .is_err_and(|e| e.starts_with("wallet error: Invalid sender_identity_key")));
+        if sender == uncompressed {
+            assert_eq!(
+                at_wallet,
+                Err(format!(
+                    "wallet error: Validation error: {}",
+                    INVALID_SENDER
+                ))
+            );
+        } else {
+            assert!(at_wallet
+                .as_ref()
+                .is_err_and(|e| e.starts_with("wallet error: Invalid sender_identity_key")));
+        }
+        assert_eq!(common::stored_outputs(&wallet).await, 0);
     }
 }
 
