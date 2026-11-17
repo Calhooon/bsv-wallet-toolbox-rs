@@ -712,3 +712,23 @@ async fn a_key_only_or_no_checksig_token_does_not_answer_618() {
         assert_eq!(prompts(&scene), 1, "shape {shape}");
     }
 }
+
+/// A token whose signature field is its DER signature followed by one byte
+/// is no grant (bsv-rs 0.9.0-beta.8, #842: `Signature::from_der` reads
+/// exactly one DER signature, as the reference's `Signature.fromDER` does).
+/// Through beta.7 the byte was dropped and the token admitted the call.
+#[tokio::test]
+async fn a_token_signature_followed_by_a_byte_is_no_grant_842() {
+    let scene = scene().await;
+    let fields = strings(&[APP, &live().to_string(), "false", "2", "ticket stub", "self"]);
+    let script = token_script(&scene.counted.inner, &fields).await;
+    let mut decoded = PushDrop::decode(&script).unwrap();
+    decoded.fields.last_mut().unwrap().push(0x00);
+    let script = PushDrop::new(decoded.locking_public_key, decoded.fields).lock();
+    let tags = strings(&PROTOCOL_TAGS);
+    store_token(&scene.counted.inner, script, "admin protocol-permission", &tags).await;
+    assert_eq!(
+        refusal(protocol_call(&scene, false).await),
+        "No protocol permission token found (seekPermission=false)."
+    );
+}
