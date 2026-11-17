@@ -473,6 +473,15 @@ where
     spend_lock: Arc<Mutex<()>>,
 }
 
+/// The basket names of a request's basket insertions, in order.
+fn insertion_baskets(args: &InternalizeActionArgs) -> impl Iterator<Item = &str> {
+    args.outputs
+        .iter()
+        .filter(|o| o.protocol == "basket insertion")
+        .filter_map(|o| o.insertion_remittance.as_ref())
+        .map(|r| r.basket.as_str())
+}
+
 impl<S, V> Wallet<S, V>
 where
     S: WalletStorageProvider + Send + Sync + 'static,
@@ -1314,20 +1323,14 @@ where
         };
         let originator = originator.unwrap_or_default();
         let reason = Some(args.description.as_str());
-        let baskets = args
-            .outputs
-            .iter()
-            .filter(|o| o.protocol == "basket insertion")
-            .filter_map(|o| o.insertion_remittance.as_ref())
-            .map(|r| r.basket.as_str())
-            .filter(|basket| !basket.starts_with("p "));
-        for basket in baskets {
+        let not_a_module = |name: &&str| crate::managers::module_scheme(name).is_none();
+        for basket in insertion_baskets(args).filter(not_a_module) {
             let insertion = crate::managers::BasketUsageType::Insertion;
             pm.ensure_basket_access(originator, basket, reason, insertion)
                 .await?;
         }
         let labels = args.labels.iter().flatten().map(String::as_str);
-        for label in labels.filter(|label| !label.starts_with("p ")) {
+        for label in labels.filter(not_a_module) {
             pm.ensure_label_apply_access(originator, label, reason)
                 .await?;
         }
@@ -2757,11 +2760,7 @@ where
         // `p nosend` label meets the chained calls' one text. Their
         // arguments validate again, as the reference's underlying call does.
         let chain = self.module_chain(
-            args.outputs
-                .iter()
-                .filter(|o| o.protocol == "basket insertion")
-                .filter_map(|o| o.insertion_remittance.as_ref())
-                .map(|r| r.basket.as_str()),
+            insertion_baskets(&args),
             args.labels.iter().flatten().map(String::as_str),
         )?;
         self.check_internalize_baskets_and_labels(&args, originator)
