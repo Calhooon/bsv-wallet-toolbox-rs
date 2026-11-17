@@ -772,18 +772,22 @@ async fn load_existing_outputs(
     Ok(outputs)
 }
 
-/// The reference's `isManagedChangeOutput` (ts-stack@4d0ea63c8
-/// `storage/methods/managedChange.ts:10-34`): `type` `P2PKH`, `change`,
+/// Wallet-managed change, which a basket insertion never reclassifies: the
+/// reference's `isManagedChangeOutput` (ts-stack@4d0ea63c8
+/// `storage/methods/managedChange.ts:10-34`: `type` `P2PKH`, `change`,
 /// `providedBy` `storage`, `purpose` `change`, and a non-empty derivation
-/// prefix and suffix. The port spells a received wallet payment's purpose
-/// `receive` where the reference spells it `change` (#169), so both are
-/// read as `MANAGED_CHANGE_CLAUSE` reads them.
+/// prefix and suffix) without its `providedBy` and `purpose` terms. A row
+/// that is change with its full derivation holds what the wallet signs it
+/// with, whatever those two say: the wallet payment merge before
+/// 0.14.0-beta.1 (815b9f97) left them as they were (`provided_by` `you`,
+/// `purpose` empty on an output of the wallet's own `createAction`), and a
+/// synced row may carry a purpose of its own (#313). The reference's legacy recovery sweep
+/// (`internalizeActionManagedChangePolicy.test.ts`) names a `custom` row,
+/// `change` false, which this predicate still admits.
 fn is_managed_change_output(output: &TableOutput) -> bool {
     let non_empty = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.is_empty());
     output.output_type == "P2PKH"
         && output.change
-        && output.provided_by == "storage"
-        && matches!(output.purpose.as_deref(), Some("change" | "receive"))
         && non_empty(&output.derivation_prefix)
         && non_empty(&output.derivation_suffix)
 }

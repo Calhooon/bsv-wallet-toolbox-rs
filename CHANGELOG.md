@@ -59,7 +59,11 @@
   row became `custom`, `change = 0`, its derivation prefix, suffix and
   sender cleared, and the answer's `satoshis` was the output's value
   negated. A basket insertion no longer moves the answer's `satoshis` in any
-  case.
+  case. An output that is change (`P2PKH`, `change = 1`) with a derivation
+  prefix and suffix is wallet-managed change here whatever its `provided_by`
+  and `purpose`, so a row a wallet payment merge converted before
+  0.14.0-beta.1, which kept the output's own `provided_by` and `purpose`,
+  is refused too (`an_output_a_wallet_payment_merge_made_change_is_not_reclassified`).
 - On the merge path a basket insertion naming an output already in another
   application basket is refused, and the requested basket is not created;
   the same basket named again is admitted, and an output in no basket or in
@@ -176,6 +180,14 @@ displays the same text:
   parameter must be output <vout> is already assigned to a different basket
   and cannot be reclassified as a basket insertion into <basket>`. Before,
   admitted.
+
+The second is wider than the reference's `isManagedChangeOutput`, which
+also requires `providedBy` `storage` and `purpose` `change`: a row that is
+change (`P2PKH`, `change = 1`) with a derivation prefix and suffix and any
+other `provided_by` or `purpose` (a wallet payment merge's row from before
+0.14.0-beta.1, or a synced row) is refused here where the reference admits
+it and clears its derivation, while the reference's recovery sweep, a
+`custom` row with `change` false, is admitted by both.
 
 The basket of the third is matched by its name as given, as this port
 stores and finds basket names; the reference matches the trimmed,
