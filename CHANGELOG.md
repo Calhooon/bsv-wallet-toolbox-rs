@@ -29,8 +29,14 @@
   one output were admitted; on a new transaction every pair failed with a
   store error. The reference answers a payment and an insertion of one
   existing output with this sentence and every other pair with a store
-  error, writing nothing; the one sentence for every pair is this port's
-  choice.
+  error: on a transaction it holds nothing is written; on a new
+  transaction the error comes after the transaction row and its proof
+  request were recorded and the transaction broadcast. The one sentence
+  for every pair, ahead of any record or broadcast, is this port's choice.
+  The check reads the request alone, before the BEEF is read, so a
+  request that repeats an index answers this sentence ahead of the
+  door's refusals that need the BEEF (an index out of range, a BEEF that
+  does not parse or verify).
 - `createAction` and `signAction` sign a stored coin whose sender identity
   key is an empty string as the wallet's own coin, the wallet itself the
   counterparty, as for a coin whose row holds no sender. Before, the call
