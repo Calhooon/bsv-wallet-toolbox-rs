@@ -586,6 +586,48 @@ impl WalletPermissionsManager {
         Ok(())
     }
 
+    /// Refuses a basket (`label == false`) or an action label (`label ==
+    /// true`) whose name starts with `p `, a name of a permission module's
+    /// scheme (`p <scheme> ...`), to every originator but the admin
+    /// originator: `internalizeAction`'s own check. With no module of that
+    /// scheme registered the text is the reference's
+    /// (`addPModuleByScheme`, and `Invalid P-label format` for a label with
+    /// no scheme or no payload); with one registered the name is refused as
+    /// admin-only, since this line has no module path for these names.
+    pub(crate) fn refuse_p_name(&self, originator: &str, label: bool, name: &str) -> Result<()> {
+        if self.is_admin(originator) || !name.starts_with("p ") {
+            return Ok(());
+        }
+        let kind = if label { "label" } else { "basket" };
+        let scheme = if label {
+            let rest = &name[2..];
+            match rest.find(' ') {
+                Some(at) if at > 0 && at + 1 < rest.len() && !rest[at + 1..].starts_with(' ') => {
+                    &rest[..at]
+                }
+                _ => {
+                    return Err(Error::AccessDenied(format!(
+                        "Invalid P-label format: {}",
+                        name
+                    )))
+                }
+            }
+        } else {
+            name.split(' ').nth(1).unwrap_or("")
+        };
+        if !self.config.permission_modules.contains_key(scheme) {
+            return Err(Error::AccessDenied(format!(
+                "Unsupported P-{} scheme: p {}",
+                kind, scheme
+            )));
+        }
+        let shown = if label { "Label" } else { "Basket" };
+        Err(Error::AccessDenied(format!(
+            "{} \"{}\" is admin-only.",
+            shown, name
+        )))
+    }
+
     /// Checks if a basket is admin-reserved ("default" or starts with "admin").
     pub fn is_admin_basket(basket: &str) -> bool {
         basket == "default" || basket.starts_with("admin")
