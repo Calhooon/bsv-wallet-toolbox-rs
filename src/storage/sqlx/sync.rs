@@ -1508,8 +1508,11 @@ async fn merge_user(
     chunk_user: &TableUser,
 ) -> Result<MergeResult> {
     // The user row is merged for the user the chunk is for: a row naming
-    // any other identity refuses the chunk, as the reference's
-    // EntityUser.mergeFind and mergeNew refuse it.
+    // any other identity refuses the chunk. The reference refuses a row
+    // naming another user the store holds (EntityUser.mergeFind) and passes
+    // over one naming an identity the store does not hold (ts-stack
+    // 4d0ea63c8 `EntitySyncState.ts` 401-411, 11faa7d16
+    // `mergeSyncChunkEntities.ts` 62-72); refusing both is this line's rule.
     if chunk_user.identity_key != identity_key {
         return Err(Error::SyncError(
             "sync chunk user row names an identity other than the chunk's".to_string(),

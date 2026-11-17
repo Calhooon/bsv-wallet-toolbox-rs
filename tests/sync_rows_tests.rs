@@ -112,8 +112,9 @@ async fn the_reader_answers_for_a_transaction_linked_to_its_proof() {
 }
 
 /// A transaction's and a request's proof link travel through the chunk's
-/// proof rows: a request names its proof by the source's id, a transaction by
-/// the proof's txid; a link that maps to no proof row is not stored.
+/// proof rows: a request is linked to the proof of its own txid, a
+/// transaction by the proof's txid; a link that maps to no proof row is not
+/// stored.
 #[tokio::test]
 async fn a_proof_link_is_mapped_through_the_chunks_proof_rows() {
     let s = store(DST).await;
