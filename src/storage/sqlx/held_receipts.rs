@@ -36,12 +36,13 @@ pub(crate) const TAKEN_SEEN_WORDS: &str = "'accepted', 'seen', 'mined'";
 /// written only by the store funnel and the read check, each after a chain
 /// tracker confirmed the root; a row a sync chunk wrote has none.
 pub(crate) fn checked_proof_condition(txid_expr: &str) -> String {
-    format!(
-        "EXISTS (SELECT 1 FROM proven_txs p JOIN proof_root_checks c \
-         ON c.txid = p.txid AND c.height = p.height AND c.merkle_root = lower(p.merkle_root) \
-         WHERE p.txid = {txid_expr})"
-    )
+    format!("EXISTS (SELECT 1 FROM {CHECKED_PROOF_JOIN} WHERE p.txid = {txid_expr})")
 }
+
+/// The join of a stored proof with its root check: the one text the door
+/// ([`checked_proof_condition`]) and migration 006 both read.
+pub(crate) const CHECKED_PROOF_JOIN: &str = "proven_txs p JOIN proof_root_checks c \
+     ON c.txid = p.txid AND c.height = p.height AND c.merkle_root = lower(p.merkle_root)";
 
 /// The SQL condition "`txid_expr` was taken": a record of a take
 /// ([`TAKEN_SEEN_WORDS`]) or a stored proof whose root was checked
@@ -114,17 +115,40 @@ pub(crate) async fn move_held_receipts(pool: &Pool<Sqlite>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{taken_condition, MIGRATION_006_HELD_RECEIPTS_SQL, TAKEN_SEEN_WORDS};
+    use super::{
+        taken_condition, CHECKED_PROOF_JOIN, MIGRATION_006_HELD_RECEIPTS_SQL, TAKEN_SEEN_WORDS,
+    };
 
-    /// The migration and the door read the same record of a take: the same
-    /// `broadcast_seen` words.
-    #[test]
-    fn the_migration_and_the_door_read_the_same_record_words() {
-        let sql: String = MIGRATION_006_HELD_RECEIPTS_SQL
+    /// Migration 006's statement, its comment lines out.
+    fn statement() -> String {
+        MIGRATION_006_HELD_RECEIPTS_SQL
             .lines()
             .filter(|l| !l.trim_start().starts_with("--"))
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n")
+    }
+
+    /// `sql` with every run of whitespace one space.
+    fn folded(sql: &str) -> String {
+        sql.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The migration and the door read the same evidence: the same
+    /// `broadcast_seen` words and the same stored proof whose root was
+    /// checked.
+    #[test]
+    fn the_migration_and_the_door_read_the_same_evidence() {
+        let sql = statement();
+        let join = folded(CHECKED_PROOF_JOIN);
+        assert!(
+            folded(&sql).contains(&format!("SELECT p.txid FROM {join})")),
+            "the migration reads the checked proof: {sql}"
+        );
+        assert!(
+            folded(&taken_condition("?1"))
+                .contains(&format!("SELECT 1 FROM {join} WHERE p.txid = ?1)")),
+            "the door reads the same checked proof"
+        );
         let record = format!("broadcast_seen WHERE status IN ({TAKEN_SEEN_WORDS})");
         assert!(sql.contains(&record), "{sql}");
         assert!(
