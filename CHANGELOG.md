@@ -21,16 +21,23 @@
 - What makes a new receipt taken at the door: a broadcaster's take the
   store recorded (an instance accepting it, a status source or push seeing
   it, a block mining it), the door's own post drawing an acceptance, or a
-  proof stored for the transaction. A request's word alone does not: a receipt beside any request with no recorded take and no
-  stored proof is held. The per-user `review_status` moves a held receipt
-  to `unproven` only on the same evidence, and to `completed` only with
-  its proof linked.
-- Every take the wallet observes is recorded in `broadcast_seen` in the
-  same write that moves the transaction to `unproven`, whichever services
-  a host built (a host's own `WalletServices` records nothing): the door's
+  stored proof whose root was checked (a chain tracker confirmed its root
+  at its height before it was stored, or when a read checked it). A
+  request's word alone does not, nor does a proof row no tracker checked,
+  such as one a sync chunk merged: a receipt beside any request with no
+  recorded take and no stored proof whose root was checked is held. The
+  per-user `review_status` moves a held receipt to `unproven` only on the
+  same evidence, and to `completed` only with its proof linked; the
+  wallet's own outgoing `sending` row heals on its request's word as
+  before.
+- These paths record the take they see in `broadcast_seen` in the same
+  write that moves the transaction to `unproven`, whichever services a
+  host built (a host's own `WalletServices` records nothing): the door's
   post and the send-waiting task's post (each accepting instance's name,
   `accepted`), and a status source holding it at the door, at send-waiting,
-  at the retire path and in the unfail task (`chain`, `seen`).
+  at the retire path and in the unfail task (`chain`, `seen`). The push
+  path (an Arcade SEEN frame) writes its record beside its row in the same
+  write, and a failure of that record is logged while the row commits.
 - Migration 006 (`006_held_receipts`, one data statement, no schema
   change), applied on `migrate()` and on `make_available()`, so on every
   open and not once: a store of any release is read by the same rule each
@@ -39,9 +46,10 @@
   written before the door recorded every take, and keeps the request's
   word for them: a received transaction a store holds as `unproven` with
   no proof whose request is `unmined`, `callback`, `unconfirmed` or
-  `completed`, or whose take is recorded, is left as it is; one whose
-  request carries any other word (`unsent`, `sending`, another user's
-  `nosend`, ...) and no recorded take moves to `sending`. `migrate()`
+  `completed`, whose take is recorded, or whose txid has a stored proof
+  whose root was checked, is left as it is; one whose request carries any
+  other word (`unsent`, `sending`, another user's `nosend`, ...), no
+  recorded take and no such proof moves to `sending`. `migrate()`
   reports `006_held_receipts`.
 
 ### Hosts

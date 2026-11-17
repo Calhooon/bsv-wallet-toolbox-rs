@@ -3,10 +3,11 @@
 //! output a held transaction gives the wallet, the wallet's own `sending`
 //! action, and the repeat call's answer as this piece leaves it.
 //!
-//! Taken at the door is a recorded take or a stored proof: the door's own
-//! post drew an acceptance, `broadcast_seen` holds `accepted`, `seen` or
-//! `mined` for the txid, or a `proven_txs` row is stored for it; a
-//! request's word alone is not read. A received transaction with no checked
+//! Taken at the door is a recorded take or a stored proof whose root was
+//! checked: the door's own post drew an acceptance, `broadcast_seen` holds
+//! `accepted`, `seen` or `mined` for the txid, or a `proven_txs` row is
+//! stored for it that `proof_root_checks` records at its height with its
+//! root; a request's word alone is not read. A received transaction with no checked
 //! proof that was not taken is `sending`. Migration 006 keeps its own rule
 //! for rows written before (`internalize_taken_record_tests.rs`).
 //!

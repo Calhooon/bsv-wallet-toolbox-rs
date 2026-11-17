@@ -6,16 +6,20 @@
 //! THE DOOR. A received transaction with no checked proof is taken when,
 //! and only when, the door's own post drew an acceptance, the store holds a
 //! record of a take for the txid (`broadcast_seen` `accepted`, `seen` or
-//! `mined`), or a proof is stored for it (a `proven_txs` row). A request's
-//! word alone is not read. Not taken, the row is held (`sending`).
+//! `mined`), or the store holds a stored proof whose root was checked for
+//! it (a `proven_txs` row that `proof_root_checks` records at its height
+//! with its root; a row a sync chunk merged has no record). A request's
+//! word alone is not read. Not taken, the row is held (`sending`). The
+//! per-user `review_status` heals a received `sending` row on the same
+//! evidence; the wallet's own outgoing row heals on its request's word.
 //!
 //! THE MIGRATION (006), its own rule. Rows written before the door recorded
 //! its takes carry no record of them, so the statement keeps the request's
 //! word for them: a received `unproven` row with no proof linked whose
-//! request is `unmined`, `callback`, `unconfirmed` or `completed`, or whose
-//! txid has a record of a take, is left as it is; one whose request carries
-//! any other word (`unsent`, `sending`, ...) and no record moves to
-//! `sending`. Running it again changes nothing; a coin the wallet's own
+//! request is `unmined`, `callback`, `unconfirmed` or `completed`, whose
+//! txid has a record of a take, or whose txid has a stored proof whose root
+//! was checked, is left as it is; one whose request carries any other word
+//! (`unsent`, `sending`, ...) and neither moves to `sending`. Running it again changes nothing; a coin the wallet's own
 //! action already spent stays spent.
 
 use sqlx::{Pool, Sqlite, SqliteConnection};
