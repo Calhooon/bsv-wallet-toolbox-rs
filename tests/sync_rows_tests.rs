@@ -400,3 +400,63 @@ async fn a_chunk_carries_only_its_users_proofs_and_requests() {
     println!("WITNESS A2/A3 alice's chunk: proofs={proofs:?} requests={reqs:?}");
     assert_eq!((proofs, reqs), (vec![alice_txid.clone()], vec![alice_txid]));
 }
+
+async fn active_storage_of(s: &StorageSqlx, identity: &str) -> Option<String> {
+    s.find_user(identity).await.unwrap().unwrap().active_storage
+}
+
+/// A chunk's user row is merged only for the user the chunk is for: a row
+/// naming another user of the store is refused, and that user's row and the
+/// chunk's user's row are unchanged.
+#[tokio::test]
+async fn a_chunk_user_row_naming_another_user_is_refused() {
+    let s = store(DST).await;
+    s.find_or_insert_user(ALICE).await.unwrap();
+    s.find_or_insert_user(BOB).await.unwrap();
+    let mut alice_row = s.find_user(ALICE).await.unwrap().unwrap();
+    alice_row.active_storage = Some("f".repeat(64));
+    alice_row.updated_at = Utc::now() + Duration::days(1);
+    let mut chunk = chunk_for(BOB);
+    chunk.user = Some(alice_row);
+    let r = s.process_sync_chunk(args_for(BOB), chunk).await;
+    let actives = (
+        active_storage_of(&s, ALICE).await,
+        active_storage_of(&s, BOB).await,
+    );
+    println!(
+        "WITNESS B1 chunk for bob naming alice: {:?}; active storage (alice, bob) = {actives:?}",
+        r.as_ref()
+            .map(|r| (r.inserts, r.updates))
+            .map_err(|e| e.to_string())
+    );
+    assert!(r.is_err());
+    assert_eq!(actives, (Some(DST.to_string()), Some(DST.to_string())));
+}
+
+/// Syncing from a reader keeps the wallet's active storage as the wallet
+/// holds it: the reader's user row does not choose it.
+#[tokio::test]
+async fn sync_from_a_reader_keeps_the_active_storage() {
+    let act = store(SRC).await;
+    act.find_or_insert_user(ALICE).await.unwrap();
+    let mgr = bsv_wallet_toolbox_rs::managers::WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(act.clone() as Arc<dyn MonitorStorage>),
+        None,
+    );
+    mgr.make_available().await.unwrap();
+    let reader_key = "3".repeat(64);
+    let reader = store(&reader_key).await;
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    reader.find_or_insert_user(ALICE).await.unwrap();
+    let r = mgr.sync_from_reader(ALICE, reader.clone()).await;
+    let active = active_storage_of(&act, ALICE).await;
+    println!(
+        "WITNESS C2 sync_from_reader: {:?}; active storage now {active:?}",
+        r.as_ref()
+            .map(|r| (r.inserts, r.updates))
+            .map_err(|e| e.to_string())
+    );
+    assert!(r.is_ok());
+    assert_eq!(active, Some(SRC.to_string()));
+}
