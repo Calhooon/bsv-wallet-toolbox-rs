@@ -132,7 +132,7 @@ fn paying(root: &PrivateKey, suffix: &str) -> (InternalizeActionArgs, String) {
 struct Seen {
     tx: String,
     req: String,
-    broadcast_seen: Vec<(String, String)>,
+    broadcast_rows: Vec<(String, String)>,
     balance: u64,
     listed_outputs: u32,
     listed_action: String,
@@ -150,7 +150,7 @@ async fn seen(wallet: &TestWallet, txid: &str) -> Seen {
         .fetch_one(storage.pool())
         .await
         .unwrap();
-    let broadcast_seen: Vec<(String, String)> = sqlx::query_as(
+    let broadcast_rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT provider, status FROM broadcast_seen WHERE txid = ? ORDER BY provider",
     )
     .bind(txid)
@@ -199,12 +199,11 @@ async fn seen(wallet: &TestWallet, txid: &str) -> Seen {
         .actions
         .iter()
         .find(|a| hex::encode(a.txid) == txid)
-        .map(|a| format!("{:?}", a.status))
-        .unwrap_or_else(|| "absent".to_string());
+        .map_or_else(|| "absent".to_string(), |a| format!("{:?}", a.status));
     Seen {
         tx,
         req,
-        broadcast_seen,
+        broadcast_rows,
         balance,
         listed_outputs: outputs.total_outputs,
         listed_action,
@@ -308,7 +307,7 @@ async fn internalize_refused_by_every_instance_is_held_sending_and_not_in_the_ba
     let s = seen(&wallet, &txid).await;
     println!("every instance refused: {s:?}");
     assert_eq!((s.tx.as_str(), s.req.as_str()), ("sending", "unsent"));
-    assert_eq!(s.broadcast_seen, vec![], "nothing taken, nothing recorded");
+    assert_eq!(s.broadcast_rows, vec![], "nothing taken, nothing recorded");
     assert_eq!((s.balance, s.listed_outputs), (0, 0), "not counted");
     assert_eq!(s.listed_action, "Sending", "listed as an action, sending");
     let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outputs WHERE txid = ?")
@@ -506,7 +505,7 @@ async fn own_change_of_a_sending_action_is_still_counted() {
     assert!(change > 0);
     assert_eq!(
         wallet.balance().await.unwrap().total,
-        change as u64,
+        u64::try_from(change).unwrap(),
         "the own change under sending is counted"
     );
 }
@@ -528,118 +527,99 @@ async fn tx_status(wallet: &TestWallet, txid: &str) -> String {
         .unwrap()
 }
 
-/// Rows written by 0.14.0-beta.8: a held receipt (`unproven`, request
-/// `unsent`), a second one whose coin the wallet's own action spent under
-/// the label, one an instance took (request `unmined`) and one recorded
-/// taken in `broadcast_seen` with its request still `unsent`. On open the
-/// two held ones move to `sending`; the taken ones are not touched; the
-/// spent coin stays spent by the same action; a second open changes
-/// nothing. RED at the base (nothing moves).
-#[tokio::test]
-async fn held_receipt_from_beta8_is_moved_to_sending_on_open_and_a_taken_one_is_not() {
-    let root = PrivateKey::random();
-    let (held, held_txid) = paying(&root, "aGVsZA==");
-    let (spent, spent_txid) = paying(&root, "c3BlbnQ=");
-    let (taken, taken_txid) = paying(&root, "dGFrZW4=");
-    let (recorded, recorded_txid) = paying(&root, "cmVjb3JkZWQ=");
+/// The spender of the coin `output_id` and that action's status.
+async fn spender_and_word(wallet: &TestWallet, output_id: i64) -> (Option<i64>, String) {
+    let storage = wallet.storage();
+    let spender: Option<i64> =
+        sqlx::query_scalar("SELECT spent_by FROM outputs WHERE output_id = ?")
+            .bind(output_id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+    let word: String =
+        sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(spender)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+    (spender, word)
+}
+
+/// A store as 0.14.0-beta.8 wrote it: four received payments `unproven`
+/// with no proof (held, spent, taken, recorded), the taken one's request
+/// `unmined`, the recorded one `accepted` in `broadcast_seen`, and the
+/// spent one's coin spent by the wallet's own action under the label, as
+/// 0.14.0-beta.8 allowed. Answers the wallet, the four txids and the coin.
+async fn beta8_store(root: &PrivateKey) -> (TestWallet, [String; 4], i64) {
+    let paid = ["aGVsZA==", "c3BlbnQ=", "dGFrZW4=", "cmVjb3JkZWQ="].map(|s| paying(root, s));
     let wallet = wallet_posting(
-        &root,
+        root,
         MockResponse::Error(MockErrorKind::NetworkError, "no instance answered".into()),
     )
     .await;
-    for args in [held, spent, taken, recorded] {
-        assert!(
-            wallet
-                .internalize_action(args, Some(ORIGIN))
-                .await
-                .unwrap()
-                .accepted
-        );
-    }
-    for txid in [&held_txid, &spent_txid, &taken_txid, &recorded_txid] {
-        as_beta8(&wallet, txid).await;
+    let txids = paid.clone().map(|(_, txid)| txid);
+    for (args, txid) in paid {
+        let answer = wallet.internalize_action(args, Some(ORIGIN)).await;
+        assert!(answer.unwrap().accepted);
+        as_beta8(&wallet, &txid).await;
     }
     let storage = wallet.storage();
     sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined' WHERE txid = ?")
-        .bind(&taken_txid)
+        .bind(&txids[2])
         .execute(storage.writer())
         .await
         .unwrap();
     sqlx::query(
         "INSERT INTO broadcast_seen (txid, provider, status) VALUES (?, 'arcade', 'accepted')",
     )
-    .bind(&recorded_txid)
+    .bind(&txids[3])
     .execute(storage.writer())
     .await
     .unwrap();
-    // The wallet's own action spends the second held coin under the label,
-    // as 0.14.0-beta.8 allowed.
-    let id = coin_id(&wallet, &spent_txid).await;
+    let id = coin_id(&wallet, &txids[1]).await;
     wallet
         .create_action_offering(spend(true), Some(ORIGIN), &[id], &[id])
         .await
         .expect("beta.8 offered it under the label");
-    let spender: Option<i64> =
-        sqlx::query_scalar("SELECT spent_by FROM outputs WHERE output_id = ?")
-            .bind(id)
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
+    (wallet, txids, id)
+}
+
+/// Rows written by 0.14.0-beta.8 (`beta8_store`). On open the two held
+/// ones move to `sending`; the taken ones are not touched; the spent coin
+/// stays spent by the same action, which keeps its word; a second open
+/// changes nothing; `migrate` applies the same statement. RED at the base
+/// (nothing moves).
+#[tokio::test]
+async fn held_receipt_from_beta8_is_moved_to_sending_on_open_and_a_taken_one_is_not() {
+    let root = PrivateKey::random();
+    let (wallet, txids, id) = beta8_store(&root).await;
+    let storage = wallet.storage();
+    let (spender, child) = spender_and_word(&wallet, id).await;
     assert!(spender.is_some());
-    let child: String =
-        sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
-            .bind(spender)
-            .fetch_one(storage.pool())
-            .await
-            .unwrap();
 
     for open in 0..2 {
         storage.make_available().await.expect("open");
+        let mut words = Vec::new();
+        for txid in &txids {
+            words.push(tx_status(&wallet, txid).await);
+        }
         assert_eq!(
-            tx_status(&wallet, &held_txid).await,
-            "sending",
-            "open {open}"
+            words,
+            ["sending", "sending", "unproven", "unproven"],
+            "open {open}: held, spent, taken, recorded"
         );
         assert_eq!(
-            tx_status(&wallet, &spent_txid).await,
-            "sending",
-            "open {open}"
+            spender_and_word(&wallet, id).await,
+            (spender, child.clone()),
+            "a coin the wallet's own action spent stays spent; the action keeps its word"
         );
-        assert_eq!(
-            tx_status(&wallet, &taken_txid).await,
-            "unproven",
-            "open {open}"
-        );
-        assert_eq!(
-            tx_status(&wallet, &recorded_txid).await,
-            "unproven",
-            "open {open}"
-        );
-        let still: Option<i64> =
-            sqlx::query_scalar("SELECT spent_by FROM outputs WHERE output_id = ?")
-                .bind(id)
-                .fetch_one(storage.pool())
-                .await
-                .unwrap();
-        assert_eq!(
-            still, spender,
-            "a coin the wallet's own action spent stays spent"
-        );
-        let child_now: String =
-            sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
-                .bind(spender)
-                .fetch_one(storage.pool())
-                .await
-                .unwrap();
-        assert_eq!(child_now, child, "the spending action keeps its word");
     }
-    // `migrate` applies the same statement.
-    as_beta8(&wallet, &held_txid).await;
+    as_beta8(&wallet, &txids[0]).await;
     storage
         .migrate("held-receipt-tests", &root.public_key().to_hex())
         .await
         .expect("migrate");
-    assert_eq!(tx_status(&wallet, &held_txid).await, "sending");
+    assert_eq!(tx_status(&wallet, &txids[0]).await, "sending");
     let own_change: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(satoshis), 0) FROM outputs \
          WHERE transaction_id = ? AND purpose = 'change' AND spendable = 1",
@@ -651,7 +631,7 @@ async fn held_receipt_from_beta8_is_moved_to_sending_on_open_and_a_taken_one_is_
     assert!(own_change > 0);
     assert_eq!(
         wallet.balance().await.unwrap().total,
-        2 * PAID + own_change as u64,
+        2 * PAID + u64::try_from(own_change).unwrap(),
         "the taken two and the spending action's own change; the held two are out"
     );
 }
