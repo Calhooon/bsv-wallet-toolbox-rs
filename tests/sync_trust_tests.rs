@@ -2,13 +2,16 @@
 //! answers before and while it drains chunks.
 #![cfg(feature = "sqlite")]
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bsv_wallet_toolbox_rs::managers::WalletStorageManager;
 use bsv_wallet_toolbox_rs::storage::*;
 use bsv_wallet_toolbox_rs::StorageSqlx;
 
 mod sync_support;
+use sync_support::double::Double;
 use sync_support::*;
 
 /// A store named `name` whose settings declare `chain`.
@@ -86,4 +89,45 @@ async fn a_sync_between_stores_of_two_chains_is_refused() {
     let other = Arc::new(chain_store(DST, "main-two", "mainnet").await);
     let r = mgr.sync_to_writer(ALICE, other.clone()).await;
     assert_eq!(refusal(&r), "ok");
+}
+
+/// A writer that answers a chunk that carried no row with `done = false`
+/// is refused at once, not drained for ever under the manager's sync lock.
+#[tokio::test]
+async fn an_unfinished_answer_to_an_empty_chunk_is_refused() {
+    let active = store(SRC).await;
+    active.find_or_insert_user(ALICE).await.unwrap();
+    let writer = Double::new((*store(DST).await).clone());
+    *writer.answer.lock().unwrap() = Some(ProcessSyncChunkResult {
+        done: false,
+        max_updated_at: None,
+        updates: 0,
+        inserts: 0,
+        error: None,
+    });
+    let writer = Arc::new(writer);
+    let mgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(active as Arc<dyn MonitorStorage>),
+        None,
+    );
+    let r = tokio::time::timeout(
+        Duration::from_secs(10),
+        mgr.sync_to_writer(ALICE, writer.clone()),
+    )
+    .await;
+    let answer = match &r {
+        Ok(inner) => refusal(inner),
+        Err(_) => "still draining after 10 s".to_string(),
+    };
+    println!(
+        "WITNESS M4 done=false to an empty chunk: {answer}; chunks handed {}",
+        writer.chunks.load(Ordering::SeqCst)
+    );
+    assert_eq!(
+        answer,
+        "Invalid operation: Sync provider reported an unfinished page without advancing its durable checkpoint."
+    );
+    // The store's default basket, then the empty chunk that is refused.
+    assert_eq!(writer.chunks.load(Ordering::SeqCst), 2);
 }
