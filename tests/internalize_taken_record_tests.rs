@@ -186,7 +186,7 @@ async fn assert_held(wallet: &TestWallet, root: &PrivateKey, txid: &str, case: &
 }
 
 /// User A's `noSend` action T paying B, merged by A's own internalize with no
-/// BUMP: the request goes `unmined` on A's word. Returns A's wallet, B's
+/// BUMP: the request goes `unmined`. Returns A's wallet, B's
 /// wallet and root, T's atomic BEEF, B's payment output and T's txid.
 async fn nosend_merged_by_its_owner() -> (
     TestWallet,

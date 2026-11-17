@@ -7,9 +7,7 @@
 //! and only when, the door's own post drew an acceptance, the store holds a
 //! record of a take for the txid (`broadcast_seen` `accepted`, `seen` or
 //! `mined`), or a proof is stored for it (a `proven_txs` row). A request's
-//! word alone is not evidence: `unmined` and `completed` are written on
-//! paths no broadcaster took and no proof was checked. Not taken, the row is
-//! held (`sending`).
+//! word alone is not read. Not taken, the row is held (`sending`).
 //!
 //! THE MIGRATION (006), its own rule. Rows written before the door recorded
 //! its takes carry no record of them, so the statement keeps the request's
