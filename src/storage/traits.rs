@@ -1000,8 +1000,9 @@ pub enum BeefVerificationMode {
     #[default]
     Strict,
 
-    /// Skip verification for transactions already known to this wallet.
-    /// Only verify merkle proofs for new/unknown txids.
+    /// Verifies as `Strict` does: every merkle root is checked. Kept for
+    /// the wire format; nothing is skipped for a txid the wallet knows
+    /// (the roots do not map to txids).
     TrustKnown,
 
     /// Disable BEEF verification entirely.

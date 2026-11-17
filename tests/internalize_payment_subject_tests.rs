@@ -18,12 +18,12 @@ mod common;
 
 use bsv_rs::primitives::{PrivateKey, PublicKey};
 use bsv_rs::script::LockingScript;
-use bsv_rs::transaction::{Beef, MerklePath, Transaction};
+use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{InternalizeActionArgs, InternalizeOutput, WalletInterface, WalletPayment};
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{StorageSqlx, Wallet};
 
-use common::{child, other_lock, p2pkh_bytes, proven_parent, stored_outputs, sweep_beef};
+use common::{beef_paying_with, other_lock, p2pkh_bytes, stored_outputs, sweep_beef};
 
 const PREFIX: &str = "c3dlZXAtcHJlZml4";
 const SUFFIX: &str = "c3dlZXAtc3VmZml4";
@@ -38,26 +38,12 @@ fn derived_lock(root: &PrivateKey, sender: &PublicKey) -> LockingScript {
 /// An AtomicBEEF whose subject's one parent is a txid-only entry, proven by
 /// a BUMP the BEEF carries.
 fn txid_only_parent_beef(lock: LockingScript) -> (Vec<u8>, String) {
-    let parent_txid = proven_parent(1).id();
-    let child = child(&parent_txid, 1, lock);
-    let txid = child.id();
-    let mut beef = Beef::new();
-    beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, 100_002));
-    beef.merge_txid_only(parent_txid);
-    beef.merge_raw_tx(child.to_binary(), None);
-    (beef.to_binary_atomic(&txid).unwrap(), txid)
+    beef_paying_with(lock, false)
 }
 
 /// The same subject with its one parent carried whole, with its BUMP.
 fn whole_parent_beef(lock: LockingScript) -> (Vec<u8>, String) {
-    let parent = proven_parent(1);
-    let child = child(&parent.id(), 1, lock);
-    let txid = child.id();
-    let mut beef = Beef::new();
-    let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent.id(), 100_002));
-    beef.merge_raw_tx(parent.to_binary(), Some(bump));
-    beef.merge_raw_tx(child.to_binary(), None);
-    (beef.to_binary_atomic(&txid).unwrap(), txid)
+    beef_paying_with(lock, true)
 }
 
 async fn wallet(root: &PrivateKey, txid: &str) -> Wallet<StorageSqlx, MockWalletServices> {
