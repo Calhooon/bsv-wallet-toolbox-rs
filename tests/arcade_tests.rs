@@ -908,6 +908,38 @@ mod arcade_reads {
         )
     }
 
+    /// A status document's block hash is handed on only as 64 hexadecimal
+    /// characters, lowercased; any other is handed on empty.
+    #[tokio::test]
+    async fn a_status_documents_block_hash_is_taken_only_as_64_hex_characters() {
+        let mut answers = Vec::new();
+        for (tag, given) in [("b1", "ZZ".repeat(32)), ("b2", "BB".repeat(32))] {
+            let txid = txid_of(tag);
+            let height = 850_000u32;
+            let bump = MerklePath::from_coinbase_txid(&txid, height);
+            let body = format!(
+                r#"{{"txid":"{}","txStatus":"MINED","blockHeight":{},"blockHash":"{}","merklePath":"{}"}}"#,
+                txid,
+                height,
+                given,
+                bump.to_hex()
+            );
+            let mut server = mockito::Server::new_async().await;
+            let _mock = server
+                .mock("GET", format!("/tx/{}", txid).as_str())
+                .with_status(200)
+                .with_header("content-type", "application/json")
+                .with_body(body)
+                .create_async()
+                .await;
+            let arcade = Arcade::new(server.url(), None, None).unwrap();
+            let result = arcade.get_merkle_path(&txid).await.unwrap();
+            answers.push(result.header.expect("header").hash);
+        }
+        println!("WITNESS 9 arcade status document block hashes (not hex, upper): {answers:?}");
+        assert_eq!(answers, vec![String::new(), "bb".repeat(32)]);
+    }
+
     #[tokio::test]
     async fn mined_status_document_serves_the_merkle_path() {
         let txid = txid_of("a1");
@@ -1367,6 +1399,60 @@ mod triage_inline_proofs {
             "the status answer already carried the proofs"
         );
         assert_eq!(mock.call_count("get_status_for_txids"), 1);
+    }
+
+    /// A status answer's block hash is stored with its proof only as 64
+    /// hexadecimal characters, lowercased; any other is stored empty.
+    #[tokio::test]
+    async fn a_status_answers_block_hash_is_stored_only_as_64_hex_characters() {
+        let storage = setup_storage().await;
+        let odd = "4".repeat(64);
+        let upper = "5".repeat(64);
+        let (height_a, height_b) = (862_000u32, 862_001u32);
+        for txid in [&odd, &upper] {
+            seed_unmined(&storage, txid).await;
+        }
+        storage
+            .set_chain_tracker(Arc::new(tracker_for(
+                &[(&odd, height_a), (&upper, height_b)],
+                height_b + 1,
+            )))
+            .await;
+        let mut odd_detail = mined_with_proof(&odd, height_a);
+        odd_detail.block_hash = Some("zz".repeat(32));
+        let mut upper_detail = mined_with_proof(&upper, height_b);
+        upper_detail.block_hash = Some("BB".repeat(32));
+        let mock = Arc::new(
+            MockWalletServices::builder()
+                .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+                    name: "ArcadeV2".to_string(),
+                    status: "success".to_string(),
+                    error: None,
+                    results: vec![odd_detail, upper_detail],
+                }))
+                .get_merkle_path_response(MockResponse::Error(
+                    MockErrorKind::ServiceError,
+                    "getMerklePath must not be called".to_string(),
+                ))
+                .build(),
+        );
+        storage.set_services(mock.clone() as Arc<dyn WalletServices>);
+        storage
+            .synchronize_transaction_statuses()
+            .await
+            .expect("synchronize");
+        let mut stored = Vec::new();
+        for txid in [&odd, &upper] {
+            let (h,): (String,) =
+                sqlx::query_as("SELECT block_hash FROM proven_txs WHERE txid = ?")
+                    .bind(txid)
+                    .fetch_one(storage.pool())
+                    .await
+                    .expect("proof row");
+            stored.push(h);
+        }
+        println!("WITNESS 9 status answer block hashes stored (not hex, upper): {stored:?}");
+        assert_eq!(stored, vec![String::new(), "bb".repeat(32)]);
     }
 
     #[tokio::test]

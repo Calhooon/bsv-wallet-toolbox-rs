@@ -376,3 +376,13 @@ impl ServicesOptions {
         self
     }
 }
+
+/// A block hash a provider gave (a status answer, an event, a status
+/// document): stored only when it is 64 hexadecimal characters, lowercased,
+/// else empty (the review task fills an empty one from the header service).
+pub(crate) fn provider_block_hash(hash: Option<&str>) -> String {
+    match hash {
+        Some(h) if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) => h.to_lowercase(),
+        _ => String::new(),
+    }
+}
