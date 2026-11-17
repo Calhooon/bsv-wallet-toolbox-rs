@@ -127,6 +127,7 @@ async fn a_host_resolvers_outputs_meet_the_evidence() {
         beef: unproven.to_beef(true).unwrap(),
         output_index: 0,
         context: None,
+        txid: None,
     };
     let empty = OutputListItem {
         beef: vec![],
