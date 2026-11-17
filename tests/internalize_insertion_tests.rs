@@ -33,9 +33,12 @@ use bsv_rs::wallet::{
     WalletInterface, WalletPayment,
 };
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
-use bsv_wallet_toolbox_rs::{AuthId, StorageSqlx, Wallet, WalletStorageWriter};
+use bsv_wallet_toolbox_rs::{StorageSqlx, Wallet, WalletStorageWriter};
 
-use common::{beef_paying, derived_key, p2pkh_bytes, OTHER_HASH};
+use common::{
+    auth, beef_paying, derived_key, internalize_at, p2pkh_bytes, paying_derived, payment,
+    OTHER_HASH,
+};
 
 const PREFIX: &str = "aW5zZXJ0LXByZWZpeA==";
 const SUFFIX: &str = "aW5zZXJ0LXN1ZmZpeA==";
@@ -75,16 +78,6 @@ fn args(tx: Vec<u8>, output: InternalizeOutput) -> InternalizeActionArgs {
         labels: None,
         seek_permission: None,
     }
-}
-
-async fn auth(wallet: &TestWallet, root: &PrivateKey) -> AuthId {
-    let identity = root.public_key().to_hex();
-    let (user, _) = wallet
-        .storage()
-        .find_or_insert_user(&identity)
-        .await
-        .unwrap();
-    AuthId::with_user_id(&identity, user.user_id)
 }
 
 /// The store's output and basket counts.
@@ -176,39 +169,11 @@ async fn a_wallet_payment_with_a_stray_insertion_remittance_naming_default_is_st
     for door in ["wallet", "storage"] {
         let root = PrivateKey::random();
         let sender = PrivateKey::random().public_key();
-        let lock =
-            LockingScript::from_binary(&p2pkh_bytes(&derived_key(&root, &sender, PREFIX, SUFFIX)))
-                .unwrap();
-        let (bytes, txid) = beef_paying(lock);
+        let (bytes, txid) = paying_derived(&root, &sender, PREFIX, SUFFIX);
         let wallet = common::wallet("insertion-stray", &root, &txid).await;
-        let output = InternalizeOutput {
-            output_index: 0,
-            protocol: "wallet payment".to_string(),
-            payment_remittance: Some(WalletPayment {
-                derivation_prefix: PREFIX.to_string(),
-                derivation_suffix: SUFFIX.to_string(),
-                sender_identity_key: sender.to_hex(),
-            }),
-            insertion_remittance: Some(BasketInsertion {
-                basket: "default".to_string(),
-                custom_instructions: None,
-                tags: None,
-            }),
-        };
-        let answer = if door == "wallet" {
-            wallet
-                .internalize_action(args(bytes, output), "test.local")
-                .await
-                .map(|r| r.accepted)
-                .map_err(|e| e.to_string())
-        } else {
-            wallet
-                .storage()
-                .internalize_action(&auth(&wallet, &root).await, args(bytes, output))
-                .await
-                .map(|r| r.base.accepted)
-                .map_err(|e| e.to_string())
-        };
+        let mut output = payment(0, PREFIX, SUFFIX, &sender.to_hex());
+        output.insertion_remittance = insertion(0, "default").insertion_remittance;
+        let answer = internalize_at(door, &wallet, &root, args(bytes, output)).await;
         assert_eq!(answer, Ok(true), "{door}");
         let (change, kind, prefix, ..) = row(&wallet, &txid, 0).await;
         let basket: String = sqlx::query_scalar(
@@ -234,24 +199,9 @@ async fn a_basket_insertion_into_a_named_basket_is_stored() {
     for door in ["wallet", "storage"] {
         let (wallet, root, bytes) = fresh("insertion-named").await;
         let (outputs, _) = counts(&wallet).await;
-        let accepted = if door == "wallet" {
-            wallet
-                .internalize_action(args(bytes, insertion(0, "tokens")), "test.local")
-                .await
-                .expect("the wallet stores it")
-                .accepted
-        } else {
-            wallet
-                .storage()
-                .internalize_action(
-                    &auth(&wallet, &root).await,
-                    args(bytes, insertion(0, "tokens")),
-                )
-                .await
-                .expect("the storage door stores it")
-                .base
-                .accepted
-        };
+        let accepted = internalize_at(door, &wallet, &root, args(bytes, insertion(0, "tokens")))
+            .await
+            .unwrap_or_else(|e| panic!("the {door} door stores it: {e}"));
         assert!(accepted, "{door}");
         assert_eq!(counts(&wallet).await.0, outputs + 1, "{door}: stored");
         let basket: String = sqlx::query_scalar(
@@ -285,25 +235,11 @@ async fn spent_wallet_of(
     script: Vec<u8>,
 ) -> (TestWallet, PrivateKey, Vec<u8>, String) {
     let sender = PrivateKey::random().public_key();
-    let derived = derived_key(&root, &sender, PREFIX, SUFFIX);
-    let lock = LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap();
-    let (bytes, txid) = beef_paying(lock);
+    let (bytes, txid) = paying_derived(&root, &sender, PREFIX, SUFFIX);
     let wallet = common::wallet(name, &root, &txid).await;
     wallet
         .internalize_action(
-            args(
-                bytes.clone(),
-                InternalizeOutput {
-                    output_index: 0,
-                    protocol: "wallet payment".to_string(),
-                    payment_remittance: Some(WalletPayment {
-                        derivation_prefix: PREFIX.to_string(),
-                        derivation_suffix: SUFFIX.to_string(),
-                        sender_identity_key: sender.to_hex(),
-                    }),
-                    insertion_remittance: None,
-                },
-            ),
+            args(bytes.clone(), payment(0, PREFIX, SUFFIX, &sender.to_hex())),
             "test.local",
         )
         .await
@@ -408,23 +344,9 @@ async fn the_wallets_own_change_is_never_reclassified_as_a_basket_insertion() {
         let sentence = format!(
             "Validation error: The outputs parameter must be output {vout} is wallet-managed change and cannot be reclassified as a basket insertion"
         );
-        let refused = if door == "wallet" {
-            wallet
-                .internalize_action(args(tx, insertion(vout, "tokens")), "test.local")
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        } else {
-            wallet
-                .storage()
-                .internalize_action(
-                    &auth(&wallet, &root).await,
-                    args(tx, insertion(vout, "tokens")),
-                )
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        };
+        let refused = internalize_at(door, &wallet, &root, args(tx, insertion(vout, "tokens")))
+            .await
+            .map(|_| ());
         let expected = if door == "wallet" {
             format!("wallet error: {sentence}")
         } else {
@@ -470,39 +392,11 @@ async fn an_output_a_wallet_payment_merge_made_change_is_never_reclassified() {
         let script = p2pkh_bytes(&derived_key(&root, &sender, MERGE_PREFIX, MERGE_SUFFIX));
         let (wallet, root, tx, txid) =
             spent_wallet_of(root, "insertion-merged", None, script).await;
-        let auth = auth(&wallet, &root).await;
-        let payment = InternalizeOutput {
-            output_index: 0,
-            protocol: "wallet payment".to_string(),
-            payment_remittance: Some(WalletPayment {
-                derivation_prefix: MERGE_PREFIX.to_string(),
-                derivation_suffix: MERGE_SUFFIX.to_string(),
-                sender_identity_key: sender.to_hex(),
-            }),
-            insertion_remittance: None,
-        };
+        let merge = payment(0, MERGE_PREFIX, MERGE_SUFFIX, &sender.to_hex());
         let internalize = |output: InternalizeOutput| {
-            let tx = tx.clone();
-            let wallet = &wallet;
-            let auth = auth.clone();
-            async move {
-                if door == "wallet" {
-                    wallet
-                        .internalize_action(args(tx, output), "test.local")
-                        .await
-                        .map(|r| r.accepted)
-                        .map_err(|e| e.to_string())
-                } else {
-                    wallet
-                        .storage()
-                        .internalize_action(&auth, args(tx, output))
-                        .await
-                        .map(|r| r.base.accepted)
-                        .map_err(|e| e.to_string())
-                }
-            }
+            internalize_at(door, &wallet, &root, args(tx.clone(), output))
         };
-        assert_eq!(internalize(payment).await, Ok(true), "{door}: the merge");
+        assert_eq!(internalize(merge).await, Ok(true), "{door}: the merge");
         let managed: (String, String) =
             sqlx::query_as("SELECT provided_by, purpose FROM outputs WHERE txid = ? AND vout = 0")
                 .bind(&txid)
@@ -561,22 +455,13 @@ async fn an_output_a_wallet_payment_merge_made_change_is_never_reclassified() {
 async fn a_received_payment_is_never_reclassified_as_a_basket_insertion() {
     let root = PrivateKey::random();
     let sender = PrivateKey::random().public_key();
-    let derived = derived_key(&root, &sender, PREFIX, SUFFIX);
-    let lock = LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap();
-    let (bytes, txid) = beef_paying(lock);
+    let (bytes, txid) = paying_derived(&root, &sender, PREFIX, SUFFIX);
     let wallet = common::wallet("insertion-payment", &root, &txid).await;
-    let payment = InternalizeOutput {
-        output_index: 0,
-        protocol: "wallet payment".to_string(),
-        payment_remittance: Some(WalletPayment {
-            derivation_prefix: PREFIX.to_string(),
-            derivation_suffix: SUFFIX.to_string(),
-            sender_identity_key: sender.to_hex(),
-        }),
-        insertion_remittance: None,
-    };
     wallet
-        .internalize_action(args(bytes.clone(), payment), "test.local")
+        .internalize_action(
+            args(bytes.clone(), payment(0, PREFIX, SUFFIX, &sender.to_hex())),
+            "test.local",
+        )
         .await
         .expect("the payment");
     let before_row = row(&wallet, &txid, 0).await;
@@ -617,23 +502,8 @@ async fn a_custom_output_in_the_default_basket_is_swept_into_a_named_basket() {
         .execute(pool)
         .await
         .unwrap();
-        let answer = if door == "wallet" {
-            wallet
-                .internalize_action(args(tx, insertion(0, "recovered")), "test.local")
-                .await
-                .map(|r| r.accepted)
-                .map_err(|e| e.to_string())
-        } else {
-            wallet
-                .storage()
-                .internalize_action(
-                    &auth(&wallet, &root).await,
-                    args(tx, insertion(0, "recovered")),
-                )
-                .await
-                .map(|r| r.base.accepted)
-                .map_err(|e| e.to_string())
-        };
+        let answer =
+            internalize_at(door, &wallet, &root, args(tx, insertion(0, "recovered"))).await;
         assert_eq!(answer, Ok(true), "{door}");
         let (change, kind, ..) = row(&wallet, &txid, 0).await;
         let basket: String = sqlx::query_scalar(
@@ -666,27 +536,8 @@ async fn an_output_in_an_application_basket_is_never_moved_into_another() {
         .await;
         let before_row = row(&wallet, &txid, 0).await;
         let before_counts = counts(&wallet).await;
-        let auth = auth(&wallet, &root).await;
         let internalize = |basket: &'static str| {
-            let tx = tx.clone();
-            let wallet = &wallet;
-            let auth = auth.clone();
-            async move {
-                if door == "wallet" {
-                    wallet
-                        .internalize_action(args(tx, insertion(0, basket)), "test.local")
-                        .await
-                        .map(|r| r.accepted)
-                        .map_err(|e| e.to_string())
-                } else {
-                    wallet
-                        .storage()
-                        .internalize_action(&auth, args(tx, insertion(0, basket)))
-                        .await
-                        .map(|r| r.base.accepted)
-                        .map_err(|e| e.to_string())
-                }
-            }
+            internalize_at(door, &wallet, &root, args(tx.clone(), insertion(0, basket)))
         };
         let sentence = "Validation error: The outputs parameter must be output 0 is already assigned to a different basket and cannot be reclassified as a basket insertion into other";
         let expected = if door == "wallet" {

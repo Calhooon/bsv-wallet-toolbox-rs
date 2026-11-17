@@ -2,7 +2,8 @@
 //! a broadcaster's acceptance, a wallet over in-memory SQLite, the count of
 //! stored outputs, the P2PKH of a key, the BRC-29 key a recipient derives,
 //! an AtomicBEEF of one output, and a sweep of one parent past bsv-rs
-//! 0.8.11's default link budget.
+//! 0.8.11's default link budget; a wallet payment, an AtomicBEEF paying a
+//! derived key, and an internalization at the wallet or the storage door.
 //!
 //! Each test file uses part of this module, hence `dead_code` allowed.
 
@@ -11,10 +12,13 @@
 use bsv_rs::primitives::{hash160, PrivateKey, PublicKey};
 use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{Beef, MerklePath, Transaction, TransactionInput, TransactionOutput};
-use bsv_rs::wallet::{Counterparty, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel};
+use bsv_rs::wallet::{
+    Counterparty, InternalizeActionArgs, InternalizeOutput, KeyDeriverApi, ProtoWallet, Protocol,
+    SecurityLevel, WalletInterface, WalletPayment,
+};
 use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
 use bsv_wallet_toolbox_rs::{
-    PostBeefResult, PostTxResultForTxid, StorageSqlx, Wallet, WalletStorageWriter,
+    AuthId, PostBeefResult, PostTxResultForTxid, StorageSqlx, Wallet, WalletStorageWriter,
 };
 
 /// Outputs of the one parent the sweep spends: past the 702 P2PKH outputs
@@ -179,4 +183,66 @@ pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
     beef.merge_txid_only(parent_txid);
     beef.merge_raw_tx(child.to_binary(), None);
     (beef.to_binary_atomic(&txid).unwrap(), txid)
+}
+
+/// The storage door's `AuthId` for the wallet of `root`.
+pub async fn auth(wallet: &Wallet<StorageSqlx, MockWalletServices>, root: &PrivateKey) -> AuthId {
+    let identity = root.public_key().to_hex();
+    let (user, _) = wallet
+        .storage()
+        .find_or_insert_user(&identity)
+        .await
+        .unwrap();
+    AuthId::with_user_id(&identity, user.user_id)
+}
+
+/// A wallet payment of output `vout` under `prefix` and `suffix` from
+/// `sender`.
+pub fn payment(vout: u32, prefix: &str, suffix: &str, sender: &str) -> InternalizeOutput {
+    InternalizeOutput {
+        output_index: vout,
+        protocol: "wallet payment".to_string(),
+        payment_remittance: Some(WalletPayment {
+            derivation_prefix: prefix.to_string(),
+            derivation_suffix: suffix.to_string(),
+            sender_identity_key: sender.to_string(),
+        }),
+        insertion_remittance: None,
+    }
+}
+
+/// An AtomicBEEF of one output locked to the key `root` derives for
+/// `sender` under `prefix` and `suffix`, and its txid.
+pub fn paying_derived(
+    root: &PrivateKey,
+    sender: &PublicKey,
+    prefix: &str,
+    suffix: &str,
+) -> (Vec<u8>, String) {
+    let derived = derived_key(root, sender, prefix, suffix);
+    beef_paying(LockingScript::from_binary(&p2pkh_bytes(&derived)).unwrap())
+}
+
+/// `args` internalized at `door` (`wallet` or `storage`): whether accepted,
+/// or the refusal's text.
+pub async fn internalize_at(
+    door: &str,
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    root: &PrivateKey,
+    args: InternalizeActionArgs,
+) -> Result<bool, String> {
+    if door == "wallet" {
+        wallet
+            .internalize_action(args, "test.local")
+            .await
+            .map(|r| r.accepted)
+            .map_err(|e| e.to_string())
+    } else {
+        wallet
+            .storage()
+            .internalize_action(&auth(wallet, root).await, args)
+            .await
+            .map(|r| r.base.accepted)
+            .map_err(|e| e.to_string())
+    }
 }
