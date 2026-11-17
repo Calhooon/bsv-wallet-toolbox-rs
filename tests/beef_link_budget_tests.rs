@@ -12,8 +12,9 @@
 //! `create_action`'s input BEEF and stored ancestry) parse it with
 //! `Beef::from_binary` and judge it with `verify_valid`, which link nothing,
 //! so the budget cannot refuse such a sweep there. These tests pin both
-//! halves: the linking door refuses the sweep, and the storage internalize
-//! door takes it.
+//! halves (the linking door refuses the sweep, and the storage internalize
+//! door takes it) and the default's onset at the linking door, from both
+//! sides.
 //!
 //! Real SQLite storage, a mock broadcaster; nothing touches the network.
 
@@ -66,7 +67,10 @@ fn the_linking_door_takes_586_swept_outputs_and_refuses_587() {
     }
     let (beef, txid) = sweep_beef_of(587, other_lock());
     match Transaction::from_beef(&beef, Some(&txid)) {
-        Err(bsv_rs::Error::BeefResourceLimit(_)) => {}
+        Err(e @ bsv_rs::Error::BeefResourceLimit(_)) => assert!(
+            e.to_string().contains("heap bytes"),
+            "refused 587, but not at the heap bound: {e}"
+        ),
         Err(e) => panic!("refused 587, but not for the link bounds: {e}"),
         Ok(_) => panic!("linked a sweep of 587 outputs"),
     }
