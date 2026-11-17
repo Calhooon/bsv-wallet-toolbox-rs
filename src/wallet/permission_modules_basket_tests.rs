@@ -540,11 +540,14 @@ async fn other_names_take_the_ordinary_check() {
         }
     }
     assert_eq!(prompts.lock().unwrap().len(), 9);
-    // The port checks no label: these list, and the insertion stores.
+    // The port checks no label on `list_actions` (#786): it lists.
     call(&wallet, "list_actions", "", "btms token", ORIGINATOR)
         .await
         .unwrap();
-    call(
+    // `internalize_action` asks the insertion's basket as the reference's
+    // manager does (ts-stack@4d0ea63c8 `WalletPermissionsManager.ts:
+    // 5065-5066`, `:4991-5006`): the test's handler refuses it.
+    let err = call(
         &wallet,
         "internalize_action",
         "btms coins",
@@ -552,7 +555,13 @@ async fn other_names_take_the_ordinary_check() {
         ORIGINATOR,
     )
     .await
-    .unwrap();
+    .expect_err("internalize_action");
+    let unauthorized = bsv_rs::WalletRefusalClass::Unauthorized;
+    assert!(
+        matches!(&err, bsv_rs::Error::WalletRefusal { class, .. } if *class == unauthorized),
+        "internalize_action: {err:?}"
+    );
+    assert_eq!(prompts.lock().unwrap().len(), 10);
     assert!(module.asked().is_empty());
 }
 
