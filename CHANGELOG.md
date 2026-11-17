@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.8] - 2026-11-17
+
+The version moves for the `bsv-rs` `=0.9.0-beta.8` pin, the 0.9.0
+prerelease that carries the stable line's 0.8.6 to 0.8.11 security fixes,
+so this is the prerelease a host of the beta line moves to: 0.14.0-beta.6
+and earlier pin `bsv-rs` prereleases the published advisories name. It
+also carries two `internalizeAction` rules as the reference has them,
+each also on the stable line (0.13.2 and 0.13.3). The wallet payment rule:
+an output that carries a payment remittance is admitted only when it is
+locked by the P2PKH of the key the remittance derives, read from the
+BEEF's subject unlinked. The basket insertion rules: no insertion into the
+default basket, wallet-managed change never reclassified, and no move
+between application baskets. This prerelease also carries everything
+under `## [0.14.0-beta.7]` below, which was never tagged or published.
+
 ### Changed
 - #533 (the owner's word of 2026-11-16): `bsv-rs` pinned at `=0.9.0-beta.8`
   in `Cargo.toml` and `fuzz/Cargo.toml`, the 0.9.0 prerelease that carries
@@ -231,6 +246,8 @@ here) cannot restore the row, and the coin is lost to the wallet's own
 signing.
 
 ## [0.14.0-beta.7] - 2026-11-04
+
+Never tagged or published: the line paused on 2026-11-04 before its tag. Its entries ship in 0.14.0-beta.8.
 
 ### Added
 - #725 (the keeper's 2026-11-03 19:0xZ reading under 23.5 (c)):
