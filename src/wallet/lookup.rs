@@ -17,6 +17,9 @@ use crate::services::providers::http_client::Client;
 use crate::Result;
 
 #[cfg(test)]
+#[path = "lookup_beta8_tests.rs"]
+mod lookup_beta8_tests;
+#[cfg(test)]
 #[path = "lookup_network_isolation_tests.rs"]
 mod network_isolation_tests;
 
@@ -442,7 +445,11 @@ fn parse_slap_hosts(answer: &LookupAnswer) -> Vec<String> {
 
 /// Extract a host URL from a BEEF-encoded SLAP PushDrop output.
 fn extract_host_from_beef(beef: &[u8], output_index: u32) -> Result<String> {
-    let tx = Transaction::from_beef(beef, None)
+    // The subject alone: one output is read, so no ancestry is linked, as
+    // bsv-rs's own resolver reads a SLAP answer since 0.9.0-beta.8 (#749,
+    // GHSA-gvmh-f5gf-5vjj). `from_beef` would link it under the default link
+    // budget and refuse an advertisement spending many outputs of one parent.
+    let tx = Transaction::from_beef_subject(beef, None)
         .map_err(|e| crate::Error::ServiceError(format!("SLAP BEEF parse failed: {}", e)))?;
 
     let output = tx
