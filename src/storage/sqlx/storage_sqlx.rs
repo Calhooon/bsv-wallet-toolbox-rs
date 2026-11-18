@@ -15,6 +15,18 @@ use tokio::sync::RwLock;
 
 use super::locked_inputs::{LOCKED_VERDICT_SPENT_PROVEN, LOCKED_VERDICT_UNKNOWN};
 use crate::error::{Error, Result, StoreBusyReason};
+
+/// What the unfail task's reopen of an output did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reopen {
+    /// Set spendable.
+    Reopened,
+    /// Withheld: the store holds a spender, or the row moved under the write.
+    SpenderHeld,
+    /// Withheld only for an unread row that could hide a spender, or for
+    /// transactions that moved under the search twice: tried again later.
+    Unread,
+}
 use crate::lock_utils::{lock_read, lock_write};
 use crate::services::{GetRawTxResult, UtxoVerdict, WalletServices};
 use crate::storage::entities::*;
@@ -5809,10 +5821,15 @@ impl MonitorStorage for StorageSqlx {
                 ..Default::default()
             })
             .await?;
-        if candidates.is_empty() && unfail_reqs.is_empty() {
+        let withheld = super::stored_spenders::withheld_to_try(self.pool()).await?;
+        if candidates.is_empty() && unfail_reqs.is_empty() && withheld.is_empty() {
             return Ok(());
         }
         let services = self.get_services()?;
+
+        // ---- The outputs an earlier pass withheld only for an unread row ----
+        self.retry_withheld_outputs(services.as_ref(), &withheld, now)
+            .await?;
 
         for row in &candidates {
             let req_id: i64 = row.get("proven_tx_req_id");
@@ -7243,7 +7260,10 @@ impl StorageSqlx {
         // yet seen there: an output is reopened only when (a) a provider
         // answers it unspent, (b) its row records no spender and (c) no
         // transaction this store holds that is not failed spends it by its
-        // bytes, and none is unread (`reopen_output_if_unspent_here`).
+        // bytes, and none that could hide a spender is unread
+        // (`reopen_output_if_unspent_here`). One withheld only for an unread
+        // row is recorded and tried again at a later pass
+        // (`retry_withheld_outputs`).
         let output_rows = sqlx::query(
             "SELECT output_id, vout, locking_script, spent_by FROM outputs WHERE txid = ? AND spendable = 0",
         )
@@ -7269,11 +7289,22 @@ impl StorageSqlx {
             let script = locking_script.as_deref().unwrap_or(&[]);
             match services.is_utxo(txid, vout as u32, script).await {
                 UtxoVerdict::UnspentHint => {
-                    if self
+                    match self
                         .reopen_output_if_unspent_here(output_id, txid, vout as u32, now)
                         .await?
                     {
-                        restored += 1;
+                        Reopen::Reopened => restored += 1,
+                        Reopen::SpenderHeld => {}
+                        Reopen::Unread => {
+                            super::stored_spenders::record_withheld(
+                                &mut *self.writer_conn().await?,
+                                output_id,
+                                txid,
+                                vout as u32,
+                                now,
+                            )
+                            .await?;
+                        }
                     }
                 }
                 UtxoVerdict::Spent | UtxoVerdict::SpentHint => {
@@ -7313,14 +7344,16 @@ impl StorageSqlx {
     /// transactions must be as the search read them (the highest id and
     /// the newest stamp), else the search runs once more and, moved again,
     /// the output is left unspendable: a coin withheld, never a coin
-    /// offered on a guess. Answers whether the output was reopened.
+    /// offered on a guess. Answers whether the output was reopened, or
+    /// withheld for a spender held or for an unread row only (the case a
+    /// later pass tries again).
     async fn reopen_output_if_unspent_here(
         &self,
         output_id: i64,
         txid: &str,
         vout: u32,
         now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<bool> {
+    ) -> Result<Reopen> {
         const MARK: &str = "SELECT COALESCE(MAX(transaction_id), 0) AS id, \
              COALESCE(CAST(MAX(updated_at) AS TEXT), '') AS stamp FROM transactions";
         for _ in 0..2 {
@@ -7334,7 +7367,11 @@ impl StorageSqlx {
                     held.spenders,
                     held.unreadable
                 );
-                return Ok(false);
+                return Ok(if held.spenders.is_empty() {
+                    Reopen::Unread
+                } else {
+                    Reopen::SpenderHeld
+                });
             }
             let mut w = self.write_tx().await?;
             let after: (i64, String) = sqlx::query_as(MARK).fetch_one(&mut *w).await?;
@@ -7353,14 +7390,103 @@ impl StorageSqlx {
             .rows_affected()
                 == 1;
             commit(w).await?;
-            return Ok(reopened);
+            return Ok(if reopened {
+                Reopen::Reopened
+            } else {
+                Reopen::SpenderHeld
+            });
         }
         tracing::warn!(
             "un_fail: output {}:{}: the store's transactions moved under the search twice, left unspendable",
             txid,
             vout
         );
-        Ok(false)
+        Ok(Reopen::Unread)
+    }
+
+    /// The outputs a pass withheld only for an unread row
+    /// (`stored_spenders::WITHHELD_EVENT` records), tried again: at most
+    /// `WITHHELD_PER_PASS` a pass, the longest untried leading. A record is
+    /// dropped once its output is spendable, records a spender, is gone or
+    /// belongs to a failed transaction, once the store holds a spender of
+    /// it, or once a provider answers it spent; it is renewed (both stamps,
+    /// so the purge's age never reaches it while it is tried) while an
+    /// unread row is still held or the provider cannot answer. The store's
+    /// reads come before the provider: one is asked only when the store holds no
+    /// spender and no unread row.
+    async fn retry_withheld_outputs(
+        &self,
+        services: &dyn WalletServices,
+        records: &[(i64, String)],
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        use super::stored_spenders::{drop_withheld, parse_withheld, renew_withheld};
+        for (event_id, details) in records {
+            let Some(output_id) = parse_withheld(details) else {
+                drop_withheld(&mut *self.writer_conn().await?, *event_id).await?;
+                continue;
+            };
+            let row = sqlx::query(
+                "SELECT o.txid, o.vout, o.locking_script, o.spendable, o.spent_by, t.status \
+                 FROM outputs o JOIN transactions t ON t.transaction_id = o.transaction_id \
+                 WHERE o.output_id = ?",
+            )
+            .bind(output_id)
+            .fetch_optional(self.pool())
+            .await?;
+            let Some(row) = row else {
+                drop_withheld(&mut *self.writer_conn().await?, *event_id).await?;
+                continue;
+            };
+            let txid: Option<String> = row.get("txid");
+            let vout: i32 = row.get("vout");
+            let spendable: bool = row.get("spendable");
+            let spent_by: Option<i64> = row.get("spent_by");
+            let status: String = row.get("status");
+            let Some(txid) = txid.filter(|t| !t.is_empty()) else {
+                drop_withheld(&mut *self.writer_conn().await?, *event_id).await?;
+                continue;
+            };
+            if spendable || spent_by.is_some() || status == "failed" {
+                drop_withheld(&mut *self.writer_conn().await?, *event_id).await?;
+                continue;
+            }
+            let held = self.stored_spenders(&txid, vout as u32).await?;
+            if !held.spenders.is_empty() {
+                drop_withheld(&mut *self.writer_conn().await?, *event_id).await?;
+                continue;
+            }
+            if held.unreadable > 0 {
+                renew_withheld(&mut *self.writer_conn().await?, *event_id, now).await?;
+                continue;
+            }
+            let script: Option<Vec<u8>> = row.get("locking_script");
+            match services
+                .is_utxo(&txid, vout as u32, script.as_deref().unwrap_or(&[]))
+                .await
+            {
+                UtxoVerdict::UnspentHint => {
+                    match self
+                        .reopen_output_if_unspent_here(output_id, &txid, vout as u32, now)
+                        .await?
+                    {
+                        Reopen::Reopened | Reopen::SpenderHeld => {
+                            drop_withheld(&mut *self.writer_conn().await?, *event_id).await?
+                        }
+                        Reopen::Unread => {
+                            renew_withheld(&mut *self.writer_conn().await?, *event_id, now).await?
+                        }
+                    }
+                }
+                UtxoVerdict::Spent | UtxoVerdict::SpentHint => {
+                    drop_withheld(&mut *self.writer_conn().await?, *event_id).await?
+                }
+                UtxoVerdict::Unknown => {
+                    renew_withheld(&mut *self.writer_conn().await?, *event_id, now).await?
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Re-mark an unfailed transaction's consumed inputs as spent: every

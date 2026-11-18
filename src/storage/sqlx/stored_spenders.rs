@@ -14,9 +14,23 @@
 //! (NULL for an action `createAction` wrote and `processAction` has not yet
 //! signed, for a completed row a purge cleared, and for such a row a sync
 //! brought from a store that held it so), and `proven_txs.raw_tx` (NOT NULL)
-//! for a transaction linked to its proof. A transaction not failed whose
-//! bytes are in neither table cannot be read: it is counted, and a caller
-//! that would free a coin frees none while any such row is held.
+//! for a transaction linked to its proof.
+//!
+//! A row with no bytes in either table is unread. Only some of them can
+//! hide a spender of the outpoint, and only those are counted:
+//! - a `completed` row is not: its spend is mined, where a provider's
+//!   unspent word reads it;
+//! - a row this store created names itself as `spent_by` on each coin of
+//!   the store it spends, which a caller reads on the coin's own row (and
+//!   this module reads on every row of the outpoint): it is not counted
+//!   unless its `input_beef` carries the bytes of the outpoint's own
+//!   transaction, where it may also spend the outpoint as an input from
+//!   outside the store;
+//! - what remains is counted: a row neither `failed` nor `completed`, with
+//!   no bytes, that no output row names as `spent_by` (one a sync brought,
+//!   or an action whose every input is from outside this store).
+//!
+//! A caller that would free a coin frees none while a counted row is held.
 
 use sqlx::{Row, SqliteConnection};
 
@@ -78,11 +92,13 @@ fn bytes_spend(raw: &[u8], txid: &str, vout: u32) -> Option<bool> {
 }
 
 /// Which transactions of this store that are not failed spend `txid`.`vout`,
-/// by their bytes (`transactions.raw_tx`, else the linked `proven_txs.raw_tx`),
-/// and how many transactions not failed cannot be read. Two reads on `conn`:
-/// a byte search (`instr`, a scan of the bytes of every transaction not
-/// failed, no index) whose candidates are each parsed, and a count of the
-/// rows with no bytes in either table.
+/// by their bytes (`transactions.raw_tx`, else the linked `proven_txs.raw_tx`)
+/// or recorded as `spent_by` on a row of the outpoint, and how many
+/// transactions that could hide a spender cannot be read. Four reads on
+/// `conn`: a byte search (`instr`, a scan of the bytes of every transaction
+/// not failed, no index) whose candidates are each parsed, the recorded
+/// spenders, the bytes of the outpoint's own transaction, and a count of
+/// the rows that could hide a spender (module docs).
 pub(crate) async fn stored_spenders_of(
     conn: &mut SqliteConnection,
     txid: &str,
@@ -122,16 +138,139 @@ pub(crate) async fn stored_spenders_of(
         }
     }
 
+    // A spender recorded on any row of the outpoint (another user's row of
+    // it included), not failed and not already read from its bytes.
+    let recorded = sqlx::query(
+        "SELECT DISTINCT t.transaction_id, t.txid, t.status FROM outputs o \
+         JOIN transactions t ON t.transaction_id = o.spent_by \
+         WHERE o.txid = ? AND o.vout = ? AND t.status != 'failed' \
+         ORDER BY t.transaction_id",
+    )
+    .bind(txid)
+    .bind(i64::from(vout))
+    .fetch_all(&mut *conn)
+    .await?;
+    for row in &recorded {
+        let id: i64 = row.get("transaction_id");
+        if !answer.spenders.iter().any(|s| s.transaction_id == id) {
+            answer.spenders.push(StoredSpender {
+                transaction_id: id,
+                txid: row.get("txid"),
+                status: row.get("status"),
+            });
+        }
+    }
+
+    // The bytes of the outpoint's own transaction, which an action's
+    // `input_beef` carries when it may spend the outpoint from outside the
+    // store. Unknown: every unread row is counted.
+    let source: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT COALESCE(NULLIF(t.raw_tx, X''), p.raw_tx) FROM transactions t \
+         LEFT JOIN proven_txs p ON p.proven_tx_id = t.proven_tx_id \
+         WHERE t.txid = ? AND COALESCE(NULLIF(t.raw_tx, X''), p.raw_tx) IS NOT NULL \
+         LIMIT 1",
+    )
+    .bind(txid)
+    .fetch_optional(&mut *conn)
+    .await?
+    .flatten();
     let bare: i64 = sqlx::query(
         "SELECT COUNT(*) AS n FROM transactions t \
          LEFT JOIN proven_txs p ON p.proven_tx_id = t.proven_tx_id \
-         WHERE t.status != 'failed' \
+         WHERE t.status NOT IN ('failed', 'completed') \
            AND (t.raw_tx IS NULL OR length(t.raw_tx) = 0) \
-           AND (p.raw_tx IS NULL OR length(p.raw_tx) = 0)",
+           AND (p.raw_tx IS NULL OR length(p.raw_tx) = 0) \
+           AND (NOT EXISTS (SELECT 1 FROM outputs o WHERE o.spent_by = t.transaction_id) \
+                OR ? IS NULL \
+                OR instr(t.input_beef, ?) > 0)",
     )
+    .bind(source.as_deref())
+    .bind(source.as_deref())
     .fetch_one(&mut *conn)
     .await?
     .get("n");
     answer.unreadable += bare as u64;
     Ok(answer)
+}
+
+/// The `monitor_events` name of an output withheld only for an unread row,
+/// which the unfail task tries again at a later pass. Its details:
+/// `outputId=<id> <txid>.<vout>`.
+pub(crate) const WITHHELD_EVENT: &str = "outputWithheld";
+
+/// The most withheld outputs one pass of the unfail task tries again.
+pub(crate) const WITHHELD_PER_PASS: i64 = 20;
+
+/// Records `output_id` as withheld, unless a record of it is held.
+pub(crate) async fn record_withheld(
+    conn: &mut SqliteConnection,
+    output_id: i64,
+    txid: &str,
+    vout: u32,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let prefix = format!("outputId={output_id} ");
+    sqlx::query(
+        "INSERT INTO monitor_events (event, details, created_at, updated_at) \
+         SELECT ?, ?, ?, ? WHERE NOT EXISTS \
+         (SELECT 1 FROM monitor_events WHERE event = ? AND substr(details, 1, ?) = ?)",
+    )
+    .bind(WITHHELD_EVENT)
+    .bind(format!("{prefix}{txid}.{vout}"))
+    .bind(now)
+    .bind(now)
+    .bind(WITHHELD_EVENT)
+    .bind(prefix.len() as i64)
+    .bind(&prefix)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// The output a withheld record names.
+pub(crate) fn parse_withheld(details: &str) -> Option<i64> {
+    details
+        .strip_prefix("outputId=")?
+        .split(' ')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// A withheld record tried and still withheld: both stamps now.
+pub(crate) async fn renew_withheld(
+    conn: &mut SqliteConnection,
+    event_id: i64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    sqlx::query("UPDATE monitor_events SET created_at = ?, updated_at = ? WHERE event_id = ?")
+        .bind(now)
+        .bind(now)
+        .bind(event_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// A withheld record resolved: dropped.
+pub(crate) async fn drop_withheld(conn: &mut SqliteConnection, event_id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM monitor_events WHERE event_id = ? AND event = ?")
+        .bind(event_id)
+        .bind(WITHHELD_EVENT)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// The withheld records one pass tries: at most `WITHHELD_PER_PASS`, the
+/// longest untried leading.
+pub(crate) async fn withheld_to_try(pool: &sqlx::SqlitePool) -> Result<Vec<(i64, String)>> {
+    Ok(sqlx::query_as::<_, (i64, String)>(
+        "SELECT event_id, COALESCE(details, '') FROM monitor_events WHERE event = ? \
+         ORDER BY julianday(updated_at) ASC, event_id ASC LIMIT ?",
+    )
+    .bind(WITHHELD_EVENT)
+    .bind(WITHHELD_PER_PASS)
+    .fetch_all(pool)
+    .await?)
 }
