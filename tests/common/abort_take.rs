@@ -1,8 +1,10 @@
-//! The matrix of a take heard beside a `failed` outgoing row, the fixture
-//! of `held_answer_abort_take_tests.rs`: the fixture, the services that
-//! land the abort during a post, the writers of a take, one cell's run and
-//! its reading. Real SQLite, a mock broadcaster that takes the
-//! transaction, a status source that knows it; nothing is sent.
+//! The matrix of a take heard beside a `failed` outgoing row, shared by
+//! `held_answer_abort_take_tests.rs` (the take after the host's abort) and
+//! `held_answer_release_take_tests.rs` (the rule by the row's state): the
+//! fixture, the services that land the abort during a post, the writers of
+//! a take, one cell's run and its reading. Real SQLite, a mock broadcaster
+//! that takes the transaction, a status source that knows it; nothing is
+//! sent.
 //!
 //! Each test file uses part of this module, hence `dead_code` allowed.
 
@@ -81,10 +83,17 @@ pub enum Cause {
     AbortSpentByProven,
     /// `failed` on a competitor's checked proof (request `doubleSpend`).
     Competitor,
-    /// `failed` on the wallet's own refusal (request `invalid`, no mark).
+    /// The retire path's `failed` (request `invalid`, its inputs locked, no mark).
     Refusal,
     /// A received transaction of another user, `failed`.
     Received,
+    /// The host's abort with no mark on the request (an abort of a
+    /// released version, an end by count, a fail on a broadcaster's word):
+    /// `failed`, its inputs released, no evidence on record.
+    Unmarked,
+    /// Released as `Unmarked`, with a competitor's checked proof on record
+    /// against it: a `locked_input_checks` row `spent-proven` on input 0.
+    Evidence,
 }
 
 pub const CAUSES: [Cause; 6] = [
@@ -100,7 +109,11 @@ impl Cause {
     fn aborts(self) -> bool {
         matches!(
             self,
-            Cause::AbortFree | Cause::AbortSpentByOther | Cause::AbortSpentByProven
+            Cause::AbortFree
+                | Cause::AbortSpentByOther
+                | Cause::AbortSpentByProven
+                | Cause::Unmarked
+                | Cause::Evidence
         )
     }
 }
@@ -226,6 +239,24 @@ pub async fn abort_now(f: &Fixture, cause: Cause) {
         Cause::AbortSpentByProven => Some(prove(&f.store, x, &f.competitor).await),
         _ => None,
     };
+    if matches!(cause, Cause::Unmarked | Cause::Evidence) {
+        // No mark: the release reads as one a released version made.
+        sqlx::query("UPDATE proven_tx_reqs SET history = '{}' WHERE txid = ?")
+            .bind(&f.txid)
+            .execute(f.store.writer())
+            .await
+            .unwrap();
+    }
+    if cause == Cause::Evidence {
+        sqlx::query(
+            "INSERT INTO locked_input_checks (output_id, attempts, last_verdict) \
+             VALUES (?, 1, 'spent-proven')",
+        )
+        .bind(f.inputs[0])
+        .execute(f.store.writer())
+        .await
+        .unwrap();
+    }
     if let Some(spender) = spender {
         sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
             .bind(spender)
@@ -336,6 +367,13 @@ pub struct Reading {
     pub own_output_spendable: Option<bool>,
     pub taken_after_abort: bool,
     pub take_not_counted: bool,
+    /// A recovery's cause on the request: `takenAfterAbort` or
+    /// `takenAfterRelease`.
+    pub recovered_note: bool,
+    /// The take held as a hint beside a row it does not recover.
+    pub held_as_hint: bool,
+    /// Another user's live row of the txid, when the cell seeds one.
+    pub other_row: Option<String>,
     /// X's spendable change.
     pub balance: i64,
     /// X's action as `listActions` lists it.
@@ -498,6 +536,12 @@ pub async fn act_on(
 }
 
 pub async fn cell(act: Act, cause: Cause) -> Reading {
+    cell_with(act, cause, false).await
+}
+
+/// One cell, with another user's live row of the txid (a held receipt,
+/// `sending`) beside X's when `other_live`.
+pub async fn cell_with(act: Act, cause: Cause, other_live: bool) -> Reading {
     let root = PrivateKey::random();
     let sender = PrivateKey::random().public_key();
     let key = common::derived_key(&root, &sender, PREFIX, SUFFIX);
@@ -537,6 +581,23 @@ pub async fn cell(act: Act, cause: Cause) -> Reading {
         .unwrap();
 
     let fixture = Arc::new(seed(&store, &parts, cause).await);
+    let other = if other_live {
+        let y_key = PrivateKey::random().public_key().to_hex();
+        let (y, _) = store.find_or_insert_user(&y_key).await.unwrap();
+        Some(
+            insert_tx(
+                &store,
+                y.user_id,
+                &fixture.txid,
+                "sending",
+                &parts.raw,
+                false,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
     let txid = fixture.txid.clone();
     let then = chrono::Utc::now() - chrono::Duration::hours(2);
 
@@ -565,7 +626,16 @@ pub async fn cell(act: Act, cause: Cause) -> Reading {
     }
 
     act_on(&wallet, act, &parts, &sender, taken).await;
-    read(&fixture, cause == Cause::Received).await
+    let mut got = read(&fixture, cause == Cause::Received).await;
+    if let Some(other) = other {
+        got.other_row =
+            sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
+                .bind(other)
+                .fetch_optional(store.pool())
+                .await
+                .unwrap();
+    }
+    got
 }
 
 pub async fn read(f: &Fixture, received: bool) -> Reading {
@@ -655,6 +725,10 @@ pub async fn read(f: &Fixture, received: bool) -> Reading {
         own_output_spendable,
         taken_after_abort: history.contains("takenAfterAbort"),
         take_not_counted: history.contains("takeNotCounted"),
+        recovered_note: history.contains("takenAfterAbort")
+            || history.contains("takenAfterRelease"),
+        held_as_hint: history.contains("takeHeldAsHint"),
+        other_row: None,
         balance,
         listed,
     }
