@@ -28,9 +28,11 @@
 //! `unmined` from every word but `completed`; every row of the txid that is
 //! neither `failed` nor `completed` to `unproven` (the unfail task alone
 //! lifts `failed`, its recovery); each take recorded; never while a
-//! competitor's checked proof stands. A take heard while one stands raises
-//! nothing: no word moves and no take is recorded, the note alone goes on
-//! the request's history. Inside the write the lookup's indexed read is run
+//! competitor's checked proof stands, or is on record as a verdict against
+//! a `failed` row of the txid (`abort_recovery::FailedState::Evidence`). A
+//! take heard while one stands raises nothing: no word moves, no row is
+//! lifted and no take is recorded, the note alone (`takeNotCounted`) goes
+//! on the request's history. Inside the write the lookup's indexed read is run
 //! again, so a competitor stored after the header read refuses the take
 //! too; a root a reorg has taken away stands no more, and a take heard
 //! after that counts.
@@ -222,8 +224,10 @@ pub(crate) enum TakeRows {
 pub(crate) enum TakeApplied {
     /// The take moved the words and was recorded.
     Applied,
-    /// A competitor's checked proof stands: nothing raised.
-    Refused { competitor: String },
+    /// A competitor's checked proof stands, or one is on record as a
+    /// verdict against a `failed` row of the txid: nothing raised.
+    /// `competitor` names it where its bytes are stored.
+    Refused { competitor: Option<String> },
 }
 
 impl TakeApplied {
@@ -250,26 +254,40 @@ pub(crate) async fn apply_take_on(
         .map(|((t, ..), _)| t)
         .find(|t| !check.read.contains(t));
     if let Some(competitor) = check.standing.as_ref().map(|s| s.txid.clone()).or(late) {
-        note_take_refused(conn, txid, &competitor, takers, now).await?;
+        note_take_refused(conn, txid, Some(&competitor), &[], takers, now).await?;
         tracing::warn!(
             txid = %txid,
             competitor = %competitor,
             marker = "take_refused_competitor_proof",
             "a take heard while a competitor's checked proof stands: nothing raised"
         );
-        return Ok(TakeApplied::Refused { competitor });
+        return Ok(TakeApplied::Refused {
+            competitor: Some(competitor),
+        });
     }
     // THE RULE BY STATE (`abort_recovery`): each `failed` outgoing row of
-    // the txid is read in this write. Released on no evidence, it is
-    // recovered here; its inputs still locked, or evidence on record
-    // against it, nothing of it moves.
+    // the txid is read in this write. A competitor's checked proof on
+    // record against one of them as a verdict refuses the take as a
+    // standing one does. Released on no evidence, a row is recovered here;
+    // its inputs still locked, it stays ended with its free inputs marked
+    // spent by it again.
     let failed = super::abort_recovery::failed_outgoing_rows(conn, txid, &check.outpoints).await?;
-    super::abort_recovery::recover_released_on(conn, txid, &failed, takers, now).await?;
     let evidence: Vec<i64> = failed
         .iter()
         .filter(|r| r.state == super::abort_recovery::FailedState::Evidence)
         .map(|r| r.transaction_id)
         .collect();
+    if !evidence.is_empty() {
+        note_take_refused(conn, txid, None, &evidence, takers, now).await?;
+        tracing::warn!(
+            txid = %txid,
+            rows = ?evidence,
+            marker = "take_refused_evidence_on_record",
+            "a take heard while a competitor's checked proof is on record: nothing raised"
+        );
+        return Ok(TakeApplied::Refused { competitor: None });
+    }
+    super::abort_recovery::recover_released_on(conn, txid, &failed, takers, now).await?;
     // A row that stays ended with an input still locked (the retire path's
     // `failed`, some of whose inputs the locked-input re-check gave back):
     // every free input is marked spent by it again, so no coin it spends
@@ -278,60 +296,52 @@ pub(crate) async fn apply_take_on(
         .iter()
         .any(|r| r.state == super::abort_recovery::FailedState::Locked)
     {
-        super::abort_recovery::remark_inputs_spent_on(conn, txid, &evidence, now).await?;
+        super::abort_recovery::remark_inputs_spent_on(conn, txid, &[], now).await?;
     }
-    lift_rows_on(conn, txid, rows, &evidence, now).await?;
-    raise_or_hold_on(conn, txid, !evidence.is_empty(), takers, now).await?;
+    lift_rows_on(conn, txid, rows, now).await?;
+    raise_or_hold_on(conn, txid, takers, now).await?;
     for (provider, word) in takers {
         super::held_receipts::record_take_on(conn, txid, provider, word).await?;
     }
     Ok(TakeApplied::Applied)
 }
 
-/// The rows of `txid` a take lifts (`rows`), a `failed` outgoing row with
-/// evidence on record never among them; unfail's lift marks the inputs in
-/// the same write.
+/// The rows of `txid` a take lifts (`rows`; a take with evidence on record
+/// was refused before); unfail's lift marks the inputs in the same write.
 async fn lift_rows_on(
     conn: &mut SqliteConnection,
     txid: &str,
     rows: TakeRows,
-    evidence: &[i64],
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
     let rows_sql = match rows {
         TakeRows::Held => {
             "UPDATE transactions SET status = 'unproven', updated_at = ? \
-             WHERE txid = ? AND status NOT IN ('failed', 'completed') \
-               AND transaction_id NOT IN (SELECT value FROM json_each(?))"
+             WHERE txid = ? AND status NOT IN ('failed', 'completed')"
         }
         TakeRows::LiftFailed => {
             "UPDATE transactions SET status = 'unproven', updated_at = ? \
-             WHERE txid = ? AND status <> 'completed' \
-               AND NOT (status = 'failed' AND is_outgoing = 1 AND transaction_id IN \
-                 (SELECT value FROM json_each(?)))"
+             WHERE txid = ? AND status <> 'completed'"
         }
     };
     sqlx::query(rows_sql)
         .bind(now)
         .bind(txid)
-        .bind(serde_json::Value::from(evidence.to_vec()).to_string())
         .execute(&mut *conn)
         .await?;
     if rows == TakeRows::LiftFailed {
         // The one recovery of a failed transaction's inputs, in this write.
-        super::abort_recovery::remark_inputs_spent_on(conn, txid, evidence, now).await?;
+        super::abort_recovery::remark_inputs_spent_on(conn, txid, &[], now).await?;
     }
     Ok(())
 }
 
 /// The request is raised unless a `failed` outgoing row of the txid stands
-/// unrecovered: then it keeps its word, raised only for a live row of
-/// another user (its inputs locked), never beside a row with evidence on
-/// record, and the take is a hint on its history.
+/// unrecovered (its inputs locked): then it keeps its word, raised only for
+/// a live row of another user, and the take is a hint on its history.
 async fn raise_or_hold_on(
     conn: &mut SqliteConnection,
     txid: &str,
-    evidence: bool,
     takers: &[(&str, &str)],
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
@@ -343,8 +353,7 @@ async fn raise_or_hold_on(
     .bind(txid)
     .fetch_one(&mut *conn)
     .await?;
-    let still_evidence = evidence && stands > 0;
-    if stands == 0 || (live > 0 && !still_evidence) {
+    if stands == 0 || live > 0 {
         sqlx::query(
             "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status <> 'completed'",
         )
@@ -360,18 +369,21 @@ async fn raise_or_hold_on(
         serde_json::json!({
             "what": "takeHeldAsHint",
             "when": now.to_rfc3339(),
-            "why": if still_evidence { "evidenceOnRecord" } else { "inputsLocked" },
+            "why": "inputsLocked",
             "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
         }),
     )
     .await
 }
 
-/// The note of a take that raised nothing, on the request's history.
+/// The note of a take that raised nothing, on the request's history: the
+/// competitor where its bytes are stored, else the `failed` rows with its
+/// verdict on record against them.
 async fn note_take_refused(
     conn: &mut SqliteConnection,
     txid: &str,
-    competitor: &str,
+    competitor: Option<&str>,
+    evidence: &[i64],
     takers: &[(&str, &str)],
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
@@ -382,6 +394,7 @@ async fn note_take_refused(
             "what": "takeNotCounted",
             "when": now.to_rfc3339(),
             "competitor": competitor,
+            "evidenceOnRecord": evidence,
             "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
         }),
     )

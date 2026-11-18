@@ -25,7 +25,10 @@
 //!   live row of another user of the store.
 //! - EVIDENCE (a `locked_input_checks` row `spent-proven` at one of its
 //!   input outpoints, on the wallet's row of the coin spent by it or by
-//!   nothing): nothing is recovered and the request keeps its word.
+//!   nothing): the take is refused as a standing competitor's checked
+//!   proof refuses it (`competitor_proof::apply_take_on`): nothing is
+//!   recovered, no row lifted, no take recorded, the request keeps its
+//!   word and a `takeNotCounted` note names the rows.
 //!
 //! A refusal of the wallet's own run leaves no record on an outgoing row:
 //! the signing check refuses before anything is written. So a request

@@ -178,7 +178,7 @@ pub async fn internalize_action_internal(
                 "internalize: a competitor's checked proof stands: no post, nothing written"
             );
             let (send_with_results, not_delayed_results) = DoorAnswer::Refuted {
-                competitor: standing.txid,
+                competitor: Some(standing.txid),
             }
             .results(&txid);
             return Ok(StorageInternalizeActionResult {

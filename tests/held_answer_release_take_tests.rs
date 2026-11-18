@@ -15,8 +15,11 @@
 //!   ended, every free input of it is marked spent by it again, the take is
 //!   a hint, and the request keeps its word unless a live row of another
 //!   user needs it raised;
-//! - evidence on record (a `spent-proven` check on one of its inputs):
-//!   nothing is recovered and the request keeps its word.
+//! - evidence on record (a `spent-proven` check on one of its inputs): the
+//!   take is refused as a standing competitor's checked proof refuses it:
+//!   nothing is recovered, no row of the txid lifted (another user's held
+//!   receipt keeps `sending`), no take recorded, the request keeps its word
+//!   and the note is `takeNotCounted`.
 //!
 //! Never the half state: a request `unmined` beside a `failed` row whose
 //! inputs are released.
@@ -56,9 +59,18 @@ fn judge(act: Act, cause: Cause, other_live: bool, got: &Reading) -> Option<Stri
     // request `unsent` or `sending`, and the retire path's `invalid` is
     // not one.
     let heard = !(act == Act::SendWaiting && matches!(cause, Cause::Refusal | Cause::Mixed));
+    // Evidence on record refuses the take: another user's row is not
+    // lifted (the retire path's own write after its refused promotion
+    // fails every row of the txid, as it does for a standing competitor).
+    let other_want = match cause {
+        Cause::Evidence if act == Act::Retire => "failed",
+        Cause::Evidence => "sending",
+        _ if heard => "unproven",
+        _ => "sending",
+    };
     let other_ok = match (&got.other_row, other_live) {
         (None, false) => true,
-        (Some(row), true) => row == if heard { "unproven" } else { "sending" },
+        (Some(row), true) => row == other_want,
         _ => false,
     };
     let ok = match cause {
@@ -96,7 +108,8 @@ fn judge(act: Act, cause: Cause, other_live: bool, got: &Reading) -> Option<Stri
                 && got.inputs.iter().all(|(s, w)| *s != (act == Act::Door) && w == "none")
                 && got.own_output_spendable == Some(false)
                 && !got.recovered_note
-                && got.held_as_hint
+                && !got.held_as_hint
+                && got.take_not_counted
         }
         _ => false,
     };
@@ -152,6 +165,35 @@ async fn a_take_heard_by_unfail_reads_the_failed_row_by_its_state() {
 #[tokio::test]
 async fn a_take_of_the_wallets_own_post_reads_the_failed_row_by_its_state() {
     matrix(Act::OwnPost).await;
+}
+
+/// Evidence on record beside another user's live row: the take lifts
+/// nothing, so that row reads its held word after the take (the retire
+/// path's own write fails it); the status review's check 1 then fails it on
+/// the request's `invalid` word, at every writer.
+#[tokio::test]
+async fn evidence_on_record_lifts_no_row_through_a_review_pass() {
+    let mut wrong = Vec::new();
+    for act in ACTS {
+        let got = cell_full(act, Cause::Evidence, true, true).await;
+        println!(
+            "EVIDENCE {act:?} -> row {:?} request {:?} other {:?} after review {:?} takeNotCounted {}",
+            got.row, got.request, got.other_row, got.other_after_review, got.take_not_counted
+        );
+        let after_take = if act == Act::Retire {
+            "failed"
+        } else {
+            "sending"
+        };
+        if got.other_row.as_deref() != Some(after_take)
+            || got.other_after_review.as_deref() != Some("failed")
+            || got.request.as_deref() != Some("invalid")
+            || !got.take_not_counted
+        {
+            wrong.push(format!("{act:?}: {got:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[test]
