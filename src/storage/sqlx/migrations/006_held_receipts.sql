@@ -5,8 +5,7 @@
 -- the balance and listOutputs leave every output it gives the wallet out
 -- and no allocator offers them. A store written by 0.14.0-beta.8,
 -- 0.14.0-beta.8.1, 0.14.0-beta.9 or 0.14.0-beta.10 holds such a receipt as
--- 'unproven'. This
--- statement moves it to 'sending': a received transaction
+-- 'unproven'. This statement moves it to 'sending': a received transaction
 -- (is_outgoing = 0), 'unproven', with no proof row linked, that has a
 -- request, under the rule below.
 --
