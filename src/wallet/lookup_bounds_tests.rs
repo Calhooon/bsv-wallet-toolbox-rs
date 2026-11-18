@@ -4,6 +4,7 @@
 use super::*;
 use bsv_rs::overlay::OutputListItem;
 use bsv_rs::primitives::PrivateKey;
+use bsv_rs::script::templates::PushDrop;
 use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{Beef, MerklePath, TransactionInput, TransactionOutput};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -226,15 +227,9 @@ pub(super) fn slap_lock(
     bsv_rs::overlay::create_signed_overlay_admin_token(key, protocol, domain, service)
 }
 
-/// The PushDrop lock of a certificate of serial number `serial`.
-pub(super) fn cert_lock(serial: &str) -> LockingScript {
-    let cert = serde_json::json!({
-        "type": "dGVzdA==",
-        "serialNumber": serial,
-        "subject": "02aa",
-        "certifier": "03bb",
-    });
-    pushdrop(vec![serde_json::to_vec(&cert).unwrap()])
+/// The identity output of the tests' subject's certificate tagged `tag`.
+pub(super) fn cert_lock(tag: &str) -> LockingScript {
+    crate::wallet::lookup_identity_fixtures::tagged_identity_lock(tag)
 }
 
 /// An overlay answer of one certificate per serial number.
@@ -249,14 +244,16 @@ fn padded(mut body: Vec<u8>, len: usize) -> Vec<u8> {
     body
 }
 
-/// The serial numbers a lookup through `trackers` answers.
+/// The tags of the certificates a lookup through `trackers` answers for
+/// the tests' subject.
 pub(super) async fn serials(trackers: Vec<String>) -> Vec<String> {
+    let subject = crate::wallet::lookup_identity_fixtures::subject_key();
     HttpLookupResolver::with_endpoints(trackers)
-        .lookup_by_identity_key("02aa")
+        .lookup_by_identity_key(&subject.public_key().to_hex())
         .await
         .unwrap()
         .into_iter()
-        .map(|c| c.serial_number)
+        .map(|c| c.decrypted_fields["tag"].clone())
         .collect()
 }
 

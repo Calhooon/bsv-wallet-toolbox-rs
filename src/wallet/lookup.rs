@@ -9,11 +9,13 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 use bsv_rs::overlay::{LookupAnswer, NetworkPreset};
-use bsv_rs::script::templates::PushDrop;
 use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{IdentityCertificate, WalletCertificate};
 
-use super::lookup_checks::{allowed_public_hostname, slap_advertisement_domain};
+use super::lookup_checks::{
+    allowed_public_hostname, answers_attributes, answers_identity_key, identity_output_certificate,
+    slap_advertisement_domain,
+};
 use crate::Result;
 
 // =============================================================================
@@ -405,8 +407,15 @@ impl HttpLookupResolver {
 
     /// Query the overlay endpoint and parse certificate results from the
     /// response, within [`LOOKUP_DEADLINE`].
-    async fn query_overlay(&self, query: serde_json::Value) -> Result<Vec<OverlayCertificate>> {
-        match tokio::time::timeout(LOOKUP_DEADLINE, self.query_overlay_unbounded(query)).await {
+    ///
+    /// A certificate is returned only when it `answers` the lookup asked.
+    async fn query_overlay(
+        &self,
+        query: serde_json::Value,
+        answers: impl Fn(&OverlayCertificate) -> bool + Send + Sync,
+    ) -> Result<Vec<OverlayCertificate>> {
+        let lookup = self.query_overlay_unbounded(query, answers);
+        match tokio::time::timeout(LOOKUP_DEADLINE, lookup).await {
             Ok(answer) => answer,
             Err(_) => {
                 tracing::debug!(
@@ -422,6 +431,7 @@ impl HttpLookupResolver {
     async fn query_overlay_unbounded(
         &self,
         query: serde_json::Value,
+        answers: impl Fn(&OverlayCertificate) -> bool + Send + Sync,
     ) -> Result<Vec<OverlayCertificate>> {
         // Step 1: Resolve competent hosts for ls_identity via SLAP
         let hosts = self.resolve_competent_hosts("ls_identity").await;
@@ -520,7 +530,17 @@ impl HttpLookupResolver {
                 continue;
             }
 
-            return parse_overlay_answer(&answer);
+            let certificates = parse_overlay_answer(&answer)?;
+            return Ok(certificates
+                .into_iter()
+                .filter(|c| {
+                    let kept = answers(c);
+                    if !kept {
+                        tracing::debug!("Skipping a certificate that does not answer the lookup");
+                    }
+                    kept
+                })
+                .collect());
         }
 
         // All hosts failed - return empty gracefully
@@ -535,7 +555,8 @@ impl OverlayLookupResolver for HttpLookupResolver {
         let query = serde_json::json!({
             "identityKey": identity_key,
         });
-        self.query_overlay(query).await
+        self.query_overlay(query, |c| answers_identity_key(c, identity_key))
+            .await
     }
 
     async fn lookup_by_attributes(
@@ -545,7 +566,8 @@ impl OverlayLookupResolver for HttpLookupResolver {
         let query = serde_json::json!({
             "attributes": attributes,
         });
-        self.query_overlay(query).await
+        self.query_overlay(query, |c| answers_attributes(c, attributes))
+            .await
     }
 }
 
@@ -645,9 +667,9 @@ fn named_host(text: &str, allow_http: bool) -> Option<String> {
 
 /// Parse a `LookupAnswer` into a list of `OverlayCertificate`s.
 ///
-/// Iterates over output-list results, decodes PushDrop from each transaction
-/// output, and deserializes the first field as a JSON certificate.
-/// Invalid outputs are silently skipped (matching TypeScript behavior).
+/// Iterates over output-list results and reads each output's certificate
+/// by [`parse_single_output`]. An output that does not pass is skipped
+/// (the reference's `parseResults`).
 fn parse_overlay_answer(answer: &LookupAnswer) -> Result<Vec<OverlayCertificate>> {
     match answer {
         LookupAnswer::OutputList { outputs } => {
@@ -666,38 +688,24 @@ fn parse_overlay_answer(answer: &LookupAnswer) -> Result<Vec<OverlayCertificate>
     }
 }
 
-/// Parse a single BEEF output into an `OverlayCertificate`.
+/// Parse a single BEEF output into an `OverlayCertificate`: the output's
+/// certificate when it passes `identity_output_certificate` (the
+/// reference's `decodeIdentityOutput`: the subject's signed output, the
+/// certificate record's shape, the certifier's signature, at least one
+/// field revealed to `anyone`, which are its decrypted fields).
 fn parse_single_output(beef: &[u8], output_index: u32) -> Result<OverlayCertificate> {
     // Parse BEEF to get the transaction; one output's locking script is all
     // this reads, so the subject is read unlinked.
     let tx = Transaction::from_beef_subject(beef, None)
         .map_err(|e| crate::Error::ServiceError(format!("Failed to parse BEEF: {}", e)))?;
 
-    // Get the output's locking script
     let output = tx
         .outputs
         .get(output_index as usize)
         .ok_or_else(|| crate::Error::ServiceError("Output index out of bounds".into()))?;
 
-    // Decode PushDrop from the locking script
-    let decoded = PushDrop::decode(&output.locking_script)
-        .map_err(|e| crate::Error::ServiceError(format!("Failed to decode PushDrop: {}", e)))?;
-
-    // Parse field 0 as the JSON certificate; a PushDrop with no field
-    // carries none, and the output is skipped as any other malformed one.
-    let field = match decoded.fields.as_slice() {
-        [field, ..] => field,
-        [] => {
-            return Err(crate::Error::ServiceError(
-                "PushDrop carries no field".into(),
-            ))
-        }
-    };
-    let cert_json = String::from_utf8(field.clone())
-        .map_err(|e| crate::Error::ServiceError(format!("Invalid UTF-8 in certificate: {}", e)))?;
-
-    let cert: OverlayCertificate = serde_json::from_str(&cert_json)?;
-    Ok(cert)
+    identity_output_certificate(&output.locking_script)
+        .map_err(|why| crate::Error::ServiceError(format!("Identity output refused: {why}")))
 }
 
 /// Deduplicate certificates by (type_id, serial_number), keeping the first occurrence.
