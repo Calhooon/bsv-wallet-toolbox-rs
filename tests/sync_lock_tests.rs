@@ -277,3 +277,61 @@ async fn a_set_active_beside_an_open_waits_for_it_and_completes() {
     assert_eq!(refusal(&switched), "ok");
     assert_eq!(state(&mgr).await, ("B".into(), true));
 }
+
+/// `update_backups` over two backups (B, then C): once B is synced, the
+/// loop waits in C's `make_available` while a `set_active` to C runs to
+/// its end from another task. Then C is released: the loop passes over
+/// C, now the active, and no store is synced to itself (the doubles
+/// record the reader and writer of each chunk). Both calls answer.
+#[tokio::test]
+async fn update_backups_never_syncs_a_store_to_itself() {
+    let cell = Cell {
+        n: 3,
+        switched: false,
+        role: Role::Active,
+        fails: Fails::SetActive,
+    };
+    let (doubles, mgr) = setup(cell).await;
+    for d in &doubles {
+        d.syncs.lock().unwrap().clear();
+    }
+    doubles[2].hold_make_available.store(true, Ordering::SeqCst);
+    let backups = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.update_backups().await })
+    };
+    bounded(
+        "the loop reaches the next backup",
+        doubles[2].make_available_entered.notified(),
+    )
+    .await;
+    let switch = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.set_active(THIRD).await })
+    };
+    let switched = bounded("set_active to the next backup", switch)
+        .await
+        .unwrap();
+    doubles[2].make_available_release.notify_one();
+    let backed = bounded("update_backups once the backup is released", backups)
+        .await
+        .unwrap();
+    let syncs: Vec<(String, String)> = doubles
+        .iter()
+        .flat_map(|d| d.syncs.lock().unwrap().clone())
+        .map(|(from, to)| (name(&from).to_string(), name(&to).to_string()))
+        .collect();
+    let to_itself: Vec<_> = syncs.iter().filter(|(from, to)| from == to).collect();
+    println!(
+        "WITNESS a switch to the next backup while update_backups runs: set_active {}; update_backups {}; syncs (reader, writer) {syncs:?}; {:?}",
+        refusal(&switched),
+        refusal(&backed),
+        state(&mgr).await
+    );
+    assert_eq!(refusal(&switched), "ok");
+    assert!(to_itself.is_empty(), "a store synced to itself: {syncs:?}");
+    let log = backed.unwrap();
+    assert_eq!(log.matches("syncToWriter complete").count(), 1, "{log}");
+    assert!(log.contains("passes over C"), "{log}");
+    assert_eq!(state(&mgr).await, ("C".into(), true));
+}

@@ -1074,9 +1074,20 @@ impl WalletStorageManager {
             backup_indices.len()
         ));
 
+        // A `set_active` from another task can run between two of these
+        // syncs: each backup is synced only while it is still one of the
+        // manager's stores and not its active, as read under the sync lock.
         for backup in backups {
-            let sync_result = self.sync_to_writer(&auth.identity_key, backup).await?;
-            log.push_str(&sync_result.log);
+            match self
+                .sync_to_writer_unless_active(&auth.identity_key, backup.clone())
+                .await?
+            {
+                Some(sync_result) => log.push_str(&sync_result.log),
+                None => log.push_str(&format!(
+                    "syncToWriter passes over {}: no longer a backup\n",
+                    backup.storage_name()
+                )),
+            }
         }
 
         Ok(log)
@@ -1088,11 +1099,45 @@ impl WalletStorageManager {
         identity_key: &str,
         writer: Arc<dyn MonitorStorage>,
     ) -> Result<SyncResult> {
+        self.sync_to_writer_from_active(identity_key, writer, false)
+            .await
+            .and_then(|synced| synced.ok_or(Error::StorageNotAvailable))
+    }
+
+    /// `sync_to_writer` for a backup: `None` (no sync) when the writer is
+    /// the manager's active, or no longer one of its stores, once the sync
+    /// lock is held.
+    async fn sync_to_writer_unless_active(
+        &self,
+        identity_key: &str,
+        writer: Arc<dyn MonitorStorage>,
+    ) -> Result<Option<SyncResult>> {
+        self.sync_to_writer_from_active(identity_key, writer, true)
+            .await
+    }
+
+    async fn sync_to_writer_from_active(
+        &self,
+        identity_key: &str,
+        writer: Arc<dyn MonitorStorage>,
+        backups_only: bool,
+    ) -> Result<Option<SyncResult>> {
         self.check_sync_identity(identity_key).await?;
         let writer_settings = writer.make_available().await?;
         let mut log = String::new();
 
         self.run_as_sync(|active| async move {
+            if backups_only {
+                let managed = self
+                    .stores
+                    .read()
+                    .await
+                    .iter()
+                    .any(|s| Arc::ptr_eq(&s.storage, &writer));
+                if !managed || Arc::ptr_eq(&active, &writer) {
+                    return Ok(None);
+                }
+            }
             let reader_settings = active.get_settings();
             log.push_str(&format!(
                 "syncToWriter from {} to {}\n",
@@ -1112,11 +1157,11 @@ impl WalletStorageManager {
                 inserts, updates
             ));
 
-            Ok(SyncResult {
+            Ok(Some(SyncResult {
                 inserts,
                 updates,
                 log,
-            })
+            }))
         })
         .await
     }
