@@ -613,6 +613,38 @@ async fn a_transaction_failed_while_a_refuting_tracker_answers_is_left() {
     assert!(after.ends_with("spendable [0]"), "{after}");
 }
 
+/// A txid with a `failed` row beside an UNCHECKED proof row and an
+/// `invalid` request is not a candidate: the pass reads no header for it
+/// (a tracker that counts its calls, carrying its root), writes nothing of
+/// it, and does not stop at it: a candidate behind it is completed at that
+/// pass.
+#[tokio::test]
+async fn a_txid_with_a_failed_row_costs_no_header_read() {
+    const BEFORE: u32 = HEIGHT - 1;
+    let (_, _, _, root) = mined(12);
+    let headers = Headers::carrying(HEIGHT, &root);
+    headers.serve(BEFORE, &mined_at(11, BEFORE).3);
+    let s = one_store(Some(headers.clone())).await;
+    let failed = synced_proof_beside_invalid_at(&s, 11, BEFORE).await;
+    exec(
+        &s,
+        &format!("UPDATE transactions SET status = 'failed' WHERE txid = '{failed}'"),
+    )
+    .await;
+    let behind = synced_proof_beside_invalid(&s, 12).await;
+    let start = rows(&s, &failed).await;
+    MonitorStorage::review_status(&*s).await.unwrap();
+    let after = rows(&s, &failed).await;
+    let done = rows(&s, &behind).await;
+    println!(
+        "WITNESS a failed row beside an unchecked proof ({} reads): {after}; the one behind: {done}",
+        headers.reads()
+    );
+    assert_eq!(headers.reads(), 1, "a header was read for the failed txid");
+    assert_eq!(after, start);
+    assert!(done.contains("req completed link true"), "{done}");
+}
+
 /// No candidate holds a slot for good: 150 candidates the tracker errors on
 /// at every read, and one behind them (a higher proof row number) whose
 /// root the headers carry. A pass takes 100 after where the last pass
