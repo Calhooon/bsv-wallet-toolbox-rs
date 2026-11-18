@@ -2427,22 +2427,68 @@ impl WalletStorageWriter for StorageSqlx {
     }
 
     async fn find_or_insert_user(&self, identity_key: &str) -> Result<(TableUser, bool)> {
-        // Try to find existing user
+        // A user the store holds is answered from a reader.
         if let Some(user) = self.find_user(identity_key).await? {
             return Ok((user, false));
         }
 
-        // Get storage identity key for new user's active storage
-        let settings = self.get_settings();
-        let active_storage = settings.storage_identity_key.clone();
+        // Otherwise one step on the store's one writer: the row is inserted
+        // only if absent and then read, so two callers at once for one
+        // identity are answered the same row and exactly one is told it is
+        // new; that one also writes the user's default basket, in the same
+        // transaction.
+        let active_storage = self.get_settings().storage_identity_key.clone();
+        let now = Utc::now();
+        let mut tx = self.write_tx().await?;
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO users (identity_key, active_storage, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(identity_key) DO NOTHING
+            "#,
+        )
+        .bind(identity_key)
+        .bind(&active_storage)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        let row = sqlx::query(
+            r#"
+            SELECT user_id, identity_key, active_storage, created_at, updated_at
+            FROM users
+            WHERE identity_key = ?
+            "#,
+        )
+        .bind(identity_key)
+        .fetch_one(&mut *tx)
+        .await?;
+        let user = TableUser {
+            user_id: row.get("user_id"),
+            identity_key: row.get("identity_key"),
+            active_storage: row.get("active_storage"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        };
+        if inserted {
+            sqlx::query(
+                r#"
+                INSERT INTO output_baskets (user_id, name, number_of_desired_utxos, minimum_desired_utxo_value, created_at, updated_at)
+                VALUES (?, 'default', 6, 10000, ?, ?)
+                ON CONFLICT(name, user_id) DO NOTHING
+                "#,
+            )
+            .bind(user.user_id)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        commit(tx).await?;
 
-        // Create new user
-        let user = self.insert_user(identity_key, &active_storage).await?;
-
-        // Also create default basket for user
-        self.find_or_create_default_basket(user.user_id).await?;
-
-        Ok((user, true))
+        Ok((user, inserted))
     }
 
     async fn abort_action(
