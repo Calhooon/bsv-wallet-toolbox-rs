@@ -39,11 +39,11 @@ use std::fmt::Write as _;
 
 use bsv_rs::transaction::MerklePath;
 
-use super::super::proof_completion::{complete_on_proof, CheckedProof};
-use super::super::proof_root_checks::{
+use super::super::super::proof_completion::{complete_on_proof, CheckedProof};
+use super::super::super::proof_root_checks::{
     check_unchecked_stored_proof_on, record_root_checked_on, ReadCheck,
 };
-use super::{commit, demote_stale_proof_on, Result, StorageSqlx};
+use super::super::{commit, demote_stale_proof_on, Result, StorageSqlx};
 
 /// One txid of check 3, as read before the tracker is asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,13 +58,13 @@ struct Candidate {
 
 /// What check 3 did over one pass.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Check3 {
+pub(in crate::storage::sqlx::storage_sqlx) struct Check3 {
     /// Transaction rows completed on a checked proof.
-    pub(super) completed: usize,
+    pub(in crate::storage::sqlx::storage_sqlx) completed: usize,
     /// Proof rows demoted on the tracker's refutation.
-    pub(super) demoted: usize,
+    pub(in crate::storage::sqlx::storage_sqlx) demoted: usize,
     /// Txids left for the next pass (no tracker, a fault, a row moved).
-    pub(super) undecided: usize,
+    pub(in crate::storage::sqlx::storage_sqlx) undecided: usize,
 }
 
 /// The candidate's rows as they read now, on `conn`.
@@ -100,9 +100,85 @@ async fn read_candidate(
     }))
 }
 
+/// A candidate as read, the tracker's verdict and the root its path computes.
+type Asked = (Candidate, ReadCheck, Option<String>);
+
 impl StorageSqlx {
+    /// The candidate read on a reader and its proof checked the way an
+    /// unchecked stored proof is checked everywhere (no writer, no lock held
+    /// while the tracker is asked).
+    async fn read_and_ask(
+        &self,
+        tracker: Option<&dyn bsv_rs::transaction::ChainTracker>,
+        txid: &str,
+        proven_tx_id: i64,
+    ) -> Result<Option<Asked>> {
+        let mut conn = self.pool().acquire().await?;
+        let Some(read) = read_candidate(&mut conn, txid, proven_tx_id).await? else {
+            return Ok(None);
+        };
+        let Ok(path) = MerklePath::from_binary(&read.path) else {
+            return Ok(Some((read, ReadCheck::Undecided, None)));
+        };
+        let verdict =
+            check_unchecked_stored_proof_on(&mut conn, None, tracker, txid, &path).await?;
+        Ok(Some((read, verdict, path.compute_root(Some(txid)).ok())))
+    }
+
+    /// The one write: every row read again, then the verdict's writes.
+    async fn write_verdict(
+        &self,
+        (read, verdict, root): Asked,
+        now: chrono::DateTime<chrono::Utc>,
+        log: &mut String,
+        done: &mut Check3,
+    ) -> Result<()> {
+        let txid = read.txid.as_str();
+        let mut tx = self.write_tx().await?;
+        if read_candidate(&mut tx, txid, read.proven_tx_id)
+            .await?
+            .as_ref()
+            != Some(&read)
+        {
+            tx.rollback().await?;
+            done.undecided += 1;
+            return Ok(());
+        }
+        match (verdict, root) {
+            (ReadCheck::AlreadyChecked | ReadCheck::Confirmed, Some(root)) => {
+                if verdict == ReadCheck::Confirmed {
+                    let height = u32::try_from(read.height).unwrap_or_default();
+                    record_root_checked_on(&mut tx, txid, height, &root).await?;
+                }
+                let Some(proof) = CheckedProof::read_on(&mut tx, txid, read.proven_tx_id).await?
+                else {
+                    tx.rollback().await?;
+                    done.undecided += 1;
+                    return Ok(());
+                };
+                complete_on_proof(&mut tx, &proof, now).await?;
+                commit(tx).await?;
+                done.completed += read.rows.iter().filter(|(_, s)| s != "completed").count();
+            }
+            (ReadCheck::Demoted, _) => {
+                demote_stale_proof_on(&mut tx, txid).await?;
+                commit(tx).await?;
+                done.demoted += 1;
+                let _ = writeln!(
+                    log,
+                    "Demoted the unchecked proof of {txid}: the chain tracker refutes its root"
+                );
+            }
+            _ => {
+                tx.rollback().await?;
+                done.undecided += 1;
+            }
+        }
+        Ok(())
+    }
+
     /// Check 3 of `review_status_impl` (see the module).
-    pub(super) async fn complete_checked_proofs(
+    pub(in crate::storage::sqlx::storage_sqlx) async fn complete_checked_proofs(
         &self,
         now: chrono::DateTime<chrono::Utc>,
         log: &mut String,
@@ -122,61 +198,13 @@ impl StorageSqlx {
         }
         let tracker = self.get_chain_tracker().await;
         for (txid, proven_tx_id) in set {
-            let mut conn = self.pool().acquire().await?;
-            let Some(read) = read_candidate(&mut conn, &txid, proven_tx_id).await? else {
+            let Some(asked) = self
+                .read_and_ask(tracker.as_deref(), &txid, proven_tx_id)
+                .await?
+            else {
                 continue;
             };
-            let (verdict, root) = match MerklePath::from_binary(&read.path) {
-                Ok(path) => {
-                    let verdict = check_unchecked_stored_proof_on(
-                        &mut conn,
-                        None,
-                        tracker.as_deref(),
-                        &txid,
-                        &path,
-                    )
-                    .await?;
-                    (verdict, path.compute_root(Some(&txid)).ok())
-                }
-                Err(_) => (ReadCheck::Undecided, None),
-            };
-            drop(conn);
-            let mut tx = self.write_tx().await?;
-            if read_candidate(&mut tx, &txid, proven_tx_id).await?.as_ref() != Some(&read) {
-                tx.rollback().await?;
-                done.undecided += 1;
-                continue;
-            }
-            match (verdict, root) {
-                (ReadCheck::AlreadyChecked | ReadCheck::Confirmed, Some(root)) => {
-                    let height = u32::try_from(read.height).unwrap_or_default();
-                    if verdict == ReadCheck::Confirmed {
-                        record_root_checked_on(&mut tx, &txid, height, &root).await?;
-                    }
-                    let Some(proof) = CheckedProof::read_on(&mut tx, &txid, proven_tx_id).await?
-                    else {
-                        tx.rollback().await?;
-                        done.undecided += 1;
-                        continue;
-                    };
-                    complete_on_proof(&mut tx, &proof, now).await?;
-                    commit(tx).await?;
-                    done.completed += read.rows.iter().filter(|(_, s)| s != "completed").count();
-                }
-                (ReadCheck::Demoted, _) => {
-                    demote_stale_proof_on(&mut tx, &txid).await?;
-                    commit(tx).await?;
-                    done.demoted += 1;
-                    let _ = writeln!(
-                        log,
-                        "Demoted the unchecked proof of {txid}: the chain tracker refutes its root"
-                    );
-                }
-                _ => {
-                    tx.rollback().await?;
-                    done.undecided += 1;
-                }
-            }
+            self.write_verdict(asked, now, log, &mut done).await?;
         }
         Ok(done)
     }
