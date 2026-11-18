@@ -1,8 +1,9 @@
 //! A store behind the storage traits that forwards to a local store, with
 //! hooks: it can answer as a store that is not local (from the start, or
 //! from a chunk on), serve scripted chunks as a reader, answer every chunk
-//! with a fixed result, refuse `set_active`, and record its `set_active`
-//! calls. Shared by the sync manager tests.
+//! with a fixed result, refuse `set_active`, write its row and then lose
+//! the answer, refuse to read its user row, and record its `set_active`
+//! calls and count its user reads. Shared by the sync manager tests.
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -36,6 +37,14 @@ pub struct Double {
     pub chunks: AtomicUsize,
     /// `set_active` refuses, when set.
     pub fail_set_active: AtomicBool,
+    /// `set_active` writes the row and then answers an error, when set.
+    pub lose_set_active_answer: AtomicBool,
+    /// A lost answer also sets `refuse_user_reads`, when set.
+    pub refuse_reads_after_lost_answer: AtomicBool,
+    /// `find_or_insert_user` refuses, when set.
+    pub refuse_user_reads: AtomicBool,
+    /// `find_or_insert_user` calls.
+    pub user_reads: AtomicUsize,
     /// How long each `set_active` call takes before it answers.
     pub set_active_delay_ms: u64,
     /// `<storage name> enter|leave <key>` per `set_active` call.
@@ -53,6 +62,10 @@ impl Double {
             answer: Mutex::new(None),
             chunks: AtomicUsize::new(0),
             fail_set_active: AtomicBool::new(false),
+            lose_set_active_answer: AtomicBool::new(false),
+            refuse_reads_after_lost_answer: AtomicBool::new(false),
+            refuse_user_reads: AtomicBool::new(false),
+            user_reads: AtomicUsize::new(0),
             set_active_delay_ms: 0,
             events: Arc::new(Mutex::new(Vec::new())),
         }
@@ -131,6 +144,11 @@ impl WalletStorageWriter for Double {
         self.inner.destroy().await
     }
     async fn find_or_insert_user(&self, identity_key: &str) -> Result<(TableUser, bool)> {
+        self.user_reads.fetch_add(1, Ordering::SeqCst);
+        if self.refuse_user_reads.load(Ordering::SeqCst) {
+            let name = self.inner.storage_name();
+            return Err(Error::StorageError(format!("{name} refused the user read")));
+        }
         self.inner.find_or_insert_user(identity_key).await
     }
     async fn abort_action(
@@ -249,6 +267,12 @@ impl WalletStorageSync for Double {
         tokio::time::sleep(std::time::Duration::from_millis(self.set_active_delay_ms)).await;
         let r = if self.fail_set_active.load(Ordering::SeqCst) {
             Err(Error::StorageError(format!("{name} refused set_active")))
+        } else if self.lose_set_active_answer.load(Ordering::SeqCst) {
+            self.inner.set_active(auth, key).await?;
+            if self.refuse_reads_after_lost_answer.load(Ordering::SeqCst) {
+                self.refuse_user_reads.store(true, Ordering::SeqCst);
+            }
+            Err(Error::StorageError(format!("{name} answer lost")))
         } else {
             self.inner.set_active(auth, key).await
         };
