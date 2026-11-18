@@ -588,10 +588,12 @@ async fn a_transaction_failed_between_the_read_and_the_write_is_left() {
 }
 
 /// No candidate holds a slot for good: 150 candidates the tracker errors on
-/// at every read, and one behind them whose root the headers carry. A pass
-/// takes the 100 it has waited longest to look at and stamps the ones it
-/// leaves, so the one behind 150 is looked at within ceil(151 / 100) = 2
-/// passes and completed; no pass reads more than 100 headers.
+/// at every read, and one behind them (a higher proof row number) whose
+/// root the headers carry. A pass takes 100 after where the last pass
+/// stopped, so the one behind 150 is looked at within ceil(151 / 100) = 2
+/// passes and completed; no pass reads more than 100 headers, and nothing
+/// of the 150 requests it leaves `invalid` is written, their `updated_at`
+/// included.
 #[tokio::test]
 async fn a_candidate_behind_150_that_never_leave_is_reached_within_two_passes() {
     const STUCK: u32 = HEIGHT - 1;
@@ -603,6 +605,13 @@ async fn a_candidate_behind_150_that_never_leave_is_reached_within_two_passes() 
         synced_proof_beside_invalid_at(&s, n, STUCK).await;
     }
     let behind = synced_proof_beside_invalid(&s, 200).await;
+    let stamps = format!(
+        "SELECT group_concat(CAST(updated_at AS TEXT), ',') FROM (SELECT updated_at FROM proven_tx_reqs WHERE txid != '{behind}' ORDER BY txid)"
+    );
+    let stamps_before: String = ::sqlx::query_scalar(&stamps)
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
     let mut per_pass = Vec::new();
     let mut reached = None;
     for pass in 1..=3 {
@@ -624,6 +633,14 @@ async fn a_candidate_behind_150_that_never_leave_is_reached_within_two_passes() 
     assert!(per_pass.iter().all(|r| *r <= 100), "{per_pass:?}");
     assert_eq!(stuck, 150);
     assert!(last.starts_with("tx completed link true"), "{last}");
+    let stamps_after: String = ::sqlx::query_scalar(&stamps)
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        stamps_after, stamps_before,
+        "a request left invalid was written"
+    );
 }
 
 /// A proof row whose path does not parse: the pass writes neither word on

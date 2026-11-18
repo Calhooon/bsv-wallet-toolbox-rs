@@ -15,19 +15,21 @@
 //! does not compute, nothing is written and the same row is a candidate next
 //! pass.
 //!
-//! The order: a pass takes the candidates it has waited longest to look at,
-//! by the request's `updated_at` (then the proof row's number), and stamps
-//! `updated_at` on every candidate it looks at and leaves `invalid` (a path
-//! that does not parse, no tracker, a tracker fault). A candidate that
-//! never leaves the set goes to the back at each look, so it holds no slot
+//! The order: a pass takes the candidates by the proof row's number,
+//! starting after the one the last pass looked at last and coming round,
+//! and records where it stopped in `monitor_state`
+//! (`invalid_beside_proof_cursor`). A candidate that never leaves the set
+//! (a path that does not parse, no tracker, a tracker fault) holds no slot
 //! for good: with `INVALID_BESIDE_PROOF_PER_PASS` = 100, a candidate behind
-//! N others is looked at within ceil((N + 1) / 100) passes, whatever the
-//! others do, and a pass reads at most 100 headers. No status, link or
-//! history moves on that stamp.
+//! N others in that order is looked at within ceil((N + 1) / 100) passes,
+//! whatever the others do, and a pass reads at most 100 headers. Nothing
+//! of a request it leaves `invalid` is written (no status, link, history or
+//! `updated_at`), so the purge's age, the sync's since-mark and the unfail
+//! task's hour read the request as they would without this pass.
 //!
 //! A txid with a `failed` transaction row (one user's row of it failed,
 //! another's live) is not a candidate: nothing of it is written here, no
-//! status, link, history or stamp, and no header is read for it. The
+//! status, link, history or `updated_at`, and no header is read for it. The
 //! unfail task takes its request once that has stood an hour, and recovers
 //! the `failed` row when the network holds the transaction (the request
 //! `unmined`, the row `unproven`, its outputs checked as unspent counted);
@@ -45,6 +47,9 @@
 
 use bsv_rs::transaction::MerklePath;
 
+use super::monitor_state::{
+    read_invalid_beside_proof_cursor_on, write_invalid_beside_proof_cursor_on,
+};
 use super::proof_root_checks::{check_unchecked_stored_proof_on, stored_proof_checked_on};
 use super::storage_sqlx::{append_req_history_note, commit, StorageSqlx};
 use crate::Result;
@@ -62,6 +67,10 @@ impl StorageSqlx {
         &self,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<usize> {
+        let cursor = {
+            let mut conn = self.pool().acquire().await?;
+            read_invalid_beside_proof_cursor_on(&mut conn).await?
+        };
         let candidates: Vec<(String, i64, Vec<u8>)> = sqlx::query_as(
             r#"
             SELECT DISTINCT r.txid, p.proven_tx_id, p.merkle_path
@@ -71,10 +80,11 @@ impl StorageSqlx {
               AND EXISTS (SELECT 1 FROM transactions t WHERE t.txid = r.txid)
               AND NOT EXISTS (SELECT 1 FROM transactions f
                               WHERE f.txid = r.txid AND f.status = 'failed')
-            ORDER BY julianday(r.updated_at), p.proven_tx_id
+            ORDER BY p.proven_tx_id <= ?, p.proven_tx_id
             LIMIT ?
             "#,
         )
+        .bind(cursor)
         .bind(INVALID_BESIDE_PROOF_PER_PASS)
         .fetch_all(self.pool())
         .await?;
@@ -115,7 +125,6 @@ impl StorageSqlx {
         }
         let mut tx = self.write_tx().await?;
         let mut completed = 0usize;
-        let mut completed_txids = std::collections::HashSet::new();
         for (txid, proven_tx_id) in &stands {
             let row: Option<(String, Vec<u8>)> = sqlx::query_as(
                 "SELECT r.history, p.merkle_path FROM proven_tx_reqs r \
@@ -174,21 +183,11 @@ impl StorageSqlx {
                 "review_status: a transaction holds a proof this store checked; its invalid request is completed, the transaction is not failed"
             );
             completed += 1;
-            completed_txids.insert(txid.as_str());
         }
-        // Every candidate looked at and left `invalid` goes to the back of
-        // the order (a demoted one is `unmined` and not touched).
-        for (txid, _, _) in &candidates {
-            if completed_txids.contains(txid.as_str()) {
-                continue;
-            }
-            sqlx::query(
-                "UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ? AND status = 'invalid'",
-            )
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *tx)
-            .await?;
+        // The next pass starts after the last proof row this one looked at
+        // (and comes round): no request's own `updated_at` keeps the order.
+        if let Some((_, last, _)) = candidates.last() {
+            write_invalid_beside_proof_cursor_on(&mut tx, *last).await?;
         }
         commit(tx).await?;
         Ok(completed)
