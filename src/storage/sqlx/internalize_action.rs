@@ -427,6 +427,10 @@ pub async fn internalize_action_internal(
         // SendWaiting; 'unproven'/'completed' by CheckForProofs) — this
         // mirrors the TS `wasNoSend` gate exactly.
         if etx.status == TransactionStatus::NoSend {
+            // Broadcast, by the caller's word: the change of this store's
+            // own `noSend` action becomes a coin, as when it is sent
+            // through `sendWith`.
+            super::stored_spenders::release_sent_change(&mut tx, &txid, now).await?;
             let stored_proof = match validated_bump {
                 Some(ref vb) => insert_proven_tx_from_bump(&mut tx, &txid, &raw_tx, vb).await?,
                 None => None,
