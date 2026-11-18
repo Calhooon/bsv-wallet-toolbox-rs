@@ -482,3 +482,58 @@ async fn a_tracker_answer_names_at_most_the_bound_of_hosts() {
     assert_eq!(called, MAX_HOSTS_PER_TRACKER);
     assert_eq!(hits[MAX_HOSTS_PER_TRACKER].load(Ordering::SeqCst), 0);
 }
+
+// =============================================================================
+// What a named host may be
+// =============================================================================
+
+/// A host named with a user name, a path, a query, a fragment, or past
+/// 2048 bytes is not called; the well-formed host named after them is.
+#[tokio::test]
+async fn a_named_host_that_is_not_an_origin_is_not_called() {
+    let (x, x_hits) = listener(Answer::ok(cert_answer(&["X"]), Framing::Length)).await;
+    let (y, _) = listener(Answer::ok(cert_answer(&["Y"]), Framing::Length)).await;
+    let authority = x.trim_start_matches("http://").to_string();
+    let named = [
+        format!("http://user:pw@{authority}"),
+        format!("{x}/path"),
+        format!("{x}/?q=1"),
+        format!("{x}/#f"),
+        format!("{x}/{}", "a".repeat(MAX_HOST_URL_BYTES)),
+    ];
+    let mut all: Vec<&str> = named.iter().map(String::as_str).collect();
+    all.push(&y);
+    let (tracker, _) = listener(Answer::ok(slap_answer(&all), Framing::Length)).await;
+    assert_eq!(serials(vec![tracker]).await, vec!["Y".to_string()]);
+    assert_eq!(x_hits.load(Ordering::SeqCst), 0);
+}
+
+/// A plain-HTTP host named by a tracker is not called when the configured
+/// trackers are not all plain HTTP; it is when they are.
+#[tokio::test]
+async fn a_plain_http_host_is_called_only_under_plain_http_trackers() {
+    let (x, x_hits) = listener(Answer::ok(cert_answer(&["X"]), Framing::Length)).await;
+    let (tracker, _) = listener(Answer::ok(slap_answer(&[&x]), Framing::Length)).await;
+    // A TLS tracker on a closed loopback port: it fails at once.
+    let closed = "https://127.0.0.1:1".to_string();
+    assert!(serials(vec![tracker.clone(), closed]).await.is_empty());
+    assert_eq!(x_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(serials(vec![tracker]).await, vec!["X".to_string()]);
+    assert_eq!(x_hits.load(Ordering::SeqCst), 1);
+}
+
+/// The rule by itself: an https origin is a host; the local preset's
+/// resolver allows http hosts and the mainnet and testnet ones do not.
+#[test]
+fn the_named_host_rule() {
+    assert!(named_host("https://overlay.example", false).is_some());
+    assert!(named_host("https://overlay.example:8443/", false).is_some());
+    assert!(named_host("http://overlay.example", false).is_none());
+    assert!(named_host("http://overlay.example", true).is_some());
+    assert!(named_host("ftp://overlay.example", true).is_none());
+    assert!(named_host("https://u@overlay.example", false).is_none());
+    assert!(named_host("https://overlay.example/x", false).is_none());
+    assert!(HttpLookupResolver::for_network(NetworkPreset::Local).allows_http_hosts());
+    assert!(!HttpLookupResolver::mainnet().allows_http_hosts());
+    assert!(!HttpLookupResolver::testnet().allows_http_hosts());
+}

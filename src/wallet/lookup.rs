@@ -284,6 +284,18 @@ impl HttpLookupResolver {
         Self::for_network(NetworkPreset::Testnet)
     }
 
+    /// Whether a host a tracker names may be plain `http`: only when every
+    /// configured tracker is itself `http` (the local preset's
+    /// `http://localhost:8080`, or a caller's own plain-HTTP trackers), as the
+    /// reference allows HTTP for its local preset alone.
+    fn allows_http_hosts(&self) -> bool {
+        !self.slap_trackers.is_empty()
+            && self
+                .slap_trackers
+                .iter()
+                .all(|t| t.trim().starts_with("http://"))
+    }
+
     /// Resolve competent hosts for a given lookup service via SLAP.
     ///
     /// Queries SLAP trackers with `{service: "ls_slap", query: {service: target}}`
@@ -368,7 +380,7 @@ impl HttpLookupResolver {
                 continue;
             }
 
-            let hosts = parse_slap_hosts(&answer);
+            let hosts = parse_slap_hosts(&answer, self.allows_http_hosts());
             if !hosts.is_empty() {
                 tracing::debug!(
                     "SLAP resolved {} competent hosts for {}: {:?}",
@@ -520,8 +532,8 @@ impl OverlayLookupResolver for HttpLookupResolver {
 ///
 /// Each output is a BEEF-encoded PushDrop transaction. The host URL is
 /// extracted from the PushDrop fields by finding the first field that
-/// looks like an HTTP(S) URL.
-fn parse_slap_hosts(answer: &LookupAnswer) -> Vec<String> {
+/// looks like an HTTP(S) URL; it is a host only by [`named_host`]'s rule.
+fn parse_slap_hosts(answer: &LookupAnswer, allow_http: bool) -> Vec<String> {
     let mut hosts = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -538,7 +550,7 @@ fn parse_slap_hosts(answer: &LookupAnswer) -> Vec<String> {
             );
             break;
         }
-        match extract_host_from_beef(&output.beef, output.output_index) {
+        match extract_host_from_beef(&output.beef, output.output_index, allow_http) {
             Ok(host) => {
                 if seen.insert(host.clone()) {
                     hosts.push(host);
@@ -554,7 +566,7 @@ fn parse_slap_hosts(answer: &LookupAnswer) -> Vec<String> {
 }
 
 /// Extract a host URL from a BEEF-encoded SLAP PushDrop output.
-fn extract_host_from_beef(beef: &[u8], output_index: u32) -> Result<String> {
+fn extract_host_from_beef(beef: &[u8], output_index: u32, allow_http: bool) -> Result<String> {
     // One output's locking script is all this reads: the subject is read
     // unlinked, its inputs' ancestry never built.
     let tx = Transaction::from_beef_subject(beef, None)
@@ -573,7 +585,9 @@ fn extract_host_from_beef(beef: &[u8], output_index: u32) -> Result<String> {
         if let Ok(s) = String::from_utf8(field.clone()) {
             let trimmed = s.trim();
             if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-                return Ok(trimmed.to_string());
+                return named_host(trimmed, allow_http).ok_or_else(|| {
+                    crate::Error::ServiceError("SLAP URL is not a host origin".into())
+                });
             }
         }
     }
@@ -581,6 +595,30 @@ fn extract_host_from_beef(beef: &[u8], output_index: u32) -> Result<String> {
     Err(crate::Error::ServiceError(
         "No URL found in SLAP PushDrop fields".into(),
     ))
+}
+
+/// The longest host URL a SLAP answer may name, in bytes: 2048, the
+/// reference's bound (`canonicalOverlayEndpoint`, `normalizeLookupHost`).
+const MAX_HOST_URL_BYTES: usize = 2048;
+
+/// `text` as a host the resolver may call, by the reference's rule for an
+/// advertised host (`LookupResolver.ts` `canonicalOverlayEndpoint`): an
+/// `https` origin (`http` too when `allow_http`) of at most 2048 bytes,
+/// with no user name or password, no query, no fragment, and no path but
+/// `/`.
+fn named_host(text: &str, allow_http: bool) -> Option<String> {
+    if text.len() > MAX_HOST_URL_BYTES {
+        return None;
+    }
+    let url = reqwest::Url::parse(text).ok()?;
+    let scheme = url.scheme() == "https" || (allow_http && url.scheme() == "http");
+    let origin = url.host().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.path() == "/";
+    (scheme && origin).then(|| text.to_string())
 }
 
 /// Parse a `LookupAnswer` into a list of `OverlayCertificate`s.
