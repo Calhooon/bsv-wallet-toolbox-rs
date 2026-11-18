@@ -260,6 +260,41 @@ async fn a_manager_passed_as_the_reader_before_its_own_use_is_local() {
     assert_eq!(stale.root_check_count(), 0);
 }
 
+/// A reader that answers local while it serves its first chunk and not
+/// local from its second chunk on: the second chunk's new proof row, which
+/// the writer's tracker refutes, refuses that chunk; the first chunk's row,
+/// read while the reader answered local, is stored as given.
+#[tokio::test]
+async fn a_reader_that_stops_being_local_between_chunks_is_validated_from_then() {
+    let (first, _) = block_at(340, 1);
+    let (second, _) = block_at(341, 1);
+    let txid = second[0].txid.clone();
+    let stale = Arc::new(MockWalletServices::builder().roots_valid(false).build());
+    let (act, mgr) = wallet(stale.clone()).await;
+    let mut reader = Double::new((*store(SRC).await).clone());
+    reader.inner.find_or_insert_user(ALICE).await.unwrap();
+    reader.local_through = Some(1);
+    let chunk = |rows: &[TableProvenTx]| {
+        let mut c = chunk_for(ALICE);
+        c.proven_txs = Some(rows.to_vec());
+        c
+    };
+    *reader.script.lock().unwrap() = Some([chunk(&first), chunk(&second)].into());
+    let r = mgr.sync_from_reader(ALICE, Arc::new(reader)).await;
+    let proofs = count(&act, "SELECT COUNT(*) FROM proven_txs").await;
+    println!(
+        "WITNESS a reader local for its first chunk, not local from its second: {} proof rows {proofs} root checks {}",
+        refusal(&r),
+        stale.root_check_count()
+    );
+    assert_eq!(
+        refusal(&r),
+        format!("Sync error: sync chunk proof {txid} is refused: Merkle root is not active at the recorded height")
+    );
+    assert_eq!(proofs, 1);
+    assert_eq!(stale.root_check_count(), 1);
+}
+
 /// A store under `services` that holds alice and no proof row.
 async fn door(services: Arc<MockWalletServices>) -> Arc<StorageSqlx> {
     let s = store(DST).await;

@@ -360,7 +360,7 @@ pub(super) async fn preflight(
         canonicalize(p)?;
     }
     let scope = crate::storage::sync_scope::current();
-    let validate_new = !scope.as_ref().is_some_and(|s| s.local_reader);
+    let validate_new = !scope.as_ref().is_some_and(|s| s.local_reader());
     let mut which = Vec::new();
     let mut helds = Vec::new();
     for (i, p) in proofs.iter().enumerate() {

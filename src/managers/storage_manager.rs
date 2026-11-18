@@ -226,17 +226,12 @@ async fn drain_sync_chunks(
     identity_key: &str,
     user_active: UserActiveStorage,
 ) -> Result<(u32, u32)> {
-    // The reader is made available before it is asked whether it is local:
-    // a manager answers by its active store, which it chooses there.
+    // The reader is made available before it is asked whether it is local
+    // (in drain_chunks, around each chunk): a manager answers by its active
+    // store, which it chooses there.
     let reader_settings = reader.make_available().await?;
-    // A local reader's rows are the wallet's own: a local writer takes its
-    // new proof rows as given. Any other reader (a storage client) is
-    // another party, and a chunk outside a drain is validated as one: the
-    // writer validates every proof row it does not hold as the same proof
-    // (crate::storage::sync_scope).
-    let local = reader.checks_received_beef_in_process().await;
     let drain = drain_chunks(reader, reader_settings, writer, identity_key, user_active);
-    crate::storage::sync_scope::scope(local, drain).await
+    crate::storage::sync_scope::scope(drain).await
 }
 
 async fn drain_chunks(
@@ -283,7 +278,18 @@ async fn drain_chunks(
             offsets: offsets.clone(),
         };
 
+        // A chunk from a local reader is the wallet's own rows: a local
+        // writer takes its new proof rows as given. The reader is asked
+        // before and after the chunk is read (a manager answers by its
+        // active store, which another task may move meanwhile); a chunk is
+        // the wallet's own only when both answers are local. Any other
+        // chunk is validated as from another party: the writer validates
+        // every proof row it does not hold as the same proof
+        // (crate::storage::sync_scope).
+        let local_before = reader.checks_received_beef_in_process().await;
         let mut chunk = reader.get_sync_chunk(args.clone()).await?;
+        let local_after = reader.checks_received_beef_in_process().await;
+        crate::storage::sync_scope::set_local_reader(local_before && local_after);
         if let (UserActiveStorage::Keep(local), Some(user)) = (&user_active, chunk.user.as_mut()) {
             user.active_storage = local.clone();
         }
