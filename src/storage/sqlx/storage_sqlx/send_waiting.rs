@@ -86,8 +86,15 @@ impl StorageSqlx {
         let next = crate::services::cadence::send_waiting_reask_minutes(
             u32::try_from(attempts).unwrap_or(0),
         );
+        // The history as it stands now, not as this pass read it: a note
+        // written since (a take that counted for nothing) is kept.
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE proven_tx_req_id = ?")
+                .bind(req.proven_tx_req_id)
+                .fetch_optional(self.pool())
+                .await?;
         let history = append_req_history_note(
-            &req.history,
+            current.as_deref().unwrap_or(&req.history),
             serde_json::json!({
                 "when": now.to_rfc3339(),
                 "what": "sendWaitingHint",
@@ -387,6 +394,19 @@ impl StorageSqlx {
                             )
                             .await?;
 
+                        if !applied {
+                            // A take heard while a competitor's checked
+                            // proof stands counts for nothing: the post is an
+                            // attempt on the cadence, as a word short of an
+                            // acceptance is, never a re-post at every pass.
+                            self.record_send_waiting_hint(
+                                req,
+                                req.attempts + 1,
+                                post_beef_words(&results_vec),
+                                now,
+                            )
+                            .await?;
+                        }
                         send_with_results.push(SendWithResult {
                             txid: req.txid.clone(),
                             status: if applied { "unproven" } else { "sending" }.to_string(),
@@ -442,6 +462,15 @@ impl StorageSqlx {
                                         now,
                                     )
                                     .await?;
+                                if !applied {
+                                    self.record_send_waiting_hint(
+                                        req,
+                                        attempts,
+                                        post_beef_words(&results_vec),
+                                        now,
+                                    )
+                                    .await?;
+                                }
                                 tracing::info!(
                                     "send_waiting: tx {} reported as orphan mempool but found alive on chain — treating as success",
                                     req.txid
