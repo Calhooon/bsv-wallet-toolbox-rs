@@ -2147,12 +2147,33 @@ async fn upsert_transaction(
         // takes the link (and, for a newer row, its other properties) and
         // leaves the status this store holds, for the status review's pass
         // that checks the root.
+        //
+        // A merge that brings no link this store can resolve (no proof
+        // txid, or one that is not the row's own) never clears the link
+        // this store holds for the row's txid (the reference's
+        // mergeOrdinaryTransactionProperties writes the mapped link, absent
+        // included). An incoming `completed` is then judged by the link the
+        // row keeps: beside a proof this store checked it is true of the
+        // txid and is written; with no link, or an unchecked one, the held
+        // status stays.
+        let kept_proof = match (proven_tx_id, local_proof) {
+            (Some(id), _) => Some(id),
+            (None, Some(held)) => {
+                let held_txid: Option<String> =
+                    sqlx::query_scalar("SELECT txid FROM proven_txs WHERE proven_tx_id = ?")
+                        .bind(held)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                (held_txid.is_some() && held_txid.as_deref() == tx.txid.as_deref()).then_some(held)
+            }
+            (None, None) => None,
+        };
         let adds_proof_evidence = proven_tx_id.is_some() && local_proof.is_none();
         let incoming_is_newer = tx.updated_at > local_updated;
         let keep_status = status_str == "completed"
-            && match proven_tx_id {
+            && match kept_proof {
                 Some(id) => !proof_checked_here(&mut *conn, id).await?,
-                None => false,
+                None => true,
             };
         if incoming_is_newer {
             sqlx::query(
@@ -2174,7 +2195,7 @@ async fn upsert_transaction(
             .bind(&tx.raw_tx)
             .bind(&tx.input_beef)
             .bind(tx.is_outgoing)
-            .bind(proven_tx_id)
+            .bind(kept_proof)
             .bind(tx.updated_at)
             .bind(local_id)
             .execute(&mut *conn)
