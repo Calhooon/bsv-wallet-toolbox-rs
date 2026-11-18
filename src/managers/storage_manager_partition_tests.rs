@@ -158,3 +158,62 @@ async fn a_call_that_finds_the_mark_set_partitions_from_the_rows() {
     );
     assert!(mgr.is_active_enabled().await);
 }
+
+/// Two rebuilds from different rows: one reads the rows (every row naming
+/// A) and waits on the index lock (held by a reader here); the rows then
+/// move to B and a second rebuild reads them. The row write waits for the
+/// earlier rebuild's writes (it holds the stores read lock through them),
+/// so the earlier writes from the rows as they stood and the later from
+/// the new rows: the manager's fields are the newer rows'.
+#[tokio::test]
+async fn a_rebuild_from_older_rows_never_writes_after_one_from_newer_rows() {
+    let (_stores, mgr, _, id_b) = manager().await;
+    let mgr = Arc::new(mgr);
+    let held = mgr.active_index.read().await;
+    let older = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.partition().await })
+    };
+    tokio::task::yield_now().await;
+
+    // The rows move to B (as a re-read of the stores would leave them).
+    let move_rows = |mgr: Arc<WalletStorageManager>| async move {
+        for store in mgr.stores.write().await.iter_mut() {
+            store.user.as_mut().unwrap().active_storage = Some(B.to_string());
+        }
+    };
+    let moved = tokio::spawn(move_rows(mgr.clone()));
+    let early = tokio::time::timeout(Duration::from_millis(300), async {
+        while !moved.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok();
+    drop(held);
+    older.await.unwrap().unwrap();
+    moved.await.unwrap();
+    let newer = mgr.partition().await.unwrap();
+    let after = fields(&mgr).await;
+    eprintln!(
+        "WITNESS two rebuilds: rows moved while the older waited: {early}; {} {after:?}",
+        newer.storage_identity_key
+    );
+    assert!(
+        !early,
+        "a row moved between a rebuild's read and its writes"
+    );
+    assert_eq!(
+        after,
+        (
+            Some(1),
+            vec![0],
+            vec![],
+            Some(id_b),
+            Some(true),
+            B.to_string()
+        )
+    );
+    assert!(mgr.is_available().await);
+    assert!(mgr.is_active_enabled().await);
+}
