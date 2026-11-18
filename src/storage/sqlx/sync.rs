@@ -2117,7 +2117,7 @@ async fn upsert_transaction(
     // Check if exists by reference (unique per user)
     let existing = sqlx::query(
         r#"
-        SELECT transaction_id, updated_at, proven_tx_id FROM transactions
+        SELECT transaction_id, updated_at, proven_tx_id, status FROM transactions
         WHERE user_id = ? AND reference = ?
         "#,
     )
@@ -2132,6 +2132,7 @@ async fn upsert_transaction(
         let local_id: i64 = row.get("transaction_id");
         let local_updated: DateTime<Utc> = row.get("updated_at");
         let local_proof: Option<i64> = row.get("proven_tx_id");
+        let local_status: String = row.get("status");
 
         // The reference's EntityTransaction.mergeExisting (shouldMerge, with
         // no BRC-177 expiry state on either side, which this line does not
@@ -2156,6 +2157,13 @@ async fn upsert_transaction(
         // row keeps: beside a proof this store checked it is true of the
         // txid and is written; with no link, or an unchecked one, the held
         // status stays.
+        //
+        // A row this store holds `completed` on a proof whose root it has
+        // checked (the link it holds, or the link the merge keeps) stays
+        // `completed` whatever the incoming status, with or without an
+        // incoming link, and keeps the link it holds: a proof this store
+        // checked outranks any store's word. The other ordinary properties
+        // merge as above.
         let kept_proof = match (proven_tx_id, local_proof) {
             (Some(id), _) => Some(id),
             (None, Some(held)) => {
@@ -2170,11 +2178,21 @@ async fn upsert_transaction(
         };
         let adds_proof_evidence = proven_tx_id.is_some() && local_proof.is_none();
         let incoming_is_newer = tx.updated_at > local_updated;
-        let keep_status = status_str == "completed"
-            && match kept_proof {
-                Some(id) => !proof_checked_here(&mut *conn, id).await?,
-                None => true,
-            };
+        let held_checked = match local_proof {
+            Some(id) if local_status == "completed" => proof_checked_here(&mut *conn, id).await?,
+            _ => false,
+        };
+        let kept_checked = match kept_proof {
+            Some(id) => proof_checked_here(&mut *conn, id).await?,
+            None => false,
+        };
+        let holds_checked_completed = local_status == "completed" && (held_checked || kept_checked);
+        let kept_proof = if held_checked {
+            local_proof
+        } else {
+            kept_proof
+        };
+        let keep_status = holds_checked_completed || (status_str == "completed" && !kept_checked);
         if incoming_is_newer {
             sqlx::query(
                 r#"
