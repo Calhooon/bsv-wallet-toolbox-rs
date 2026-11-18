@@ -530,3 +530,120 @@ async fn a_row_moved_behind_the_manager_is_written_by_set_active_to_its_own_acti
         }
     }
 }
+
+/// Each store's `find_or_insert_user` calls since `reset`.
+fn reads(doubles: &[Arc<Double>]) -> Vec<usize> {
+    doubles
+        .iter()
+        .map(|d| d.user_reads.swap(0, Ordering::SeqCst))
+        .collect()
+}
+
+/// What `set_active` reads: each store's row of the wallet's user once for
+/// a no-op, twice (the active) or three times (each other store) for a
+/// switch, and once more each after an error inside the transition.
+#[tokio::test]
+async fn set_active_reads_each_stores_row_once_for_a_no_op_and_more_for_a_switch() {
+    for n in [2, 3] {
+        let cell = Cell {
+            n,
+            switched: false,
+            role: Role::Target,
+            fails: Fails::SetActive,
+        };
+        let (doubles, mgr) = setup(cell).await;
+        reads(&doubles);
+        let noop = refusal(&mgr.set_active(SRC).await);
+        let noop_reads = reads(&doubles);
+        let switch = refusal(&mgr.set_active(DST).await);
+        let switch_reads = reads(&doubles);
+
+        let (doubles, mgr) = setup(cell).await;
+        arm(&doubles[1], Fails::SetActive, true);
+        reads(&doubles);
+        let failed = refusal(&mgr.set_active(DST).await);
+        let failed_reads = reads(&doubles);
+        println!(
+            "WITNESS {n} stores, user reads per store: no-op {noop} {noop_reads:?}; switch A to B {switch} {switch_reads:?}; switch failing at B {failed} {failed_reads:?}"
+        );
+        assert_eq!(noop, "ok");
+        assert_eq!(noop_reads, vec![1; n]);
+        assert_eq!(switch, "ok");
+        let mut expected = vec![3; n];
+        expected[0] = 2;
+        assert_eq!(switch_reads, expected);
+        assert_eq!(failed, "Storage error: B refused set_active");
+        let once_more: Vec<usize> = expected.iter().map(|r| r + 1).collect();
+        assert_eq!(failed_reads, once_more);
+    }
+}
+
+/// `set_active` to the manager's own active, every row naming it, answers
+/// a store's error when that store cannot be read.
+#[tokio::test]
+async fn set_active_to_its_own_active_answers_a_store_that_cannot_be_read() {
+    let cell = Cell {
+        n: 2,
+        switched: false,
+        role: Role::Target,
+        fails: Fails::SetActive,
+    };
+    let (doubles, mgr) = setup(cell).await;
+    doubles[1].refuse_user_reads.store(true, Ordering::SeqCst);
+    let r = refusal(&mgr.set_active(SRC).await);
+    let after = (rows(&doubles).await, state(&mgr).await);
+    doubles[1].refuse_user_reads.store(false, Ordering::SeqCst);
+    let again = mgr.set_active(SRC).await;
+    println!(
+        "WITNESS set_active(A) to its own active, B unreadable: {r}; {after:?}; once B answers: {}",
+        refusal(&again)
+    );
+    assert_eq!(r, "Storage error: B refused the user read");
+    assert_eq!(after, (vec!["A".into(), "A".into()], ("A".into(), true)));
+    assert_eq!(again.unwrap(), format!("setActive to {SRC} unchanged\n"));
+}
+
+/// After A to B, `set_active(A)` failing at B leaves the rows A, B; a
+/// store added to the manager then (its row naming B) partitions the
+/// stores again, and the manager answers as one made new over stores
+/// that disagree: A active, not enabled, `update_backups` and `set_active`
+/// to either refused.
+#[tokio::test]
+async fn a_store_added_after_a_part_way_failure_partitions_again() {
+    let denied = "Access denied: Operation requires active storage";
+    let cell = Cell {
+        n: 2,
+        switched: true,
+        role: Role::Active,
+        fails: Fails::SetActive,
+    };
+    let (doubles, mgr) = setup(cell).await;
+    arm(&doubles[1], Fails::SetActive, true);
+    let failed = refusal(&mgr.set_active(SRC).await);
+    arm(&doubles[1], Fails::SetActive, false);
+    let before = state(&mgr).await;
+    let c = bsv_wallet_toolbox_rs::StorageSqlx::in_memory()
+        .await
+        .unwrap();
+    c.migrate(name(THIRD), THIRD).await.unwrap();
+    c.make_available().await.unwrap();
+    let (u, _) = c.find_or_insert_user(ALICE).await.unwrap();
+    c.update_user_active_storage(u.user_id, DST).await.unwrap();
+    let added = refusal(
+        &mgr.add_wallet_storage_provider(Arc::new(c) as Arc<dyn MonitorStorage>)
+            .await,
+    );
+    let after = state(&mgr).await;
+    let backups = refusal(&mgr.update_backups().await);
+    let to_a = refusal(&mgr.set_active(SRC).await);
+    let to_b = refusal(&mgr.set_active(DST).await);
+    println!(
+        "WITNESS after A to B, set_active(A) failing at B: {failed}, {before:?}; a store added: {added}, {after:?}; update_backups {backups}; set_active(A) {to_a}; set_active(B) {to_b}"
+    );
+    assert_eq!(failed, "Storage error: B refused set_active");
+    assert_eq!(before, ("B".into(), false));
+    assert_eq!(added, "ok");
+    assert_eq!(after, ("A".into(), false));
+    assert_eq!((backups.as_str(), to_a.as_str()), (denied, denied));
+    assert_eq!(to_b, denied);
+}
