@@ -83,6 +83,33 @@ impl ManagedStorage {
     }
 }
 
+/// Whether the active is enabled, the one answer of `is_active_enabled` and
+/// of `is_enabled` in `get_stores`: an active is held, its row names it, no
+/// store conflicts, every open store's row names it (a store pushed and not
+/// yet open holds no row and no role), and no `set_active` transition is in
+/// doubt.
+fn active_enabled(
+    stores: &[ManagedStorage],
+    active_index: Option<usize>,
+    conflicting: &[usize],
+    in_doubt: bool,
+) -> bool {
+    let Some(key) = active_index
+        .and_then(|idx| stores.get(idx))
+        .filter(|s| s.is_open())
+        .and_then(|s| s.settings.as_ref())
+        .map(|settings| &settings.storage_identity_key)
+    else {
+        return false;
+    };
+    !in_doubt
+        && conflicting.is_empty()
+        && stores
+            .iter()
+            .filter(|s| s.is_open())
+            .all(|s| s.user.as_ref().and_then(|u| u.active_storage.as_ref()) == Some(key))
+}
+
 /// Default lock acquisition timeout in seconds.
 const LOCK_TIMEOUT_SECS: u64 = 30;
 
@@ -431,23 +458,10 @@ impl WalletStorageManager {
     /// 5. No `set_active` transition has begun to write without completing
     ///    or reading every store's row again (a call dropped at an await)
     pub async fn is_active_enabled(&self) -> bool {
-        if self.rows_in_doubt() {
-            return false;
-        }
         let stores = self.stores.read().await;
         let active_index = self.active_index.read().await;
         let conflicting = self.conflicting_indices.read().await;
-
-        if let Some(idx) = *active_index {
-            if let Some(settings) = stores.get(idx).and_then(|s| s.settings.as_ref()) {
-                let key = &settings.storage_identity_key;
-                return conflicting.is_empty()
-                    && stores.iter().all(|s| {
-                        s.user.as_ref().and_then(|u| u.active_storage.as_ref()) == Some(key)
-                    });
-            }
-        }
-        false
+        active_enabled(&stores, *active_index, &conflicting, self.rows_in_doubt())
     }
 
     fn rows_in_doubt(&self) -> bool {
@@ -548,11 +562,11 @@ impl WalletStorageManager {
             return Ok(settings);
         }
 
-        // Reset state
-        *self.active_index.write().await = None;
-        *self.backup_indices.write().await = Vec::new();
-        *self.conflicting_indices.write().await = Vec::new();
-
+        // No role is reset here: the roles change only through the
+        // partition at the open's end, from the rows it read, so every call
+        // meanwhile answers on the roles the manager had (none before its
+        // earliest open). Stores are only ever appended, so the indices held
+        // stay valid while a store is pushed.
         let identity_key = self.auth_id.read().await.identity_key.clone();
         // The stores to initialize, copied out: no state lock is held while
         // a store answers.
@@ -889,11 +903,14 @@ impl WalletStorageManager {
             provider.set_services(services);
         }
 
+        // The store is pushed not open: it holds no role until the open
+        // below ends with a partition that takes it in. The manager stays
+        // available on the roles it had meanwhile, and after an open that
+        // fails, which the next open (`make_available`) tries again.
         self.stores
             .write()
             .await
             .push(ManagedStorage::new(provider));
-        *self.is_available.write().await = false;
 
         self.make_available().await?;
         Ok(())
@@ -905,7 +922,12 @@ impl WalletStorageManager {
         let active_idx = self.active_index.read().await;
         let backup_indices = self.backup_indices.read().await;
         let conflicting_indices = self.conflicting_indices.read().await;
-        let in_doubt = self.rows_in_doubt();
+        let enabled = active_enabled(
+            &stores,
+            *active_idx,
+            &conflicting_indices,
+            self.rows_in_doubt(),
+        );
 
         let mut result = Vec::new();
 
@@ -914,17 +936,7 @@ impl WalletStorageManager {
             let is_backup = backup_indices.contains(&i);
             let is_conflicting = conflicting_indices.contains(&i);
 
-            let is_enabled = if is_active {
-                if let (Some(settings), Some(user)) = (&store.settings, &store.user) {
-                    user.active_storage.as_ref() == Some(&settings.storage_identity_key)
-                        && conflicting_indices.is_empty()
-                        && !in_doubt
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
+            let is_enabled = is_active && enabled;
 
             result.push(WalletStorageInfo {
                 is_active,
