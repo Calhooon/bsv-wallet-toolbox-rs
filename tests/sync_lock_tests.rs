@@ -494,7 +494,10 @@ async fn a_set_active_beside_an_add_calls_only_the_open_stores() {
         .filter(|e| e.contains("enter"))
         .cloned()
         .collect();
-    let held_state = state(&mgr).await;
+    let held_active = match mgr.get_active_store().await {
+        Ok(key) => name(&key).to_string(),
+        Err(e) => e.to_string(),
+    };
 
     fourth.user_read_release.notify_one();
     let added = bounded("the new store's open", add).await.unwrap();
@@ -509,7 +512,7 @@ async fn a_set_active_beside_an_add_calls_only_the_open_stores() {
     let reads_by_next = fourth.user_reads.load(Ordering::SeqCst) - reads_before_next;
     let backups = mgr.get_backup_stores().await;
     println!(
-        "WITNESS set_active beside an add: ended while the open was held {ended_while_held}; the new store's user reads by the transition {reads_by_switch}, its set_active calls {set_actives_on_new:?}; state while held {held_state:?}; set_active {}; add {}; next {:?}, its reads of the new store {reads_by_next}; backups {}; {:?}",
+        "WITNESS set_active beside an add: ended while the open was held {ended_while_held}; the new store's user reads by the transition {reads_by_switch}, its set_active calls {set_actives_on_new:?}; active while held {held_active}; set_active {}; add {}; next {:?}, its reads of the new store {reads_by_next}; backups {}; {:?}",
         refusal(&switched),
         refusal(&added),
         next.as_ref().map(|s| s.trim().to_string()).map_err(|e| e.to_string()),
@@ -521,7 +524,7 @@ async fn a_set_active_beside_an_add_calls_only_the_open_stores() {
     assert!(ended_while_held);
     // While the new store's open runs the manager is not enabled (its
     // row is not yet read); the active is the target.
-    assert_eq!(held_state.0, "B");
+    assert_eq!(held_active, "B");
     assert_eq!(refusal(&switched), "ok");
     assert_eq!(refusal(&added), "ok");
     assert_eq!(next.unwrap(), format!("setActive to {DST} unchanged\n"));
