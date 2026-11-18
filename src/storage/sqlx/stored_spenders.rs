@@ -305,12 +305,20 @@ pub(crate) async fn withheld_to_try(pool: &sqlx::SqlitePool) -> Result<Vec<(i64,
 }
 
 /// The output rows a send of the caller's `nosend` transaction `txid`
-/// releases: its change that records no spender, the transaction's own row
-/// reading `nosend` and the caller's.
+/// releases, the transaction's own row reading `nosend` and the caller's:
+/// each output the `noSend` state held back, the change and every output
+/// the action put in a basket, that records no spender. While the
+/// transaction reads `nosend` processAction writes every output of it not
+/// spendable (and every output of any other transaction spendable), so a
+/// row of it not spendable with no spender is one the state held back. An
+/// output in no basket stays as it is: one paid to another key, or one the
+/// host relinquished (`relinquishOutput` clears its basket), is not the
+/// wallet's to list or spend.
 const SENT_ROWS: &str = "SELECT o.output_id, o.vout FROM outputs o \
      JOIN transactions t ON t.transaction_id = o.transaction_id \
      WHERE t.txid = ? AND t.user_id = ? AND t.status = 'nosend' \
-       AND o.user_id = t.user_id AND o.change = 1 AND o.spendable = 0 AND o.spent_by IS NULL \
+       AND o.user_id = t.user_id AND o.basket_id IS NOT NULL \
+       AND o.spendable = 0 AND o.spent_by IS NULL \
      ORDER BY o.output_id";
 
 /// The store's transactions as a search read them: the highest id and the
@@ -354,7 +362,8 @@ impl SentChangeSearch {
 
 /// The search of `release_sent_change`, run on a reader before the caller's
 /// write: for each of `txids` the caller's `nosend` transaction's change
-/// rows that record no spender, and what the store holds that spends each.
+/// rows the send would release (`SENT_ROWS`), and what the store holds that
+/// spends each.
 /// `current`: the reference of an action the write signs (its own row is
 /// left out of the unread count; the write reads its bytes).
 pub(crate) async fn search_sent_change(
@@ -391,8 +400,9 @@ pub(crate) async fn search_sent_change(
 }
 
 /// The caller's `nosend` transaction `txid` being sent (its own row still
-/// reads `nosend` and is the caller's, `user_id`): each change output of it
-/// that records no spender becomes spendable in the caller's write, unless
+/// reads `nosend` and is the caller's, `user_id`): each output of it the
+/// `noSend` state held back (`SENT_ROWS`: the change and each output in a
+/// basket) that records no spender becomes spendable in the caller's write, unless
 /// a transaction this store holds spends it (by its bytes or as a recorded
 /// spender on a row of it) or an unread row could hide one; one withheld
 /// only for an unread row is recorded for the unfail task to try again.
