@@ -1245,14 +1245,19 @@ pub trait MonitorStorage: WalletStorageProvider {
     /// Synchronize transaction statuses by fetching merkle proofs.
     ///
     /// This method:
-    /// 0. Adopts proof-less `transactions` rows that have NO proven_tx_req into
-    ///    the req set (the SQLx backend's `adopt_unproven_transactions`; bounded
-    ///    per pass) — otherwise such a row is invisible to every step below
+    /// 0. Adopts proof-less `transactions` rows into the req set (the SQLx
+    ///    backend's `adopt_unproven_transactions`): a row whose txid has a
+    ///    proof row this store has not marked refuted is linked to it (and
+    ///    completed only where the store checked that proof's root), and a
+    ///    row with NO proven_tx_req and no proof row gets an `unmined` one
+    ///    (bounded per pass); otherwise such a row is invisible to every
+    ///    step below
     /// 1. Queries proven_tx_reqs with status: unmined, unknown, callback, sending, unconfirmed
     /// 2. For each transaction, fetches merkle path from services
     /// 3. On success with proof: updates proven_tx_req to completed, updates transaction status
     /// 4. On not found: increments attempts counter
-    /// 5. Marks transactions as invalid after max attempts exceeded
+    /// 5. Past the attempt count, logs and asks again at the next header
+    ///    (the SQLx backend writes no word for a count)
     ///
     /// # Returns
     ///
