@@ -331,3 +331,39 @@ async fn the_refused_read_takes_no_more_than_the_bound() {
     let read = read_lookup_body(get(url).await, max).await.unwrap();
     assert_eq!(read.len(), max);
 }
+
+// =============================================================================
+// Outputs an answer carries that hold nothing to read
+// =============================================================================
+
+/// An overlay output whose PushDrop decodes with no field, and one whose
+/// output index is past its transaction's outputs, are skipped: the call
+/// answers with the answer's other output.
+#[tokio::test]
+async fn an_output_with_no_field_or_no_such_output_is_skipped() {
+    let answer = answer_of(vec![
+        (beef_of(pushdrop(vec![])), 0),
+        (beef_of(cert_lock("Z")), 7),
+        (beef_of(cert_lock("Y")), 0),
+    ]);
+    let (host, _) = listener(Answer::ok(answer, Framing::Length)).await;
+    let (tracker, _) = listener(Answer::ok(slap_answer(&[&host]), Framing::Length)).await;
+    assert_eq!(serials(vec![tracker]).await, vec!["Y".to_string()]);
+}
+
+/// A SLAP output whose PushDrop decodes with no field, and one whose output
+/// index is past its transaction's outputs, name no host: the host the
+/// answer's other output names is called.
+#[tokio::test]
+async fn a_slap_output_with_no_field_or_no_such_output_names_no_host() {
+    let (y, _) = listener(Answer::ok(cert_answer(&["Y"]), Framing::Length)).await;
+    let mut outputs = vec![(beef_of(pushdrop(vec![])), 0)];
+    let named: LookupAnswer = serde_json::from_slice(&slap_answer(&[&y])).unwrap();
+    let LookupAnswer::OutputList { outputs: named } = named else {
+        unreachable!()
+    };
+    outputs.push((named[0].beef.clone(), 3));
+    outputs.push((named[0].beef.clone(), 0));
+    let (tracker, _) = listener(Answer::ok(answer_of(outputs), Framing::Length)).await;
+    assert_eq!(serials(vec![tracker]).await, vec!["Y".to_string()]);
+}

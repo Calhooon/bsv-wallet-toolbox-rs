@@ -562,8 +562,17 @@ fn parse_single_output(beef: &[u8], output_index: u32) -> Result<OverlayCertific
     let decoded = PushDrop::decode(&output.locking_script)
         .map_err(|e| crate::Error::ServiceError(format!("Failed to decode PushDrop: {}", e)))?;
 
-    // Parse the first field as JSON certificate
-    let cert_json = String::from_utf8(decoded.fields[0].clone())
+    // Parse field 0 as the JSON certificate; a PushDrop with no field
+    // carries none, and the output is skipped as any other malformed one.
+    let field = match decoded.fields.as_slice() {
+        [field, ..] => field,
+        [] => {
+            return Err(crate::Error::ServiceError(
+                "PushDrop carries no field".into(),
+            ))
+        }
+    };
+    let cert_json = String::from_utf8(field.clone())
         .map_err(|e| crate::Error::ServiceError(format!("Invalid UTF-8 in certificate: {}", e)))?;
 
     let cert: OverlayCertificate = serde_json::from_str(&cert_json)?;
