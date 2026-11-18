@@ -50,8 +50,11 @@
 //!   write, so the output was held when the action was made), or when the
 //!   output's transaction is an outgoing action with a higher
 //!   `transaction_id` and a `created_at` not older than the action's (its
-//!   txid did not exist when the action was made). Its one limit: that
-//!   second arm trusts the stamp, which a sync carries from its reader.
+//!   txid did not exist when the action was made). Its two limits: that
+//!   second arm trusts the stamp, which a sync carries from its reader;
+//!   and the other arm reads a row written before the action as held
+//!   then, which an output row of the user's own action not yet signed
+//!   (no txid to be looked up by) was not (#864).
 //!   An action made before the user's row of the output was written (it
 //!   took the output as an input from outside the store), an action with
 //!   no output row of its own, another user's row, and a row a sync
