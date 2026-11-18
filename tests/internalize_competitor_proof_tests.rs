@@ -47,6 +47,12 @@ const PREFIX: &str = "Y29tcGV0aXRvcg==";
 const SUFFIX: &str = "c3RhbmRz";
 const ORIGIN: &str = "test.local";
 
+/// A door note of another user's presentation on the standing request.
+const FOREIGN_NOTE: &str = r#"{"notes":[{"what":"doorPost","door":"internalize","user":999999,"instance":"arcade","word":"another user's words"}]}"#;
+
+/// The reference's sentence of the review-actions refusal.
+const SENTENCE: &str = "Undelayed createAction or signAction results require review.";
+
 /// The height of the competitor's block.
 const COMPETITOR_HEIGHT: u32 = ProtocolEra::MAINNET_GENESIS_HEIGHT + 150;
 
@@ -132,6 +138,8 @@ struct Reading {
     other: Option<String>,
     mine: Option<String>,
     taken: bool,
+    /// The refusal's message, when the call answered one.
+    message: Option<String>,
 }
 
 async fn scalar(wallet: &TestWallet, sql: &str, txid: &str) -> Option<String> {
@@ -286,10 +294,11 @@ async fn cell(word: Option<&str>, proof: Proof, act: Act) -> Reading {
         let then = chrono::Utc::now() - chrono::Duration::hours(2);
         sqlx::query(
             "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, \
-             raw_tx, input_beef, created_at, updated_at) VALUES (?, ?, 0, '{}', 0, '{}', ?, ?, ?, ?)",
+             raw_tx, input_beef, created_at, updated_at) VALUES (?, ?, 0, ?, 0, '{}', ?, ?, ?, ?)",
         )
         .bind(&txid)
         .bind(word)
+        .bind(FOREIGN_NOTE)
         .bind(&parts.raw)
         .bind(&parts.beef)
         .bind(then)
@@ -300,16 +309,19 @@ async fn cell(word: Option<&str>, proof: Proof, act: Act) -> Reading {
     }
 
     let mut answer = "-".to_string();
+    let mut message = None;
     match act {
         Act::Door => {
-            answer = read_answer(
-                wallet
-                    .internalize_action(
-                        common::args(parts.beef.clone(), common::payment(&sender, PREFIX, SUFFIX)),
-                        Some(ORIGIN),
-                    )
-                    .await,
-            );
+            let got = wallet
+                .internalize_action(
+                    common::args(parts.beef.clone(), common::payment(&sender, PREFIX, SUFFIX)),
+                    Some(ORIGIN),
+                )
+                .await;
+            if let Err(bsv_rs::Error::WalletReviewActions(r)) = &got {
+                message = Some(r.message.clone());
+            }
+            answer = read_answer(got);
         }
         Act::SendWaiting => {
             store
@@ -372,6 +384,7 @@ async fn cell(word: Option<&str>, proof: Proof, act: Act) -> Reading {
         )
         .await
         .is_some(),
+        message,
     }
 }
 
@@ -499,6 +512,19 @@ async fn the_door_posts_nothing_for_a_refuted_presentation() {
         refuted.posts, refuted.answer, unrefuted.posts, unrefuted.answer
     );
     assert_eq!((refuted.posts, unrefuted.posts), (0, 1));
+}
+
+/// ITEM 3: a call that made no post (a competitor's checked proof
+/// refutes it) finds none of its own notes: its message is the sentence
+/// alone, never another user's presentation's words on the request.
+#[tokio::test]
+async fn a_call_that_made_no_post_gives_the_sentence_alone() {
+    let got = cell(Some("unsent"), Proof::Checking, Act::Door).await;
+    println!(
+        "ITEM3 no post: posts {} message {:?}",
+        got.posts, got.message
+    );
+    assert_eq!((got.posts, got.message.as_deref()), (0, Some(SENTENCE)));
 }
 
 /// `ACTS` and `PROOFS` name every column the matrix runs.

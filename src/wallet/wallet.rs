@@ -2880,7 +2880,8 @@ where
         // results and the txid, as the reference's
         // `throwIfUnsuccessfulInternalizeAction` (ts-stack@11faa7d1
         // `Wallet.ts:1604-1612`), its message the reference's sentence and
-        // each instance's words from the request's history.
+        // each instance's words from this user's door notes on the
+        // request's history (`door_words_for`).
         if result
             .send_with_results
             .as_ref()
@@ -2896,7 +2897,9 @@ where
             {
                 Ok(reqs) => reqs
                     .first()
-                    .map(|req| super::internalize_answer::last_door_words(&req.history))
+                    .map(|req| {
+                        super::internalize_answer::door_words_for(&req.history, self.user_id)
+                    })
                     .unwrap_or_default(),
                 Err(_) => Vec::new(),
             };

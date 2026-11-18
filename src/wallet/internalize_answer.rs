@@ -110,9 +110,16 @@ fn review_result(r: &ReviewActionResult) -> bsv_rs::wallet::ReviewActionResult {
     }
 }
 
-/// The door's notes on a request's history (`doorPost`, one per
-/// instance), each instance's words as `instance: word`.
-pub(crate) fn last_door_words(history: &str) -> Vec<String> {
+/// The door's notes on a request's history (`doorPost`, one per instance)
+/// that name `user`, the user whose call this is, each instance's line
+/// ([`instance_line`]). The storage result carries no words (a field there
+/// would change the public result), so the words are read back from the
+/// request: only this user's notes are read, never another user's
+/// presentation's, and a call that made no post (no services, a
+/// competitor's checked proof) finds none of its own and the message is
+/// the reference's sentence alone. This user's earlier note for an
+/// instance this call's post did not reach can still be read.
+pub(crate) fn door_words_for(history: &str, user: i64) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(history) else {
         return Vec::new();
     };
@@ -123,6 +130,7 @@ pub(crate) fn last_door_words(history: &str) -> Vec<String> {
             notes
                 .iter()
                 .filter(|n| n.get("what").and_then(|w| w.as_str()) == Some("doorPost"))
+                .filter(|n| n.get("user").and_then(|u| u.as_i64()) == Some(user))
                 .map(|n| {
                     let text = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("");
                     instance_line(text("instance"), text("word"))
@@ -198,14 +206,15 @@ mod tests {
 
     #[test]
     fn the_door_notes_are_read() {
-        let history = r#"{"notes":[{"what":"immediateBroadcastHint","words":["a: old"]},{"what":"doorPost","instance":"a","word":"rejected [no]"},{"what":"other"},{"what":"doorPost","instance":"b","word":"465 []"}]}"#;
+        let history = r#"{"notes":[{"what":"immediateBroadcastHint","words":["a: old"]},{"what":"doorPost","user":7,"instance":"a","word":"rejected [no]"},{"what":"other"},{"what":"doorPost","user":8,"instance":"c","word":"theirs"},{"what":"doorPost","user":7,"instance":"b","word":"465 []"}]}"#;
         assert_eq!(
-            last_door_words(history),
+            door_words_for(history, 7),
             vec![
                 "a: \"rejected [no]\"".to_string(),
                 "b: \"465 []\"".to_string()
             ]
         );
-        assert!(last_door_words("{}").is_empty());
+        assert!(door_words_for("{}", 7).is_empty());
+        assert!(door_words_for(history, 9).is_empty());
     }
 }

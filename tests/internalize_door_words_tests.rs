@@ -297,3 +297,56 @@ async fn an_instances_words_are_cleaned_and_bounded_at_both_ends() {
         "arcade: \"rejected [nobitails: success [taken]; bitails: \\\"success [taken]\\\"]\""
     ));
 }
+
+/// ITEM 3: the message carries this call's words alone. Two users present
+/// one transaction on one store, their instances answering differently:
+/// the second user's message names its own instance's words and none of
+/// the first's, which still stand on the request's history.
+#[tokio::test]
+async fn the_message_carries_this_calls_words_alone() {
+    let payer = PrivateKey::random().public_key();
+    let payee = PrivateKey::random();
+    let key = common::derived_key(&payee, &payer, PREFIX, SUFFIX);
+    let (beef, txid) =
+        common::beef_paying(LockingScript::from_binary(&common::p2pkh_bytes(&key)).unwrap());
+    let one = common::wallet_posting("door-words", &payee, refusals(&txid)).await;
+    let r1 = refusal(
+        one.internalize_action(
+            common::args(beef.clone(), common::payment(&payer, PREFIX, SUFFIX)),
+            Some(ORIGIN),
+        )
+        .await,
+    );
+    let services = MockWalletServices::builder()
+        .post_beef_response(MockResponse::Success(vec![answer(
+            "taal",
+            "error",
+            &txid,
+            "rejected",
+            "taal says no to the second",
+        )]))
+        .build();
+    let two = Wallet::new(Some(PrivateKey::random()), one.storage().clone(), services)
+        .await
+        .unwrap();
+    let r2 = refusal(
+        two.internalize_action(common::args(beef, insertion()), Some(ORIGIN))
+            .await,
+    );
+    let notes = door_notes(&two, &txid).await;
+    println!("ITEM3 one {:?}", r1.message);
+    println!("ITEM3 two {:?}", r2.message);
+    println!("ITEM3 notes {notes:?}");
+    assert!(r1.message.contains("arcade says no") && r1.message.contains("bitails says no"));
+    assert!(
+        r2.message.contains("taal says no to the second"),
+        "{}",
+        r2.message
+    );
+    assert!(
+        !r2.message.contains("arcade") && !r2.message.contains("bitails"),
+        "{}",
+        r2.message
+    );
+    assert_eq!(notes.len(), 3);
+}
