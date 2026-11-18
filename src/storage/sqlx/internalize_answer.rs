@@ -98,9 +98,31 @@ pub(crate) enum InstanceWord {
 
 use super::internalize_action::is_refusal;
 
-/// One instance's word.
-pub(crate) fn instance_word(result: &PostBeefResult) -> InstanceWord {
-    if result.is_success() {
+/// The instances whose word in `words` accepted `txid`: an acceptance with
+/// no per-txid result, or one whose result for `txid` is a success. The one
+/// reader of a take in an instance's answer: the door, the wallet's own
+/// post (`process_action`) and [`instance_word`] read it.
+pub(crate) fn accepting_instances<'a>(words: &'a [PostBeefResult], txid: &str) -> Vec<&'a str> {
+    words
+        .iter()
+        .filter(|w| takes(w, txid))
+        .map(|w| w.name.as_str())
+        .collect()
+}
+
+/// Did `result` take `txid` ([`accepting_instances`]'s rule)?
+fn takes(result: &PostBeefResult, txid: &str) -> bool {
+    result.is_success()
+        && (result.txid_results.is_empty()
+            || result
+                .txid_results
+                .iter()
+                .any(|r| r.txid == txid && r.is_success()))
+}
+
+/// One instance's word on `txid`.
+pub(crate) fn instance_word(result: &PostBeefResult, txid: &str) -> InstanceWord {
+    if takes(result, txid) {
         return InstanceWord::Took;
     }
     let refusals: Vec<_> = result
@@ -121,8 +143,8 @@ pub(crate) fn instance_word(result: &PostBeefResult) -> InstanceWord {
 /// The review status of a post no instance took (reading 10): `doubleSpend`
 /// when any refusal named a competitor; `invalidTx` only when every named
 /// instance said no; otherwise `serviceError`.
-pub(crate) fn held_status(results: &[PostBeefResult]) -> ReviewActionResultStatus {
-    let words: Vec<_> = results.iter().map(instance_word).collect();
+pub(crate) fn held_status(results: &[PostBeefResult], txid: &str) -> ReviewActionResultStatus {
+    let words: Vec<_> = results.iter().map(|r| instance_word(r, txid)).collect();
     if words.iter().any(|w| {
         matches!(
             w,
@@ -144,10 +166,10 @@ pub(crate) fn held_status(results: &[PostBeefResult]) -> ReviewActionResultStatu
 }
 
 /// Whether any instance said no (the door then asks the status sources).
-pub(crate) fn any_refusal(results: &[PostBeefResult]) -> bool {
+pub(crate) fn any_refusal(results: &[PostBeefResult], txid: &str) -> bool {
     results
         .iter()
-        .any(|r| matches!(instance_word(r), InstanceWord::SaidNo { .. }))
+        .any(|r| matches!(instance_word(r, txid), InstanceWord::SaidNo { .. }))
 }
 
 /// The competitors the refusals named, each once, in order.
@@ -201,15 +223,30 @@ mod tests {
         let no = answer("a", "rejected", false, None);
         let rival = answer("b", "error", true, Some("cc"));
         let silent = answer("c", "serviceError", false, None);
-        assert_eq!(held_status(&[no.clone(), rival.clone()]), DoubleSpend);
-        assert_eq!(held_status(&[silent.clone(), rival]), DoubleSpend);
-        assert_eq!(held_status(&[no.clone(), no.clone()]), InvalidTx);
-        assert_eq!(held_status(&[no, silent.clone()]), ServiceError);
-        assert_eq!(held_status(&[silent]), ServiceError);
-        assert_eq!(held_status(&[]), ServiceError);
+        assert_eq!(
+            held_status(&[no.clone(), rival.clone()], &"aa".repeat(32)),
+            DoubleSpend
+        );
+        assert_eq!(
+            held_status(&[silent.clone(), rival], &"aa".repeat(32)),
+            DoubleSpend
+        );
+        assert_eq!(
+            held_status(&[no.clone(), no.clone()], &"aa".repeat(32)),
+            InvalidTx
+        );
+        assert_eq!(
+            held_status(&[no, silent.clone()], &"aa".repeat(32)),
+            ServiceError
+        );
+        assert_eq!(held_status(&[silent], &"aa".repeat(32)), ServiceError);
+        assert_eq!(held_status(&[], &"aa".repeat(32)), ServiceError);
         // A double-spend word that names nobody is a no, not a competitor.
         let unnamed = answer("d", "error", true, None);
-        assert_eq!(held_status(&[unnamed.clone(), unnamed]), InvalidTx);
+        assert_eq!(
+            held_status(&[unnamed.clone(), unnamed], &"aa".repeat(32)),
+            InvalidTx
+        );
     }
 
     #[test]

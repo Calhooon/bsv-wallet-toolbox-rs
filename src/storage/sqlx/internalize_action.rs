@@ -1590,16 +1590,19 @@ async fn broadcast_new_internalized_req(
         }
     };
 
-    let success = results_vec.iter().any(|r| r.is_success());
+    // A take is read per txid (`internalize_answer::accepting_instances`):
+    // an instance whose success names another txid did not take this one.
+    let accepting = internalize_answer::accepting_instances(&results_vec, txid);
+    let success = !accepting.is_empty();
 
     if !success {
         // A refusal: the payer may have already broadcast this tx; a status
         // source that holds it makes it a success.
-        let alive = internalize_answer::any_refusal(&results_vec)
+        let alive = internalize_answer::any_refusal(&results_vec, txid)
             && super::process_action::reconcile_tx_status_via_services(&*services, txid).await;
 
         if !alive {
-            let status = internalize_answer::held_status(&results_vec);
+            let status = internalize_answer::held_status(&results_vec, txid);
             let competitors = internalize_answer::named_competitors(&results_vec);
             // The history's word, as the door has always written it.
             let word = if results_vec.iter().any(|r| {
@@ -1608,7 +1611,7 @@ async fn broadcast_new_internalized_req(
                     .any(|tr| tr.double_spend && !tr.orphan_mempool)
             }) {
                 "doubleSpend"
-            } else if internalize_answer::any_refusal(&results_vec) {
+            } else if internalize_answer::any_refusal(&results_vec, txid) {
                 "invalidTx"
             } else if results_vec
                 .iter()
@@ -1641,10 +1644,9 @@ async fn broadcast_new_internalized_req(
 
     // Success (accepted, already known, or reconciled-alive).
     let takers: Vec<(&str, &str)> = if success {
-        results_vec
+        accepting
             .iter()
-            .filter(|r| r.is_success())
-            .map(|r| (r.name.as_str(), BROADCAST_STATUS_ACCEPTED))
+            .map(|name| (*name, BROADCAST_STATUS_ACCEPTED))
             .collect()
     } else {
         vec![(BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_SEEN)]
