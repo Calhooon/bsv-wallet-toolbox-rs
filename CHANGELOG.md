@@ -53,8 +53,8 @@
   reports `006_held_receipts`.
 - `internalizeAction` answers the review-actions refusal when no
   broadcaster takes a received transaction that carries no checked proof
-  (the owner's ruling of 2026-11-17): `accepted: true` now means a checked
-  proof or at least one named instance's take. Taken by nobody, the
+  (the owner's ruling of 2026-11-17; what `accepted: true` means is the
+  Hosts line on it, below). Taken by nobody, the
   transaction stays held (`sending`), nothing is undone, and the call
   answers `Error::ReviewActions` (bsv-rs's `WalletReviewActions`, wire
   code 5) with the txid, one send result `{txid, sending}` (never
@@ -64,16 +64,69 @@
   every named instance said no and none named a competitor, and
   `serviceError` otherwise (no instance answered, or some said no and some
   did not answer). Its message is the reference's sentence, then each
-  instance's words as the door recorded them on the request's history,
-  each cut to 256 bytes and the whole to 1024: `Undelayed createAction or
-  signAction results require review. no instance answered: Network error:
-  no instance answered`, or `Undelayed createAction or signAction results
-  require review. arcade: error [DOUBLE_SPEND_ATTEMPTED]; bitails:
-  rejected [bitails refuses the body]` (from runs of
+  instance's line from this call's own door notes (the entry on the
+  message's words, below): `Undelayed createAction or signAction results
+  require review. arcade: "error [DOUBLE_SPEND_ATTEMPTED]"; bitails:
+  "rejected [bitails refuses the body]"` (from a run of
   `tests/internalize_held_answer_tests.rs`). The storage result carries
   the two fields (`send_with_results` and `not_delayed_results`, on the
-  wire `sendWithResults` and `notDelayedResults`), so a `StorageClient`
-  and a `WalletStorageManager` give the same answer.
+  wire `sendWithResults` and `notDelayedResults`); the wallet's answer is
+  witnessed over a local store, a `StorageClient` and a
+  `WalletStorageManager` (`tests/internalize_held_answer_cells_tests.rs`).
+- A competitor's checked proof stands against any take (the keeper's
+  ruling of 2026-11-18). A competitor's checked proof is a transaction the
+  store records as spending an outpoint this one spends (an output row of
+  the store whose `spent_by` names it), whose stored bytes spend that
+  outpoint, and whose stored merkle path checks against our headers at the
+  time of asking. With one held and checking, the door gives the answer for
+  a refuted payment and posts nothing: the review-actions refusal with
+  `doubleSpend` naming the competitor and the send result `failed`, and
+  no row of this user written. Every writer of a take (the door, the
+  send-waiting task, the retire path's status source, the unfail task and
+  the wallet's own post) applies it through one write that raises nothing
+  while such a proof stands (no request moved to `unmined`, no row to
+  `unproven`, no take recorded; a note on the request); when a reorg has
+  taken the competitor's root away, a take heard after counts. That write
+  has one rule: the request to `unmined` from every word but `completed`,
+  every row of the txid neither `failed` nor `completed` to `unproven` (the
+  unfail task's recovery also lifts `failed`). So the wallet's own accepted
+  post now moves another user's `invalid` or `doubleSpend` request with no
+  competitor's proof behind it to `unmined`, where it left it, and a
+  request an abort wrote `invalid` reads `unmined` when the network took
+  the transaction after all (the row stays `failed`)
+  (`tests/internalize_competitor_proof_tests.rs`: six standing requests by
+  three proofs by five acts). Its load: one indexed read per input and one
+  header read per competitor found, none when none is held, asked before
+  any writer is held; no post at all for a refuted presentation
+  (`the_door_posts_nothing_for_a_refuted_presentation`). The store holds a
+  competitor's proof only where the spent outpoint is one of its own
+  output rows: the proof path's competitor ask checks a fetched proof and
+  keeps its verdict, not the competitor's bytes or path.
+- A take is read per txid at the door, as the wallet's own post reads it:
+  an instance whose answer says success for another txid did not take
+  this one.
+- The door's note of a post nobody took is its own (`doorPost`), names the
+  presenting user and the instance, and is kept once per instance per
+  request (the newest replaces the door's older one), so presentations
+  never crowd a request's own notes out of its 32. The request's sending
+  clock (`attempts`, which paces the send-waiting task's re-ask; nothing
+  ends a request on a count) moves only for a request the presentation
+  created: other users' presentations never slow a request's own sending.
+- An instance's words are outside bytes: each note's words are cleaned
+  (control characters out) and cut to 256 bytes where they are written,
+  and cleaned and cut again where the wallet reads them into the message,
+  each instance's line its name then its words in quotes with each quote
+  and backslash escaped, so one instance's words cannot read as another
+  instance's line; the message is cut to 1024 bytes.
+- The message's words come from this call alone: the storage result has
+  no field for them (a field there would change the public result), so the
+  wallet reads back only the door notes that name its own user; a call
+  that made no post answers the reference's sentence alone.
+- A store with a chain tracker and no services has no instance to ask:
+  every receipt with no checked proof is held and answers the
+  review-actions refusal with `serviceError`, where 0.14.0-beta.9
+  answered `accepted: true`; the door's note says so (`*: "no services
+  configured: nothing was posted"`).
 - The door posts a received transaction for each user's presentation of
   it: a new row of this user with no checked proof and no recorded take
   is posted once to each named instance whatever request the store
@@ -93,9 +146,11 @@
   starts it is a user's presentation of a received transaction the store
   holds no checked proof of and no recorded take for; the act is one POST
   to each named instance, once per presentation; a repeat by the same
-  user (the merge path) posts nothing; nothing here runs on a clock (the
-  send-waiting task is unchanged); asserted by
-  `one_post_per_presentation_none_per_repeat`.
+  user (the merge path) posts nothing; asserted by
+  `one_post_per_presentation_none_per_repeat`. The door adds no clock and
+  no act of the send-waiting task: a post nobody took moves the request's
+  re-ask clock only for a request the presentation created (no test
+  counts the send-waiting task's later posts).
 - The wallet's own accepted post of a signed transaction
   (`process_action`'s success arm) records its take in the same write
   that moves the rows: each accepting instance's name with `accepted`,
@@ -165,22 +220,47 @@ alone, so their answers here are 0.14.0-beta.8.1's):
 - The call's answer: `internalizeAction` answers the review-actions
   refusal for a held receipt (the entry on the answer, above, and the
   Hosts lines below).
+- What `accepted: true` means, said once. On a presentation (a call that
+  writes this user's row for the transaction) it means a checked proof or
+  a broadcaster's take. A later call for a transaction the wallet already
+  holds for this user answers from the merge path, and today that answer
+  is `accepted: true` whatever was taken: it does NOT mean taken, a host
+  must not rely on it, and it changes when the repeat's own answer lands.
+  A host that ignores the class and calls again with the same body meets
+  exactly that: `accepted: true`, nothing posted, the row still `sending`
+  (pinned in
+  `after_the_refusal_the_held_rows_read_as_held_and_a_repeat_answers_todays_merge`).
 - A host's `internalizeAction` may now answer `WalletReviewActions`
-  (wire code 5). A payee reads it as VALID, HELD, STILL BEING SENT, never
-  as refused: the bytes, the request and the rows are kept, the
-  transaction is `sending`, out of the balance and `listOutputs`, and the
-  wallet keeps sending it. `accepted: true` means a checked proof or a
-  broadcaster's take. A host reads the class and the statuses (the send
-  result `sending`; the review status `doubleSpend`, `invalidTx` or
-  `serviceError`), never the message. Before this change the same call
-  answered `accepted: true`: a 4500-satoshi payment no instance answered
-  read `accepted: true` at 0.14.0-beta.9 and `WalletReviewActions` with
-  `sending` and `serviceError` now.
-- A host that ignores the class and calls again with the same body makes
-  a repeat: today it answers `accepted: true` from the merge path,
-  posting nothing, the row still `sending` (pinned in
-  `after_the_refusal_the_held_rows_read_as_held_and_a_repeat_answers_todays_merge`;
-  the repeat's own answer from the stored word is a later piece).
+  (wire code 5). With the send result `sending` a payee reads it as
+  VALID, HELD, STILL BEING SENT, never as refused: the bytes, the request
+  and the rows are kept, the transaction is `sending`, out of the balance
+  and `listOutputs`. With the send result `failed` and `doubleSpend`
+  naming a competitor, a competitor's checked proof refutes the payment
+  and nothing was written; a reorg can take that proof back, so a host
+  that acts on it irreversibly waits for its own depth. Before this change
+  the same call answered `accepted: true`: a 4500-satoshi payment no
+  instance answered read `accepted: true` at 0.14.0-beta.9 and
+  `WalletReviewActions` with `sending` and `serviceError` now.
+- Who keeps sending a held payment: the door posts it once to each named
+  instance at each user's presentation; after that the send-waiting task
+  posts only requests whose word is `unsent` or `sending`, on its re-ask
+  clock. A receipt held beside another user's `nosend`, `unmined`,
+  `invalid` or `doubleSpend` request is posted at the door and then by no
+  task until the clock piece.
+- What each substrate delivers. A host in process reads the class and the
+  statuses (the send result `sending` or `failed`; the review status
+  `doubleSpend`, `invalidTx` or `serviceError`), never the message. Over
+  bsv-rs's wallet wire the processor frames code 5 with its words and
+  without its results (`wire/validation.rs`, `explicit_wallet_code`), so a
+  wire host reads the class and the message and no statuses. A host
+  behind bsv-rs's HTTP JSON client reads `Invalid internalizeAction
+  wallet error code`: that client, as the reference's, reads code 5 with
+  its results for `createAction` and `signAction` alone (bsv-rs issue
+  1058; ts-stack@11faa7d1 `HTTPWalletJSON.ts` 272 to 275).
+- A store a host opens with a chain tracker and no services: every
+  received payment with no checked proof is held and answers
+  `serviceError`, with the door's note saying no services were
+  configured, until the store is given services.
 - The reference, by commit: at its main of 2026-11-16 (ts-stack@11faa7d1,
   `storage/methods/internalizeActionCore.ts:944-968`, `Wallet.ts:1604-1612`,
   `utility/aggregateResults.ts`) it posts a new transaction with no proof
