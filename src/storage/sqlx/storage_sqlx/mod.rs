@@ -96,9 +96,8 @@ use super::create_action::{
     beef_bfs_walk, parse_input_txids, prune_beef_to_roots, rebuild_beef_for_broadcast,
 };
 
-/// Every schema migration, in order. Each schema statement is `IF NOT
-/// EXISTS` and 006's one data statement finds nothing to move a second time,
-/// so the whole list is idempotent on a database at any earlier schema.
+/// Every schema migration, in order. Each statement is `IF NOT EXISTS`, so
+/// the whole list is idempotent on a database at any earlier schema.
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001_initial", include_str!("../migrations/001_initial.sql")),
     (
@@ -116,10 +115,6 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME,
         super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_SQL,
-    ),
-    (
-        super::held_receipts::MIGRATION_006_HELD_RECEIPTS_NAME,
-        super::held_receipts::MIGRATION_006_HELD_RECEIPTS_SQL,
     ),
 ];
 

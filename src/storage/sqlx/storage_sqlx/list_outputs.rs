@@ -120,15 +120,8 @@ impl StorageSqlx {
             }
         }
 
-        // The listed transactions, less the held ones. A transaction the
-        // wallet received (`is_outgoing = 0`) that is `sending` is held (no
-        // checked proof, no broadcaster's take; the owner's ruling of
-        // 2026-11-17, DECISIONS 29.1): every output it gives the wallet, a
-        // payment or a basket insertion, is not listed and not counted. The
-        // wallet's own `sending` action (`is_outgoing = 1`) is listed with
-        // every output it carries, a payment merged into it among them.
-        let listed_not_held = "t.status IN ('completed', 'unproven', 'nosend', 'sending') \
-             AND NOT (t.status = 'sending' AND t.is_outgoing = 0)";
+        // Valid transaction statuses for outputs
+        let valid_statuses = "'completed', 'unproven', 'nosend', 'sending'";
 
         // Build the main query
         let (output_rows, total_count): (Vec<_>, u32) = if tag_ids.is_empty() {
@@ -139,9 +132,9 @@ impl StorageSqlx {
                        o.locking_script, o.custom_instructions
                 FROM outputs o
                 JOIN transactions t ON o.transaction_id = t.transaction_id
-                WHERE o.user_id = ? AND o.spendable = 1 AND {}
+                WHERE o.user_id = ? AND o.spendable = 1 AND t.status IN ({})
                 "#,
-                listed_not_held
+                valid_statuses
             );
 
             if let Some(bid) = basket_id {
@@ -161,9 +154,9 @@ impl StorageSqlx {
                 r#"
                 SELECT COUNT(*) as total FROM outputs o
                 JOIN transactions t ON o.transaction_id = t.transaction_id
-                WHERE o.user_id = ? AND o.spendable = 1 AND {}
+                WHERE o.user_id = ? AND o.spendable = 1 AND t.status IN ({})
                 "#,
-                listed_not_held
+                valid_statuses
             );
 
             if let Some(bid) = basket_id {
@@ -208,12 +201,12 @@ impl StorageSqlx {
                             AND m.is_deleted = 0) as tag_count
                     FROM outputs o
                     JOIN transactions t ON o.transaction_id = t.transaction_id
-                    WHERE o.user_id = ? AND o.spendable = 1 AND {}{}
+                    WHERE o.user_id = ? AND o.spendable = 1 AND t.status IN ({}){}
                 )
                 SELECT * FROM outputs_with_tags WHERE tag_count >= ?
                 ORDER BY output_id {} LIMIT ? OFFSET ?
                 "#,
-                tag_id_list, listed_not_held, basket_filter, order_by
+                tag_id_list, valid_statuses, basket_filter, order_by
             );
 
             let query = sqlx::query(&sql)
@@ -235,11 +228,11 @@ impl StorageSqlx {
                             AND m.is_deleted = 0) as tag_count
                     FROM outputs o
                     JOIN transactions t ON o.transaction_id = t.transaction_id
-                    WHERE o.user_id = ? AND o.spendable = 1 AND {}{}
+                    WHERE o.user_id = ? AND o.spendable = 1 AND t.status IN ({}){}
                 )
                 SELECT COUNT(*) as total FROM outputs_with_tags WHERE tag_count >= ?
                 "#,
-                tag_id_list, listed_not_held, basket_filter
+                tag_id_list, valid_statuses, basket_filter
             );
 
             let count_query = sqlx::query(&count_sql)

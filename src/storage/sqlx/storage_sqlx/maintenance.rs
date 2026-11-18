@@ -34,13 +34,8 @@ impl StorageSqlx {
             ));
         }
 
-        // 2. Find transactions where status doesn't match proven_tx_req status.
-        // A received `sending` row heals only on a recorded take or a stored
-        // proof whose root was checked (`held_receipts::taken_condition`,
-        // DECISIONS 29.1): a request's word alone is not evidence that a
-        // broadcaster took it. The wallet's own outgoing row heals on its
-        // request's word, as before the ruling, which is about receipts.
-        let mismatch_sql = format!(
+        // 2. Find transactions where status doesn't match proven_tx_req status
+        let mismatches: Vec<(i64, String, String, String, Option<i64>)> = sqlx::query_as(
             r#"
             SELECT t.transaction_id, t.txid, t.status AS tx_status, p.status AS req_status, p.proven_tx_id
             FROM transactions t
@@ -48,17 +43,14 @@ impl StorageSqlx {
             WHERE t.user_id = ?
               AND (
                 (t.status = 'unproven' AND p.status = 'completed')
-                OR (t.status = 'sending' AND p.status IN ('completed', 'unmined') AND (t.is_outgoing = 1 OR {taken}))
+                OR (t.status = 'sending' AND p.status IN ('completed', 'unmined'))
                 OR (t.status = 'completed' AND p.status NOT IN ('completed', 'nosend'))
               )
             "#,
-            taken = super::super::held_receipts::taken_condition("t.txid"),
-        );
-        let mismatches: Vec<(i64, String, String, String, Option<i64>)> =
-            sqlx::query_as(&mismatch_sql)
-                .bind(user_id)
-                .fetch_all(self.pool())
-                .await?;
+        )
+        .bind(user_id)
+        .fetch_all(self.pool())
+        .await?;
 
         // 3. Fix mismatches
         for (tx_id, txid, tx_status, req_status, proven_tx_id) in &mismatches {
@@ -78,7 +70,7 @@ impl StorageSqlx {
                 && (req_status == "completed" || req_status == "unmined")
             {
                 // Transaction was sent; update status
-                let new_status = if req_status == "completed" && proven_tx_id.is_some() {
+                let new_status = if req_status == "completed" {
                     "completed"
                 } else {
                     "unproven"
