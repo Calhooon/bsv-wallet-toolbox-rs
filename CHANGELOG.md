@@ -3627,7 +3627,7 @@ The programme line's (epic #80) opening prerelease, cut from beta on the owner's
 
 ## [0.13.7] - 2026-11-18
 
-The stable line's patch of 2026-11-18, recorded here as `main` has it (the sync of `main` into `beta` after a stable patch, RELEASING.md); the section below is main's, verbatim. This line has run a received BEEF's input scripts at its door since 0.14.0-beta.1, under #422's word since 0.14.0-beta.3.
+The stable line's patch of 2026-11-18, recorded here as `main` has it (the sync of `main` into `beta` after a stable patch, RELEASING.md); the section below is main's, verbatim. This line has run a received BEEF's input scripts at its door since 0.14.0-beta.1, under #422's word since 0.14.0-beta.4.
 
 This release makes `internalizeAction` run the unlocking script of every input of every transaction of a received AtomicBEEF that the BEEF does not prove, and refuse the request, with nothing written, when one does not pass; a host that receives ordinary payments sees no answer change, only the check's cost. Before upgrading, a host looks at its tests that hand this door placeholder unlocking scripts or parents proven below Genesis, which are refused (the Hosts section gives the fixture that works), and at the payments it takes, since one spending a coin mined before Genesis is refused. A received payment that passes these checks is answered and counted as in 0.13.6. The bsv-rs requirement is unchanged at "0.8.12".
 
