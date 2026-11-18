@@ -278,6 +278,106 @@ pub(crate) async fn open_own_outputs(
     Ok(closed)
 }
 
+/// The notes on a request's history that record bytes handed to an
+/// instance: the door's post, the wallet's own post (its stored post's
+/// words and its immediate post's hint), send-waiting's post, a refusal
+/// heard from a broadcaster, a lost proof's re-announce.
+const POST_NOTES: [&str; 6] = [
+    "doorPost",
+    "processActionPost",
+    "immediateBroadcastHint",
+    "sendWaitingHint",
+    "broadcasterRefusalHint",
+    "lostProofAnnounce",
+];
+
+/// May `txid`'s bytes have left for an instance, by the store's own
+/// records? A `broadcast_seen` row for the txid naming an instance (any
+/// word: a release turns an instance's row `rejected` and keeps it), or the
+/// network's row with any word but the release's own `rejected`; a post
+/// note on its request's history ([`POST_NOTES`]); or a history the store
+/// cannot read whole (not a JSON object, or as many notes as it keeps, the
+/// older ones evicted): yes. No request, or a request whose history shows
+/// no post (a `noSend` action's, an unsigned one's): no. `attempts` is not
+/// read: the abort, the release and the proof asks count on it too.
+async fn may_have_left_on(conn: &mut SqliteConnection, txid: &str) -> Result<bool> {
+    let seen: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM broadcast_seen WHERE txid = ? \
+         AND (provider <> 'network' OR status <> 'rejected')",
+    )
+    .bind(txid)
+    .fetch_one(&mut *conn)
+    .await?;
+    if seen > 0 {
+        return Ok(true);
+    }
+    let history: Option<String> =
+        sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some(history) = history else {
+        return Ok(false);
+    };
+    let history = match serde_json::from_str::<serde_json::Value>(&history) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ if history.trim().is_empty() => return Ok(false),
+        _ => return Ok(true),
+    };
+    let notes = match history.get("notes") {
+        None => return Ok(false),
+        Some(serde_json::Value::Array(notes)) => notes,
+        Some(_) => return Ok(true),
+    };
+    if notes.len() >= super::storage_sqlx::REQ_HISTORY_NOTES_KEPT {
+        return Ok(true);
+    }
+    Ok(notes.iter().any(|n| {
+        n.get("what")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|w| POST_NOTES.contains(&w))
+    }))
+}
+
+/// A COIN WHOSE SPENDER WAS GIVEN UP (the keeper's reading 24): in the
+/// write that recovers `transaction_id`, each of its outputs spent by a
+/// `failed` descendant whose bytes never left for an instance
+/// ([`may_have_left_on`]) is released: no spender, spendable as its other
+/// outputs are. An output a descendant spent whose bytes may have left
+/// stays as it is (it returns by that descendant's own take, its proof, or
+/// a competitor's proof against it). The descendant stays ended either
+/// way; only the recovered row's own outputs are read. Returns the ids.
+async fn release_given_up_spends_on(
+    conn: &mut SqliteConnection,
+    transaction_id: i64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<i64>> {
+    let spent: Vec<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT o.output_id, d.txid FROM outputs o JOIN transactions d ON d.transaction_id = o.spent_by \
+         WHERE o.transaction_id = ? AND d.status = 'failed' ORDER BY o.output_id",
+    )
+    .bind(transaction_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut released = Vec::new();
+    for (output_id, spender) in spent {
+        if let Some(spender) = spender.as_deref() {
+            if may_have_left_on(conn, spender).await? {
+                continue;
+            }
+        }
+        sqlx::query(
+            "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",
+        )
+        .bind(now)
+        .bind(output_id)
+        .execute(&mut *conn)
+        .await?;
+        released.push(output_id);
+    }
+    Ok(released)
+}
+
 /// THE TAKE AFTER A RELEASE MADE ON NO EVIDENCE, on the take's write (see
 /// the module): every `failed` outgoing row of `txid` in
 /// [`FailedState::Released`] is recovered. Returns the rows recovered.
@@ -309,6 +409,7 @@ pub(crate) async fn recover_released_on(
         .execute(&mut *conn)
         .await?;
         let closed = open_own_outputs(conn, transaction_id, marked, now).await?;
+        let given_up = release_given_up_spends_on(conn, transaction_id, now).await?;
         remark_inputs_spent_on(conn, txid, &skip, now).await?;
         if was_marked {
             sqlx::query(
@@ -333,6 +434,7 @@ pub(crate) async fn recover_released_on(
                 "when": now.to_rfc3339(),
                 "transactionId": transaction_id,
                 "outputs": closed,
+                "givenUpSpends": given_up,
                 "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
             }),
         )

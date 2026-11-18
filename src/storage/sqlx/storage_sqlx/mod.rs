@@ -66,7 +66,7 @@ pub(crate) use proven_txs::{
 pub(crate) use retirement::RetireBasis;
 pub use retirement::RetireOutcome;
 pub(super) use send_waiting::append_req_history_note;
-use send_waiting::REQ_HISTORY_NOTES_KEPT;
+pub(in crate::storage::sqlx) use send_waiting::REQ_HISTORY_NOTES_KEPT;
 pub(super) use stale_proofs::demote_stale_proof_on;
 pub(super) use transactions::RAW_TX_REQ_STATUSES;
 
