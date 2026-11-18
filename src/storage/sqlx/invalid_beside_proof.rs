@@ -17,7 +17,12 @@
 //!
 //! The tracker is asked with neither the writer nor a write transaction
 //! held: the candidates are read on a reader, checked, and each is read
-//! again inside the write before its request moves.
+//! again inside the write before its request moves: the request still
+//! `invalid`, the same proof row, its root still recorded as checked, and
+//! no transaction of its txid `failed`. A transaction another path failed
+//! meanwhile is left to the next pass, as it stands then (no longer a
+//! candidate): its request is not completed, so check 3 does not write a
+//! failed transaction `completed` beside outputs left unspendable.
 
 use bsv_rs::transaction::MerklePath;
 
@@ -98,7 +103,9 @@ impl StorageSqlx {
             let row: Option<(String, Vec<u8>)> = sqlx::query_as(
                 "SELECT r.history, p.merkle_path FROM proven_tx_reqs r \
                  JOIN proven_txs p ON p.txid = r.txid \
-                 WHERE r.txid = ? AND r.status = 'invalid' AND p.proven_tx_id = ?",
+                 WHERE r.txid = ? AND r.status = 'invalid' AND p.proven_tx_id = ? \
+                   AND NOT EXISTS (SELECT 1 FROM transactions t \
+                                   WHERE t.txid = r.txid AND t.status = 'failed')",
             )
             .bind(txid)
             .bind(proven_tx_id)
