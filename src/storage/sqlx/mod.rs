@@ -38,6 +38,7 @@ mod broadcast_seen;
 mod broadcaster_hint_tests;
 mod create_action;
 mod internalize_action;
+mod invalid_beside_proof;
 mod locked_inputs;
 mod monitor_state;
 mod poisoned_chain;
