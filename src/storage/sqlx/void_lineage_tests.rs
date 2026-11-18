@@ -287,7 +287,7 @@ async fn pick(s: &StorageSqlx, l: &Lineage) -> Option<String> {
     .await
     .unwrap();
     let mut conn = s.writer().acquire().await.unwrap();
-    allocate_change_input(&mut conn, l.user_id, l.basket_id, spender, 500, true)
+    allocate_change_input(&mut conn, l.user_id, l.basket_id, spender, 500)
         .await
         .unwrap()
         .map(|a| format!("{a:?}"))

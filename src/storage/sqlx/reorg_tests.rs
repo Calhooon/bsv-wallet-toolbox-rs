@@ -646,7 +646,7 @@ async fn demoting_a_stale_proof_reverts_to_the_pre_proof_state_and_keeps_the_coi
     .unwrap();
     {
         let mut conn = s.writer().acquire().await.unwrap();
-        let picked = allocate_change_input(&mut conn, user_id, basket_id, spender_id, 500, true)
+        let picked = allocate_change_input(&mut conn, user_id, basket_id, spender_id, 500)
             .await
             .unwrap();
         assert!(picked.is_some(), "coin selection still finds the output");
@@ -678,7 +678,7 @@ async fn demoting_a_stale_proof_reverts_to_the_pre_proof_state_and_keeps_the_coi
     let actions = s.list_actions(&auth, list_actions_args()).await.unwrap();
     assert_eq!(actions.total_actions, 0);
     let mut conn = s.pool().acquire().await.unwrap();
-    let picked = allocate_change_input(&mut conn, user_id, basket_id, spender_id, 500, true)
+    let picked = allocate_change_input(&mut conn, user_id, basket_id, spender_id, 500)
         .await
         .unwrap();
     assert!(picked.is_none());

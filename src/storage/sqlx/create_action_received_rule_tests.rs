@@ -64,23 +64,12 @@ async fn one_coin(purpose: &str, status: &str) -> (StorageSqlx, i64, i64, i64) {
 }
 
 /// The count, the dry run's pick and the allocation's pick for one coin.
-async fn count_and_picks(
-    purpose: &str,
-    status: &str,
-    allow_received: bool,
-    require_spendable: bool,
-) -> (usize, bool, bool) {
+async fn count_and_picks(purpose: &str, status: &str, allow_received: bool) -> (usize, bool, bool) {
     let (storage, user_id, basket_id, output_id) = one_coin(purpose, status).await;
     let mut conn = storage.pool().acquire().await.unwrap();
-    let count = count_change_inputs_under_rule(
-        &mut conn,
-        user_id,
-        basket_id,
-        require_spendable,
-        allow_received,
-    )
-    .await
-    .unwrap();
+    let count = count_change_inputs_under_rule(&mut conn, user_id, basket_id, allow_received)
+        .await
+        .unwrap();
     let mut reserved = PickReservation::new(Default::default());
     let dry = allocate_change_input_by(
         &mut conn,
@@ -88,7 +77,6 @@ async fn count_and_picks(
         basket_id,
         0,
         1_000,
-        require_spendable,
         &mut ChangePick::DryRun {
             reserved: &mut reserved,
             skip: &[],
@@ -119,7 +107,6 @@ async fn count_and_picks(
         basket_id,
         spender,
         1_000,
-        require_spendable,
         &mut ChangePick::Within {
             allowed: &[output_id],
             allow_received,
@@ -144,15 +131,13 @@ async fn the_count_and_both_picks_agree_on_every_case() {
         ("change", "completed", false, true),
     ];
     for (purpose, status, rule, taken) in cases {
-        for require_spendable in [true, false] {
-            let got = count_and_picks(purpose, status, rule, require_spendable).await;
-            println!("purpose={purpose} status={status} rule={rule} spendable={require_spendable}: {got:?}");
-            assert_eq!(
-                got,
-                (usize::from(taken), taken, taken),
-                "purpose={purpose} status={status} rule={rule} spendable={require_spendable}"
-            );
-        }
+        let got = count_and_picks(purpose, status, rule).await;
+        println!("purpose={purpose} status={status} rule={rule}: {got:?}");
+        assert_eq!(
+            got,
+            (usize::from(taken), taken, taken),
+            "purpose={purpose} status={status} rule={rule}"
+        );
     }
 }
 

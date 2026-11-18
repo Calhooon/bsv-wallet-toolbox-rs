@@ -215,7 +215,7 @@ async fn change_is_offered(s: &StorageSqlx, f: &Fixture) -> bool {
     .await
     .unwrap();
     let mut conn = s.writer().acquire().await.unwrap();
-    let picked = allocate_change_input(&mut conn, f.user_id, f.basket_id, spender, 500, true)
+    let picked = allocate_change_input(&mut conn, f.user_id, f.basket_id, spender, 500)
         .await
         .unwrap();
     let held_by: Option<i64> =

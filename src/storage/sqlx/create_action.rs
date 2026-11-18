@@ -561,12 +561,6 @@ impl Door<'_> {
         self.args.options.as_ref()
     }
 
-    fn is_delayed(&self) -> bool {
-        self.options()
-            .and_then(|o| o.accept_delayed_broadcast)
-            .unwrap_or(false)
-    }
-
     fn return_txid_only(&self) -> bool {
         self.options()
             .and_then(|o| o.return_txid_only)
@@ -607,7 +601,6 @@ impl Door<'_> {
             &mut conn,
             self.user_id,
             self.change_basket.basket_id,
-            !self.is_delayed(),
             self.allow_received,
         )
         .await?;
@@ -640,7 +633,6 @@ impl Door<'_> {
                 &extended_inputs,
                 &extended_outputs,
                 available_change_count,
-                self.is_delayed(),
                 &mut ChangePick::DryRun {
                     reserved: &mut *reserved,
                     skip: &skip,
@@ -667,7 +659,6 @@ impl Door<'_> {
                     &extended_inputs,
                     &extended_outputs,
                     available_change_count,
-                    self.is_delayed(),
                     &mut ChangePick::DryRun {
                         reserved: &mut own_only,
                         skip: &skip,
@@ -752,7 +743,6 @@ impl Door<'_> {
         let args = self.args;
         let change_basket = self.change_basket;
         let is_no_send = self.options().and_then(|o| o.no_send).unwrap_or(false);
-        let is_delayed = self.is_delayed();
         // The coins the allocation may take: the pre-checked ones, within
         // the host's offer.
         let allowed: Vec<i64> = prechecked
@@ -778,7 +768,6 @@ impl Door<'_> {
             &mut tx,
             user_id,
             change_basket.basket_id,
-            !is_delayed,
             self.allow_received,
         )
         .await?;
@@ -806,7 +795,6 @@ impl Door<'_> {
             &extended_inputs,
             &extended_outputs,
             available_change_count,
-            is_delayed,
             &mut ChangePick::Within {
                 allowed: &allowed,
                 allow_received: self.allow_received,
@@ -1138,7 +1126,6 @@ async fn plan_change(
     extended_inputs: &[ExtendedInput],
     extended_outputs: &[ExtendedOutput],
     available_change_count: usize,
-    is_delayed: bool,
     pick: &mut ChangePick<'_>,
 ) -> Result<(GenerateChangeResult, String)> {
     let fee_rate = DEFAULT_FEE_RATE_SAT_PER_KB;
@@ -1249,7 +1236,6 @@ async fn plan_change(
                     transaction_id,
                     &params,
                     &derivation_prefix,
-                    is_delayed,
                     pick,
                 )
                 .await?
@@ -1263,7 +1249,6 @@ async fn plan_change(
             transaction_id,
             &params,
             &derivation_prefix,
-            is_delayed,
             pick,
         )
         .await?
@@ -1603,20 +1588,13 @@ async fn validate_and_extend_inputs(
 }
 
 /// Counts the change inputs in the default basket eligible under this
-/// action's received rule.
+/// action's received rule: spendable ones only, as the selection takes.
 async fn count_change_inputs_under_rule(
     conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,
-    require_spendable: bool,
     allow_received: bool,
 ) -> Result<usize> {
-    let spendable_clause = if require_spendable {
-        "AND o.spendable = 1"
-    } else {
-        ""
-    };
-
     let sql = format!(
         r#"
         SELECT COUNT(*) as count
@@ -1625,11 +1603,10 @@ async fn count_change_inputs_under_rule(
         WHERE o.user_id = ?
           AND o.basket_id = ?
           AND o.change = 1
+          AND o.spendable = 1
           AND t.status IN ('completed', 'unproven')
           {RECEIVED_COIN_CLAUSE}
-          {}
-        "#,
-        spendable_clause
+        "#
     );
 
     let row = sqlx::query(&sql)
@@ -2270,7 +2247,6 @@ async fn generate_change(
     transaction_id: i64,
     params: &GenerateChangeParams,
     derivation_prefix: &str,
-    is_delayed: bool,
     pick: &mut ChangePick<'_>,
 ) -> Result<GenerateChangeResult> {
     let mut allocated_inputs: Vec<AllocatedChangeInput> = Vec::new();
@@ -2385,7 +2361,6 @@ async fn generate_change(
                 basket_id,
                 transaction_id,
                 target_sats,
-                !is_delayed,
                 pick,
             )
             .await?;
@@ -2707,7 +2682,6 @@ pub(super) async fn allocate_change_input(
     basket_id: i64,
     transaction_id: i64,
     target_satoshis: u64,
-    require_spendable: bool,
 ) -> Result<Option<AllocatedChangeInput>> {
     allocate_change_input_by(
         conn,
@@ -2715,27 +2689,26 @@ pub(super) async fn allocate_change_input(
         basket_id,
         transaction_id,
         target_satoshis,
-        require_spendable,
         &mut ChangePick::Allocate,
     )
     .await
 }
 
 /// Picks a change input from the default basket as `pick` says.
+///
+/// A coin is offered only when this store's own row says it is free:
+/// `spendable = 1` and no spender, whether or not the action accepts
+/// delayed broadcast. On a store a sync has written, a coin the other store
+/// spent arrives not spendable with no spender; `spendable` is the coin's
+/// word there, and such a coin is offered to no action.
 async fn allocate_change_input_by(
     conn: &mut SqliteConnection,
     user_id: i64,
     basket_id: i64,
     transaction_id: i64,
     target_satoshis: u64,
-    require_spendable: bool,
     pick: &mut ChangePick<'_>,
 ) -> Result<Option<AllocatedChangeInput>> {
-    let spendable_clause = if require_spendable {
-        "AND o.spendable = 1"
-    } else {
-        ""
-    };
     // A dry run reserves each coin it picks; a coin another call reserved
     // between the query and the reservation is passed over and the query
     // asked again (each pass over adds the coin to the unavailable set, so
@@ -2788,10 +2761,10 @@ async fn allocate_change_input_by(
             WHERE o.user_id = ?
               AND o.basket_id = ?
               AND o.change = 1
+              AND o.spendable = 1
               AND o.spent_by IS NULL
               AND t.status IN ('completed', 'unproven')
               {RECEIVED_COIN_CLAUSE}
-              {}
               {}
             ORDER BY
                 CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
@@ -2800,7 +2773,7 @@ async fn allocate_change_input_by(
                 ABS(o.satoshis - ?) ASC
             LIMIT 1
             "#,
-            spendable_clause, pick_clause
+            pick_clause
         );
 
         let mut query = sqlx::query(&sql)
@@ -7092,7 +7065,7 @@ mod tests {
 
         // count_change_inputs should see 0 available outputs
         let count =
-            count_change_inputs_under_rule(&mut conn, user.user_id, basket.basket_id, true, false)
+            count_change_inputs_under_rule(&mut conn, user.user_id, basket.basket_id, false)
                 .await
                 .unwrap();
         assert_eq!(count, 0, "nosend outputs must not be counted as available");
@@ -7104,7 +7077,6 @@ mod tests {
             basket.basket_id,
             9999, // dummy transaction_id for allocation
             50_000,
-            true,
         )
         .await
         .unwrap();
@@ -7156,7 +7128,7 @@ mod tests {
 
         // count_change_inputs should see 1 available output
         let count =
-            count_change_inputs_under_rule(&mut conn, user.user_id, basket.basket_id, true, false)
+            count_change_inputs_under_rule(&mut conn, user.user_id, basket.basket_id, false)
                 .await
                 .unwrap();
         assert_eq!(count, 1, "completed outputs must be counted as available");
@@ -7168,7 +7140,6 @@ mod tests {
             basket.basket_id,
             spending_tx_id,
             50_000,
-            true,
         )
         .await
         .unwrap();
@@ -7897,7 +7868,6 @@ mod tests {
             basket.basket_id,
             spending_tx_id,
             5000,
-            true,
         )
         .await
         .unwrap();
@@ -7958,7 +7928,6 @@ mod tests {
             basket.basket_id,
             spending_tx_id,
             5000,
-            true,
         )
         .await
         .unwrap();
@@ -8012,7 +7981,6 @@ mod tests {
             basket.basket_id,
             spending_tx_id,
             4500,
-            true,
         )
         .await
         .unwrap();
@@ -8066,7 +8034,6 @@ mod tests {
             basket.basket_id,
             spending_tx_id,
             270_000,
-            true,
         )
         .await
         .unwrap();
