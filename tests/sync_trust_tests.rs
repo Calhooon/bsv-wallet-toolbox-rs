@@ -331,6 +331,7 @@ async fn a_set_active_that_fails_part_way_is_undone_by_a_call_back() {
     let fresh_settings = fresh.make_available().await.map(|s| s.storage_identity_key);
     let fresh_enabled = fresh.is_active_enabled().await;
     let fresh_backups = fresh.update_backups().await;
+    let fresh_set_active = fresh.set_active(SRC).await;
     b.fail_set_active.store(false, Ordering::SeqCst);
     let undo = mgr.set_active(SRC).await;
     let after = active_rows(&[&a, &b.inner]).await;
@@ -339,13 +340,14 @@ async fn a_set_active_that_fails_part_way_is_undone_by_a_call_back() {
         mgr.is_active_enabled().await,
     );
     println!(
-        "WITNESS set_active(B) failing at B, then set_active(A): {} then {}; rows {after:?}; active A {}, enabled {}; a fresh manager meanwhile: active A {}, enabled {fresh_enabled}, update_backups {}",
+        "WITNESS set_active(B) failing at B, then set_active(A): {} then {}; rows {after:?}; active A {}, enabled {}; a fresh manager meanwhile: active A {}, enabled {fresh_enabled}, update_backups {}, set_active(A) {}",
         refusal(&failed),
         refusal(&undo),
         now.0 == SRC,
         now.1,
         fresh_settings.as_deref().ok() == Some(SRC),
-        refusal(&fresh_backups)
+        refusal(&fresh_backups),
+        refusal(&fresh_set_active)
     );
     assert_eq!(refusal(&failed), "Storage error: rows refused set_active");
     assert_eq!(refusal(&undo), "ok");
@@ -355,6 +357,38 @@ async fn a_set_active_that_fails_part_way_is_undone_by_a_call_back() {
     assert!(!fresh_enabled);
     assert_eq!(
         refusal(&fresh_backups),
+        "Access denied: Operation requires active storage"
+    );
+    assert_eq!(
+        refusal(&fresh_set_active),
+        "Access denied: Operation requires active storage"
+    );
+}
+
+/// A manager whose stores are in conflict (a backup's row names a store
+/// other than the active) refuses `set_active`.
+#[tokio::test]
+async fn set_active_refuses_while_the_stores_are_in_conflict() {
+    let a = store(SRC).await;
+    let b = store(DST).await;
+    name_active(&[&a], SRC).await;
+    name_active(&[&b], THIRD).await;
+    let mgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(a.clone() as Arc<dyn MonitorStorage>),
+        Some(vec![b.clone() as Arc<dyn MonitorStorage>]),
+    );
+    mgr.make_available().await.unwrap();
+    let conflicting = mgr.get_conflicting_stores().await;
+    let r = mgr.set_active(DST).await;
+    println!(
+        "WITNESS set_active with a store in conflict: conflicting {}; {}",
+        conflicting.len(),
+        refusal(&r)
+    );
+    assert_eq!(conflicting, vec![DST.to_string()]);
+    assert_eq!(
+        refusal(&r),
         "Access denied: Operation requires active storage"
     );
 }
