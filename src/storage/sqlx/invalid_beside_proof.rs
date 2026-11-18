@@ -327,7 +327,9 @@ impl StorageSqlx {
 /// before anything is written. Confirmed (or recorded meanwhile): the
 /// record, then every transaction row of the txid `completed` and linked as
 /// check 3 writes it, and the request of the txid, where one is held and is
-/// not `completed`, `completed` with the same link. Refuted while still
+/// not `completed`, `completed` with the same link and the history note
+/// `linkedProofCompletesRequest` (its former word under `was`; logged with
+/// marker `linked_proof_completes_request`). Refuted while still
 /// unchecked: the link of each such transaction is cleared, its status left
 /// as it is (the proof row stays, unchecked, linked by none of them).
 /// Returns how many transaction rows it brought to `completed`.
@@ -398,15 +400,43 @@ async fn complete_linked_to_checked_proof(
         _ => {}
     }
     let completed = complete_transactions_of_on(&mut *tx, txid, proven_tx_id, now).await?;
-    sqlx::query(
-        "UPDATE proven_tx_reqs SET status = 'completed', proven_tx_id = ?, updated_at = ? \
-         WHERE txid = ? AND status != 'completed'",
+    // The request's history says on what ground its word moved, as check
+    // 1's `invalidRequestProofStands` does.
+    let request: Option<(String, String)> = sqlx::query_as(
+        "SELECT status, history FROM proven_tx_reqs WHERE txid = ? AND status != 'completed'",
     )
-    .bind(proven_tx_id)
-    .bind(now)
     .bind(txid)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
+    if let Some((was, history)) = request {
+        let history = append_req_history_note(
+            &history,
+            serde_json::json!({
+                "when": now.to_rfc3339(),
+                "what": "linkedProofCompletesRequest",
+                "why": "a proof this store checked against its own headers, linked by the transaction, completes the request",
+                "was": was,
+                "height": path.block_height,
+            }),
+        );
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET status = 'completed', proven_tx_id = ?, history = ?, updated_at = ? \
+             WHERE txid = ? AND status != 'completed'",
+        )
+        .bind(proven_tx_id)
+        .bind(history)
+        .bind(now)
+        .bind(txid)
+        .execute(&mut *tx)
+        .await?;
+        tracing::warn!(
+            txid = %txid,
+            height = path.block_height,
+            was = %was,
+            marker = "linked_proof_completes_request",
+            "review_status: a transaction links a proof this store checked; its request is completed"
+        );
+    }
     Ok(completed)
 }
 
