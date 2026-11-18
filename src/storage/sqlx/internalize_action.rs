@@ -1673,6 +1673,7 @@ async fn broadcast_new_internalized_req(
             (DoorAnswer::Refuted { competitor }, Ok(()))
         }
         Ok(super::competitor_proof::TakeApplied::Applied) => (DoorAnswer::Taken, Ok(())),
+        Ok(super::competitor_proof::TakeApplied::Withheld) => (DoorAnswer::no_answer(), Ok(())),
         Err(e) => (DoorAnswer::Taken, Err(e)),
     }
 }

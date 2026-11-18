@@ -24,6 +24,11 @@
 //!   on this proof through the release rule, the existing conflicted path;
 //! - its own outputs that nothing spent spendable again (counted);
 //! - the cause on the request's history (`provenOverFailed`, the rows).
+//!
+//! The inputs and the losers are read from the store's own copy of the
+//! transaction that hashes to the txid (`abort_recovery::
+//! held_transaction_on`); with no such copy the completion marks no input
+//! and queues no loser, and its note says so (`inputsMarked: false`).
 
 use sqlx::SqliteConnection;
 
@@ -98,8 +103,14 @@ pub(crate) async fn complete_on_proof(
     if failed.is_empty() {
         return Ok(failed);
     }
-    super::abort_recovery::remark_inputs_spent_on(conn, txid, &[], now).await?;
-    let losers = losers_of(conn, txid).await?;
+    // The inputs and the losers are read from the store's own copy of the
+    // transaction that hashes to the txid; without one neither is read.
+    let marked = super::abort_recovery::remark_inputs_spent_on(conn, txid, &[], now).await?;
+    let losers = if marked {
+        losers_of(conn, txid).await?
+    } else {
+        Vec::new()
+    };
     for loser in &losers {
         queue_competitor_on(conn, loser, txid).await?;
     }
@@ -113,6 +124,7 @@ pub(crate) async fn complete_on_proof(
             "what": "provenOverFailed",
             "when": now.to_rfc3339(),
             "transactionIds": failed,
+            "inputsMarked": marked,
             "losers": losers,
         }),
     )
@@ -128,18 +140,10 @@ pub(crate) async fn complete_on_proof(
 }
 
 /// Every other transaction the store records as spending one of `txid`'s
-/// input outpoints, not itself ended: the losers of the proven conflict.
+/// input outpoints (read from the store's copy that hashes to `txid`), not
+/// itself ended: the losers of the proven conflict.
 async fn losers_of(conn: &mut SqliteConnection, txid: &str) -> Result<Vec<String>> {
-    let raw: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT raw_tx FROM proven_txs WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0 \
-         UNION ALL SELECT raw_tx FROM transactions WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0 \
-         LIMIT 1",
-    )
-    .bind(txid)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some(tx) = raw.and_then(|raw| bsv_rs::transaction::Transaction::from_binary(&raw).ok())
-    else {
+    let Some(tx) = super::abort_recovery::held_transaction_on(conn, txid).await? else {
         return Ok(Vec::new());
     };
     let mut losers: Vec<String> = Vec::new();
