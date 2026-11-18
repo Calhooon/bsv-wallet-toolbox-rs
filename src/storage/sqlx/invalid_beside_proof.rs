@@ -104,9 +104,20 @@ impl StorageSqlx {
         };
         let candidates: Vec<(String, i64, Vec<u8>, String)> = sqlx::query_as(
             r#"
-            SELECT DISTINCT r.txid, p.proven_tx_id, p.merkle_path, r.status
-            FROM proven_tx_reqs r
-            JOIN proven_txs p ON p.txid = r.txid
+            SELECT DISTINCT p.txid, p.proven_tx_id, p.merkle_path,
+                   CASE WHEN r.status = 'invalid'
+                             AND EXISTS (SELECT 1 FROM transactions t WHERE t.txid = r.txid)
+                             AND NOT EXISTS (SELECT 1 FROM transactions f
+                                             WHERE f.txid = r.txid AND f.status = 'failed')
+                        THEN 'invalid'
+                        WHEN r.status = 'completed'
+                             AND r.proven_tx_id = p.proven_tx_id
+                             AND EXISTS (SELECT 1 FROM transactions t
+                                         WHERE t.txid = r.txid AND t.status != 'completed')
+                        THEN 'completed'
+                        ELSE 'linked' END
+            FROM proven_txs p
+            LEFT JOIN proven_tx_reqs r ON r.txid = p.txid
             WHERE (r.status = 'invalid'
                    AND EXISTS (SELECT 1 FROM transactions t WHERE t.txid = r.txid)
                    AND NOT EXISTS (SELECT 1 FROM transactions f
@@ -115,6 +126,15 @@ impl StorageSqlx {
                    AND r.proven_tx_id = p.proven_tx_id
                    AND EXISTS (SELECT 1 FROM transactions t
                                WHERE t.txid = r.txid AND t.status != 'completed'))
+               OR ((r.status IS NULL OR r.status NOT IN (
+                        'completed', 'unmined', 'unknown', 'callback', 'sending',
+                        'unconfirmed', 'unsent', 'unfail'))
+                   AND EXISTS (SELECT 1 FROM transactions t
+                               WHERE t.txid = p.txid AND t.proven_tx_id = p.proven_tx_id
+                                 AND t.status != 'completed')
+                   AND NOT EXISTS (SELECT 1 FROM proof_root_checks c
+                                   WHERE c.txid = p.txid AND c.height = p.height
+                                     AND c.merkle_root = lower(p.merkle_root)))
             ORDER BY p.proven_tx_id <= ?, p.proven_tx_id
             LIMIT ?
             "#,
@@ -161,15 +181,27 @@ impl StorageSqlx {
                     txid.clone(),
                     *proven_tx_id,
                     merkle_path.clone(),
-                    kind == "completed",
+                    kind.clone(),
                     check,
                 ));
             }
         }
         let mut tx = self.write_tx().await?;
         let mut counts = PassCounts::default();
-        for (txid, proven_tx_id, read_path, beside_completed, check) in &verdicts {
-            if *beside_completed {
+        for (txid, proven_tx_id, read_path, kind, check) in &verdicts {
+            if kind == "linked" {
+                counts.transactions_completed += complete_linked_to_checked_proof(
+                    &mut tx,
+                    txid,
+                    *proven_tx_id,
+                    read_path,
+                    *check,
+                    now,
+                )
+                .await?;
+                continue;
+            }
+            if kind == "completed" {
                 counts.transactions_completed += complete_beside_checked_proof(
                     &mut tx,
                     txid,
@@ -281,6 +313,101 @@ impl StorageSqlx {
         commit(tx).await?;
         Ok(counts)
     }
+}
+
+/// The arm of the pass for a transaction that is not `completed` and links
+/// a proof row this store has not checked, beside no request or a request
+/// whose word neither the proof task (`unmined`, `unknown`, `callback`,
+/// `sending`, `unconfirmed`), the send task (`unsent`) nor the unfail
+/// task's consumer (`unfail`) asks, and that is not check 1's (`invalid`
+/// with no `failed` row) or check 3's (`completed`): `invalid` beside a
+/// `failed` row, `doubleSpend`, `nosend`, `notFound` among them. Inside the
+/// pass's one write. The row is read again (the same proof row with the
+/// same path bytes, a transaction of the txid still not `completed` linking it)
+/// before anything is written. Confirmed (or recorded meanwhile): the
+/// record, then every transaction row of the txid `completed` and linked as
+/// check 3 writes it, and the request of the txid, where one is held and is
+/// not `completed`, `completed` with the same link. Refuted while still
+/// unchecked: the link of each such transaction is cleared, its status left
+/// as it is (the proof row stays, unchecked, linked by none of them).
+/// Returns how many transaction rows it brought to `completed`.
+async fn complete_linked_to_checked_proof(
+    tx: &mut sqlx::SqliteConnection,
+    txid: &str,
+    proven_tx_id: i64,
+    read_path: &[u8],
+    check: ReadCheck,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<usize> {
+    let row: Option<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT p.merkle_path FROM proven_txs p \
+         WHERE p.txid = ? AND p.proven_tx_id = ? \
+           AND EXISTS (SELECT 1 FROM transactions t \
+                       WHERE t.txid = p.txid AND t.proven_tx_id = p.proven_tx_id \
+                         AND t.status != 'completed')",
+    )
+    .bind(txid)
+    .bind(proven_tx_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((merkle_path,)) = row else {
+        return Ok(0);
+    };
+    if merkle_path != read_path {
+        return Ok(0);
+    }
+    let Ok(path) = MerklePath::from_binary(&merkle_path) else {
+        return Ok(0);
+    };
+    let checked = stored_proof_checked_on(&mut *tx, txid, &path).await?;
+    match check {
+        ReadCheck::Demoted => {
+            if !checked {
+                sqlx::query(
+                    "UPDATE transactions SET proven_tx_id = NULL, updated_at = ? \
+                     WHERE txid = ? AND proven_tx_id = ? AND status != 'completed'",
+                )
+                .bind(now)
+                .bind(txid)
+                .bind(proven_tx_id)
+                .execute(&mut *tx)
+                .await?;
+                tracing::warn!(
+                    txid = %txid,
+                    height = path.block_height,
+                    marker = "unchecked_proof_link_cleared",
+                    "review_status: a transaction linked a proof row that was never checked and the chain tracker refutes it; the link is cleared, its status left as it is"
+                );
+            }
+            return Ok(0);
+        }
+        ReadCheck::Confirmed if !checked => {
+            let Ok(root) = path.compute_root(Some(txid)) else {
+                return Ok(0);
+            };
+            record_root_checked_on(&mut *tx, txid, path.block_height, &root).await?;
+            tracing::info!(
+                txid = %txid,
+                height = path.block_height,
+                marker = "unchecked_proof_confirmed",
+                "review_status: a proof row a transaction links that was never checked is confirmed by the chain tracker"
+            );
+        }
+        ReadCheck::AlreadyChecked if !checked => return Ok(0),
+        ReadCheck::Undecided => return Ok(0),
+        _ => {}
+    }
+    let completed = complete_transactions_of_on(&mut *tx, txid, proven_tx_id, now).await?;
+    sqlx::query(
+        "UPDATE proven_tx_reqs SET status = 'completed', proven_tx_id = ?, updated_at = ? \
+         WHERE txid = ? AND status != 'completed'",
+    )
+    .bind(proven_tx_id)
+    .bind(now)
+    .bind(txid)
+    .execute(&mut *tx)
+    .await?;
+    Ok(completed)
 }
 
 /// What one pass wrote.
