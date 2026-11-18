@@ -270,6 +270,16 @@ pub(crate) async fn apply_take_on(
         .filter(|r| r.state == super::abort_recovery::FailedState::Evidence)
         .map(|r| r.transaction_id)
         .collect();
+    // A row that stays ended with an input still locked (the retire path's
+    // `failed`, some of whose inputs the locked-input re-check gave back):
+    // every free input is marked spent by it again, so no coin it spends
+    // is offered while the network holds the spend.
+    if failed
+        .iter()
+        .any(|r| r.state == super::abort_recovery::FailedState::Locked)
+    {
+        super::abort_recovery::remark_inputs_spent_on(conn, txid, &evidence, now).await?;
+    }
     lift_rows_on(conn, txid, rows, &evidence, now).await?;
     raise_or_hold_on(conn, txid, !evidence.is_empty(), takers, now).await?;
     for (provider, word) in takers {

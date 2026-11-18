@@ -10,16 +10,18 @@
 //!   fail on a broadcaster's word): recovered, the transaction `unproven`,
 //!   the request `unmined`, the inputs marked spent by it again, its own
 //!   outputs spendable again, the cause on the request's history;
-//! - its inputs still locked (the retire path's `failed`): nothing is
-//!   recovered, the take is a hint, and the request keeps its word unless a
-//!   live row of another user needs it raised;
+//! - its inputs still locked (the retire path's `failed`), all of them or
+//!   some, the locked-input re-check having given the others back: it stays
+//!   ended, every free input of it is marked spent by it again, the take is
+//!   a hint, and the request keeps its word unless a live row of another
+//!   user needs it raised;
 //! - evidence on record (a `spent-proven` check on one of its inputs):
 //!   nothing is recovered and the request keeps its word.
 //!
 //! Never the half state: a request `unmined` beside a `failed` row whose
 //! inputs are released.
 //!
-//! The matrix: the five writers of a take by the row's four states by
+//! The matrix: the five writers of a take by the row's five states by
 //! another user's live row of the same txid (a held receipt, `sending`)
 //! present or not. The door's presenter is itself a live row of another
 //! user, so the door's cells read a live row in both columns.
@@ -35,10 +37,11 @@ mod abort_take;
 use abort_take::*;
 
 /// The row's states of the rule.
-const STATES: [Cause; 4] = [
+const STATES: [Cause; 5] = [
     Cause::AbortFree,
     Cause::Unmarked,
     Cause::Refusal,
+    Cause::Mixed,
     Cause::Evidence,
 ];
 
@@ -52,7 +55,7 @@ fn judge(act: Act, cause: Cause, other_live: bool, got: &Reading) -> Option<Stri
     // Whether the take was heard at all: send-waiting selects only a
     // request `unsent` or `sending`, and the retire path's `invalid` is
     // not one.
-    let heard = !(act == Act::SendWaiting && cause == Cause::Refusal);
+    let heard = !(act == Act::SendWaiting && matches!(cause, Cause::Refusal | Cause::Mixed));
     let other_ok = match (&got.other_row, other_live) {
         (None, false) => true,
         (Some(row), true) => row == if heard { "unproven" } else { "sending" },
@@ -69,12 +72,19 @@ fn judge(act: Act, cause: Cause, other_live: bool, got: &Reading) -> Option<Stri
                 && got.balance == 500
                 && got.listed.as_deref() == Some("Unproven")
         }
-        Cause::Refusal => {
+        Cause::Refusal | Cause::Mixed => {
             let lifted = act == Act::Unfail;
             let raised = lifted || (heard && (other_live || act == Act::Door));
+            // Every free input of the row is marked spent by it again on a
+            // take; unheard, the re-check's restored input stays free.
+            let inputs = if heard || cause == Cause::Refusal {
+                own.clone()
+            } else {
+                vec![(true, "none".to_string()), (false, "own".to_string())]
+            };
             got.row.as_deref() == Some(if lifted { "unproven" } else { "failed" })
                 && got.request.as_deref() == Some(if raised { "unmined" } else { "invalid" })
-                && got.inputs == own
+                && got.inputs == inputs
                 && !got.recovered_note
                 && got.held_as_hint == (heard && !raised)
         }
@@ -146,5 +156,5 @@ async fn a_take_of_the_wallets_own_post_reads_the_failed_row_by_its_state() {
 
 #[test]
 fn the_matrix_names_every_writer_state_and_column() {
-    assert_eq!(ACTS.len() * STATES.len() * 2, 40);
+    assert_eq!(ACTS.len() * STATES.len() * 2, 50);
 }
