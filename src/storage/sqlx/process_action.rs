@@ -562,8 +562,23 @@ pub async fn process_action_internal(
 
     // Begin SQL transaction - all DB mutations go through `tx`.
     // On drop without commit, sqlx automatically rolls back.
+    // A sent `noSend` transaction's release searches the store's bytes
+    // here, on a reader, before the write (`stored_spenders::search_sent_change`).
+    let sends: Vec<String> = if args.is_new_tx {
+        args.send_with.clone()
+    } else {
+        args.txid.iter().cloned().collect()
+    };
+    let sent_change = super::stored_spenders::search_sent_change(
+        storage,
+        user_id,
+        &sends,
+        args.reference.as_deref().filter(|_| args.is_new_tx),
+    )
+    .await?;
     let mut tx = storage.write_tx().await?;
-    let results = process_action_writes(storage, &mut tx, user_id, &args).await?;
+    let results =
+        process_action_writes(storage, &mut tx, user_id, &args, Some(&sent_change)).await?;
     super::storage_sqlx::commit(tx).await?;
     Ok(results)
 }
@@ -578,6 +593,7 @@ pub(super) async fn process_action_writes(
     conn: &mut SqliteConnection,
     user_id: i64,
     args: &StorageProcessActionArgs,
+    sent_change: Option<&super::stored_spenders::SentChangeSearch>,
 ) -> Result<StorageProcessActionResults> {
     validate_process_action_args(args)?;
 
@@ -592,6 +608,9 @@ pub(super) async fn process_action_writes(
     let tx = conn;
     let mut send_with_results: Vec<SendWithResult> = Vec::new();
     let txids_to_broadcast: Vec<String>;
+    // The action this write signs (its row id and bytes), which a sent
+    // `noSend` transaction's release reads.
+    let mut current: Option<(i64, &[u8])> = None;
 
     if args.is_new_tx {
         let reference = args.reference.as_ref().unwrap();
@@ -662,6 +681,7 @@ pub(super) async fn process_action_writes(
             }
         }
 
+        current = Some((found_tx.transaction_id, raw_tx.as_slice()));
         let (tx_status, req_status) = determine_statuses(args);
         update_transaction_with_signed_data(
             &mut *tx,
@@ -749,6 +769,18 @@ pub(super) async fn process_action_writes(
         None
     };
 
+    // The release's search ran on a reader before this write; it stands if
+    // the store's transactions are as it read them (read once, before any
+    // status write below).
+    let sent_change = match sent_change {
+        Some(search) => {
+            search
+                .still_read(&mut *tx, current.map(|(id, _)| id))
+                .await?
+        }
+        None => None,
+    };
+
     for txid in &txids_to_broadcast {
         let req = find_proven_tx_req_by_txid(&mut *tx, txid).await?;
 
@@ -761,8 +793,19 @@ pub(super) async fn process_action_writes(
             // in this write, as the reference writes every output of a
             // signed transaction spendable and lets the transaction's status
             // gate it (ts-stack `processAction.ts` `buildOutputUpdates`).
+            // The release reads the transaction's own row: it must still
+            // read `nosend` and be the caller's (an action its owner
+            // aborted keeps its request `nosend` and reads `failed`).
             if !already_sent && current_status == proven_tx_req_status::NOSEND {
-                super::stored_spenders::release_sent_change(&mut *tx, txid, Utc::now()).await?;
+                super::stored_spenders::release_sent_change(
+                    &mut *tx,
+                    user_id,
+                    txid,
+                    Utc::now(),
+                    sent_change,
+                    current,
+                )
+                .await?;
             }
 
             if already_sent {

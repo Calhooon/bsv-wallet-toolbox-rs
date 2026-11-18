@@ -441,13 +441,22 @@ async fn stored_spenders_cost() {
             let t = std::time::Instant::now();
             let ans_w = stored_spenders_of(&mut w, txid, vout).await.unwrap();
             let inside = t.elapsed();
+            // The send's release inside the writer when the search ran on a
+            // reader before it: the mark alone (`still_read`).
+            let t = std::time::Instant::now();
+            let _ = super::stored_spenders::SentChangeSearch::default()
+                .still_read(&mut w, None)
+                .await
+                .unwrap();
+            let mark = t.elapsed();
             w.commit().await.unwrap();
             assert_eq!(ans, ans_w);
             assert_eq!(ans.spenders.len(), usize::from(label == "spent"));
             timings.push(format!(
-                "{label}: reader {:.1} ms, writer {:.1} ms",
+                "{label}: reader {:.1} ms, writer {:.1} ms, mark in the writer {:.1} ms",
                 outside.as_secs_f64() * 1e3,
-                inside.as_secs_f64() * 1e3
+                inside.as_secs_f64() * 1e3,
+                mark.as_secs_f64() * 1e3
             ));
         }
         println!(

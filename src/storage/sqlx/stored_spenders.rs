@@ -110,6 +110,18 @@ pub(crate) async fn stored_spenders_of(
     txid: &str,
     vout: u32,
 ) -> Result<StoredSpenders> {
+    stored_spenders_except(conn, txid, vout, None).await
+}
+
+/// `stored_spenders_of`, the unread count leaving out the row `except`
+/// (an action being signed in the caller's write, whose own bytes the
+/// caller reads).
+async fn stored_spenders_except(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    vout: u32,
+    except: Option<i64>,
+) -> Result<StoredSpenders> {
     let needle = outpoint_bytes(txid, vout)?.to_vec();
     let candidates = sqlx::query(
         "SELECT t.transaction_id, t.txid, t.status, t.raw_tx AS t_raw, p.raw_tx AS p_raw \
@@ -191,12 +203,14 @@ pub(crate) async fn stored_spenders_of(
          WHERE t.status NOT IN ('failed', 'completed') \
            AND (t.raw_tx IS NULL OR length(t.raw_tx) = 0) \
            AND (p.raw_tx IS NULL OR length(p.raw_tx) = 0) \
+           AND t.transaction_id != ? \
            AND (? IS NULL \
                 OR t.input_beef IS NULL OR length(t.input_beef) = 0 \
                 OR instr(t.input_beef, ?) > 0 \
                 OR instr(t.input_beef, ?) > 0 \
                 OR instr(t.input_beef, ?) > 0)",
     )
+    .bind(except.unwrap_or(-1))
     .bind(source.as_deref())
     .bind(source.as_deref())
     .bind(&internal)
@@ -290,27 +304,163 @@ pub(crate) async fn withheld_to_try(pool: &sqlx::SqlitePool) -> Result<Vec<(i64,
     .await?)
 }
 
-/// A `nosend` transaction being sent (`txid`): each change output of it
+/// The output rows a send of the caller's `nosend` transaction `txid`
+/// releases: its change that records no spender, the transaction's own row
+/// reading `nosend` and the caller's.
+const SENT_ROWS: &str = "SELECT o.output_id, o.vout FROM outputs o \
+     JOIN transactions t ON t.transaction_id = o.transaction_id \
+     WHERE t.txid = ? AND t.user_id = ? AND t.status = 'nosend' \
+       AND o.user_id = t.user_id AND o.change = 1 AND o.spendable = 0 AND o.spent_by IS NULL \
+     ORDER BY o.output_id";
+
+/// The store's transactions as a search read them: the highest id and the
+/// newest stamp, the row `except` left out.
+async fn mark_of(conn: &mut SqliteConnection, except: Option<i64>) -> Result<(i64, String)> {
+    Ok(sqlx::query_as(
+        "SELECT COALESCE(MAX(transaction_id), 0), \
+         COALESCE(CAST(MAX(updated_at) AS TEXT), '') FROM transactions \
+         WHERE transaction_id != ?",
+    )
+    .bind(except.unwrap_or(-1))
+    .fetch_one(&mut *conn)
+    .await?)
+}
+
+/// What a send's release found on a reader before the write: the store's
+/// mark, and for each output it would release, the stored spenders.
+#[derive(Debug, Default)]
+pub(crate) struct SentChangeSearch {
+    mark: (i64, String),
+    except: Option<i64>,
+    found: std::collections::HashMap<i64, StoredSpenders>,
+}
+
+impl SentChangeSearch {
+    /// Inside the caller's write, before any of its sends' status writes:
+    /// `self` when the store's transactions are as the search read them
+    /// (`current`, the action the write signs, left out), else `None`, and
+    /// each release searches on the writer.
+    pub(crate) async fn still_read(
+        &self,
+        conn: &mut SqliteConnection,
+        current: Option<i64>,
+    ) -> Result<Option<&Self>> {
+        if self.except.is_some_and(|e| Some(e) != current) {
+            return Ok(None);
+        }
+        Ok((mark_of(conn, current).await? == self.mark).then_some(self))
+    }
+}
+
+/// The search of `release_sent_change`, run on a reader before the caller's
+/// write: for each of `txids` the caller's `nosend` transaction's change
+/// rows that record no spender, and what the store holds that spends each.
+/// `current`: the reference of an action the write signs (its own row is
+/// left out of the unread count; the write reads its bytes).
+pub(crate) async fn search_sent_change(
+    storage: &super::StorageSqlx,
+    user_id: i64,
+    txids: &[String],
+    current: Option<&str>,
+) -> Result<SentChangeSearch> {
+    let mut search = SentChangeSearch::default();
+    if txids.is_empty() {
+        return Ok(search);
+    }
+    let mut conn = storage.pool().acquire().await?;
+    if let Some(reference) = current {
+        search.except =
+            sqlx::query_scalar("SELECT transaction_id FROM transactions WHERE reference = ?")
+                .bind(reference)
+                .fetch_optional(&mut *conn)
+                .await?;
+    }
+    search.mark = mark_of(&mut conn, search.except).await?;
+    for txid in txids {
+        let rows: Vec<(i64, i64)> = sqlx::query_as(SENT_ROWS)
+            .bind(txid)
+            .bind(user_id)
+            .fetch_all(&mut *conn)
+            .await?;
+        for (output_id, vout) in rows {
+            let held = stored_spenders_except(&mut conn, txid, vout as u32, search.except).await?;
+            search.found.insert(output_id, held);
+        }
+    }
+    Ok(search)
+}
+
+/// The caller's `nosend` transaction `txid` being sent (its own row still
+/// reads `nosend` and is the caller's, `user_id`): each change output of it
 /// that records no spender becomes spendable in the caller's write, unless
 /// a transaction this store holds spends it (by its bytes or as a recorded
 /// spender on a row of it) or an unread row could hide one; one withheld
 /// only for an unread row is recorded for the unfail task to try again.
-/// Answers how many were set spendable.
+///
+/// The byte search runs before the write (`search_sent_change`; `pre`, the
+/// search `SentChangeSearch::still_read` kept): inside it the rows are read
+/// again, a spender recorded since is read, and the bytes of the action the
+/// write signs (`current`: its id and bytes) are parsed. A row `pre` did not
+/// search, or no `pre`, is searched here, on the writer. Answers how many were set
+/// spendable.
 pub(crate) async fn release_sent_change(
     conn: &mut SqliteConnection,
+    user_id: i64,
     txid: &str,
     now: chrono::DateTime<chrono::Utc>,
+    pre: Option<&SentChangeSearch>,
+    current: Option<(i64, &[u8])>,
 ) -> Result<u64> {
-    let rows: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT output_id, vout FROM outputs \
-         WHERE txid = ? AND change = 1 AND spendable = 0 AND spent_by IS NULL",
-    )
-    .bind(txid)
-    .fetch_all(&mut *conn)
-    .await?;
+    let rows: Vec<(i64, i64)> = sqlx::query_as(SENT_ROWS)
+        .bind(txid)
+        .bind(user_id)
+        .fetch_all(&mut *conn)
+        .await?;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let except = current.map(|(id, _)| id);
+    let searched = pre;
     let mut released = 0;
     for (output_id, vout) in rows {
-        let held = stored_spenders_of(&mut *conn, txid, vout as u32).await?;
+        let vout = vout as u32;
+        let mut held = match searched.and_then(|p| p.found.get(&output_id)) {
+            Some(found) => {
+                let mut held = found.clone();
+                // A spender recorded on a row of the outpoint since.
+                let recorded: Vec<i64> = sqlx::query_scalar(
+                    "SELECT DISTINCT t.transaction_id FROM outputs o \
+                     JOIN transactions t ON t.transaction_id = o.spent_by \
+                     WHERE o.txid = ? AND o.vout = ? AND t.status != 'failed'",
+                )
+                .bind(txid)
+                .bind(i64::from(vout))
+                .fetch_all(&mut *conn)
+                .await?;
+                for id in recorded {
+                    if !held.spenders.iter().any(|s| s.transaction_id == id) {
+                        held.spenders.push(StoredSpender {
+                            transaction_id: id,
+                            txid: None,
+                            status: String::new(),
+                        });
+                    }
+                }
+                held
+            }
+            None => stored_spenders_except(&mut *conn, txid, vout, except).await?,
+        };
+        if let Some((id, raw)) = current {
+            match bytes_spend(raw, txid, vout) {
+                Some(false) => {}
+                Some(true) => held.spenders.push(StoredSpender {
+                    transaction_id: id,
+                    txid: None,
+                    status: String::new(),
+                }),
+                None => held.unreadable += 1,
+            }
+        }
         if held.none_held() {
             released += sqlx::query(
                 "UPDATE outputs SET spendable = 1, updated_at = ? \
@@ -322,7 +472,7 @@ pub(crate) async fn release_sent_change(
             .await?
             .rows_affected();
         } else if held.spenders.is_empty() {
-            record_withheld(&mut *conn, output_id, txid, vout as u32, now).await?;
+            record_withheld(&mut *conn, output_id, txid, vout, now).await?;
         }
     }
     Ok(released)
