@@ -79,7 +79,8 @@ use super::monitor_state::{
     read_invalid_beside_proof_cursor_on, write_invalid_beside_proof_cursor_on,
 };
 use super::proof_root_checks::{
-    check_unchecked_stored_proof_on, record_root_checked_on, stored_proof_checked_on, ReadCheck,
+    check_unchecked_stored_proof_on, record_root_checked_on, record_root_refuted_on,
+    stored_proof_checked_on, stored_proof_refuted_on, ReadCheck, MARKED_REFUTED_SQL,
 };
 use super::storage_sqlx::{append_req_history_note, commit, demote_stale_proof_on, StorageSqlx};
 use crate::Result;
@@ -102,13 +103,17 @@ impl StorageSqlx {
             let mut conn = self.pool().acquire().await?;
             read_invalid_beside_proof_cursor_on(&mut conn).await?
         };
-        let candidates: Vec<(String, i64, Vec<u8>, String)> = sqlx::query_as(
+        // A proof row this store's tracker refuted (a refutation mark) is
+        // no candidate of the invalid or the linked kind: nothing reads its
+        // header again a pass. Check 1 takes a marked row as no proof.
+        let sql = format!(
             r#"
             SELECT DISTINCT p.txid, p.proven_tx_id, p.merkle_path,
                    CASE WHEN r.status = 'invalid'
                              AND EXISTS (SELECT 1 FROM transactions t WHERE t.txid = r.txid)
                              AND NOT EXISTS (SELECT 1 FROM transactions f
                                              WHERE f.txid = r.txid AND f.status = 'failed')
+                             AND NOT {marked}
                         THEN 'invalid'
                         WHEN r.status = 'completed'
                              AND r.proven_tx_id = p.proven_tx_id
@@ -121,7 +126,8 @@ impl StorageSqlx {
             WHERE (r.status = 'invalid'
                    AND EXISTS (SELECT 1 FROM transactions t WHERE t.txid = r.txid)
                    AND NOT EXISTS (SELECT 1 FROM transactions f
-                                   WHERE f.txid = r.txid AND f.status = 'failed'))
+                                   WHERE f.txid = r.txid AND f.status = 'failed')
+                   AND NOT {marked})
                OR (r.status = 'completed'
                    AND r.proven_tx_id = p.proven_tx_id
                    AND EXISTS (SELECT 1 FROM transactions t
@@ -134,15 +140,18 @@ impl StorageSqlx {
                                  AND t.status != 'completed')
                    AND NOT EXISTS (SELECT 1 FROM proof_root_checks c
                                    WHERE c.txid = p.txid AND c.height = p.height
-                                     AND c.merkle_root = lower(p.merkle_root)))
+                                     AND c.merkle_root = lower(p.merkle_root))
+                   AND NOT {marked})
             ORDER BY p.proven_tx_id <= ?, p.proven_tx_id
             LIMIT ?
             "#,
-        )
-        .bind(cursor)
-        .bind(INVALID_BESIDE_PROOF_PER_PASS)
-        .fetch_all(self.pool())
-        .await?;
+            marked = MARKED_REFUTED_SQL
+        );
+        let candidates: Vec<(String, i64, Vec<u8>, String)> = sqlx::query_as(&sql)
+            .bind(cursor)
+            .bind(INVALID_BESIDE_PROOF_PER_PASS)
+            .fetch_all(self.pool())
+            .await?;
         if candidates.is_empty() {
             return Ok(PassCounts::default());
         }
@@ -162,14 +171,20 @@ impl StorageSqlx {
                     );
                     continue;
                 };
-                let check = check_unchecked_stored_proof_on(
-                    &mut conn,
-                    None,
-                    tracker.as_deref(),
-                    txid,
-                    &path,
-                )
-                .await?;
+                // A row this store's tracker refuted answers from its mark
+                // (a `completed` request beside it): no header is read.
+                let check = if stored_proof_refuted_on(&mut conn, txid, &path).await? {
+                    ReadCheck::Demoted
+                } else {
+                    check_unchecked_stored_proof_on(
+                        &mut conn,
+                        None,
+                        tracker.as_deref(),
+                        txid,
+                        &path,
+                    )
+                    .await?
+                };
                 if check == ReadCheck::Undecided {
                     tracing::debug!(
                         txid = %txid,
@@ -331,7 +346,15 @@ impl StorageSqlx {
 /// `linkedProofCompletesRequest` (its former word under `was`; logged with
 /// marker `linked_proof_completes_request`). Refuted while still
 /// unchecked: the link of each such transaction is cleared, its status left
-/// as it is (the proof row stays, unchecked, linked by none of them).
+/// as it is; the proof row is kept and marked refuted (its
+/// `proof_root_checks` record reads `refuted:<root>` at its height, see
+/// `REFUTED_ROOT_PREFIX`); where the txid holds no request one is made
+/// asking for its proof (`unmined`). The adoption and this pass skip a
+/// marked row, so no header is read for it a pass; it is read again only
+/// where its answer could change: a proof the proof task brings for the
+/// txid, which the store funnel checks against the tracker and records over
+/// the mark, and the reorg task's writes. Check 1 takes a marked row as no
+/// proof; a `completed` request beside one answers from the mark.
 /// Returns how many transaction rows it brought to `completed`.
 async fn complete_linked_to_checked_proof(
     tx: &mut sqlx::SqliteConnection,
@@ -374,11 +397,21 @@ async fn complete_linked_to_checked_proof(
                 .bind(proven_tx_id)
                 .execute(&mut *tx)
                 .await?;
+                // The proof row is kept and marked: this store's tracker
+                // refuted that root at that height. The adoption and this
+                // pass skip a marked row, so nothing links it again and no
+                // header is read for it a pass; a proof the proof task
+                // brings for the txid writes its record over the mark.
+                if let Ok(root) = path.compute_root(Some(txid)) {
+                    record_root_refuted_on(&mut *tx, txid, path.block_height, &root).await?;
+                }
+                let asked = ask_for_proof_on(&mut *tx, txid, proven_tx_id, now).await?;
                 tracing::warn!(
                     txid = %txid,
                     height = path.block_height,
+                    request_created = asked,
                     marker = "unchecked_proof_link_cleared",
-                    "review_status: a transaction linked a proof row that was never checked and the chain tracker refutes it; the link is cleared, its status left as it is"
+                    "review_status: a transaction linked a proof row that was never checked and the chain tracker refutes it; the link is cleared, the proof row kept and marked refuted, the proof asked for"
                 );
             }
             return Ok(0);
@@ -438,6 +471,32 @@ async fn complete_linked_to_checked_proof(
         );
     }
     Ok(completed)
+}
+
+/// Where the txid holds no request, make one that asks for its proof
+/// (`unmined`, attempts 0, the bytes of the proof row), as the adoption's
+/// second step makes one for an unlinked row. A request the txid holds is
+/// left to its owner. Returns whether one was made.
+async fn ask_for_proof_on(
+    tx: &mut sqlx::SqliteConnection,
+    txid: &str,
+    proven_tx_id: i64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<bool> {
+    let made = sqlx::query(
+        "INSERT OR IGNORE INTO proven_tx_reqs \
+             (txid, status, attempts, notified, history, notify, raw_tx, input_beef, created_at, updated_at) \
+         SELECT p.txid, 'unmined', 0, 0, '{}', '{}', p.raw_tx, NULL, ?, ? \
+         FROM proven_txs p WHERE p.proven_tx_id = ? AND p.txid = ?",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(proven_tx_id)
+    .bind(txid)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    Ok(made > 0)
 }
 
 /// What one pass wrote.

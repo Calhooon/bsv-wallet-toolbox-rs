@@ -70,6 +70,48 @@ pub(crate) async fn root_checked_on(
     Ok(found.is_some())
 }
 
+/// The prefix of a refutation mark's `merkle_root`: a `proof_root_checks`
+/// record whose root reads `refuted:<root>` says this store's tracker
+/// refuted `<root>` at that height for that txid. No root a path computes
+/// carries the prefix, so no reader of a CHECKED record takes a mark for
+/// one; the record's one row per txid holds either a check or a mark, and
+/// a later check (the store funnel's, the pass's) writes over the mark.
+pub(crate) const REFUTED_ROOT_PREFIX: &str = "refuted:";
+
+/// The SQL test, on a `proven_txs` row aliased `p`, that this store holds a
+/// refutation mark at that row's height (the pass's and the adoption's
+/// candidate queries skip such a row; the write's reader matches the root
+/// the stored path computes, `stored_proof_refuted_on`).
+pub(crate) const MARKED_REFUTED_SQL: &str = "EXISTS (SELECT 1 FROM proof_root_checks m \
+     WHERE m.txid = p.txid AND m.height = p.height AND m.merkle_root LIKE 'refuted:%')";
+
+/// Record that this store's tracker refuted `merkle_root` at `height` for
+/// `txid` (the proof row is kept; see `REFUTED_ROOT_PREFIX`).
+pub(crate) async fn record_root_refuted_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    height: u32,
+    merkle_root: &str,
+) -> Result<()> {
+    let mark = format!("{REFUTED_ROOT_PREFIX}{}", merkle_root.to_ascii_lowercase());
+    record_root_checked_on(conn, txid, height, &mark).await
+}
+
+/// Does this store hold a refutation mark for the root the stored proof
+/// `merkle_path` computes for `txid` at its height? A path whose root
+/// cannot be computed is never marked.
+pub(crate) async fn stored_proof_refuted_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    merkle_path: &MerklePath,
+) -> Result<bool> {
+    let Ok(root) = merkle_path.compute_root(Some(txid)) else {
+        return Ok(false);
+    };
+    let mark = format!("{REFUTED_ROOT_PREFIX}{}", root.to_ascii_lowercase());
+    root_checked_on(conn, txid, merkle_path.block_height, &mark).await
+}
+
 /// Drop `txid`'s record (its proof row is being deleted).
 pub(crate) async fn forget_root_check_on(conn: &mut SqliteConnection, txid: &str) -> Result<()> {
     sqlx::query("DELETE FROM proof_root_checks WHERE txid = ?")

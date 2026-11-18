@@ -1,7 +1,8 @@
 //! The proof task's adoption (`adopt_unproven_transactions`, step 1) beside
 //! a proof row this store has not checked: the row is linked and its status
 //! left, no header read; the status review's pass then checks the root
-//! (confirmed: completed; refuted: the link cleared, the status left; no
+//! (confirmed: completed; refuted: the link cleared, the status left, the
+//! proof row kept and marked refuted, a request asking for the proof; no
 //! tracker: nothing written). A proof this store checked: linked and
 //! completed as before.
 //!
@@ -24,7 +25,7 @@ const Y: u8 = 41;
 /// (under `ry`, `completed` and linked, no request) comes in a drain; then
 /// the proof task's pass and the review's pass. Returns W's row `wy` after
 /// each step and the header reads of each.
-async fn cell(tracker: Tracker) -> [String; 6] {
+async fn cell(tracker: Tracker) -> [String; 7] {
     let headers = Arc::new(Headers::default());
     if tracker == Tracker::Confirms {
         headers.carry(Y);
@@ -53,6 +54,17 @@ async fn cell(tracker: Tracker) -> [String; 6] {
         drain_reads.to_string(),
         adopt_reads.to_string(),
         review_reads.to_string(),
+        format!(
+            "req {}",
+            view(&w, Y)
+                .await
+                .split("| req ")
+                .nth(1)
+                .unwrap()
+                .split(" |")
+                .next()
+                .unwrap()
+        ),
     ]
 }
 
@@ -77,6 +89,7 @@ async fn the_review_then_checks_the_root() {
         v[2], "unproven:-",
         "refuted: the link cleared, the status left"
     );
+    assert_eq!(v[6], "req unmined", "refuted: its proof asked for");
     let v = cell(Tracker::None).await;
     assert_eq!(v[2], "unproven:linked", "no tracker: nothing written");
 }
