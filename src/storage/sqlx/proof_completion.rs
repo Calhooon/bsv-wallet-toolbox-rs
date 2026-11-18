@@ -21,7 +21,7 @@
 //! - its own outputs that nothing spent spendable again (counted);
 //! - the cause on the request's history (`provenOverFailed`, the rows).
 
-use sqlx::{Row, SqliteConnection};
+use sqlx::SqliteConnection;
 
 use crate::Result;
 
@@ -53,38 +53,24 @@ pub(crate) async fn complete_on_proof(
         return Ok(failed);
     }
     super::abort_recovery::remark_inputs_spent_on(conn, txid, &[], now).await?;
-    let losers = queue_losers(conn, txid).await?;
+    let losers = losers_of(conn, txid).await?;
+    for loser in &losers {
+        queue_competitor_on(conn, loser, txid).await?;
+    }
     for transaction_id in &failed {
-        sqlx::query(
-            "UPDATE outputs SET spendable = 1, updated_at = ? \
-             WHERE transaction_id = ? AND spendable = 0 AND spent_by IS NULL",
-        )
-        .bind(now)
-        .bind(transaction_id)
-        .execute(&mut *conn)
-        .await?;
+        super::abort_recovery::open_own_outputs(conn, *transaction_id, None, now).await?;
     }
-    let row: Option<(i64, String)> =
-        sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *conn)
-            .await?;
-    if let Some((id, history)) = row {
-        let history = super::storage_sqlx::append_req_history_note(
-            &history,
-            serde_json::json!({
-                "what": "provenOverFailed",
-                "when": now.to_rfc3339(),
-                "transactionIds": failed,
-                "losers": losers,
-            }),
-        );
-        sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
-            .bind(history)
-            .bind(id)
-            .execute(&mut *conn)
-            .await?;
-    }
+    super::abort_recovery::note_request_on(
+        conn,
+        txid,
+        serde_json::json!({
+            "what": "provenOverFailed",
+            "when": now.to_rfc3339(),
+            "transactionIds": failed,
+            "losers": losers,
+        }),
+    )
+    .await?;
     tracing::warn!(
         txid = %txid,
         rows = ?failed,
@@ -95,10 +81,9 @@ pub(crate) async fn complete_on_proof(
     Ok(failed)
 }
 
-/// Queue `txid` as a competitor on the request of every other transaction
-/// the store records as spending one of `txid`'s input outpoints, not
-/// itself ended: the losers of the proven conflict. Returns their txids.
-async fn queue_losers(conn: &mut SqliteConnection, txid: &str) -> Result<Vec<String>> {
+/// Every other transaction the store records as spending one of `txid`'s
+/// input outpoints, not itself ended: the losers of the proven conflict.
+async fn losers_of(conn: &mut SqliteConnection, txid: &str) -> Result<Vec<String>> {
     let raw: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT raw_tx FROM proven_txs WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0 \
          UNION ALL SELECT raw_tx FROM transactions WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0 \
@@ -113,7 +98,7 @@ async fn queue_losers(conn: &mut SqliteConnection, txid: &str) -> Result<Vec<Str
     };
     let mut losers: Vec<String> = Vec::new();
     for (source_txid, vout) in super::internalize_action::extract_input_outpoints(&tx) {
-        let rows = sqlx::query(
+        let found: Vec<String> = sqlx::query_scalar(
             "SELECT t.txid FROM outputs o JOIN transactions t ON t.transaction_id = o.spent_by \
              WHERE lower(o.txid) = lower(?) AND o.vout = ? AND t.txid <> ? \
                AND t.status NOT IN ('failed', 'completed')",
@@ -123,43 +108,31 @@ async fn queue_losers(conn: &mut SqliteConnection, txid: &str) -> Result<Vec<Str
         .bind(txid)
         .fetch_all(&mut *conn)
         .await?;
-        for row in rows {
-            let loser: String = row.get("txid");
+        for loser in found {
             if !losers.contains(&loser) {
                 losers.push(loser);
             }
         }
     }
-    for loser in &losers {
-        let row: Option<(i64, String)> =
-            sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
-                .bind(loser)
-                .fetch_optional(&mut *conn)
-                .await?;
-        let Some((id, history)) = row else {
-            continue;
-        };
-        let mut object = match serde_json::from_str::<serde_json::Value>(&history) {
-            Ok(serde_json::Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
-        };
-        let mut queued: Vec<serde_json::Value> = object
-            .get("competitorsQueued")
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
-        let proven = serde_json::Value::from(txid.to_ascii_lowercase());
-        if !queued.contains(&proven) {
-            queued.push(proven);
-        }
-        object.insert(
-            "competitorsQueued".to_string(),
-            serde_json::Value::from(queued),
-        );
-        sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
-            .bind(serde_json::Value::Object(object).to_string())
-            .bind(id)
-            .execute(&mut *conn)
-            .await?;
-    }
     Ok(losers)
+}
+
+/// Queue `proven` as a competitor on `loser`'s request (`competitorsQueued`,
+/// which the competitor proof ask reads).
+async fn queue_competitor_on(conn: &mut SqliteConnection, loser: &str, proven: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE proven_tx_reqs SET history = json_set( \
+           CASE WHEN json_valid(history) AND json_type(history) = 'object' THEN history ELSE '{}' END, \
+           '$.competitorsQueued', \
+           json((SELECT json_group_array(value) FROM ( \
+             SELECT value FROM json_each(COALESCE(json_extract( \
+               CASE WHEN json_valid(history) THEN history ELSE '{}' END, '$.competitorsQueued'), '[]')) \
+             UNION SELECT lower(?2))))) \
+         WHERE txid = ?1",
+    )
+    .bind(loser)
+    .bind(proven)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }

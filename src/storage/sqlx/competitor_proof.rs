@@ -265,10 +265,34 @@ pub(crate) async fn apply_take_on(
     // against it, nothing of it moves.
     let failed = super::abort_recovery::failed_outgoing_rows(conn, txid, &check.outpoints).await?;
     super::abort_recovery::recover_released_on(conn, txid, &failed, takers, now).await?;
+    let evidence: Vec<i64> = failed
+        .iter()
+        .filter(|r| r.state == super::abort_recovery::FailedState::Evidence)
+        .map(|r| r.transaction_id)
+        .collect();
+    lift_rows_on(conn, txid, rows, &evidence, now).await?;
+    raise_or_hold_on(conn, txid, !evidence.is_empty(), takers, now).await?;
+    for (provider, word) in takers {
+        super::held_receipts::record_take_on(conn, txid, provider, word).await?;
+    }
+    Ok(TakeApplied::Applied)
+}
+
+/// The rows of `txid` a take lifts (`rows`), a `failed` outgoing row with
+/// evidence on record never among them; unfail's lift marks the inputs in
+/// the same write.
+async fn lift_rows_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    rows: TakeRows,
+    evidence: &[i64],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
     let rows_sql = match rows {
         TakeRows::Held => {
             "UPDATE transactions SET status = 'unproven', updated_at = ? \
-             WHERE txid = ? AND status NOT IN ('failed', 'completed')"
+             WHERE txid = ? AND status NOT IN ('failed', 'completed') \
+               AND transaction_id NOT IN (SELECT value FROM json_each(?))"
         }
         TakeRows::LiftFailed => {
             "UPDATE transactions SET status = 'unproven', updated_at = ? \
@@ -277,24 +301,30 @@ pub(crate) async fn apply_take_on(
                  (SELECT value FROM json_each(?)))"
         }
     };
-    let evidence: Vec<i64> = failed
-        .iter()
-        .filter(|r| r.state == super::abort_recovery::FailedState::Evidence)
-        .map(|r| r.transaction_id)
-        .collect();
-    let mut lift = sqlx::query(rows_sql).bind(now).bind(txid);
-    if rows == TakeRows::LiftFailed {
-        lift = lift.bind(serde_json::Value::from(evidence.clone()).to_string());
-    }
-    lift.execute(&mut *conn).await?;
+    sqlx::query(rows_sql)
+        .bind(now)
+        .bind(txid)
+        .bind(serde_json::Value::from(evidence.to_vec()).to_string())
+        .execute(&mut *conn)
+        .await?;
     if rows == TakeRows::LiftFailed {
         // The one recovery of a failed transaction's inputs, in this write.
-        super::abort_recovery::remark_inputs_spent_on(conn, txid, &evidence, now).await?;
+        super::abort_recovery::remark_inputs_spent_on(conn, txid, evidence, now).await?;
     }
-    // The request is raised unless a `failed` outgoing row of the txid
-    // stands unrecovered: then it keeps its word, raised only for a live
-    // row of another user (`Locked`), never beside a row with evidence on
-    // record, and the take is a hint on its history.
+    Ok(())
+}
+
+/// The request is raised unless a `failed` outgoing row of the txid stands
+/// unrecovered: then it keeps its word, raised only for a live row of
+/// another user (its inputs locked), never beside a row with evidence on
+/// record, and the take is a hint on its history.
+async fn raise_or_hold_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    evidence: bool,
+    takers: &[(&str, &str)],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
     let (stands, live): (i64, i64) = sqlx::query_as(
         "SELECT \
            (SELECT COUNT(*) FROM transactions WHERE txid = ?1 AND status = 'failed' AND is_outgoing = 1), \
@@ -303,9 +333,8 @@ pub(crate) async fn apply_take_on(
     .bind(txid)
     .fetch_one(&mut *conn)
     .await?;
-    let still_evidence = !evidence.is_empty() && stands > 0;
-    let raise = stands == 0 || (live > 0 && !still_evidence);
-    if raise {
+    let still_evidence = evidence && stands > 0;
+    if stands == 0 || (live > 0 && !still_evidence) {
         sqlx::query(
             "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status <> 'completed'",
         )
@@ -313,48 +342,19 @@ pub(crate) async fn apply_take_on(
         .bind(txid)
         .execute(&mut *conn)
         .await?;
-    } else {
-        note_take_held(conn, txid, still_evidence, takers, now).await?;
-    }
-    for (provider, word) in takers {
-        super::held_receipts::record_take_on(conn, txid, provider, word).await?;
-    }
-    Ok(TakeApplied::Applied)
-}
-
-/// The note of a take heard beside a `failed` outgoing row it does not
-/// recover (its inputs still locked, or evidence on record against it):
-/// the request keeps its word, the take is a hint.
-async fn note_take_held(
-    conn: &mut SqliteConnection,
-    txid: &str,
-    evidence: bool,
-    takers: &[(&str, &str)],
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<()> {
-    let row: Option<(i64, String)> =
-        sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some((id, history)) = row else {
         return Ok(());
-    };
-    let history = super::storage_sqlx::append_req_history_note(
-        &history,
+    }
+    super::abort_recovery::note_request_on(
+        conn,
+        txid,
         serde_json::json!({
             "what": "takeHeldAsHint",
             "when": now.to_rfc3339(),
-            "why": if evidence { "evidenceOnRecord" } else { "inputsLocked" },
+            "why": if still_evidence { "evidenceOnRecord" } else { "inputsLocked" },
             "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
         }),
-    );
-    sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
-        .bind(history)
-        .bind(id)
-        .execute(&mut *conn)
-        .await?;
-    Ok(())
+    )
+    .await
 }
 
 /// The note of a take that raised nothing, on the request's history.
@@ -365,27 +365,15 @@ async fn note_take_refused(
     takers: &[(&str, &str)],
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
-    let row: Option<(i64, String)> =
-        sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let Some((id, history)) = row else {
-        return Ok(());
-    };
-    let history = super::storage_sqlx::append_req_history_note(
-        &history,
+    super::abort_recovery::note_request_on(
+        conn,
+        txid,
         serde_json::json!({
             "what": "takeNotCounted",
             "when": now.to_rfc3339(),
             "competitor": competitor,
             "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
         }),
-    );
-    sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
-        .bind(history)
-        .bind(id)
-        .execute(&mut *conn)
-        .await?;
-    Ok(())
+    )
+    .await
 }
