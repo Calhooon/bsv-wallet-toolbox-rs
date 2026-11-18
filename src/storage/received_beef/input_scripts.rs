@@ -7,11 +7,13 @@
 //! `judge_input` there), built here from what bsv-rs 0.8 offers
 //! (`ProtocolEra`, `ScriptFlags::standard`, `Spend::with_transaction`):
 //!
-//! - the transactions are run in the order the BEEF carries them, one read
-//!   before a parent held until the parent is read (the 0.14 line's
-//!   `WordPass`); a transaction the BEEF proves (its own BUMP, or its txid
-//!   in a BUMP, whose root step 6 confirmed) is not run: a mined
-//!   transaction is the chain's word;
+//! - the transactions are run in the order the BEEF carries them; one the
+//!   BEEF carries ahead of its parent is held until that parent is read
+//!   (the 0.14 line's `WordPass`); a transaction the BEEF proves (its own
+//!   BUMP, or its txid in a BUMP, whose root step 6 confirmed) is not run:
+//!   a mined transaction is the chain's word. The 0.14 line runs a
+//!   transaction that has no BUMP index of its own even when its txid is
+//!   in a BUMP; this line does not;
 //! - the spend takes the era of the block after the tracker's mining tip,
 //!   or with no tip the latest activation the network knows;
 //! - the coin takes the era of the height its parent's BUMP proves, an
