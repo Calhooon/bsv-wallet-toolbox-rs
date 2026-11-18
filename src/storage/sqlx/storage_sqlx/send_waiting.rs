@@ -119,41 +119,8 @@ impl StorageSqlx {
         words: serde_json::Value,
         competitors: &[String],
     ) -> Result<()> {
-        let row: Option<(i64, i64, String)> = sqlx::query_as(
-            "SELECT proven_tx_req_id, attempts, history FROM proven_tx_reqs \
-             WHERE txid = ? AND status IN ('unsent', 'sending', 'unprocessed')",
-        )
-        .bind(txid)
-        .fetch_optional(self.pool())
-        .await?;
-        let Some((proven_tx_req_id, attempts, history)) = row else {
-            return Ok(());
-        };
-        let attempts = attempts.saturating_add(1);
-        let now = chrono::Utc::now();
-        let next = crate::services::cadence::send_waiting_reask_minutes(
-            u32::try_from(attempts).unwrap_or(u32::MAX),
-        );
-        let history = append_req_history_note(
-            &history,
-            serde_json::json!({
-                "when": now.to_rfc3339(),
-                "what": "immediateBroadcastHint",
-                "outcome": outcome,
-                "attempts": attempts,
-                "words": words,
-                "nextReaskMinutes": next,
-            }),
-        );
-        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-            .bind(attempts)
-            .bind(history)
-            .bind(now)
-            .bind(proven_tx_req_id)
-            .execute(&mut *self.writer_conn().await?)
-            .await?;
-        self.queue_competitors(txid, competitors).await?;
-        Ok(())
+        self.record_post_hint(txid, (outcome, words), competitors, false)
+            .await
     }
 
     /// The internalize door's post of a held presentation drew no take
@@ -174,6 +141,19 @@ impl StorageSqlx {
         words: serde_json::Value,
         competitors: &[String],
     ) -> Result<()> {
+        self.record_post_hint(txid, (outcome, words), competitors, true)
+            .await
+    }
+
+    /// The one writer of both hints: `any_word` reads the request whatever
+    /// its word (the door's), else only a request still to send.
+    async fn record_post_hint(
+        &self,
+        txid: &str,
+        (outcome, words): (&str, serde_json::Value),
+        competitors: &[String],
+        any_word: bool,
+    ) -> Result<()> {
         let row: Option<(i64, i64, String, String)> = sqlx::query_as(
             "SELECT proven_tx_req_id, attempts, history, status FROM proven_tx_reqs WHERE txid = ?",
         )
@@ -184,11 +164,10 @@ impl StorageSqlx {
             return Ok(());
         };
         let sends = matches!(status.as_str(), "unsent" | "sending" | "unprocessed");
-        let attempts = if sends {
-            attempts.saturating_add(1)
-        } else {
-            attempts
-        };
+        if !sends && !any_word {
+            return Ok(());
+        }
+        let attempts = attempts.saturating_add(i64::from(sends));
         let now = chrono::Utc::now();
         let next = crate::services::cadence::send_waiting_reask_minutes(
             u32::try_from(attempts).unwrap_or(u32::MAX),

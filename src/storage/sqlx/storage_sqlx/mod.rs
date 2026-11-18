@@ -561,6 +561,18 @@ impl StorageSqlx {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Tests only: `StoreBusy` (SQLite code 5) when a busy status write is
+    /// armed ([`Self::take_busy_next_status_write`]), else `Ok`.
+    #[cfg(test)]
+    pub(crate) fn busy_status_write(&self) -> Result<()> {
+        if self.take_busy_next_status_write() {
+            return Err(Error::StoreBusy {
+                reason: StoreBusyReason::SqliteBusy { code: 5 },
+            });
+        }
+        Ok(())
+    }
+
     /// Tests only: the next `retire_poisoned_descendants` answers busy
     /// before its first write, as a store held by another process would.
     #[cfg(test)]

@@ -1663,11 +1663,7 @@ async fn record_door_take(
     takers: &[(&str, &str)],
 ) -> Result<()> {
     #[cfg(test)]
-    if storage.take_busy_next_status_write() {
-        return Err(crate::error::Error::StoreBusy {
-            reason: crate::error::StoreBusyReason::SqliteBusy { code: 5 },
-        });
-    }
+    storage.busy_status_write()?;
     let now = Utc::now();
     // The request and the held transactions move together: taken, every
     // row of the txid that is neither `failed` nor `completed` is
