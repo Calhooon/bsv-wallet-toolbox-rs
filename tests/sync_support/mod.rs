@@ -273,3 +273,11 @@ pub fn refusal<T>(r: &bsv_wallet_toolbox_rs::Result<T>) -> String {
         Err(e) => e.to_string(),
     }
 }
+
+/// Awaits `f` for at most ten seconds; past that the test fails naming
+/// `what`, where it would otherwise wait without end.
+pub async fn bounded<F: std::future::Future>(what: &str, f: F) -> F::Output {
+    tokio::time::timeout(std::time::Duration::from_secs(10), f)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: no answer within 10 s"))
+}

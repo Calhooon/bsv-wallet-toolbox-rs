@@ -297,16 +297,19 @@ async fn a_proof_row_that_appears_meanwhile_refuses_the_chunk() {
     let mut chunk = chunk_for(ALICE);
     chunk.proven_txs = Some(vec![incoming]);
     let task = tokio::spawn(async move { s2.process_sync_chunk(args_for(ALICE), chunk).await });
-    while services.call_count("get_header_for_height") == 0 {
-        tokio::task::yield_now().await;
-    }
+    bounded("the validation's header read", async {
+        while services.call_count("get_header_for_height") == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
     ::sqlx::query("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES (?,7,0,'','',X'00',X'00',datetime('now'),datetime('now'))")
         .bind(&txid)
         .execute(&mut *held)
         .await
         .unwrap();
     drop(held);
-    let r = task.await.unwrap();
+    let r = bounded("the chunk's answer", task).await.unwrap();
     let after = held_height(&s).await.0;
     println!(
         "WITNESS 8a proof row appearing meanwhile: {}; held height {after}",
@@ -341,16 +344,19 @@ async fn a_held_proof_rewritten_after_its_validation_refuses_the_chunk() {
     let mut chunk = chunk_for(ALICE);
     chunk.proven_txs = Some(vec![good]);
     let task = tokio::spawn(async move { s2.process_sync_chunk(args_for(ALICE), chunk).await });
-    while services.call_count("get_header_for_height") == 0 {
-        tokio::task::yield_now().await;
-    }
+    bounded("the validation's header read", async {
+        while services.call_count("get_header_for_height") == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
     ::sqlx::query("UPDATE proven_txs SET height = 300 WHERE txid = ?")
         .bind(&txid)
         .execute(&mut *held)
         .await
         .unwrap();
     drop(held);
-    let r = task.await.unwrap();
+    let r = bounded("the chunk's answer", task).await.unwrap();
     let after = held_height(&s).await.0;
     println!(
         "WITNESS P3 held proof rewritten after its validation: {}; held height {after}",
