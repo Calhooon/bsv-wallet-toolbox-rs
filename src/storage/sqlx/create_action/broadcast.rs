@@ -186,8 +186,11 @@ pub(super) async fn fetch_and_store_merkle_path(
     .await;
 
     // Every row of the txid, a `failed` one included (`proof_completion`).
-    let _ =
-        super::super::proof_completion::complete_on_proof(&mut wtx, txid, proven_tx_id, now).await;
+    if let Ok(Some(proof)) =
+        super::super::proof_completion::CheckedProof::read_on(&mut wtx, txid, proven_tx_id).await
+    {
+        let _ = super::super::proof_completion::complete_on_proof(&mut wtx, &proof, now).await;
+    }
 
     if let Err(e) = wtx.commit().await {
         tracing::debug!(txid = %txid, error = %e, "could not commit the proven tx");
