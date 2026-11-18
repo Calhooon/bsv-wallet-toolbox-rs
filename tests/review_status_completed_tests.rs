@@ -5,7 +5,8 @@
 //! checked by the review's bounded pass before (the tracker asked with no
 //! lock held, then one write that reads each row again): confirmed, the root
 //! is recorded and the transaction completed in that write; refuted, the
-//! proof is demoted and asked again, a `failed` row staying `failed`; with
+//! proof is demoted and asked again, a `failed` row reading `unproven`
+//! with its free inputs spent by it again; with
 //! no tracker or no answer nothing is written.
 //!
 //! The road, through the manager's real sync: Alice's store A proves her
@@ -363,10 +364,12 @@ async fn an_unchecked_proof_the_tracker_refutes_completes_no_unproven_row() {
 }
 
 #[tokio::test]
-async fn an_unchecked_proof_the_tracker_refutes_leaves_a_failed_row_failed() {
+async fn an_unchecked_proof_the_tracker_refutes_brings_a_failed_row_back_unproven() {
     let (_, after, reads) = cell(4, ("failed", 0, "invalid"), false).await;
     assert_eq!(reads, 1);
-    assert!(after.starts_with("alice unproven bob failed"), "{after}");
+    // The failed row unproven beside its request asking, its own output as
+    // the failure left it.
+    assert!(after.starts_with("alice unproven bob unproven"), "{after}");
     assert!(
         after.contains("proof false checked 0 | req unmined link false"),
         "{after}"
