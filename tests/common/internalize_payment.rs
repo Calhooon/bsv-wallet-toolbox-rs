@@ -192,6 +192,39 @@ pub fn spend_beef(spent: u32, lock: LockingScript) -> (Vec<u8>, String) {
 
 /// [`spend_beef`], the child carrying a BUMP of its own when `proven`.
 fn spend_beef_with(spent: u32, lock: LockingScript, proven: bool) -> (Vec<u8>, String) {
+    let parts = spend_parts(spent, lock, proven);
+    (parts.beef, parts.txid)
+}
+
+/// The parts of a [`spend_beef`] payment: the atomic BEEF, the child's
+/// txid and raw bytes, and the parent's txid.
+pub struct SpendParts {
+    pub beef: Vec<u8>,
+    pub txid: String,
+    pub raw: Vec<u8>,
+    pub parent_txid: String,
+}
+
+/// [`beef_paying`]'s parts.
+pub fn beef_paying_parts(lock: LockingScript) -> SpendParts {
+    spend_parts(5, lock, false)
+}
+
+/// A transaction spending output `vout` of `parent_txid` to `OTHER_HASH`:
+/// a competitor of any spend of that outpoint.
+pub fn competitor_of(parent_txid: &str, vout: u32) -> Transaction {
+    let mut tx = Transaction::new();
+    tx.set_version(1);
+    tx.inputs_mut().push(input(parent_txid, vout));
+    tx.outputs_mut().push(TransactionOutput {
+        satoshis: Some(500),
+        locking_script: other_lock(),
+        change: false,
+    });
+    tx
+}
+
+fn spend_parts(spent: u32, lock: LockingScript, proven: bool) -> SpendParts {
     let (parent, bump) = proven_parent(spent);
     let parent_txid = parent.id();
     let mut child = Transaction::new();
@@ -215,7 +248,12 @@ fn spend_beef_with(spent: u32, lock: LockingScript, proven: bool) -> (Vec<u8>, S
         ))
     });
     beef.merge_raw_tx(child.to_binary(), child_bump).unwrap();
-    (beef.to_binary_atomic(&txid).unwrap(), txid)
+    SpendParts {
+        beef: beef.to_binary_atomic(&txid).unwrap(),
+        txid,
+        raw: child.to_binary(),
+        parent_txid,
+    }
 }
 
 /// The sweep: `spend_beef` of `SWEPT` outputs.

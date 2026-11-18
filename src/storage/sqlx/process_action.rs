@@ -1413,48 +1413,37 @@ pub(crate) async fn update_transaction_status_after_post_words(
 
     let (word, details, competitors): (&str, &[String], &[String]) = match effective_outcome {
         BroadcastOutcome::Success => {
-            let mut tx = storage.write_tx().await?;
-            let now = Utc::now();
-
-            // Broadcast succeeded: unproven / unmined. A broadcaster's
-            // acceptance never lifts a `failed` transaction (an abort or a
-            // retire that landed first stands, 0.3.60) nor a `completed` one,
-            // and never reopens a req already judged `invalid` / `doubleSpend`.
-            sqlx::query(
-                "UPDATE transactions SET status = ?, updated_at = ? \
-                 WHERE txid = ? AND status NOT IN ('failed', 'completed')",
-            )
-            .bind(TransactionStatus::Unproven.as_str())
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *tx)
-            .await?;
-
-            sqlx::query(
-                "UPDATE proven_tx_reqs SET status = ?, updated_at = ? \
-                 WHERE txid = ? AND status NOT IN ('completed', 'invalid', 'doubleSpend')",
-            )
-            .bind(proven_tx_req_status::UNMINED)
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *tx)
-            .await?;
-
-            // The take, recorded in the same write.
-            if reconciled {
-                super::held_receipts::record_chain_seen_on(&mut tx, txid).await?;
-            } else {
-                for provider in accepting_instances(words, txid) {
-                    super::held_receipts::record_take_on(
-                        &mut tx,
-                        txid,
-                        provider,
+            // The one write that applies a take (`competitor_proof.rs`): the
+            // request `unmined` from every word but `completed`, every row of
+            // the txid neither `failed` nor `completed` `unproven` (an abort
+            // or a retire that landed earlier stands, 0.3.60), the take
+            // recorded in the same write: each accepting instance's name, or
+            // `chain` with `seen` when a status source holds a refused
+            // transaction. Never while a competitor's checked proof stands.
+            let check = storage.competitor_check(txid, None).await?;
+            let chain = [(
+                crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
+                crate::services::broadcast_memory::BROADCAST_STATUS_SEEN,
+            )];
+            let named: Vec<(&str, &str)> = accepting_instances(words, txid)
+                .into_iter()
+                .map(|p| {
+                    (
+                        p,
                         crate::services::broadcast_memory::BROADCAST_STATUS_ACCEPTED,
                     )
-                    .await?;
-                }
-            }
-
+                })
+                .collect();
+            let takers: &[(&str, &str)] = if reconciled { &chain } else { &named };
+            let mut tx = storage.write_tx().await?;
+            super::competitor_proof::apply_take_on(
+                &mut tx,
+                &check,
+                takers,
+                super::competitor_proof::TakeRows::Held,
+                Utc::now(),
+            )
+            .await?;
             super::storage_sqlx::commit(tx).await?;
             return Ok(());
         }

@@ -137,6 +137,14 @@ pub async fn internalize_action_internal(
         None => None,
     };
 
+    // A competitor's checked proof stands against any take (the keeper's
+    // ruling of 2026-11-18): asked before any writer and before the post,
+    // for a transaction the BEEF does not prove (`competitor_proof.rs`).
+    let competitor = match validated_bump {
+        None => Some(storage.competitor_check(&txid, Some(&raw_tx)).await?),
+        Some(_) => None,
+    };
+
     // Step 2: Get the user's default (change) basket
     // NOTE: This uses its own connection (known limitation).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
@@ -152,6 +160,34 @@ pub async fn internalize_action_internal(
     // Validate existing transaction status if merging
     if let Some(ref etx) = existing_tx {
         validate_merge_status(&etx.status)?;
+    }
+
+    // A presentation a competitor's checked proof refutes (reading 11's
+    // second case): reading 7's answer, the competitor and `failed`; no
+    // post and no row written. A merge (this user's repeat) is the repeat
+    // piece's.
+    if let Some(standing) = competitor.as_ref().and_then(|c| c.standing.clone()) {
+        if !is_merge {
+            drop(tx);
+            tracing::warn!(
+                txid = %txid,
+                competitor = %standing.txid,
+                marker = "internalize_refuted_by_competitor_proof",
+                "internalize: a competitor's checked proof stands: no post, nothing written"
+            );
+            let (send_with_results, not_delayed_results) = DoorAnswer::Refuted {
+                competitor: standing.txid,
+            }
+            .results(&txid);
+            return Ok(StorageInternalizeActionResult {
+                base: InternalizeActionResult { accepted: true },
+                is_merge,
+                txid,
+                satoshis: 0,
+                send_with_results,
+                not_delayed_results,
+            });
+        }
     }
 
     // Step 4: Extract output specifications and validate
@@ -681,7 +717,9 @@ pub async fn internalize_action_internal(
     // its review status, from which the wallet raises the review-actions
     // refusal.
     let (send_with_results, not_delayed_results) = if door_posts {
-        let (answer, written) = broadcast_new_internalized_req(storage, &txid, &args.tx).await;
+        let check = competitor.unwrap_or_default();
+        let (answer, written) =
+            broadcast_new_internalized_req(storage, &txid, &args.tx, &check).await;
         if let Err(e) = written {
             crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
         }
@@ -1518,6 +1556,7 @@ async fn broadcast_new_internalized_req(
     storage: &StorageSqlx,
     txid: &str,
     atomic_beef: &[u8],
+    check: &super::competitor_proof::CompetitorCheck,
 ) -> (DoorAnswer, Result<()>) {
     let services = match storage.get_services() {
         Ok(s) => s,
@@ -1610,10 +1649,13 @@ async fn broadcast_new_internalized_req(
     } else {
         vec![(BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_SEEN)]
     };
-    (
-        DoorAnswer::Taken,
-        record_door_take(storage, txid, &takers).await,
-    )
+    match record_door_take(storage, check, &takers).await {
+        Ok(super::competitor_proof::TakeApplied::Refused { competitor }) => {
+            (DoorAnswer::Refuted { competitor }, Ok(()))
+        }
+        Ok(super::competitor_proof::TakeApplied::Applied) => (DoorAnswer::Taken, Ok(())),
+        Err(e) => (DoorAnswer::Taken, Err(e)),
+    }
 }
 
 /// The refusal predicate the door has always used: not an orphan hold, not a
@@ -1654,54 +1696,34 @@ fn instance_words(r: &crate::services::PostBeefResult) -> String {
         .join("; ")
 }
 
-/// A take of the door's post, written in one transaction: the request to
-/// `unmined` from every word but `completed`, every row of the txid that is
-/// neither `failed` nor `completed` to `unproven`, and each take recorded.
+/// A take of the door's post, through the one write that applies a take
+/// (`competitor_proof::apply_take_on`): the request to `unmined` from every
+/// word but `completed`, every row of the txid that is neither `failed` nor
+/// `completed` to `unproven`, each take recorded; nothing raised while a
+/// competitor's checked proof stands.
 async fn record_door_take(
     storage: &StorageSqlx,
-    txid: &str,
+    check: &super::competitor_proof::CompetitorCheck,
     takers: &[(&str, &str)],
-) -> Result<()> {
+) -> Result<super::competitor_proof::TakeApplied> {
     #[cfg(test)]
     storage.busy_status_write()?;
-    let now = Utc::now();
-    // The request and the held transactions move together: taken, every
-    // row of the txid that is neither `failed` nor `completed` is
-    // `unproven` (counted, offered under the action's rule), the rule of
-    // `process_action`'s success arm; the request is `unmined` from every
-    // word but `completed`, another user's `nosend`, `unsent`, `sending`,
-    // `invalid` or `doubleSpend` included (a broadcaster's take outweighs a
-    // word no proof stands behind, reading 11).
     let mut tx = storage.write_tx().await?;
-    sqlx::query(
-        "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status <> 'completed'",
+    let applied = super::competitor_proof::apply_take_on(
+        &mut tx,
+        check,
+        takers,
+        super::competitor_proof::TakeRows::Held,
+        Utc::now(),
     )
-    .bind(now)
-    .bind(txid)
-    .execute(&mut *tx)
     .await?;
-    sqlx::query(
-        "UPDATE transactions SET status = 'unproven', updated_at = ? \
-         WHERE txid = ? AND status NOT IN ('failed', 'completed')",
-    )
-    .bind(now)
-    .bind(txid)
-    .execute(&mut *tx)
-    .await?;
-    // The door records the take it drew in the same write, so the row's
-    // word and the record agree whichever services a host built (the
-    // crate's `Services` records an acceptance itself; the ladder keeps
-    // that row as it is).
-    for (provider, word) in takers {
-        super::held_receipts::record_take_on(&mut tx, txid, provider, word).await?;
-    }
     super::storage_sqlx::commit(tx).await?;
-
     tracing::info!(
-        txid = %txid,
-        "internalize: tx broadcast/acknowledged — req advanced to 'unmined'"
+        txid = %check.txid(),
+        applied = applied.applied(),
+        "internalize: tx broadcast/acknowledged: the take applied unless a competitor's proof stands"
     );
-    Ok(())
+    Ok(applied)
 }
 
 // =============================================================================

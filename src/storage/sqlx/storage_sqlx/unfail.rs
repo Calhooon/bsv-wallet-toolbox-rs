@@ -113,25 +113,35 @@ impl StorageSqlx {
     ) -> Result<()> {
         let services = self.get_services()?;
 
+        // The chain evidence that recovered it, through the one write that
+        // applies a take (`competitor_proof::apply_take_on`, the rows rule
+        // that lifts `failed`; 'completed' rows never move backward), the
+        // attempts reset in the same write. Nothing raised while a
+        // competitor's checked proof stands.
+        let check = self.competitor_check(txid, None).await?;
         let mut tx = self.write_tx().await?;
+        let applied = super::super::competitor_proof::apply_take_on(
+            &mut tx,
+            &check,
+            &[(
+                crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
+                crate::services::broadcast_memory::BROADCAST_STATUS_SEEN,
+            )],
+            super::super::competitor_proof::TakeRows::LiftFailed,
+            now,
+        )
+        .await?;
+        if !applied.applied() {
+            super::commit(tx).await?;
+            return Ok(());
+        }
         sqlx::query(
-            "UPDATE proven_tx_reqs SET status = 'unmined', attempts = 0, updated_at = ? WHERE proven_tx_req_id = ?",
+            "UPDATE proven_tx_reqs SET attempts = 0, updated_at = ? WHERE proven_tx_req_id = ?",
         )
         .bind(now)
         .bind(req_id)
         .execute(&mut *tx)
         .await?;
-
-        // 'completed' rows are already correct — never move them backward.
-        sqlx::query(
-            "UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ? AND status != 'completed'",
-        )
-        .bind(now)
-        .bind(txid)
-        .execute(&mut *tx)
-        .await?;
-        // The chain evidence that recovered it, recorded in the same write.
-        super::super::held_receipts::record_chain_seen_on(&mut tx, txid).await?;
         super::commit(tx).await?;
 
         // Restore outputs of this transaction, but validate each against

@@ -38,6 +38,7 @@ mod broadcast_seen;
 mod broadcaster_hint_tests;
 #[cfg(test)]
 mod change_tiebreak_tests;
+mod competitor_proof;
 mod create_action;
 mod held_receipts;
 mod internalize_action;

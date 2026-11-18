@@ -34,6 +34,10 @@ pub(crate) enum DoorAnswer {
         status: ReviewActionResultStatus,
         competitors: Vec<String>,
     },
+    /// A competitor's checked proof stands against it (reading 11's second
+    /// case, reading 7's answer): `doubleSpend` naming the competitor, the
+    /// send result `failed`, no post.
+    Refuted { competitor: String },
 }
 
 impl DoorAnswer {
@@ -65,6 +69,18 @@ impl DoorAnswer {
                     txid: txid.to_string(),
                     status: *status,
                     competing_txs: (!competitors.is_empty()).then(|| competitors.clone()),
+                    competing_beef: None,
+                }]),
+            ),
+            Self::Refuted { competitor } => (
+                Some(vec![SendWithResult {
+                    txid: txid.to_string(),
+                    status: "failed".to_string(),
+                }]),
+                Some(vec![ReviewActionResult {
+                    txid: txid.to_string(),
+                    status: ReviewActionResultStatus::DoubleSpend,
+                    competing_txs: Some(vec![competitor.clone()]),
                     competing_beef: None,
                 }]),
             ),
