@@ -571,12 +571,21 @@ impl WalletStorageManager {
     /// when every store was read and every row names one store.
     ///
     /// All or nothing against a dropped or panicking call: everything it
-    /// writes is computed under the stores read lock, which is released;
-    /// then it takes, in this order, `active_index`, `backup_indices`,
+    /// writes is computed under the stores read lock; then, that lock still
+    /// held, it takes, in this order, `active_index`, `backup_indices`,
     /// `conflicting_indices`, `auth_id` and `is_available` (each for write)
     /// and writes every field, `cached_settings` last, with no await between
     /// its writes. A call dropped while it waits on a lock has changed none
     /// of the manager's fields; once it holds them all it has no await left.
+    /// It holds the stores read lock from its read of the rows through its
+    /// last write: a cached row is written only under the stores write
+    /// lock, so no row moves between a partition's read and its writes, and
+    /// a partition that read older rows cannot write after one that read
+    /// newer. It cannot wait on itself: no caller holds a state lock when it
+    /// calls (`make_available` releases the stores before, `set_active` and
+    /// the transition hold only the transition lock), it takes the stores
+    /// ahead of the five as every other taker does, and a writer queued on
+    /// the stores holds no other state lock while it waits.
     ///
     /// The manager's locks. The transition lock (`set_active_lock`, one
     /// `set_active` at a time) is the outermost and the one lock held across
@@ -663,9 +672,9 @@ impl WalletStorageManager {
                 && conflicting.is_empty();
             (user.user_id, is_active, settings)
         });
-        drop(stores);
 
-        // Every lock, in the order above; then every write, no await.
+        // Every lock, in the order above, the stores still held; then every
+        // write, no await.
         let mut active_index = self.active_index.write().await;
         let mut backup_indices = self.backup_indices.write().await;
         let mut conflicting_indices = self.conflicting_indices.write().await;
