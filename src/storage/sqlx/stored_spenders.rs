@@ -35,6 +35,16 @@
 //!   none of those (an unsigned action whose inputs all come from
 //!   elsewhere) cannot spend this outpoint and is not counted, whether or
 //!   not an output row names it as a spender.
+//! - a row of the output's own user that an output row names as its
+//!   spender is not counted when the caller names that output
+//!   (`stored_spenders_of_output`): `createAction` takes a coin of the
+//!   store only by allocating change or by a named input it looks up by the
+//!   caller's user and refuses unless spendable (a change coin is never
+//!   named), and either way records itself as the coin's spender; an
+//!   outside input is one with no row of the caller's, so this output,
+//!   already held, is never taken as one. Another user's row, and a row a
+//!   sync brought (the spender does not travel, so no output names it),
+//!   stay counted.
 //!
 //! A caller that would free a coin frees none while a counted row is held.
 
@@ -105,22 +115,37 @@ fn bytes_spend(raw: &[u8], txid: &str, vout: u32) -> Option<bool> {
 /// not failed, no index) whose candidates are each parsed, the recorded
 /// spenders, the bytes of the outpoint's own transaction, and a count of
 /// the rows that could hide a spender (module docs).
+#[cfg(test)]
 pub(crate) async fn stored_spenders_of(
     conn: &mut SqliteConnection,
     txid: &str,
     vout: u32,
 ) -> Result<StoredSpenders> {
-    stored_spenders_except(conn, txid, vout, None).await
+    stored_spenders_except(conn, txid, vout, None, None).await
+}
+
+/// `stored_spenders_of` for the output row `output_id` of the outpoint:
+/// the unread count leaves out a row of that output's own user that an
+/// output row names as its spender (module docs).
+pub(crate) async fn stored_spenders_of_output(
+    conn: &mut SqliteConnection,
+    output_id: i64,
+    txid: &str,
+    vout: u32,
+) -> Result<StoredSpenders> {
+    stored_spenders_except(conn, txid, vout, None, Some(output_id)).await
 }
 
 /// `stored_spenders_of`, the unread count leaving out the row `except`
 /// (an action being signed in the caller's write, whose own bytes the
-/// caller reads).
+/// caller reads) and, with `output`, every row of that output row's user
+/// that an output row names as its spender.
 async fn stored_spenders_except(
     conn: &mut SqliteConnection,
     txid: &str,
     vout: u32,
     except: Option<i64>,
+    output: Option<i64>,
 ) -> Result<StoredSpenders> {
     let needle = outpoint_bytes(txid, vout)?.to_vec();
     let candidates = sqlx::query(
@@ -204,6 +229,8 @@ async fn stored_spenders_except(
            AND (t.raw_tx IS NULL OR length(t.raw_tx) = 0) \
            AND (p.raw_tx IS NULL OR length(p.raw_tx) = 0) \
            AND t.transaction_id != ? \
+           AND NOT (t.user_id IS (SELECT user_id FROM outputs WHERE output_id = ?) \
+                    AND EXISTS (SELECT 1 FROM outputs n WHERE n.spent_by = t.transaction_id)) \
            AND (? IS NULL \
                 OR t.input_beef IS NULL OR length(t.input_beef) = 0 \
                 OR instr(t.input_beef, ?) > 0 \
@@ -211,6 +238,7 @@ async fn stored_spenders_except(
                 OR instr(t.input_beef, ?) > 0)",
     )
     .bind(except.unwrap_or(-1))
+    .bind(output.unwrap_or(-1))
     .bind(source.as_deref())
     .bind(source.as_deref())
     .bind(&internal)
@@ -392,7 +420,14 @@ pub(crate) async fn search_sent_change(
             .fetch_all(&mut *conn)
             .await?;
         for (output_id, vout) in rows {
-            let held = stored_spenders_except(&mut conn, txid, vout as u32, search.except).await?;
+            let held = stored_spenders_except(
+                &mut conn,
+                txid,
+                vout as u32,
+                search.except,
+                Some(output_id),
+            )
+            .await?;
             search.found.insert(output_id, held);
         }
     }
@@ -458,7 +493,7 @@ pub(crate) async fn release_sent_change(
                 }
                 held
             }
-            None => stored_spenders_except(&mut *conn, txid, vout, except).await?,
+            None => stored_spenders_except(&mut *conn, txid, vout, except, Some(output_id)).await?,
         };
         if let Some((id, raw)) = current {
             match bytes_spend(raw, txid, vout) {

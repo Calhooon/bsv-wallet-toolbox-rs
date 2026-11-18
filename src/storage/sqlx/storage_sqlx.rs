@@ -571,6 +571,7 @@ impl StorageSqlx {
     /// `txid`.`vout`, by their bytes, read on a reader connection (never
     /// the writer), and how many such transactions cannot be read
     /// (`super::stored_spenders`).
+    #[cfg(test)]
     pub(crate) async fn stored_spenders(
         &self,
         txid: &str,
@@ -578,6 +579,19 @@ impl StorageSqlx {
     ) -> Result<super::stored_spenders::StoredSpenders> {
         let mut conn = self.reader.acquire().await?;
         super::stored_spenders::stored_spenders_of(&mut conn, txid, vout).await
+    }
+
+    /// `stored_spenders` for the output row `output_id` of the outpoint: a
+    /// row of that output's own user that an output row names as its
+    /// spender is not counted as unread (`super::stored_spenders`).
+    pub(crate) async fn stored_spenders_of_output(
+        &self,
+        output_id: i64,
+        txid: &str,
+        vout: u32,
+    ) -> Result<super::stored_spenders::StoredSpenders> {
+        let mut conn = self.reader.acquire().await?;
+        super::stored_spenders::stored_spenders_of_output(&mut conn, output_id, txid, vout).await
     }
 
     /// The persisted broadcast acceptance memory over this storage's pool
@@ -7365,7 +7379,9 @@ impl StorageSqlx {
              COALESCE(CAST(MAX(updated_at) AS TEXT), '') AS stamp FROM transactions";
         for _ in 0..2 {
             let before: (i64, String) = sqlx::query_as(MARK).fetch_one(self.pool()).await?;
-            let held = self.stored_spenders(txid, vout).await?;
+            let held = self
+                .stored_spenders_of_output(output_id, txid, vout)
+                .await?;
             if !held.none_held() {
                 tracing::info!(
                     "un_fail: output {}:{} is spent by {:?} this store holds ({} unread), left unspendable",
@@ -7460,7 +7476,9 @@ impl StorageSqlx {
                 drop_withheld(&mut *self.writer_conn().await?, *event_id).await?;
                 continue;
             }
-            let held = self.stored_spenders(&txid, vout as u32).await?;
+            let held = self
+                .stored_spenders_of_output(output_id, &txid, vout as u32)
+                .await?;
             if !held.spenders.is_empty() {
                 drop_withheld(&mut *self.writer_conn().await?, *event_id).await?;
                 continue;
