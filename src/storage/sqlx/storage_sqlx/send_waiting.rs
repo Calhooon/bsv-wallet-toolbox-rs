@@ -8,7 +8,7 @@ use crate::services::broadcast_memory::{
 };
 
 /// How many notes a request's history keeps, the newest.
-const REQ_HISTORY_NOTES_KEPT: usize = 32;
+pub(super) const REQ_HISTORY_NOTES_KEPT: usize = 32;
 
 /// Is `req` due for a re-ask by `send_waiting_transactions` at `now`?
 /// (`services::cadence::send_waiting_reask_minutes`; bsv-stack-lean #65.)
@@ -122,41 +122,6 @@ impl StorageSqlx {
         words: serde_json::Value,
         competitors: &[String],
     ) -> Result<()> {
-        self.record_post_hint(txid, (outcome, words), competitors, false)
-            .await
-    }
-
-    /// The internalize door's post of a held presentation drew no take
-    /// (DECISIONS 29.1, reading 11 of section 30): every instance's word
-    /// goes on the request's history (`immediateBroadcastHint`, as
-    /// [`Self::record_immediate_broadcast_hint`] writes it) whatever the
-    /// request's word. A request `unsent`, `sending` or `unprocessed` is
-    /// the door's to send: it is left `unsent` with `attempts` counted, as
-    /// the immediate hint leaves it. Any other word (another user's
-    /// `nosend`, an `unmined` request with no recorded take, an `invalid`
-    /// or `doubleSpend` word) is not overwritten by a post nobody took:
-    /// its status and `attempts` stay, the note alone is added. A named
-    /// competitor is queued for a proof ask.
-    pub(in crate::storage::sqlx) async fn record_door_post_hint(
-        &self,
-        txid: &str,
-        outcome: &str,
-        words: serde_json::Value,
-        competitors: &[String],
-    ) -> Result<()> {
-        self.record_post_hint(txid, (outcome, words), competitors, true)
-            .await
-    }
-
-    /// The one writer of both hints: `any_word` reads the request whatever
-    /// its word (the door's), else only a request still to send.
-    async fn record_post_hint(
-        &self,
-        txid: &str,
-        (outcome, words): (&str, serde_json::Value),
-        competitors: &[String],
-        any_word: bool,
-    ) -> Result<()> {
         let row: Option<(i64, i64, String, String)> = sqlx::query_as(
             "SELECT proven_tx_req_id, attempts, history, status FROM proven_tx_reqs WHERE txid = ?",
         )
@@ -166,11 +131,10 @@ impl StorageSqlx {
         let Some((proven_tx_req_id, attempts, history, status)) = row else {
             return Ok(());
         };
-        let sends = matches!(status.as_str(), "unsent" | "sending" | "unprocessed");
-        if !sends && !any_word {
+        if !matches!(status.as_str(), "unsent" | "sending" | "unprocessed") {
             return Ok(());
         }
-        let attempts = attempts.saturating_add(i64::from(sends));
+        let attempts = attempts.saturating_add(1);
         let now = chrono::Utc::now();
         let next = crate::services::cadence::send_waiting_reask_minutes(
             u32::try_from(attempts).unwrap_or(u32::MAX),
@@ -186,9 +150,7 @@ impl StorageSqlx {
                 "nextReaskMinutes": next,
             }),
         );
-        let status = if sends { "unsent" } else { status.as_str() };
-        sqlx::query("UPDATE proven_tx_reqs SET status = ?, attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ?")
-            .bind(status)
+        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ?")
             .bind(attempts)
             .bind(history)
             .bind(now)

@@ -293,6 +293,14 @@ fn note_is_immediate_hint(h: &serde_json::Value, outcome: &str) -> bool {
     })
 }
 
+fn note_is_door_post(h: &serde_json::Value, outcome: &str) -> bool {
+    h["notes"].as_array().is_some_and(|notes| {
+        notes.iter().any(|n| {
+            n["what"] == "doorPost" && n["outcome"] == outcome && n["door"] == "internalize"
+        })
+    })
+}
+
 /// RED at `32a494d`: the 465 took the release rule (`failed`, req
 /// `invalid`, the funding coin released, the change written off) and
 /// `createAction` returned "Transaction broadcast failed". GREEN: the txid
@@ -613,7 +621,9 @@ async fn internalize_action_answered_465_is_a_hint_not_an_error() {
     assert_eq!((r.as_str(), a), ("unsent", 1), "re-asked on the cadence");
     no_failed_word(&storage).await;
     assert_eq!(queued(&storage, &txid).await, vec![competitor]);
-    assert!(note_is_immediate_hint(
+    // The door's note (`doorPost`, one per instance, naming the door and
+    // the presenting user), not the immediate hint of the wallet's own post.
+    assert!(note_is_door_post(
         &history(&storage, &txid).await,
         "invalidTx"
     ));

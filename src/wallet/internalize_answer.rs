@@ -79,8 +79,8 @@ fn review_result(r: &ReviewActionResult) -> bsv_rs::wallet::ReviewActionResult {
     }
 }
 
-/// The words of the last door note on a request's history
-/// (`immediateBroadcastHint`), each instance's a string.
+/// The door's notes on a request's history (`doorPost`, one per
+/// instance), each instance's words as `instance: word`.
 pub(crate) fn last_door_words(history: &str) -> Vec<String> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(history) else {
         return Vec::new();
@@ -88,20 +88,13 @@ pub(crate) fn last_door_words(history: &str) -> Vec<String> {
     value
         .get("notes")
         .and_then(|n| n.as_array())
-        .and_then(|notes| {
+        .map(|notes| {
             notes
                 .iter()
-                .rev()
-                .find(|n| n.get("what").and_then(|w| w.as_str()) == Some("immediateBroadcastHint"))
-        })
-        .and_then(|note| note.get("words"))
-        .and_then(|w| w.as_array())
-        .map(|words| {
-            words
-                .iter()
-                .map(|w| match w.as_str() {
-                    Some(text) => text.to_string(),
-                    None => w.to_string(),
+                .filter(|n| n.get("what").and_then(|w| w.as_str()) == Some("doorPost"))
+                .map(|n| {
+                    let text = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                    format!("{}: {}", text("instance"), text("word"))
                 })
                 .collect()
         })
@@ -161,8 +154,8 @@ mod tests {
     }
 
     #[test]
-    fn the_last_door_note_is_read() {
-        let history = r#"{"notes":[{"what":"immediateBroadcastHint","words":["a: old"]},{"what":"other"},{"what":"immediateBroadcastHint","words":["a: rejected [no]","b: 465 []"]}]}"#;
+    fn the_door_notes_are_read() {
+        let history = r#"{"notes":[{"what":"immediateBroadcastHint","words":["a: old"]},{"what":"doorPost","instance":"a","word":"rejected [no]"},{"what":"other"},{"what":"doorPost","instance":"b","word":"465 []"}]}"#;
         assert_eq!(
             last_door_words(history),
             vec!["a: rejected [no]".to_string(), "b: 465 []".to_string()]

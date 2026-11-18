@@ -18,6 +18,7 @@ mod commissions;
 mod competitors;
 #[cfg(test)]
 mod core_tests;
+mod door_notes;
 mod labels;
 mod list_outputs;
 mod maintenance;
@@ -55,6 +56,7 @@ mod users;
 #[cfg(test)]
 mod validation_tests;
 mod writer;
+pub(crate) use door_notes::InstanceNote;
 pub(crate) use outputs::{output_from_row, sequence_number_from_row};
 pub use proven_tx_reqs::{UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT};
 pub(crate) use proven_txs::{
@@ -63,6 +65,7 @@ pub(crate) use proven_txs::{
 pub(crate) use retirement::RetireBasis;
 pub use retirement::RetireOutcome;
 pub(super) use send_waiting::append_req_history_note;
+use send_waiting::REQ_HISTORY_NOTES_KEPT;
 pub(super) use stale_proofs::demote_stale_proof_on;
 pub(super) use transactions::RAW_TX_REQ_STATUSES;
 
