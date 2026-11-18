@@ -2961,10 +2961,14 @@ impl WalletStorageWriter for StorageSqlx {
         }
 
         // 3. Clean up old monitor events
-        let result = sqlx::query(r#"DELETE FROM monitor_events WHERE created_at < ?"#)
-            .bind(cutoff)
-            .execute(&mut *self.writer_conn().await?)
-            .await?;
+        // A withheld-output record is kept: it ends only by its own retry
+        // (`retry_withheld_outputs`), never by age.
+        let result =
+            sqlx::query(r#"DELETE FROM monitor_events WHERE created_at < ? AND event != ?"#)
+                .bind(cutoff)
+                .bind(super::stored_spenders::WITHHELD_EVENT)
+                .execute(&mut *self.writer_conn().await?)
+                .await?;
         let rows = result.rows_affected() as u32;
         if rows > 0 {
             log.push_str(&format!("Deleted {} old monitor events.\n", rows));
@@ -7103,7 +7107,9 @@ impl StorageSqlx {
         })
     }
 
-    /// Clear old monitor events.
+    /// Clear old monitor events. A record of an output withheld only for an
+    /// unread row (`outputWithheld`) is kept whatever its age: it ends only
+    /// by the unfail task's retry.
     ///
     /// # Arguments
     /// * `older_than` - Remove events older than this duration
@@ -7115,10 +7121,11 @@ impl StorageSqlx {
         let result = sqlx::query(
             r#"
             DELETE FROM monitor_events
-            WHERE created_at < ?
+            WHERE created_at < ? AND event != ?
             "#,
         )
         .bind(cutoff)
+        .bind(super::stored_spenders::WITHHELD_EVENT)
         .execute(&mut *self.writer_conn().await?)
         .await?;
 
@@ -7409,9 +7416,11 @@ impl StorageSqlx {
     /// `WITHHELD_PER_PASS` a pass, the longest untried leading. A record is
     /// dropped once its output is spendable, records a spender, is gone or
     /// belongs to a failed transaction, once the store holds a spender of
-    /// it, or once a provider answers it spent; it is renewed (both stamps,
-    /// so the purge's age never reaches it while it is tried) while an
-    /// unread row is still held or the provider cannot answer. The store's
+    /// it, or once a provider answers it spent with proof
+    /// (`UtxoVerdict::Spent`); it is renewed while an unread row is still
+    /// held, or the provider answers a hint (`SpentHint`) or nothing. No
+    /// purge deletes a record (`purge_data` and `cleanup_monitor_events`
+    /// leave the event out), so a record ends only so. The store's
     /// reads come before the provider: one is asked only when the store holds no
     /// spender and no unread row.
     async fn retry_withheld_outputs(
@@ -7478,10 +7487,13 @@ impl StorageSqlx {
                         }
                     }
                 }
-                UtxoVerdict::Spent | UtxoVerdict::SpentHint => {
+                // Only a proven spend ends the record. A hint (a transaction
+                // the explorers have not indexed yet answers so) is never
+                // written as a spend and is asked again, as no answer is.
+                UtxoVerdict::Spent => {
                     drop_withheld(&mut *self.writer_conn().await?, *event_id).await?
                 }
-                UtxoVerdict::Unknown => {
+                UtxoVerdict::SpentHint | UtxoVerdict::Unknown => {
                     renew_withheld(&mut *self.writer_conn().await?, *event_id, now).await?
                 }
             }
