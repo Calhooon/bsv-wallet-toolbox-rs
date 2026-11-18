@@ -39,6 +39,7 @@ mod broadcaster_hint_tests;
 #[cfg(test)]
 mod change_tiebreak_tests;
 mod create_action;
+mod held_receipts;
 mod internalize_action;
 use crate::wallet::label;
 mod locked_inputs;
