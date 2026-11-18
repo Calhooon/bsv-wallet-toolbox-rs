@@ -1,5 +1,6 @@
 //! A store behind the storage traits that forwards to a local store, with
-//! hooks: it can answer as a store that is not local, answer every chunk
+//! hooks: it can answer as a store that is not local (from the start, or
+//! from a chunk on), serve scripted chunks as a reader, answer every chunk
 //! with a fixed result, refuse `set_active`, and record its `set_active`
 //! calls. Shared by the sync manager tests.
 #![allow(dead_code)]
@@ -23,6 +24,12 @@ pub struct Double {
     pub inner: StorageSqlx,
     /// Answer `checks_received_beef_in_process` false, as a storage client.
     pub not_local: bool,
+    /// Answer local only while at most this many chunks have been served.
+    pub local_through: Option<usize>,
+    /// Chunks served as a reader.
+    pub served: AtomicUsize,
+    /// As a reader, serve these in order (then an empty chunk), when set.
+    pub script: Mutex<Option<std::collections::VecDeque<SyncChunk>>>,
     /// Every `process_sync_chunk_mapped` answers this, when set.
     pub answer: Mutex<Option<ProcessSyncChunkResult>>,
     /// Chunks handed to this store as a writer.
@@ -40,6 +47,9 @@ impl Double {
         Self {
             inner,
             not_local: false,
+            local_through: None,
+            served: AtomicUsize::new(0),
+            script: Mutex::new(None),
             answer: Mutex::new(None),
             chunks: AtomicUsize::new(0),
             fail_set_active: AtomicBool::new(false),
@@ -249,7 +259,20 @@ impl WalletStorageSync for Double {
         r
     }
     async fn get_sync_chunk(&self, args: RequestSyncChunkArgs) -> Result<SyncChunk> {
-        self.inner.get_sync_chunk(args).await
+        let scripted = self.script.lock().unwrap().as_mut().map(|chunks| {
+            chunks.pop_front().unwrap_or_else(|| SyncChunk {
+                from_storage_identity_key: args.from_storage_identity_key.clone(),
+                to_storage_identity_key: args.to_storage_identity_key.clone(),
+                user_identity_key: args.identity_key.clone(),
+                ..Default::default()
+            })
+        });
+        let chunk = match scripted {
+            Some(chunk) => Ok(chunk),
+            None => self.inner.get_sync_chunk(args).await,
+        };
+        self.served.fetch_add(1, Ordering::SeqCst);
+        chunk
     }
     async fn process_sync_chunk(
         &self,
@@ -277,7 +300,8 @@ impl WalletStorageSync for Double {
 #[async_trait]
 impl WalletStorageProvider for Double {
     async fn checks_received_beef_in_process(&self) -> bool {
-        !self.not_local
+        let served = self.served.load(Ordering::SeqCst);
+        !self.not_local && self.local_through.is_none_or(|n| served <= n)
     }
     fn storage_identity_key(&self) -> String {
         self.inner.storage_identity_key()
