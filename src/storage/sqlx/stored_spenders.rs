@@ -40,7 +40,6 @@ pub(crate) struct StoredSpenders {
     pub unreadable: u64,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl StoredSpenders {
     /// Nothing this store holds spends the outpoint, and nothing it holds
     /// is unread: the only answer on which a coin may be freed.
