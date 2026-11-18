@@ -39,10 +39,11 @@
 //! action: the two are competitors, and the proof path decides between
 //! them. The recovered transaction reads `unproven` meanwhile.
 //!
-//! THE ONE RECOVERY OF INPUTS ([`remark_inputs_spent_on`]) has two
-//! callers: the take after a release, and the unfail task's recovery of a
+//! THE ONE RECOVERY OF INPUTS ([`remark_inputs_spent_on`]) has three
+//! callers: the take after a release, the unfail task's recovery of a
 //! transaction failed on a false word (`TakeRows::LiftFailed`), both inside
-//! the take's write.
+//! the take's write, and a checked proof's completion of a `failed` row
+//! (`proof_completion`).
 
 use sqlx::{Row, SqliteConnection};
 

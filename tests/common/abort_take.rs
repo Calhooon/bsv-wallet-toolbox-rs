@@ -106,7 +106,7 @@ pub const CAUSES: [Cause; 6] = [
 ];
 
 impl Cause {
-    fn aborts(self) -> bool {
+    pub fn aborts(self) -> bool {
         matches!(
             self,
             Cause::AbortFree

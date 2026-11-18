@@ -420,15 +420,10 @@ impl StorageSqlx {
         .execute(&mut *tx)
         .await?;
 
-        // Update transaction status to completed and link proof
-        sqlx::query(
-            "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?"
-        )
-        .bind(proven_tx_id)
-        .bind(now)
-        .bind(txid)
-        .execute(&mut *tx)
-        .await?;
+        // Every row of the txid completed and linked, a `failed` one
+        // included: its inputs marked spent by it, its outputs counted
+        // (`proof_completion`).
+        super::super::proof_completion::complete_on_proof(&mut tx, txid, proven_tx_id, now).await?;
         commit(tx).await?;
 
         Ok(ProofIngestOutcome::Ingested(TxSynchronizedStatus {
