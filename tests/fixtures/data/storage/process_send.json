@@ -239,7 +239,7 @@
       "result": {"ok":{"log":null,"notDelayedResults":null,"sendWithResults":[{"status":"unproven","txid":"<txid:4>"}]}},
       "rows": {
         "broadcast_prefs": [],
-        "broadcast_seen": [],
+        "broadcast_seen": [{"provider":"MockProvider","status":"accepted","txid":"<txid:4>"}],
         "commissions": [],
         "locked_input_checks": [],
         "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],

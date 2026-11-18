@@ -116,12 +116,22 @@ pub async fn wallet(
     root: &PrivateKey,
     txid: &str,
 ) -> Wallet<StorageSqlx, MockWalletServices> {
+    wallet_posting(name, root, MockResponse::Success(vec![accepted(txid)])).await
+}
+
+/// A wallet of `root` over in-memory SQLite named `name`, whose mock
+/// broadcaster answers `post` and whose mock tracker answers every root.
+pub async fn wallet_posting(
+    name: &str,
+    root: &PrivateKey,
+    post: MockResponse<Vec<PostBeefResult>>,
+) -> Wallet<StorageSqlx, MockWalletServices> {
     let storage = StorageSqlx::in_memory().await.expect("in-memory storage");
     let identity = root.public_key().to_hex();
     storage.migrate(name, &identity).await.expect("migrate");
     storage.make_available().await.expect("make_available");
     let services = MockWalletServices::builder()
-        .post_beef_response(MockResponse::Success(vec![accepted(txid)]))
+        .post_beef_response(post)
         .build();
     Wallet::new(Some(root.clone()), storage, services)
         .await
@@ -177,6 +187,11 @@ fn proven_parent(outputs: u32) -> (Transaction, MerklePath) {
 /// An atomic BEEF of a proven parent of `spent` outputs and a child
 /// spending every one of them into one output locked by `lock`.
 pub fn spend_beef(spent: u32, lock: LockingScript) -> (Vec<u8>, String) {
+    spend_beef_with(spent, lock, false)
+}
+
+/// [`spend_beef`], the child carrying a BUMP of its own when `proven`.
+fn spend_beef_with(spent: u32, lock: LockingScript, proven: bool) -> (Vec<u8>, String) {
     let (parent, bump) = proven_parent(spent);
     let parent_txid = parent.id();
     let mut child = Transaction::new();
@@ -193,7 +208,13 @@ pub fn spend_beef(spent: u32, lock: LockingScript) -> (Vec<u8>, String) {
     let mut beef = Beef::new();
     let bump = beef.merge_bump(bump);
     beef.merge_raw_tx(parent.to_binary(), Some(bump)).unwrap();
-    beef.merge_raw_tx(child.to_binary(), None).unwrap();
+    let child_bump = proven.then(|| {
+        beef.merge_bump(MerklePath::from_coinbase_txid(
+            &txid,
+            ProtocolEra::MAINNET_GENESIS_HEIGHT + 102,
+        ))
+    });
+    beef.merge_raw_tx(child.to_binary(), child_bump).unwrap();
     (beef.to_binary_atomic(&txid).unwrap(), txid)
 }
 
@@ -206,4 +227,10 @@ pub fn sweep_beef(lock: LockingScript) -> (Vec<u8>, String) {
 /// one proven parent.
 pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
     spend_beef(5, lock)
+}
+
+/// [`beef_paying`] with the paying transaction proven by a BUMP of its own
+/// (a one-leaf path at Genesis + 102): the same txid.
+pub fn proven_beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
+    spend_beef_with(5, lock, true)
 }

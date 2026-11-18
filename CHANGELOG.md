@@ -2,6 +2,114 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `internalizeAction` holds a received transaction that carries no
+  checked proof and that no broadcaster took (the owner's ruling of
+  2026-11-17): the door writes its transaction `sending` (it wrote
+  `unproven`), its request `unsent` as before, and keeps the transaction,
+  its request and its output rows. Held, every output it gives the wallet
+  (a wallet payment or an application's basket insertion) is not listed,
+  not counted and not offered by any rule. When an instance takes it (the
+  door's own post, the send-waiting task's post, an Arcade SEEN frame, a
+  status source holding it) it is `unproven`, counted, and offered under
+  the action's `underReceivedRule` label as before; a proof makes it
+  `completed`. A proof the door checked and the proof gate deferred is
+  `unproven` with an `unmined` request as before. How often and to whom
+  the monitor posts a held transaction is unchanged (one post at the door,
+  one per due send-waiting tick).
+- What makes a new receipt taken at the door: a broadcaster's take the
+  store recorded (an instance accepting it, a status source or push seeing
+  it, a block mining it), the door's own post drawing an acceptance, or a
+  stored proof whose root was checked (a chain tracker confirmed its root
+  at its height before it was stored, or when a read checked it). A
+  request's word alone does not, nor does a proof row no tracker checked,
+  such as one a sync chunk merged: a receipt beside any request with no
+  recorded take and no stored proof whose root was checked is held. The
+  per-user `review_status` moves a held receipt to `unproven` only on the
+  same evidence, and to `completed` only with its proof linked; the
+  wallet's own outgoing `sending` row heals on its request's word as
+  before (to `completed` only with its proof linked).
+- These paths record the take they see in `broadcast_seen` in the same
+  write that moves the transaction to `unproven`, whichever services a
+  host built (a host's own `WalletServices` records nothing): the door's
+  post and the send-waiting task's post (each accepting instance's name,
+  `accepted`), and a status source holding it at the door, at send-waiting,
+  at the retire path and in the unfail task (`chain`, `seen`). The push
+  path (an Arcade SEEN frame) writes its record beside its row in the same
+  write, and a failure of that record is logged while the row commits.
+- Migration 006 (`006_held_receipts`, one data statement, no schema
+  change), applied on `migrate()` and on `make_available()`, so on every
+  open and not once: a store of any release is read by the same rule each
+  time it opens. The balance falls on open by every held receipt. Its
+  rule is its own, for rows
+  written before the door recorded every take, and keeps the request's
+  word for them: a received transaction a store holds as `unproven` with
+  no proof whose request is `unmined`, `callback`, `unconfirmed` or
+  `completed`, whose take is recorded, or whose txid has a stored proof
+  whose root was checked, is left as it is; one whose request carries any
+  other word (`unsent`, `sending`, another user's `nosend`, ...), no
+  recorded take and no such proof moves to `sending`. `migrate()`
+  reports `006_held_receipts`.
+
+### Hosts
+
+Each read from a run (`tests/internalize_held_receipt_tests.rs`,
+`tests/internalize_held_word_tests.rs`,
+`tests/internalize_taken_record_tests.rs`), at this change and at
+0.14.0-beta.8.1 (0.14.0-beta.9 moved the `bsv-rs` pin alone, so its
+answers here are 0.14.0-beta.8.1's):
+- `Wallet::balance`, `balance_and_utxos` and `listOutputs` no longer count
+  or list a received payment no broadcaster has taken: a 4500-satoshi
+  payment every instance refused, or that no instance answered, read 4500
+  and one output before and 0 and no output now. The balance falls by
+  every held receipt.
+- An application's basket insertion in a held transaction is not listed
+  under its basket until a broadcaster takes the transaction or a proof
+  arrives; `listActions` lists the action `sending` with its output; one
+  instance taking it lists it. At an upgrade the outputs of received
+  transactions that nobody took leave their baskets' listings until a
+  broadcaster takes the transaction or a proof arrives; nothing is
+  deleted. The reference, by commit: at ts-stack@4d0ea63c8 it listed
+  such an output at once (it wrote a received transaction with no proof
+  `unproven` and listed `unproven` outputs,
+  `storage/methods/internalizeAction.ts:473`, `listOutputsKnex.ts:104`);
+  at its main of 2026-11-16 (ts-stack@11faa7d1,
+  `storage/methods/internalizeActionCore.ts:944-978`) it posts the
+  transaction at its door and stores a recipient's outputs only after
+  that post succeeds, so it does not list one either. What stays this
+  line's own, by the owner's ruling, is that the transaction is held and
+  sent again where the reference undoes it.
+- `listActions` lists the held transaction's action with status `sending`
+  (before, `unproven`).
+- A held coin is offered by no rule: `createAction` with or without the
+  `underReceivedRule` label answers `Insufficient funds` when it is the
+  only coin (before, the label took it), and `Wallet::create_action_offering`
+  naming it as a must-spend answers `mustSpend[0]: output <txid>.0 is not
+  spendable: its transaction is sending` (before, taken).
+- Once an instance takes it or a proof arrives, the payment is counted
+  (4500) and offered under the action's `underReceivedRule` label, as
+  before. In this change a proof arrives through the monitor's proof path
+  once a broadcaster has taken the transaction: the path asks requests in
+  `unmined`, `unknown`, `callback`, `sending` or `unconfirmed`, and a held
+  receipt's request is `unsent` between posts. A repeated
+  `internalizeAction` bringing a proof is not yet read (the transaction
+  stays `sending`, no proof stored).
+- A store written by 0.14.0-beta.8, 0.14.0-beta.8.1 or 0.14.0-beta.9
+  (which carries the pin alone) moves each held receipt from `unproven` to
+  `sending` on open; a receipt an instance took is not touched; opening
+  again changes nothing.
+- A coin already spent by the wallet's own action stays spent, and that
+  action keeps its status and its change stays counted: a store from
+  0.14.0-beta.8 may hold such a spend of a held receipt made under the
+  label, and the migration moves only the receipt's word.
+- The wallet's own `sending` action is listed and counted as before, every
+  output it carries: its change, and a wallet payment merged into it
+  (its change and a 1000-satoshi merged payment read the change plus
+  1000, and two outputs).
+- The call's answer is unchanged in this change: `internalizeAction`
+  answers `accepted: true` for a held receipt, as before.
+
 ## [0.14.0-beta.10] - 2026-11-18
 
 The version moves for the `bsv-rs` `=0.9.0-beta.10` pin, the 0.9.0

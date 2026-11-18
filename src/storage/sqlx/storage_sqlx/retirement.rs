@@ -251,17 +251,49 @@ impl StorageSqlx {
         if !super::process_action::reconcile_tx_status_via_services(services, txid).await {
             return Ok(false);
         }
+        let mut tx = self.write_tx().await?;
         sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
             .bind(now)
             .bind(proven_tx_req_id)
-            .execute(&mut *self.writer_conn().await?)
+            .execute(&mut *tx)
             .await?;
         sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ? AND status IN ('sending', 'unproven')")
             .bind(now)
             .bind(txid)
-            .execute(&mut *self.writer_conn().await?)
+            .execute(&mut *tx)
             .await?;
+        // The status source's word, recorded in the same write.
+        super::super::held_receipts::record_chain_seen_on(&mut tx, txid).await?;
+        super::commit(tx).await?;
         Ok(true)
+    }
+
+    /// A take observed by the send-waiting task: the request `unmined`, every
+    /// transaction of the txid `unproven`, and the take recorded for each
+    /// `provider` with `word`, in one write.
+    pub(super) async fn promote_taken(
+        &self,
+        proven_tx_req_id: i64,
+        txid: &str,
+        providers: &[&str],
+        word: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let mut tx = self.write_tx().await?;
+        sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
+            .bind(now)
+            .bind(proven_tx_req_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
+            .bind(now)
+            .bind(txid)
+            .execute(&mut *tx)
+            .await?;
+        for provider in providers {
+            super::super::held_receipts::record_take_on(&mut tx, txid, provider, word).await?;
+        }
+        super::commit(tx).await
     }
 
     /// THE RELEASE RULE, addressed by txid — for a caller that learned AFTER the

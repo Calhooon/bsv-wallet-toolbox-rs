@@ -510,7 +510,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 version,
-                super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
+                super::super::held_receipts::MIGRATION_006_HELD_RECEIPTS_NAME
             );
             sqlx::query("DROP TABLE broadcast_seen")
                 .execute(storage.writer())
@@ -552,7 +552,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             version,
-            super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
+            super::super::held_receipts::MIGRATION_006_HELD_RECEIPTS_NAME
         );
         storage.pool().close().await;
     }
