@@ -537,10 +537,11 @@ async fn a_set_active_beside_an_add_calls_only_the_open_stores() {
 }
 
 /// A `set_active` to the active waits inside its re-read of A's row while
-/// a third store is added from another task, whose open would reset the
-/// manager's roles and wait in the new store's user read. The no-op is
-/// decided on the open lock: the add's open waits for it, so the call
-/// reads the roles whole and answers unchanged; then the add completes.
+/// a third store is added from another task, whose open waits in the new
+/// store's user read. The no-op does not wait for that open, and the open
+/// changes no role until its partition: the call reads the roles whole
+/// and answers unchanged while the add's open is held; then the add
+/// completes.
 #[tokio::test]
 async fn a_set_active_no_op_beside_an_add_reads_the_roles_whole() {
     let doubles = vec![double_naming(SRC, SRC).await, double_naming(DST, SRC).await];
@@ -572,8 +573,8 @@ async fn a_set_active_no_op_beside_an_add_reads_the_roles_whole() {
         }
     })
     .await;
-    // Room for the add's open to reset the roles and reach the new store's
-    // user read, were nothing holding it.
+    // The add's open reaches the new store's user read while the no-op
+    // waits on A.
     let reached = tokio::time::timeout(
         std::time::Duration::from_millis(300),
         fourth.user_read_entered.notified(),
@@ -590,7 +591,7 @@ async fn a_set_active_no_op_beside_an_add_reads_the_roles_whole() {
         refusal(&added),
         state(&mgr).await
     );
-    assert!(!reached, "the add's open ran while the no-op was decided");
+    assert!(reached, "the no-op kept the add's open waiting");
     assert_eq!(switched.unwrap(), format!("setActive to {SRC} unchanged\n"));
     assert_eq!(refusal(&added), "ok");
     assert_eq!(mgr.get_backup_stores().await.len(), 2);

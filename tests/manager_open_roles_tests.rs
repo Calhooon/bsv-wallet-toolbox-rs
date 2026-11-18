@@ -253,3 +253,54 @@ async fn a_switch_beside_an_add_backs_up_every_backup_it_had() {
         "Access denied: Operation requires active storage"
     );
 }
+
+/// A store added whose open never answers: a `set_active` to the active
+/// answers unchanged, a `set_active` to a backup completes the switch, and
+/// a plain write and `update_backups` answer, none waiting for that open.
+/// A manager never opened would wait for it (no roles yet).
+#[tokio::test]
+async fn a_store_added_that_never_answers_keeps_no_set_active_waiting() {
+    let cell = Cell {
+        n: 3,
+        switched: false,
+        role: Role::Active,
+        fails: Fails::SetActive,
+    };
+    let (_doubles, mgr) = setup(cell).await;
+    let fourth = Arc::new(sync_support::double::Double::new(
+        (*store(FOURTH).await).clone(),
+    ));
+    fourth.hang_user_reads.store(true, Ordering::SeqCst);
+    let add = {
+        let (mgr, fourth) = (mgr.clone(), fourth.clone());
+        tokio::spawn(async move {
+            mgr.add_wallet_storage_provider(fourth as Arc<dyn MonitorStorage>)
+                .await
+        })
+    };
+    bounded("the new store is pushed", async {
+        while mgr.get_stores().await.len() < 4 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let word = |r: std::result::Result<bsv_wallet_toolbox_rs::Result<String>, String>| match r {
+        Ok(Ok(log)) => log.lines().next().unwrap_or_default().to_string(),
+        Ok(Err(e)) => e.to_string(),
+        Err(e) => e,
+    };
+    let no_op = word(within(mgr.set_active(SRC)).await);
+    let switch = word(within(mgr.set_active(DST)).await);
+    let (write, backups, enabled) = answers(&mgr).await;
+    let add_waits = !add.is_finished();
+    println!(
+        "WITNESS a store added that never answers: set_active to the active {no_op}; set_active to B {switch}; write {write}; update_backups {backups}; enabled {enabled}; the add still waiting {add_waits}"
+    );
+    assert_eq!(no_op, format!("setActive to {SRC} unchanged"));
+    assert_eq!(switch, format!("setActive to {DST}"));
+    assert_eq!(write, "B");
+    assert_eq!(backups, "BACKUP CURRENT ACTIVE TO 2 STORES");
+    assert!(enabled);
+    assert!(add_waits);
+    add.abort();
+}
