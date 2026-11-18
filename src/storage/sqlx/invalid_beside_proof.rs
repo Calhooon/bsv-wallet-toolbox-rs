@@ -22,7 +22,11 @@
 //! (a path that does not parse, no tracker, a tracker fault) holds no slot
 //! for good: with `INVALID_BESIDE_PROOF_PER_PASS` = 100, a candidate behind
 //! N others in that order is looked at within ceil((N + 1) / 100) passes,
-//! whatever the others do, and a pass reads at most 100 headers. Nothing
+//! whatever the others do, counting those put ahead of it meanwhile (a
+//! request that turns `invalid` beside a proof row this store holds, or a
+//! proof row stored beside an `invalid` request once the cursor has come
+//! round past its number); no clock is read for the order. A pass reads at
+//! most 100 headers. Nothing
 //! of a request it leaves `invalid` is written (no status, link, history or
 //! `updated_at`), so the purge's age, the sync's since-mark and the unfail
 //! task's hour read the request as they would without this pass.
