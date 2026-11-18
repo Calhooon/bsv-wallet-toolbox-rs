@@ -154,9 +154,9 @@ mod runs {
     /// check is printed (`--nocapture`).
     #[test]
     fn a_sweep_of_800_inputs_passes() {
-        let (bytes, txid) = sweep(800, "00", false);
+        let (bytes, _) = sweep(800, "00", false);
         let start = std::time::Instant::now();
-        let answer = verify_subject_inputs(&bytes, &txid, "main", None);
+        let answer = verify_unproven_inputs(&bytes, "main", None);
         println!(
             "the check of an 800-input sweep ({} bytes): {:?} in {:?}",
             bytes.len(),
@@ -169,10 +169,10 @@ mod runs {
     /// A subject the BEEF proves is not run, whatever its scripts.
     #[test]
     fn a_proven_subject_is_not_run() {
-        let (bytes, txid) = sweep(2, "", true);
-        assert!(verify_subject_inputs(&bytes, &txid, "main", None).is_ok());
-        let (bytes, txid) = sweep(2, "", false);
-        assert!(verify_subject_inputs(&bytes, &txid, "main", None).is_err());
+        let (bytes, _) = sweep(2, "", true);
+        assert!(verify_unproven_inputs(&bytes, "main", None).is_ok());
+        let (bytes, _) = sweep(2, "", false);
+        assert!(verify_unproven_inputs(&bytes, "main", None).is_err());
     }
 
     fn with_work<T>(limits: (u64, u64), run: impl FnOnce() -> T) -> T {
@@ -187,7 +187,7 @@ mod runs {
     fn an_input_past_its_work_bound_is_not_judged() {
         let (bytes, txid) = sweep(1, "00", false);
         let answer = with_work((2, u64::MAX), || {
-            verify_subject_inputs(&bytes, &txid, "main", None)
+            verify_unproven_inputs(&bytes, "main", None)
         });
         let text = answer.unwrap_err().to_string();
         assert!(
@@ -202,13 +202,13 @@ mod runs {
     /// the input that crosses it.
     #[test]
     fn inputs_past_the_transaction_work_bound_are_not_judged() {
-        let (bytes, txid) = sweep(3, "00", false);
+        let (bytes, _) = sweep(3, "00", false);
         let one = with_work((u64::MAX, u64::MAX), || {
-            verify_subject_inputs(&bytes, &txid, "main", None)
+            verify_unproven_inputs(&bytes, "main", None)
         });
         assert!(one.is_ok());
         let answer = with_work((u64::MAX, 5), || {
-            verify_subject_inputs(&bytes, &txid, "main", None)
+            verify_unproven_inputs(&bytes, "main", None)
         });
         let text = answer.unwrap_err().to_string();
         assert!(
@@ -221,6 +221,18 @@ mod runs {
     /// (SIGHASH_ALL | FORKID); it passes, and its time is printed.
     #[test]
     fn a_signed_sweep_of_800_p2pkh_inputs_passes() {
+        signed_sweep(true);
+    }
+
+    /// The same sweep with its parent unproven (the parent spending a
+    /// coin proven after Genesis): the parent's input and the sweep's 800
+    /// are run; it passes, and its time is printed.
+    #[test]
+    fn a_signed_sweep_of_800_p2pkh_inputs_of_an_unproven_parent_passes() {
+        signed_sweep(false);
+    }
+
+    fn signed_sweep(parent_proven: bool) {
         use bsv_rs::primitives::PrivateKey;
         use bsv_rs::script::templates::P2PKH;
         use bsv_rs::script::{SignOutputs, SigningContext};
@@ -231,8 +243,16 @@ mod runs {
         ));
         lock.extend([0x88, 0xac]);
         let lock = LockingScript::from_binary(&lock).unwrap();
+        let mut grandparent = Transaction::new();
+        grandparent.inputs.push(input(&"11".repeat(32), 0, "00"));
+        grandparent.outputs.push(TransactionOutput {
+            satoshis: Some(801_000),
+            locking_script: anyone_lock(),
+            change: false,
+        });
+        let grandparent_txid = grandparent.id();
         let mut parent = Transaction::new();
-        parent.inputs.push(input(&"11".repeat(32), 0, "00"));
+        parent.inputs.push(input(&grandparent_txid, 0, "00"));
         for _ in 0..800 {
             parent.outputs.push(TransactionOutput {
                 satoshis: Some(1_000),
@@ -265,17 +285,27 @@ mod runs {
             signed.inputs.push(spend);
         }
         let child = signed;
-        let txid = child.id();
         let height = ProtocolEra::MAINNET_GENESIS_HEIGHT + 101;
-        let mut beef = Beef::new();
-        let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, height));
-        beef.merge_raw_tx(parent.to_binary(), Some(bump));
-        beef.merge_raw_tx(child.to_binary(), None);
-        let bytes = beef.to_binary_atomic(&txid).unwrap();
+        let with_parent = |tx: &Transaction| {
+            let mut beef = Beef::new();
+            if parent_proven {
+                let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, height));
+                beef.merge_raw_tx(parent.to_binary(), Some(bump));
+            } else {
+                let bump =
+                    beef.merge_bump(MerklePath::from_coinbase_txid(&grandparent_txid, height));
+                beef.merge_raw_tx(grandparent.to_binary(), Some(bump));
+                beef.merge_raw_tx(parent.to_binary(), None);
+            }
+            beef.merge_raw_tx(tx.to_binary(), None);
+            beef.to_binary_atomic(&tx.id()).unwrap()
+        };
+        let bytes = with_parent(&child);
         let start = std::time::Instant::now();
-        let answer = verify_subject_inputs(&bytes, &txid, "main", None);
+        let answer = verify_unproven_inputs(&bytes, "main", None);
         println!(
-            "the check of a signed 800-input P2PKH sweep ({} bytes): {:?} in {:?}",
+            "the check of a signed 800-input P2PKH sweep, its parent {} ({} bytes): {:?} in {:?}",
+            if parent_proven { "proven" } else { "unproven" },
             bytes.len(),
             answer,
             start.elapsed()
@@ -288,14 +318,38 @@ mod runs {
         broken.inputs = child.inputs.clone();
         broken.inputs[799].unlocking_script = child.inputs[0].unlocking_script.clone();
         let txid = broken.id();
-        let mut beef = Beef::new();
-        let bump = beef.merge_bump(MerklePath::from_coinbase_txid(&parent_txid, height));
-        beef.merge_raw_tx(parent.to_binary(), Some(bump));
-        beef.merge_raw_tx(broken.to_binary(), None);
-        let bytes = beef.to_binary_atomic(&txid).unwrap();
-        let text = verify_subject_inputs(&bytes, &txid, "main", None)
+        let bytes = with_parent(&broken);
+        let text = verify_unproven_inputs(&bytes, "main", None)
             .unwrap_err()
             .to_string();
         assert!(text.contains(&format!("input 799 of {txid}: ")), "{text}");
+    }
+    /// An unproven parent whose input does not pass refuses the BEEF at
+    /// the parent's input, naming the parent, before the subject is run.
+    #[test]
+    fn an_unproven_parent_is_run_before_its_child() {
+        // `sweep`'s child (unproven, spending with `unlock`) becomes the
+        // parent of a child spending it with `00`.
+        let with_child = |unlock: &str| {
+            let (bytes, parent) = sweep(1, unlock, false);
+            let mut beef = Beef::from_binary(&bytes).unwrap();
+            let mut child = Transaction::new();
+            child.version = 1;
+            child.inputs.push(input(&parent, 0, "00"));
+            child.outputs.push(TransactionOutput {
+                satoshis: Some(400),
+                locking_script: anyone_lock(),
+                change: false,
+            });
+            beef.merge_raw_tx(child.to_binary(), None);
+            (beef.to_binary_atomic(&child.id()).unwrap(), parent)
+        };
+        let (bytes, _) = with_child("00");
+        assert!(verify_unproven_inputs(&bytes, "main", None).is_ok());
+        let (bytes, parent) = with_child("");
+        let text = verify_unproven_inputs(&bytes, "main", None)
+            .unwrap_err()
+            .to_string();
+        assert!(text.contains(&format!("input 0 of {parent}: ")), "{text}");
     }
 }

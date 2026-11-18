@@ -14,9 +14,10 @@
 //! 5. every transaction whole ([`ReceivedBeef::whole_roots`]: an entry the
 //!    BEEF names by its id without its bytes is refused);
 //! 6. every root against the tracker ([`check_roots`]);
-//! 7. every input of the subject run against the output it spends
-//!    ([`check_input_scripts`], `input_scripts.rs`): a subject the BEEF
-//!    proves is not run; any other input that does not pass is refused,
+//! 7. every input of every transaction the BEEF does not prove (the
+//!    subject and each unproven ancestor) run against the output it spends
+//!    ([`check_input_scripts`], `input_scripts.rs`): a transaction the BEEF
+//!    proves is not run; an input that does not pass is refused,
 //!    `spend refused at offset <n>, input <i> of <txid>: <why>`.
 //!
 //! The reference's wallet and storage each verify a received BEEF
@@ -140,17 +141,16 @@ pub(crate) async fn check_roots(
     Ok(())
 }
 
-/// Step 7: every input of the subject `subject` (display hex) of `bytes`
-/// run against the output it spends, under the word for that input on the
-/// network `network` with `tracker`'s mining tip (the tip asked before the
-/// scripts run, both before any row is written). A subject the BEEF
-/// proves is not run.
+/// Step 7: every input of every transaction of `bytes` the BEEF does not
+/// prove (the subject and each unproven ancestor) run against the output
+/// it spends, under the word for that input on the network `network` with
+/// `tracker`'s mining tip (the tip asked before the scripts run, both
+/// before any row is written). A transaction the BEEF proves is not run.
 pub(crate) async fn check_input_scripts(
     bytes: &[u8],
-    subject: &str,
     network: &str,
     tracker: &dyn ChainTracker,
 ) -> Result<()> {
     let tip = input_scripts::mining_tip(tracker).await;
-    input_scripts::verify_subject_inputs(bytes, subject, network, tip)
+    input_scripts::verify_unproven_inputs(bytes, network, tip)
 }
