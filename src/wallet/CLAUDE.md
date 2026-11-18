@@ -181,15 +181,22 @@ The reference's on-chain abort answers `aborted: false`
 an owner's public API decision under #185.
 
 An honoured abort of an action whose post was in flight is undone by a
-take heard after it (the keeper's reading 18 of section 30): the abort's
-write leaves its mark on the request's history, and the one write that
-applies the take (any of its five writers) puts the action back
-`unproven`, its free inputs spent by it again, the outputs it closed
-spendable, with a `takenAfterAbort` note naming the instances
-(`src/storage/sqlx/abort_recovery.rs`). The call answered `aborted: true`
-and is not answered again: the host reads the undo from `listActions`
-(the action `unproven`) and the balance. A `failed` on evidence is never
-recovered by a take; the competitor guard stands in front.
+take heard after it (the keeper's readings 18 and 20 of section 30): a
+release made on no evidence does not stand against a take, whichever act
+released it. The one write that applies the take (any of its five
+writers) reads each `failed` row of the wallet's own by its state:
+released with no competitor's checked proof on record, it puts the action
+back `unproven`, its free inputs spent by it again, its own outputs that
+nothing spent spendable, with a `takenAfterAbort` note naming the
+instances where the abort's mark is on the request (`takenAfterRelease`
+where an earlier release wrote none); an input still locked by it, or a
+`spent-proven` check on record, recovers nothing and the request keeps
+its word (`src/storage/sqlx/abort_recovery.rs`). The call answered
+`aborted: true` and is not answered again: the host reads the undo from
+`listActions` (the action `unproven`) and the balance. A checked proof
+completes the action, a `failed` one included, with its inputs spent by
+it and its change counted (`src/storage/sqlx/proof_completion.rs`). The
+descendants the abort ended stay ended when the root is recovered.
 
 The direct SDK guards below carry classed refusals too, with their
 message bytes unchanged. Hosts matching `WalletError` at these doors must
