@@ -94,6 +94,10 @@ pub enum Cause {
     /// Released as `Unmarked`, with a competitor's checked proof on record
     /// against it: a `locked_input_checks` row `spent-proven` on input 0.
     Evidence,
+    /// The retire path's `failed` as `Refusal`, after the locked-input
+    /// re-check gave input 0 back (free, no spender) and kept input 1
+    /// locked by it.
+    Mixed,
 }
 
 pub const CAUSES: [Cause; 6] = [
@@ -374,6 +378,8 @@ pub struct Reading {
     pub held_as_hint: bool,
     /// Another user's live row of the txid, when the cell seeds one.
     pub other_row: Option<String>,
+    /// That row after a status review pass, when the cell runs one.
+    pub other_after_review: Option<String>,
     /// X's spendable change.
     pub balance: i64,
     /// X's action as `listActions` lists it.
@@ -435,6 +441,13 @@ pub async fn seed(store: &StorageSqlx, parts: &common::SpendParts, cause: Cause)
         }
         None => 0,
     };
+    if cause == Cause::Mixed {
+        sqlx::query("UPDATE outputs SET spendable = 1, spent_by = NULL WHERE output_id = ?")
+            .bind(inputs[0])
+            .execute(store.writer())
+            .await
+            .unwrap();
+    }
     if received {
         let y_key = PrivateKey::random().public_key().to_hex();
         let (y, _) = store.find_or_insert_user(&y_key).await.unwrap();
@@ -542,6 +555,12 @@ pub async fn cell(act: Act, cause: Cause) -> Reading {
 /// One cell, with another user's live row of the txid (a held receipt,
 /// `sending`) beside X's when `other_live`.
 pub async fn cell_with(act: Act, cause: Cause, other_live: bool) -> Reading {
+    cell_full(act, cause, other_live, false).await
+}
+
+/// [`cell_with`], and with `review` the monitor's status review run after
+/// the take, the other user's row read again after it.
+pub async fn cell_full(act: Act, cause: Cause, other_live: bool, review: bool) -> Reading {
     let root = PrivateKey::random();
     let sender = PrivateKey::random().public_key();
     let key = common::derived_key(&root, &sender, PREFIX, SUFFIX);
@@ -634,6 +653,15 @@ pub async fn cell_with(act: Act, cause: Cause, other_live: bool) -> Reading {
                 .fetch_optional(store.pool())
                 .await
                 .unwrap();
+        if review {
+            MonitorStorage::review_status(&store).await.unwrap();
+            got.other_after_review =
+                sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
+                    .bind(other)
+                    .fetch_optional(store.pool())
+                    .await
+                    .unwrap();
+        }
     }
     got
 }
@@ -729,6 +757,7 @@ pub async fn read(f: &Fixture, received: bool) -> Reading {
             || history.contains("takenAfterRelease"),
         held_as_hint: history.contains("takeHeldAsHint"),
         other_row: None,
+        other_after_review: None,
         balance,
         listed,
     }
