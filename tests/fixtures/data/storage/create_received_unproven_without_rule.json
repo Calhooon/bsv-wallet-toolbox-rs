@@ -54,7 +54,7 @@
       },
       "rows": {
         "broadcast_prefs": [],
-        "broadcast_seen": [{"provider":"fixture","status":"accepted","txid":"<txid:1>"}],
+        "broadcast_seen": [],
         "commissions": [],
         "locked_input_checks": [],
         "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
@@ -95,7 +95,7 @@
       "result": {"error":"Insufficient funds: need 1003, have 0"},
       "rows": {
         "broadcast_prefs": [],
-        "broadcast_seen": [{"provider":"fixture","status":"accepted","txid":"<txid:1>"}],
+        "broadcast_seen": [],
         "commissions": [],
         "locked_input_checks": [],
         "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],
@@ -136,7 +136,7 @@
       "result": {"error":"Insufficient funds: need 1003, have 0"},
       "rows": {
         "broadcast_prefs": [],
-        "broadcast_seen": [{"provider":"fixture","status":"accepted","txid":"<txid:1>"}],
+        "broadcast_seen": [],
         "commissions": [],
         "locked_input_checks": [],
         "monitor_state": [{"key":"max_acceptable_proof_height","text_value":null,"value":880000}],

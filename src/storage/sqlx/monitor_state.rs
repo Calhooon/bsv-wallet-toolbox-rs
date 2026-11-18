@@ -172,7 +172,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 version,
-                super::super::held_receipts::MIGRATION_006_HELD_RECEIPTS_NAME
+                super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
             );
             sqlx::query("DROP TABLE monitor_state")
                 .execute(storage.writer())

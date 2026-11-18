@@ -3,9 +3,6 @@ use super::{
     Error, FindProvenTxReqsArgs, ProvenTxReqStatus, Result, SendWithResult,
     StorageProcessActionResults, StorageSqlx, TableProvenTxReq, WalletStorageReader,
 };
-use crate::services::broadcast_memory::{
-    BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_ACCEPTED, BROADCAST_STATUS_SEEN,
-};
 
 /// How many notes a request's history keeps, the newest.
 const REQ_HISTORY_NOTES_KEPT: usize = 32;
@@ -362,22 +359,18 @@ impl StorageSqlx {
                     // Check if any provider returned success
                     let success = results_vec.iter().any(|r| r.is_success());
                     if success {
-                        // Update to unmined, and record each instance's
-                        // take in the same write (a host's own services
-                        // record none).
-                        let takers: Vec<&str> = results_vec
-                            .iter()
-                            .filter(|r| r.is_success())
-                            .map(|r| r.name.as_str())
-                            .collect();
-                        self.promote_taken(
-                            req.proven_tx_req_id,
-                            &req.txid,
-                            &takers,
-                            BROADCAST_STATUS_ACCEPTED,
-                            now,
-                        )
-                        .await?;
+                        // Update to unmined
+                        sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
+                            .bind(now)
+                            .bind(req.proven_tx_req_id)
+                            .execute(&mut *self.writer_conn().await?)
+                            .await?;
+
+                        sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
+                            .bind(now)
+                            .bind(&req.txid)
+                            .execute(&mut *self.writer_conn().await?)
+                            .await?;
 
                         send_with_results.push(SendWithResult {
                             txid: req.txid.clone(),
@@ -423,16 +416,17 @@ impl StorageSqlx {
                                 .await;
 
                             if reconciled {
-                                // Tx is actually alive on chain: treat as
-                                // success, the status source's word recorded.
-                                self.promote_taken(
-                                    req.proven_tx_req_id,
-                                    &req.txid,
-                                    &[BROADCAST_PROVIDER_CHAIN],
-                                    BROADCAST_STATUS_SEEN,
-                                    now,
-                                )
-                                .await?;
+                                // Tx is actually alive on chain — treat as success
+                                sqlx::query("UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE proven_tx_req_id = ?")
+                                    .bind(now)
+                                    .bind(req.proven_tx_req_id)
+                                    .execute(&mut *self.writer_conn().await?)
+                                    .await?;
+                                sqlx::query("UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ?")
+                                    .bind(now)
+                                    .bind(&req.txid)
+                                    .execute(&mut *self.writer_conn().await?)
+                                    .await?;
                                 tracing::info!(
                                     "send_waiting: tx {} reported as orphan mempool but found alive on chain — treating as success",
                                     req.txid

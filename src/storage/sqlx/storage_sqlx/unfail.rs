@@ -113,13 +113,12 @@ impl StorageSqlx {
     ) -> Result<()> {
         let services = self.get_services()?;
 
-        let mut tx = self.write_tx().await?;
         sqlx::query(
             "UPDATE proven_tx_reqs SET status = 'unmined', attempts = 0, updated_at = ? WHERE proven_tx_req_id = ?",
         )
         .bind(now)
         .bind(req_id)
-        .execute(&mut *tx)
+        .execute(&mut *self.writer_conn().await?)
         .await?;
 
         // 'completed' rows are already correct — never move them backward.
@@ -128,11 +127,8 @@ impl StorageSqlx {
         )
         .bind(now)
         .bind(txid)
-        .execute(&mut *tx)
+        .execute(&mut *self.writer_conn().await?)
         .await?;
-        // The chain evidence that recovered it, recorded in the same write.
-        super::super::held_receipts::record_chain_seen_on(&mut tx, txid).await?;
-        super::commit(tx).await?;
 
         // Restore outputs of this transaction, but validate each against
         // chain to avoid creating ghost UTXOs (outputs already spent
