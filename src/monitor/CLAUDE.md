@@ -458,6 +458,7 @@ Synchronizes transaction status with ProvenTxReq status.
 1. Find transactions with completed proofs that are older than age threshold
 2. Verify associated transaction records are also marked completed
 3. Sync status for any mismatches
+4. Storage check 1 (`MonitorStorage::review_status`): a transaction beside an `invalid` request is failed only when the store holds no proof row for it; a proof whose root the store's chain tracker confirms (or a store-checked one) stands and its request is completed; a refuted unchecked proof is demoted and asked again; no tracker answer writes nothing (at most 100 header reads per pass)
 
 **Constructors:**
 - `ReviewStatusTask::new(storage)` - Create with default threshold
