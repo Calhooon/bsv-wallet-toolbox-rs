@@ -103,7 +103,10 @@ impl StorageSqlx {
                 "nextReaskMinutes": next,
             }),
         );
-        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+        // A request another write moved during the post (the host's abort:
+        // `invalid`; a take: `unmined`) keeps its word: the hint never
+        // re-queues it.
+        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ? AND status IN ('unsent', 'sending')")
             .bind(i64::from(attempts))
             .bind(history)
             .bind(now)

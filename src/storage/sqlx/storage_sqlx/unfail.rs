@@ -108,7 +108,6 @@ impl StorageSqlx {
         &self,
         req_id: i64,
         txid: &str,
-        raw_tx: Option<&[u8]>,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<()> {
         let services = self.get_services()?;
@@ -188,122 +187,12 @@ impl StorageSqlx {
             }
         }
 
-        self.remark_unfailed_inputs_spent(txid, raw_tx, now).await?;
-
         tracing::info!(
             "un_fail: restored transaction {} ({}/{} outputs validated as UTXOs)",
             txid,
             restored,
             output_rows.len()
         );
-        Ok(())
-    }
-
-    /// Re-mark an unfailed transaction's consumed inputs as spent: every
-    /// wallet-tracked output row at each of the tx's input outpoints becomes
-    /// unspendable (chain truth — the outpoint is consumed), and `spent_by`
-    /// is stamped with the row-owner's own transactions row for this txid
-    /// where one exists and no competing spend is recorded. Same decision
-    /// table as internalize's `mark_user_inputs_spent`, but cross-user (the
-    /// monitor runs for all users, not one caller).
-    async fn remark_unfailed_inputs_spent(
-        &self,
-        txid: &str,
-        raw_tx: Option<&[u8]>,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<()> {
-        // Resolve the raw tx: prefer the req's copy, fall back to the
-        // transactions row. Without one the outpoints are unknowable — the
-        // output restoration + is_utxo validation stays the safety net.
-        let raw = match raw_tx {
-            Some(r) if !r.is_empty() => r.to_vec(),
-            _ => {
-                let row = sqlx::query(
-                    "SELECT raw_tx FROM transactions WHERE txid = ? AND raw_tx IS NOT NULL LIMIT 1",
-                )
-                .bind(txid)
-                .fetch_optional(self.pool())
-                .await?;
-                match row.and_then(|r| r.get::<Option<Vec<u8>>, _>("raw_tx")) {
-                    Some(r) if !r.is_empty() => r,
-                    _ => {
-                        tracing::warn!(
-                            "un_fail: no raw_tx available for {} — cannot re-mark consumed inputs spent",
-                            txid
-                        );
-                        return Ok(());
-                    }
-                }
-            }
-        };
-        let tx = match bsv_rs::transaction::Transaction::from_binary(&raw) {
-            Ok(tx) => tx,
-            Err(e) => {
-                tracing::warn!(
-                    "un_fail: raw_tx for {} does not parse ({:?}) — skipping input re-mark",
-                    txid,
-                    e
-                );
-                return Ok(());
-            }
-        };
-        for (source_txid, vout) in super::internalize_action::extract_input_outpoints(&tx) {
-            let rows = sqlx::query(
-                "SELECT output_id, user_id, spendable, spent_by FROM outputs WHERE txid = ? AND vout = ?",
-            )
-            .bind(&source_txid)
-            .bind(vout as i32)
-            .fetch_all(self.pool())
-            .await?;
-            for row in rows {
-                let output_id: i64 = row.get("output_id");
-                let row_user_id: i64 = row.get("user_id");
-                let spendable: bool = row.get("spendable");
-                let spent_by: Option<i64> = row.get("spent_by");
-
-                // The row-owner's own transactions row for the spending
-                // txid (None for foreign users without one — their
-                // spent_by stays NULL, the FK references the owning
-                // user's transactions scope).
-                let user_tx_id: Option<i64> = sqlx::query(
-                    "SELECT transaction_id FROM transactions WHERE txid = ? AND user_id = ?",
-                )
-                .bind(txid)
-                .bind(row_user_id)
-                .fetch_optional(self.pool())
-                .await?
-                .map(|r| r.get("transaction_id"));
-
-                // Rows already accounted for are skipped, and a competing
-                // recorded spend is never clobbered.
-                if !spendable {
-                    continue;
-                }
-                if let Some(existing) = spent_by {
-                    if user_tx_id != Some(existing) {
-                        continue;
-                    }
-                }
-                if let Some(user_tx_id) = user_tx_id {
-                    sqlx::query(
-                        "UPDATE outputs SET spendable = 0, spent_by = ?, updated_at = ? WHERE output_id = ?",
-                    )
-                    .bind(user_tx_id)
-                    .bind(now)
-                    .bind(output_id)
-                    .execute(&mut *self.writer_conn().await?)
-                    .await?;
-                } else {
-                    sqlx::query(
-                        "UPDATE outputs SET spendable = 0, updated_at = ? WHERE output_id = ?",
-                    )
-                    .bind(now)
-                    .bind(output_id)
-                    .execute(&mut *self.writer_conn().await?)
-                    .await?;
-                }
-            }
-        }
         Ok(())
     }
 
@@ -357,7 +246,7 @@ impl StorageSqlx {
         // row missed its 'failed' write (partial batch) must still be
         // re-checked.
         let candidates = sqlx::query(
-            "SELECT DISTINCT r.proven_tx_req_id, r.txid, r.raw_tx \
+            "SELECT DISTINCT r.proven_tx_req_id, r.txid \
              FROM proven_tx_reqs r \
              LEFT JOIN transactions t ON t.txid = r.txid \
              WHERE r.status IN ('invalid', 'doubleSpend') \
@@ -389,7 +278,6 @@ impl StorageSqlx {
         for row in &candidates {
             let req_id: i64 = row.get("proven_tx_req_id");
             let txid: String = row.get("txid");
-            let raw_tx: Option<Vec<u8>> = row.get("raw_tx");
             if txid.is_empty() {
                 continue;
             }
@@ -417,8 +305,7 @@ impl StorageSqlx {
             };
             match evidence {
                 Some(evidence) => {
-                    self.recover_false_failed_req(req_id, &txid, raw_tx.as_deref(), now)
-                        .await?;
+                    self.recover_false_failed_req(req_id, &txid, now).await?;
                     tracing::warn!(
                         "un_fail canary: false-failed tx is on network ({}) — recovered txid={}",
                         evidence,
@@ -450,13 +337,8 @@ impl StorageSqlx {
             // Check if transaction has a merkle path on-chain
             match services.get_merkle_path(&req.txid, false).await {
                 Ok(result) if result.merkle_path.is_some() => {
-                    self.recover_false_failed_req(
-                        req.proven_tx_req_id,
-                        &req.txid,
-                        req.raw_tx.as_deref(),
-                        now,
-                    )
-                    .await?;
+                    self.recover_false_failed_req(req.proven_tx_req_id, &req.txid, now)
+                        .await?;
                 }
                 Ok(_) => {
                     // Positive network answer, no proof — back to 'invalid'.

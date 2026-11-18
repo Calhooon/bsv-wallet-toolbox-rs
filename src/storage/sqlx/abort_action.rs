@@ -163,6 +163,18 @@ async fn abort_pending(
     // Step 5: Update transaction status to 'failed'
     update_transaction_status_to_failed(&mut db_tx, tx.transaction_id).await?;
 
+    // The abort's mark, which a later take reads (`abort_recovery`).
+    if let Some(txid) = tx.txid.as_deref() {
+        super::abort_recovery::write_abort_mark(
+            &mut db_tx,
+            txid,
+            tx.transaction_id,
+            &[],
+            Utc::now(),
+        )
+        .await?;
+    }
+
     // Commit the transaction to make all changes durable.
     super::storage_sqlx::commit(db_tx).await?;
 
@@ -197,7 +209,15 @@ async fn abort_broadcast(
     // Its inputs come back: the caller vouches the transaction never mines.
     release_locked_outputs(&mut db_tx, tx.transaction_id).await?;
 
-    // Its own outputs never fund anything again.
+    // Its own outputs never fund anything again; the ones it closes are
+    // named on the abort's mark, which a later take reads
+    // (`abort_recovery`).
+    let closed: Vec<i64> = sqlx::query_scalar(
+        "SELECT output_id FROM outputs WHERE transaction_id = ? AND spendable = 1 ORDER BY output_id",
+    )
+    .bind(tx.transaction_id)
+    .fetch_all(&mut *db_tx)
+    .await?;
     sqlx::query("UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ?")
         .bind(now)
         .bind(tx.transaction_id)
@@ -216,6 +236,8 @@ async fn abort_broadcast(
     .bind(txid)
     .execute(&mut *db_tx)
     .await?;
+    super::abort_recovery::write_abort_mark(&mut db_tx, txid, tx.transaction_id, &closed, now)
+        .await?;
 
     super::storage_sqlx::commit(db_tx).await?;
 

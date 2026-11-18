@@ -535,6 +535,47 @@ mod concurrent {
         );
     }
 
+    /// A `sending` transaction `reference` spending the fund's output 0
+    /// (locked by it), with its request carrying its bytes: its txid, its
+    /// row and the coin's output id.
+    async fn insert_sending_spend(
+        storage: &StorageSqlx,
+        user_id: i64,
+        reference: &str,
+    ) -> (String, i64, i64) {
+        let fund_txid = "f".repeat(64);
+        let fund_id =
+            insert_transaction(storage, user_id, "race-fund-2", "completed", &fund_txid).await;
+        let mut spend = bsv_rs::transaction::Transaction::new();
+        spend
+            .inputs_mut()
+            .push(bsv_rs::transaction::TransactionInput::new(
+                fund_txid.clone(),
+                0,
+            ));
+        let txid = spend.id();
+        let tx_id = insert_transaction(storage, user_id, reference, "sending", &txid).await;
+        let coin = insert_output(
+            storage,
+            user_id,
+            fund_id,
+            &fund_txid,
+            0,
+            2000,
+            false,
+            Some(tx_id),
+        )
+        .await;
+        insert_proven_tx_req(storage, &txid, "sending").await;
+        sqlx::query("UPDATE proven_tx_reqs SET raw_tx = ? WHERE txid = ?")
+            .bind(spend.to_binary())
+            .bind(&txid)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        (txid, tx_id, coin)
+    }
+
     // =========================================================================
     // Test 5: Race between update_transaction_status_after_broadcast and abort_action
     // =========================================================================
@@ -543,16 +584,10 @@ mod concurrent {
         let (storage, auth) = setup_storage().await;
         let user_id = auth.user_id.unwrap();
 
-        // Create a "sending" transaction (already processed, about to be broadcast)
-        let txid = "e".repeat(64);
+        // A "sending" transaction (already processed, about to be
+        // broadcast) spending the wallet's coin, locked by it.
         let reference = "race-ref-2".to_string();
-        let tx_id = insert_transaction(&storage, user_id, &reference, "sending", &txid).await;
-
-        // Create an output locked by this tx
-        insert_output(&storage, user_id, tx_id, &txid, 0, 2000, false, Some(tx_id)).await;
-
-        // Insert a proven_tx_req for this txid (raw_tx is required NOT NULL)
-        insert_proven_tx_req(&storage, &txid, "sending").await;
+        let (txid, tx_id, coin) = insert_sending_spend(&storage, user_id, &reference).await;
 
         let s_broadcast = storage.clone();
         let s_abort = storage.clone();
@@ -581,10 +616,10 @@ mod concurrent {
 
         // #165: acceptance and abort serialize at the write lock. An
         // acceptance already committed refuses the abort; an abort already
-        // committed is not reopened by the later status write: the row stays
-        // `failed` and its inputs released, while the request takes the one
-        // rule of a take (`unmined` from every word but `completed`, the
-        // keeper's ruling of 2026-11-18): the network holds it.
+        // committed is undone by the later take, in its one write: the
+        // transaction `unproven`, the request `unmined`, the coin marked
+        // spent by it again (the network holds a spend of it), the cause on
+        // the request's history. Either way the same state.
         assert!(
             broadcast_result.is_ok(),
             "Broadcast status update should succeed: {:?}",
@@ -620,21 +655,28 @@ mod concurrent {
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        let released: (Option<i64>,) =
-            sqlx::query_as("SELECT spent_by FROM outputs WHERE transaction_id = ? AND vout = 0")
-                .bind(tx_id)
+        let released: (bool, Option<i64>) =
+            sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE output_id = ?")
+                .bind(coin)
                 .fetch_one(storage.pool())
                 .await
                 .unwrap();
-        let expected = if aborted {
-            ("failed", "unmined", None)
-        } else {
-            ("unproven", "unmined", Some(tx_id))
-        };
+        let history: (String,) =
+            sqlx::query_as("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+                .bind(&txid)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
         assert_eq!(
-            (final_status.0.as_str(), req_status.0.as_str(), released.0),
-            expected,
-            "the status, request and input lock must agree with the winning write"
+            (final_status.0.as_str(), req_status.0.as_str(), released),
+            ("unproven", "unmined", (false, Some(tx_id))),
+            "the status, request and input lock agree whichever write won"
+        );
+        assert_eq!(
+            history.0.contains("takenAfterAbort"),
+            aborted,
+            "an abort the take undid names its cause: {}",
+            history.0
         );
     }
 

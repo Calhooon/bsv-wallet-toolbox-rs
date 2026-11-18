@@ -32,6 +32,7 @@
 //! ```
 
 mod abort_action;
+mod abort_recovery;
 mod beef_verification;
 mod broadcast_seen;
 #[cfg(test)]
