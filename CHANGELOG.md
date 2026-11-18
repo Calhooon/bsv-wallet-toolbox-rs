@@ -8,12 +8,12 @@ A security patch on the stable line, and nothing else. The bsv-rs requirement mo
 
 ### Security
 
-- [GHSA-j4w5-4g84-q3f4](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-j4w5-4g84-q3f4) (medium): bsv-rs's `GlobalKVStore` selector reads (`query`, `get_by_controller`, `get_by_tags`) returned an overlay lookup host's answer without re-checking the selector, so a host could answer with another controller's or other tags' validly signed token; 0.8.13 drops such an entry. This crate does not call `GlobalKVStore`, so none of its doors was reached.
+- [GHSA-j4w5-4g84-q3f4](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-j4w5-4g84-q3f4) (medium): bsv-rs's `GlobalKVStore` selector reads (`query`, `get_by_controller`, `get_by_tags`) returned an overlay lookup host's answer without re-checking the selector, so a lookup host could answer with another controller's or other tags' validly signed token; 0.8.13 drops such an entry. This crate does not call `GlobalKVStore`, so none of its doors was reached.
 
 ### Hosts
 
 - A host that does not use bsv-rs's `GlobalKVStore` selector reads in its own code takes the release and changes nothing: every test of 0.13.7 answers the same on bsv-rs 0.8.13, and no answer of this crate changes.
-- A host that calls `GlobalKVStore::query`, `get_by_controller` or `get_by_tags` in its own code, through the bsv-rs this crate brings in, now gets only the entries that match its selector; an honest host's answer is unchanged.
+- A host that calls `GlobalKVStore::query`, `get_by_controller` or `get_by_tags` in its own code, through the bsv-rs this crate brings in, now gets only the entries that match its selector; an honest lookup host's answer is unchanged. By bsv-rs's note the lookup of the caller's existing token that `set` and `remove` run reads the same path, and no longer takes another controller's token for the caller's own.
 
 ## [0.13.7] - 2026-11-18
 
