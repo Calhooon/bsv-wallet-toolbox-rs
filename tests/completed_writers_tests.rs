@@ -9,7 +9,11 @@
 //! The unchecked proof row comes by the road a store meets it on: a
 //! manager's drain from a local reader whose rows of the txid are under
 //! other references (W's own rows untouched), or under the same references
-//! where the merge is the writer.
+//! where the merge is the writer. Two rows stand apart: the internalize
+//! door's insert of a row this store holds none of (a new row reads
+//! `completed` only after a header read and a record), and the merge as a
+//! writer away from `completed` (a row held `completed` on a proof this
+//! store checked stays so).
 #![cfg(feature = "sqlite")]
 
 use std::sync::Arc;
@@ -41,6 +45,9 @@ enum Writer {
     BeefWalkFetched,
     /// The internalize door, a proven AtomicBEEF of a txid held `nosend`.
     InternalizeDoor,
+    /// The internalize door's INSERT of a new row reading `completed`: a
+    /// proven AtomicBEEF of a txid this store holds no row of.
+    InternalizeInsert,
     /// The monitor review's check 3: a `completed` request with a link.
     Check3,
     /// The monitor review's check 1: an `invalid` request beside a proof.
@@ -58,18 +65,24 @@ enum Writer {
     MergeNewerNoLink,
     /// The proof task's adoption (step 1 of `adopt_unproven_transactions`).
     Adoption,
+    /// The sync's merge as a writer AWAY from `completed`: a row held
+    /// `completed` on a proof this store checked, a newer reader's row
+    /// reading `unproven` with no link. It stays `completed`.
+    MergeAwayFromChecked,
     /// LIMIT, outside the rule: the sync's INSERT of a transaction row this
     /// store did not hold takes its reader's status and proof link as they
     /// are; it moves no status this store held. Not driven here.
     SyncInsertOfARowNotHeld,
 }
 
-/// Every writer the two rounds' tables list, and the one outside the rule.
-const WRITERS: [Writer; 13] = [
+/// Every writer the rounds' tables list, the merge as a writer away from
+/// `completed`, and the one outside the rule.
+const WRITERS: [Writer; 15] = [
     Writer::ProofFunnel,
     Writer::BeefWalkStored,
     Writer::BeefWalkFetched,
     Writer::InternalizeDoor,
+    Writer::InternalizeInsert,
     Writer::Check3,
     Writer::Check1,
     Writer::PassLinked,
@@ -78,6 +91,7 @@ const WRITERS: [Writer; 13] = [
     Writer::MergeNewer,
     Writer::MergeNewerNoLink,
     Writer::Adoption,
+    Writer::MergeAwayFromChecked,
     Writer::SyncInsertOfARowNotHeld,
 ];
 
@@ -92,6 +106,7 @@ fn completes_when_confirmed(writer: Writer) -> bool {
         Writer::ProofFunnel
             | Writer::BeefWalkFetched
             | Writer::InternalizeDoor
+            | Writer::InternalizeInsert
             | Writer::Check3
             | Writer::Check1
             | Writer::PassLinked
@@ -217,6 +232,17 @@ async fn run(
         Writer::MergeOlder | Writer::MergeNewer | Writer::MergeNewerNoLink | Writer::Adoption => {
             held_at(&w, n, "unproven", &own, NOW).await;
         }
+        // No row of the txid held.
+        Writer::InternalizeInsert => {}
+        Writer::MergeAwayFromChecked => {
+            let t = held_at(&w, n, "completed", &own, NOW).await;
+            let p = checked_proof_row(&w, n).await;
+            exec(
+                &w,
+                &format!("UPDATE transactions SET proven_tx_id = {p} WHERE transaction_id = {t}"),
+            )
+            .await;
+        }
         Writer::SyncInsertOfARowNotHeld => unreachable!("outside the rule, not driven"),
     }
     let before: Vec<(i64, String)> = held_rows(&w, n)
@@ -248,7 +274,7 @@ async fn run(
             };
             let _ = WalletStorageReader::list_outputs(&*w, &auth, args).await;
         }
-        Writer::InternalizeDoor => {
+        Writer::InternalizeDoor | Writer::InternalizeInsert => {
             let (txid, raw, path, _) = mined(n);
             let mut beef = Beef::new();
             beef.merge_bump(MerklePath::from_binary(&path).unwrap());
@@ -286,6 +312,11 @@ async fn run(
         Writer::MergeOlder => bring(&w, n, &own, OLD, true, false).await,
         Writer::MergeNewer => bring(&w, n, &own, LATER, true, false).await,
         Writer::MergeNewerNoLink => bring(&w, n, &own, LATER, false, false).await,
+        Writer::MergeAwayFromChecked => {
+            let r = r_store().await;
+            reader_rows(&r, n, &own, LATER, "unproven", false, false).await;
+            drain(&w, r).await;
+        }
         Writer::SyncInsertOfARowNotHeld => unreachable!(),
     }
     let reads = headers.reads() - reads_before;
@@ -316,6 +347,36 @@ async fn a_held_row_reads_completed_only_after_a_header_read_and_a_record() {
         {
             let n = 100 + (i * 3 + j) as u8;
             let (before, after, reads, recorded) = run(writer, n, tracker).await;
+            if writer == Writer::InternalizeInsert {
+                // A new row: it reads `completed` only after a header read
+                // and with this store's record.
+                assert!(before.is_empty());
+                let completed = after.iter().any(|(_, s)| s == "completed");
+                assert_eq!(completed, tracker == Tracker::Confirms, "{after:?}");
+                if completed {
+                    completed_somewhere += 1;
+                    assert!(
+                        reads > 0 && recorded,
+                        "{tracker:?}: {reads} reads, record {recorded}"
+                    );
+                }
+                println!(
+                    "WITNESS {writer:?} {tracker:?}: {after:?} | {reads} header reads | record {recorded}"
+                );
+                continue;
+            }
+            if writer == Writer::MergeAwayFromChecked {
+                // The held `completed` stays, whatever the reader's word.
+                assert!(before.is_empty(), "held completed");
+                assert!(after.iter().all(|(_, s)| s == "completed"), "{after:?}");
+                assert_eq!(reads, 0);
+                assert!(recorded);
+                println!(
+                    "WITNESS {writer:?} {tracker:?}: completed->{} | {reads} header reads | record {recorded}",
+                    after[0].1
+                );
+                continue;
+            }
             assert!(!before.is_empty(), "{writer:?}: a row held not completed");
             let mut answers = Vec::new();
             let all_completed = before
