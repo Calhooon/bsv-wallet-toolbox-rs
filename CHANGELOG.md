@@ -145,9 +145,7 @@
     recorded, the request keeps its word, a `takeNotCounted` note naming
     the rows; at the internalize door the answer is `doubleSpend` with the
     send result `failed`, naming no competitor where only the verdict is
-    kept. The monitor's status review then fails another user's row of
-    the txid on the request's `invalid` word, as it does any row beside an
-    `invalid` request.
+    kept.
   A refusal of the wallet's own run leaves no `failed` row: the signing
   check refuses before anything is written. So no take leaves a request
   `unmined` beside a `failed` transaction with an input free. The
