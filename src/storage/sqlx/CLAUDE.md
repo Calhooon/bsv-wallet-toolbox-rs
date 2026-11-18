@@ -10,7 +10,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (4798 lines) |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (10295 lines) |
 | `create_action.rs` | Transaction creation implementation (3823 lines) |
 | `process_action.rs` | Signed transaction processing (1884 lines) |
 | `abort_action.rs` | Transaction abort/cancellation; since 0.3.60 a broadcast (`unproven` / `sending`) transaction with NO chain evidence (no `chain|seen`, no `mined` row, no proof) is aborted too: inputs released, own outputs dead, memory `rejected`, unproven descendants retired |
@@ -116,7 +116,7 @@ MonitorStorage          - Background monitoring operations (+ task locking)
 | `make_available()` | Initialize and load settings |
 | `migrate()` | Run schema migrations |
 | `destroy()` | Drop all tables |
-| `find_or_insert_user()` | Get or create user by identity key |
+| `find_or_insert_user()` | Get or create user by identity key: a held user from a reader; otherwise one `write_tx` inserts the row only if absent (`ON CONFLICT(identity_key) DO NOTHING`), reads it, and writes the default basket only for the caller whose insert made it, so callers at once are answered one row and exactly one `true` |
 | `insert_certificate()` | Insert new certificate |
 | `insert_certificate_field()` | Insert certificate field with keyring |
 | `relinquish_certificate()` | Soft-delete certificate |
