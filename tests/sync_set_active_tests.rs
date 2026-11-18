@@ -35,7 +35,7 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
         let (from, to) = (name(from).to_string(), name(to).to_string());
         let a = run(cell).await;
         println!(
-            "WITNESS {} stores, {}, failing {:?} ({}) at {:?}: {}; rows {:?}, active {:?}, a write lands on {:?}; retry {}: rows {:?}, active {:?}; call back {}: rows {:?}, active {:?}",
+            "WITNESS {} stores, {}, failing {:?} ({}) at {:?}: {}; rows {:?}, active {:?}, a write lands on {:?}; a retry that fails {:?}; retry {}: rows {:?}, active {:?}; call back {}: rows {:?}, active {:?}",
             cell.n,
             if cell.switched { "after A to B, B to A" } else { "A to B" },
             cell.role,
@@ -45,6 +45,7 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
             a.after_failure.0,
             a.after_failure.1,
             a.written,
+            a.retry_lost,
             a.retry,
             a.after_retry.0,
             a.after_retry.1,
@@ -58,17 +59,27 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
         // enabled; otherwise on the active it had, not enabled. A call that
         // never returned read nothing again.
         let expected_rows = rows_after_failure(cell);
-        let readable = matches!(
+        let readable = !matches!(
             cell.fails,
-            Fails::SetActive | Fails::Sync | Fails::AnswerLost
+            Fails::AnswerLostUnread | Fails::Dropped | Fails::Panics
         );
-        let one = expected_rows.iter().all(|r| *r == expected_rows[0]);
-        let expected_state = if readable && one {
-            (expected_rows[0].clone(), true)
-        } else {
-            (from.clone(), false)
-        };
-        let expected_retry = if expected_state == (to.clone(), true) {
+        let expected_state = read_again(&expected_rows, readable, &from);
+        // The retry that fails writes the stores up to and including the
+        // failing one, and the rows are read again.
+        let i = cell.failing();
+        let expected_retry_lost = (cell.fails == Fails::SyncThenRetryLost).then(|| {
+            let rows: Vec<String> = (0..cell.n)
+                .map(|j| if j <= i { to.clone() } else { from.clone() })
+                .collect();
+            let state = read_again(&rows, true, &from);
+            let text = format!("Storage error: {} answer lost", name(KEYS[i]));
+            (text, (rows, state))
+        });
+        let before_retry = expected_retry_lost
+            .as_ref()
+            .map(|r| r.1 .1.clone())
+            .unwrap_or_else(|| expected_state.clone());
+        let expected_retry = if before_retry == (to.clone(), true) {
             "unchanged"
         } else {
             "ok"
@@ -78,7 +89,13 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
                 "Storage error: {} refused set_active",
                 name(KEYS[cell.failing()])
             ),
-            Fails::Sync => "Sync error: the backup refused the page".to_string(),
+            Fails::Sync | Fails::SyncThenRetryLost => {
+                "Sync error: the backup refused the page".to_string()
+            }
+            Fails::SyncLost => format!(
+                "Storage error: {} sync answer lost",
+                name(KEYS[cell.failing()])
+            ),
             Fails::AnswerLost | Fails::AnswerLostUnread => {
                 format!("Storage error: {} answer lost", name(KEYS[cell.failing()]))
             }
@@ -90,6 +107,7 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
             && *rows == expected_rows
             && *state == expected_state
             && a.written == vec![state.0.clone()]
+            && a.retry_lost == expected_retry_lost
             && a.retry == expected_retry
             && every(&a.after_retry.0, &to)
             && a.after_retry.1 == (to.clone(), true)

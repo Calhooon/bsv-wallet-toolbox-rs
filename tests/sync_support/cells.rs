@@ -46,6 +46,11 @@ pub enum Fails {
     /// Its own `set_active` writes the row and panics: the call runs on a
     /// spawned task, whose join error is the answer.
     Panics,
+    /// As `Sync`; then the retry's call at that store writes its row and
+    /// loses its answer, and a second retry completes.
+    SyncThenRetryLost,
+    /// The backup merges the chunk of its sync, then answers an error.
+    SyncLost,
 }
 
 /// One cell: the number of stores, whether the manager has already
@@ -90,6 +95,13 @@ pub fn arm(d: &Double, fails: Fails, on: bool) {
             d.refuse_reads_after_lost_answer.store(on, Ordering::SeqCst);
             if !on {
                 d.refuse_user_reads.store(false, Ordering::SeqCst);
+            }
+        }
+        Fails::SyncLost => d.lose_sync_answer.store(on, Ordering::SeqCst),
+        Fails::SyncThenRetryLost => {
+            arm(d, Fails::Sync, on);
+            if !on {
+                arm(d, Fails::AnswerLost, false);
             }
         }
         Fails::Sync => {
@@ -152,6 +164,20 @@ pub async fn state(mgr: &WalletStorageManager) -> (String, bool) {
     )
 }
 
+/// What the manager answers after the stores' rows are read again: on the
+/// store every row names, enabled, when every store was read and the rows
+/// agree; otherwise on the active it had, not enabled.
+pub fn read_again(rows: &[String], readable: bool, from: &str) -> (String, bool) {
+    if readable && rows.iter().all(|r| *r == rows[0]) {
+        (rows[0].clone(), true)
+    } else {
+        (from.to_string(), false)
+    }
+}
+
+/// The stores' rows and the manager's active with whether it is enabled.
+pub type Seen = (Vec<String>, (String, bool));
+
 /// What one cell answers: after the failure; the retry; the call back.
 #[derive(Debug)]
 pub struct Answers {
@@ -159,6 +185,9 @@ pub struct Answers {
     pub after_failure: (Vec<String>, (String, bool)),
     /// The stores a plain write through the manager lands on, read back.
     pub written: Vec<String>,
+    /// A retry that fails at the store's lost answer: its answer, then
+    /// the rows and the manager's state.
+    pub retry_lost: Option<(String, Seen)>,
     pub retry: String,
     pub after_retry: (Vec<String>, (String, bool)),
     pub call_back: String,
@@ -196,7 +225,7 @@ pub fn rows_after_failure(cell: Cell) -> Vec<String> {
     let (from, to) = cell.old_and_new();
     let i = cell.failing();
     let through = match cell.fails {
-        Fails::Sync => 0,
+        Fails::Sync | Fails::SyncThenRetryLost | Fails::SyncLost => 0,
         Fails::SetActive => i,
         _ => i + 1,
     };
@@ -251,6 +280,14 @@ pub async fn run(cell: Cell) -> Answers {
     let failed = attempt(&mgr, to, cell.fails).await;
     let after_failure = (rows(&doubles).await, state(&mgr).await);
     let written = plain_write(&doubles, &mgr).await;
+    let retry_lost = if cell.fails == Fails::SyncThenRetryLost {
+        arm(&doubles[i], Fails::Sync, false);
+        arm(&doubles[i], Fails::AnswerLost, true);
+        let r = refusal(&bounded("the retry that fails", mgr.set_active(to)).await);
+        Some((r, (rows(&doubles).await, state(&mgr).await)))
+    } else {
+        None
+    };
     arm(&doubles[i], cell.fails, false);
     let retry = word(&bounded("the retry", mgr.set_active(to)).await);
     let after_retry = (rows(&doubles).await, state(&mgr).await);
@@ -266,6 +303,7 @@ pub async fn run(cell: Cell) -> Answers {
         failed,
         after_failure,
         written,
+        retry_lost,
         retry,
         after_retry,
         call_back,
@@ -285,10 +323,19 @@ pub fn cells() -> Vec<Cell> {
                     Fails::AnswerLostUnread,
                     Fails::Dropped,
                     Fails::Panics,
+                    Fails::SyncThenRetryLost,
+                    Fails::SyncLost,
                 ] {
-                    // The active is no backup: no sync writes to it.
+                    // The active is no backup: no sync writes to it. One
+                    // cell of a backup's lost sync answer: no row moves.
+                    let sync = matches!(
+                        fails,
+                        Fails::Sync | Fails::SyncThenRetryLost | Fails::SyncLost
+                    );
                     let reachable = (n == 3 || role != Role::Third)
-                        && !(role == Role::Active && fails == Fails::Sync);
+                        && !(role == Role::Active && sync)
+                        && (fails != Fails::SyncLost
+                            || (n == 2 && !switched && role == Role::Target));
                     if reachable {
                         out.push(Cell {
                             n,
