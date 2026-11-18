@@ -535,3 +535,64 @@ async fn a_set_active_beside_an_add_calls_only_the_open_stores() {
     assert!(backups.iter().any(|k| k == FOURTH));
     assert_eq!(state(&mgr).await, ("B".into(), true));
 }
+
+/// A `set_active` to the active waits inside its re-read of A's row while
+/// a third store is added from another task, whose open would reset the
+/// manager's roles and wait in the new store's user read. The no-op is
+/// decided on the open lock: the add's open waits for it, so the call
+/// reads the roles whole and answers unchanged; then the add completes.
+#[tokio::test]
+async fn a_set_active_no_op_beside_an_add_reads_the_roles_whole() {
+    let doubles = vec![double_naming(SRC, SRC).await, double_naming(DST, SRC).await];
+    let mgr = Arc::new(manager_over(&doubles));
+    mgr.make_available().await.unwrap();
+    doubles[0].hold_user_read.store(true, Ordering::SeqCst);
+    let switch = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.set_active(SRC).await })
+    };
+    bounded(
+        "set_active's re-read of A begins",
+        doubles[0].user_read_entered.notified(),
+    )
+    .await;
+
+    let fourth = double_naming(FOURTH, SRC).await;
+    fourth.hold_user_read.store(true, Ordering::SeqCst);
+    let add = {
+        let (mgr, fourth) = (mgr.clone(), fourth.clone());
+        tokio::spawn(async move {
+            mgr.add_wallet_storage_provider(fourth as Arc<dyn MonitorStorage>)
+                .await
+        })
+    };
+    bounded("the new store is pushed", async {
+        while mgr.get_stores().await.len() < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    // Room for the add's open to reset the roles and reach the new store's
+    // user read, were nothing holding it.
+    let reached = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        fourth.user_read_entered.notified(),
+    )
+    .await
+    .is_ok();
+    doubles[0].user_read_release.notify_one();
+    let switched = bounded("set_active once A answers", switch).await.unwrap();
+    fourth.user_read_release.notify_one();
+    let added = bounded("the add", add).await.unwrap();
+    println!(
+        "WITNESS a no-op set_active beside an add: the add's open reached its store while the call decided {reached}; set_active {:?}; add {}; {:?}",
+        switched.as_ref().map(|s| s.trim().to_string()).map_err(|e| e.to_string()),
+        refusal(&added),
+        state(&mgr).await
+    );
+    assert!(!reached, "the add's open ran while the no-op was decided");
+    assert_eq!(switched.unwrap(), format!("setActive to {SRC} unchanged\n"));
+    assert_eq!(refusal(&added), "ok");
+    assert_eq!(mgr.get_backup_stores().await.len(), 2);
+    assert_eq!(state(&mgr).await, ("A".into(), true));
+}

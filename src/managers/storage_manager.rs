@@ -537,6 +537,13 @@ impl WalletStorageManager {
         // calls (no state lock is), so a second open waits here and then
         // finds every store the open ahead of it opened open.
         let _open = self.open_lock.lock().await;
+        self.open_locked().await
+    }
+
+    /// The open's body, called with the open lock held (`make_available`,
+    /// `set_active`): answers at once when
+    /// every store is open, else opens the stores still to open.
+    async fn open_locked(&self) -> Result<TableSettings> {
         if let Some(settings) = self.opened_settings().await {
             return Ok(settings);
         }
@@ -1190,9 +1197,12 @@ impl WalletStorageManager {
         // A call dropped or panicking once its transition had begun left the
         // mark set; what it left of the manager's fields is not trusted.
         let in_doubt_at_entry = self.rows_in_doubt();
-        if !*self.is_available.read().await {
-            self.make_available().await?;
-        }
+        // The no-op is decided on the open lock (the transition lock, then
+        // the open lock: the order): no open resets the manager's roles
+        // while it reads them. A store pushed meanwhile is not open and is
+        // not read; the transition below runs without the lock.
+        let open = self.open_lock.lock().await;
+        self.open_locked().await?;
 
         // Find the store with matching identity key
         let stores = self.stores.read().await;
@@ -1232,6 +1242,7 @@ impl WalletStorageManager {
             self.set_rows_in_doubt(false);
             return Ok(format!("setActive to {} unchanged\n", storage_identity_key));
         }
+        drop(open);
 
         // From here a store's row may be written (the backups' syncs carry
         // the active's row): until the transition completes, or the rows are
