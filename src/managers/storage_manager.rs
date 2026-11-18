@@ -209,6 +209,8 @@ enum UserActiveStorage {
     FromReader,
     /// The writer's own: merging state from a reader cannot change which
     /// store the wallet treats as active (the reference's syncFromReader).
+    /// `None` (the manager holds no active for the writer's row) leaves the
+    /// chunk's user row as the reader sent it.
     Keep(Option<String>),
 }
 
@@ -297,8 +299,13 @@ async fn drain_chunks(
         let mut chunk = reader.get_sync_chunk(args.clone()).await?;
         let local_after = reader.checks_received_beef_in_process().await;
         crate::storage::sync_scope::set_local_reader(local_before && local_after);
-        if let (UserActiveStorage::Keep(local), Some(user)) = (&user_active, chunk.user.as_mut()) {
-            user.active_storage = local.clone();
+        // The writer's own active, when the manager knows it; a value it
+        // does not know (a row it could not read) is never written: the
+        // chunk's user row then carries the reader's, as the reader sent it.
+        if let (UserActiveStorage::Keep(Some(local)), Some(user)) =
+            (&user_active, chunk.user.as_mut())
+        {
+            user.active_storage = Some(local.clone());
         }
 
         let mut carried = 0u32;

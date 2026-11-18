@@ -38,6 +38,9 @@ pub struct Double {
     pub answer: Mutex<Option<ProcessSyncChunkResult>>,
     /// Chunks handed to this store as a writer.
     pub chunks: AtomicUsize,
+    /// The user row's active storage of each chunk handed to this store as
+    /// a writer that carries a user row.
+    pub user_rows: Mutex<Vec<Option<String>>>,
     /// `set_active` refuses, when set.
     pub fail_set_active: AtomicBool,
     /// `set_active` writes the row and then answers an error, when set.
@@ -71,6 +74,7 @@ impl Double {
             script: Mutex::new(None),
             answer: Mutex::new(None),
             chunks: AtomicUsize::new(0),
+            user_rows: Mutex::new(Vec::new()),
             fail_set_active: AtomicBool::new(false),
             lose_set_active_answer: AtomicBool::new(false),
             refuse_reads_after_lost_answer: AtomicBool::new(false),
@@ -335,6 +339,12 @@ impl WalletStorageSync for Double {
         sync_map: &mut SyncMap,
     ) -> Result<ProcessSyncChunkResult> {
         self.chunks.fetch_add(1, Ordering::SeqCst);
+        if let Some(user) = chunk.user.as_ref() {
+            self.user_rows
+                .lock()
+                .unwrap()
+                .push(user.active_storage.clone());
+        }
         if let Some(answer) = self.answer.lock().unwrap().clone() {
             return Ok(answer);
         }
