@@ -352,3 +352,100 @@ async fn an_aborted_no_send_action_named_in_a_later_send_with_keeps_its_change_n
         "{after_send}"
     );
 }
+
+/// A pending unsigned action of the wallet's own (`signAndProcess` false,
+/// `returnTXIDOnly`: no BEEF of its inputs is kept) while a `noSend`
+/// action is sent through `sendWith`: the pending action named itself as
+/// the spender of each coin it took, so it cannot spend the noSend
+/// action's change, and an action needing that change takes it after the
+/// send, posted at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pending_own_unsigned_action_with_no_input_beef_does_not_withhold_a_sent_change_at_once()
+{
+    pending_own_unsigned_action(false).await;
+}
+
+/// The same, the last action accepting delayed broadcast.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pending_own_unsigned_action_with_no_input_beef_does_not_withhold_a_sent_change_delayed()
+{
+    pending_own_unsigned_action(true).await;
+}
+
+async fn pending_own_unsigned_action(delayed: bool) {
+    let root = PrivateKey::random();
+    let (wallet, store) = funded(&root).await;
+    let sender = PrivateKey::random().public_key();
+    let (tx, _) = paying_derived(&root, &sender, "cHJlZml4Qw==", "c3VmZml4Qw==");
+    wallet
+        .internalize_action(
+            InternalizeActionArgs {
+                tx,
+                outputs: vec![payment(0, "cHJlZml4Qw==", "c3VmZml4Qw==", &sender.to_hex())],
+                description: "a third payment to the wallet".to_string(),
+                labels: None,
+                seek_permission: None,
+            },
+            "test.local",
+        )
+        .await
+        .expect("the third payment");
+    let (one, _) = create(&wallet, pay_no_send(1_000, None)).await.unwrap();
+    let mut unsigned = pay(500, true);
+    {
+        let options = unsigned.options.as_mut().unwrap();
+        options.sign_and_process = Some(false);
+        options.return_txid_only = Some(true);
+    }
+    let pending = wallet
+        .create_action(unsigned, "test.local")
+        .await
+        .map(|c| c.signable_transaction.is_some())
+        .map_err(|e| e.to_string());
+    let (beef_len, named): (i64, i64) = ::sqlx::query_as(
+        "SELECT length(COALESCE(t.input_beef, X'')), \
+         (SELECT COUNT(*) FROM outputs o WHERE o.spent_by = t.transaction_id) \
+         FROM transactions t WHERE t.status = 'unsigned'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    let mut send = pay(600, true);
+    send.options.as_mut().unwrap().send_with = Some(vec![hex_txid(&one)]);
+    let sent = create(&wallet, send).await.map(|r| r.0);
+    let after_send = change_of(&store, &one).await;
+    ::sqlx::query(
+        "UPDATE proven_tx_reqs SET created_at = datetime('now', '-1 hour'), \
+         updated_at = datetime('now', '-1 hour')",
+    )
+    .execute(store.writer())
+    .await
+    .unwrap();
+    store
+        .send_waiting_transactions(std::time::Duration::ZERO)
+        .await
+        .expect("send-waiting");
+    let after_wait = change_of(&store, &one).await;
+    let withheld: i64 =
+        ::sqlx::query_scalar("SELECT COUNT(*) FROM monitor_events WHERE event = 'outputWithheld'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    let last = create(&wallet, pay(16_000, delayed)).await;
+    println!(
+        "STEP pending unsigned delayed={delayed}\n  pending {pending:?}: input_beef {beef_len} \
+         bytes, named as spender on {named} rows\n  sendWith {sent:?}: {after_send}\n  \
+         send-waiting: {after_wait}, withheld records {withheld}\n  action of 16000: {last:?}"
+    );
+    assert_eq!(pending, Ok(true));
+    assert_eq!(beef_len, 0, "returnTXIDOnly keeps no input BEEF");
+    assert!(named > 0, "the pending action took a coin");
+    sent.expect("the sendWith action");
+    assert!(
+        after_wait.ends_with("spendable=1 spent_by=None unproven"),
+        "{after_wait}"
+    );
+    assert_eq!(withheld, 0);
+    let (_, spends) = last.expect("the action of 16000");
+    assert!(spends.contains(&format!("{one}.1")), "{spends:?}");
+}

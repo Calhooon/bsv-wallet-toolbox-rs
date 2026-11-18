@@ -362,6 +362,46 @@ async fn another_users_unread_row_naming_the_outpoints_txid_or_with_no_input_bee
     }
 }
 
+/// For an output named by its row: an unread row of that output's own user
+/// with no input BEEF is not counted when an output row names it as its
+/// spender (it took a coin of the store, and `createAction` records itself
+/// on every coin of the store it takes); the same row named on no output (a
+/// row a sync brought), and another user's row named on its own coin, stay
+/// counted.
+#[tokio::test]
+async fn an_own_users_unread_row_named_as_a_spender_elsewhere_is_not_counted_for_its_output() {
+    for case in ["own-named", "own-not-named", "other-named"] {
+        let s = storage().await;
+        let (x, _) = seed_user(&s).await;
+        let (y, _) = s.find_or_insert_user(&"b".repeat(66)).await.unwrap();
+        let (raw, source) = tx_of(&[(&"cd".repeat(32), 0)], P2PKH);
+        let owner = insert_tx(&s, x, &source, "unproven", Some(&raw), None).await;
+        insert_output(&s, x, owner, &source, 0, None).await;
+        let output_id: i64 =
+            sqlx::query_scalar("SELECT output_id FROM outputs WHERE txid = ? AND vout = 0")
+                .bind(&source)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        let who = if case == "other-named" { y.user_id } else { x };
+        let (c_raw, coin) = tx_of(&[(&"99".repeat(32), 0)], P2PKH);
+        let c_owner = insert_tx(&s, who, &coin, "unproven", Some(&c_raw), None).await;
+        let unsigned = insert_tx(&s, who, &"ef".repeat(32), "unsigned", None, None).await;
+        let named = (case != "own-not-named").then_some(unsigned);
+        insert_output(&s, who, c_owner, &coin, 0, named).await;
+
+        let a = s
+            .stored_spenders_of_output(output_id, &source, 0)
+            .await
+            .unwrap();
+        assert!(a.spenders.is_empty(), "{case}: {a:?}");
+        let counted = u64::from(case != "own-named");
+        assert_eq!(a.unreadable, counted, "{case}: {a:?}");
+        // Asked with no output row, the row is counted whoever it is.
+        assert_eq!(spenders(&s, &source, 0).await.unreadable, 1, "{case}");
+    }
+}
+
 #[tokio::test]
 async fn a_spender_recorded_on_another_users_row_of_the_outpoint_is_read() {
     let s = storage().await;
