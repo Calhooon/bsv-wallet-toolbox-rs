@@ -61,7 +61,8 @@ async fn the_reader_answers_for_a_transaction_linked_to_its_proof() {
             let mut a = args_for(ALICE);
             a.offsets.retain(|o| o.name == e);
             let s2 = s.clone();
-            let r = tokio::spawn(async move { s2.get_sync_chunk(a).await }).await;
+            let task = tokio::spawn(async move { s2.get_sync_chunk(a).await });
+            let r = bounded("the reader's chunk", task).await;
             let verdict = match r {
                 Ok(Ok(_)) => "ok".to_string(),
                 Ok(Err(e)) => format!("ERR {e}"),
@@ -90,7 +91,8 @@ async fn the_reader_answers_for_a_transaction_linked_to_its_proof() {
     mgr.make_available().await.unwrap();
     for round in 1..=2 {
         let m = mgr.clone();
-        let r = tokio::spawn(async move { m.update_backups().await }).await;
+        let task = tokio::spawn(async move { m.update_backups().await });
+        let r = bounded("update_backups", task).await;
         let verdict = match &r {
             Ok(Ok(_)) => "ok".to_string(),
             Ok(Err(e)) => format!("ERR {e}"),
