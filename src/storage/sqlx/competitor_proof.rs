@@ -206,10 +206,12 @@ impl StorageSqlx {
 /// Which rows of the txid a take lifts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TakeRows {
-    /// Every row neither `failed` nor `completed` (every writer but unfail).
+    /// Every row neither `failed` nor `completed` (every writer but
+    /// unfail), and a row the host's own abort failed (`abort_recovery`).
     Held,
     /// Every row but `completed`: the unfail task's recovery of a
-    /// transaction failed on a false word.
+    /// transaction failed on a false word, its free inputs marked spent
+    /// again in the same write (`abort_recovery::remark_inputs_spent_on`).
     LiftFailed,
 }
 
@@ -262,6 +264,10 @@ pub(crate) async fn apply_take_on(
     .bind(txid)
     .execute(&mut *conn)
     .await?;
+    // A row the host's own abort failed is recovered in this write
+    // (`abort_recovery`): never a request `unmined` beside it with its
+    // inputs released.
+    super::abort_recovery::recover_aborted_on(conn, txid, takers, now).await?;
     let rows_sql = match rows {
         TakeRows::Held => {
             "UPDATE transactions SET status = 'unproven', updated_at = ? \
@@ -277,6 +283,10 @@ pub(crate) async fn apply_take_on(
         .bind(txid)
         .execute(&mut *conn)
         .await?;
+    if rows == TakeRows::LiftFailed {
+        // The one recovery of a failed transaction's inputs, in this write.
+        super::abort_recovery::remark_inputs_spent_on(conn, txid, now).await?;
+    }
     for (provider, word) in takers {
         super::held_receipts::record_take_on(conn, txid, provider, word).await?;
     }
