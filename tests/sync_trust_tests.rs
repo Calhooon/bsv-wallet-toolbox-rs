@@ -93,6 +93,53 @@ async fn a_sync_between_stores_of_two_chains_is_refused() {
     assert_eq!(refusal(&r), "ok");
 }
 
+/// A store declaring a chain by this crate's word and a store declaring it
+/// by the reference's word are one chain; a test chain is not a main chain
+/// under either word.
+#[tokio::test]
+async fn one_chain_under_either_word_syncs() {
+    let text = "Sync error: Live sync requires matching declared network chains on both storage providers.";
+    let local = chain_store(SRC, "local", "mainnet").await;
+    local.find_or_insert_user(ALICE).await.unwrap();
+    seed_all(&local, 1, 'a', true, true).await;
+    let local = Arc::new(local);
+    let mgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(local.clone() as Arc<dyn MonitorStorage>),
+        None,
+    );
+    let main = Arc::new(chain_store(DST, "ref-main", "main").await);
+    let to_main = mgr.sync_to_writer(ALICE, main.clone()).await;
+    let main_txs = count(&main, "SELECT COUNT(*) FROM transactions").await;
+    let test = Arc::new(chain_store(DST, "ref-test", "test").await);
+    let to_test = mgr.sync_to_writer(ALICE, test.clone()).await;
+    let test_txs = count(&test, "SELECT COUNT(*) FROM transactions").await;
+
+    let testnet = chain_store(SRC, "local-test", "testnet").await;
+    testnet.find_or_insert_user(ALICE).await.unwrap();
+    seed_all(&testnet, 1, 'a', true, true).await;
+    let tmgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(Arc::new(testnet) as Arc<dyn MonitorStorage>),
+        None,
+    );
+    let ref_test = Arc::new(chain_store(DST, "ref-test-two", "test").await);
+    let testnet_to_test = tmgr.sync_to_writer(ALICE, ref_test.clone()).await;
+    let ref_test_txs = count(&ref_test, "SELECT COUNT(*) FROM transactions").await;
+    println!(
+        "WITNESS chain words: mainnet->main {} ({main_txs} txs); mainnet->test {} ({test_txs} txs); testnet->test {} ({ref_test_txs} txs)",
+        refusal(&to_main),
+        refusal(&to_test),
+        refusal(&testnet_to_test)
+    );
+    assert_eq!(refusal(&to_main), "ok");
+    assert!(main_txs > 0);
+    assert_eq!(refusal(&to_test), text);
+    assert_eq!(test_txs, 0);
+    assert_eq!(refusal(&testnet_to_test), "ok");
+    assert!(ref_test_txs > 0);
+}
+
 /// A writer that answers a chunk that carried no row with `done = false`
 /// is refused at once, not drained for ever under the manager's sync lock.
 #[tokio::test]

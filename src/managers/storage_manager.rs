@@ -205,6 +205,21 @@ enum UserActiveStorage {
     Keep(Option<String>),
 }
 
+/// Whether two declared chains are one chain: this crate's stores declare
+/// `mainnet` (or `testnet`), the reference's stores `main` (or `test`)
+/// (ts-stack 11faa7d16 `storage/sync/syncFailure.ts` 6); every other word
+/// is one chain with itself alone.
+fn same_chain(a: &str, b: &str) -> bool {
+    fn canonical(chain: &str) -> &str {
+        match chain {
+            "mainnet" => "main",
+            "testnet" => "test",
+            other => other,
+        }
+    }
+    canonical(a) == canonical(b)
+}
+
 async fn drain_sync_chunks(
     reader: Arc<dyn MonitorStorage>,
     writer: Arc<dyn MonitorStorage>,
@@ -233,7 +248,7 @@ async fn drain_chunks(
     let writer_settings = writer.make_available().await?;
     // Stores of one chain alone, before the writer's user or any chunk (the
     // reference's assertSyncNetwork).
-    if reader_settings.chain != writer_settings.chain {
+    if !same_chain(&reader_settings.chain, &writer_settings.chain) {
         return Err(Error::SyncError(
             "Live sync requires matching declared network chains on both storage providers."
                 .to_string(),
