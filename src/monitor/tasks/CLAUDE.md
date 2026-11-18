@@ -259,7 +259,7 @@ CheckForProofsTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 ```
 
 **Behavior:**
-0. Adopts proof-less transactions into the req set first (`StorageSqlx::adopt_unproven_transactions`, 2026-08-29 — the bsv-wallet-cli receive-proof gap): a `transactions` row that is `completed`/`unproven` with `proven_tx_id IS NULL` and NO `proven_tx_req` is invisible to step 1 (every pre-0.3.52 internalize wrote that shape). Links from an existing `proven_txs` row when one exists, else creates the req as `unmined` (≤ `ADOPT_UNPROVEN_TX_LIMIT` per pass). Rows that already have a req — any status — are left to that req's owner.
+0. The adoption (`StorageSqlx::adopt_unproven_transactions`): a transaction that links no proof, reads `completed` or `unproven`, beside no request or a proof-eligible one, whose txid has a proof row, is linked to it; it is written `completed` (and its request with it) only where the store holds a root-check record of that proof, else the link alone, the status and the request left (the review's pass, or step 1's ask through the funnel, checks the root). A proof row the store marked refuted (its record reads `refuted:<root>`) is never linked. No header is read. The link step takes every such row in one write a pass; a row with no request at all and no proof row gets an `unmined` request (at most `ADOPT_UNPROVEN_TX_LIMIT`, 200, a pass).
 1. Queries `proven_tx_reqs` with status: `Unmined`, `Unknown`, `Callback`, `Sending`, or `Unconfirmed`
 2. For each transaction, calls `services.get_merkle_path(txid, false)`
 3. On success with proof: logs success, increments processed count
