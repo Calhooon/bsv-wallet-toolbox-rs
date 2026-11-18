@@ -374,17 +374,19 @@ impl StorageSqlx {
                 .await
             {
                 Ok(results_vec) => {
-                    // Check if any provider returned success
-                    let success = results_vec.iter().any(|r| r.is_success());
-                    if success {
+                    // The instances that took this txid, read per txid as
+                    // the door and the wallet's own post read them (an
+                    // instance whose answer says success for another txid
+                    // took nothing of this one).
+                    let takers = super::super::internalize_answer::accepting_instances(
+                        &results_vec,
+                        &req.txid,
+                    );
+                    let taken = !takers.is_empty();
+                    if taken {
                         // Update to unmined, and record each instance's
                         // take in the same write (a host's own services
                         // record none).
-                        let takers: Vec<&str> = results_vec
-                            .iter()
-                            .filter(|r| r.is_success())
-                            .map(|r| r.name.as_str())
-                            .collect();
                         // Nothing raised while a competitor's checked proof
                         // stands: the result stays `sending`.
                         let applied = self

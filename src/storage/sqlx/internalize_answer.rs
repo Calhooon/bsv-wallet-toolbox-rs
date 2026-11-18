@@ -113,7 +113,8 @@ pub(crate) fn status_word(status: ReviewActionResultStatus) -> &'static str {
 /// The instances whose word in `words` accepted `txid`: an acceptance with
 /// no per-txid result, or one whose result for `txid` is a success. The one
 /// reader of a take in an instance's answer: the door, the wallet's own
-/// post (`process_action`) and [`instance_word`] read it.
+/// post (`process_action`), the send-waiting task and [`instance_word`]
+/// read it.
 pub(crate) fn accepting_instances<'a>(words: &'a [PostBeefResult], txid: &str) -> Vec<&'a str> {
     words
         .iter()
