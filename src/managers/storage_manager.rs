@@ -421,9 +421,9 @@ impl WalletStorageManager {
         if self.rows_in_doubt() {
             return false;
         }
+        let stores = self.stores.read().await;
         let active_index = self.active_index.read().await;
         let conflicting = self.conflicting_indices.read().await;
-        let stores = self.stores.read().await;
 
         if let Some(idx) = *active_index {
             if let Some(settings) = stores.get(idx).and_then(|s| s.settings.as_ref()) {
@@ -545,10 +545,11 @@ impl WalletStorageManager {
     /// and writes every field, `cached_settings` last, with no await between
     /// its writes. A call dropped while it waits on a lock has changed none
     /// of the manager's fields; once it holds them all it has no await left.
-    /// Every other taker of two of these locks takes them in the same order
-    /// (`is_active_enabled`, `get_stores`, `get_active`), and the partition
-    /// holds no stores lock while it waits on one of them, so no cycle of
-    /// waits can include it.
+    /// Every taker of two of the manager's state locks takes them in one
+    /// order, `stores` ahead of these five and these in the order above
+    /// (`is_active_enabled`, `get_stores`, `get_active`, `make_available`,
+    /// `checks_received_beef_in_process`), so no cycle of waits can form
+    /// among them, a writer queued on one lock included.
     async fn partition(&self) -> Result<TableSettings> {
         let stores = self.stores.read().await;
         // Partition stores into active, backups, and conflicting
@@ -665,8 +666,8 @@ impl WalletStorageManager {
 
     /// Gets a reference to the active storage provider.
     async fn get_active(&self) -> Result<Arc<dyn MonitorStorage>> {
-        let active_idx = self.active_index.read().await;
         let stores = self.stores.read().await;
+        let active_idx = self.active_index.read().await;
 
         if let Some(idx) = *active_idx {
             if *self.is_available.read().await {
@@ -1588,8 +1589,8 @@ impl WalletStorageProvider for WalletStorageManager {
     /// wallet checks). The locks are taken with `.await`, never blocking.
     async fn checks_received_beef_in_process(&self) -> bool {
         let active = {
-            let active_idx = self.active_index.read().await;
             let stores = self.stores.read().await;
+            let active_idx = self.active_index.read().await;
             match *active_idx {
                 Some(idx) => stores.get(idx).map(|store| store.storage.clone()),
                 None => None,
