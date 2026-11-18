@@ -8,7 +8,7 @@ use crate::services::broadcast_memory::{
 };
 
 /// How many notes a request's history keeps, the newest.
-pub(super) const REQ_HISTORY_NOTES_KEPT: usize = 32;
+pub(in crate::storage::sqlx) const REQ_HISTORY_NOTES_KEPT: usize = 32;
 
 /// Is `req` due for a re-ask by `send_waiting_transactions` at `now`?
 /// (`services::cadence::send_waiting_reask_minutes`; bsv-stack-lean #65.)
