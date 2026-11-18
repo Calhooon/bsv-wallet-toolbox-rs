@@ -141,6 +141,11 @@ pub(crate) const MAX_LOOKUP_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 /// An answer with more is that tracker's or host's failure.
 pub(crate) const MAX_LOOKUP_OUTPUTS: usize = 4096;
 
+/// The most hosts one SLAP tracker's answer may name: 64, the reference's
+/// `DEFAULT_LOOKUP_LIMITS.maxHostsPerTracker`. The 64 distinct hosts the
+/// answer names earliest are called in order; the rest are not.
+pub(crate) const MAX_HOSTS_PER_TRACKER: usize = 64;
+
 /// The output count of an output-list answer past [`MAX_LOOKUP_OUTPUTS`].
 fn outputs_past_bound(answer: &LookupAnswer) -> Option<usize> {
     match answer {
@@ -526,6 +531,13 @@ fn parse_slap_hosts(answer: &LookupAnswer) -> Vec<String> {
     };
 
     for output in outputs {
+        if hosts.len() == MAX_HOSTS_PER_TRACKER {
+            tracing::debug!(
+                "SLAP answer names more than {} hosts; the rest are not called",
+                MAX_HOSTS_PER_TRACKER
+            );
+            break;
+        }
         match extract_host_from_beef(&output.beef, output.output_index) {
             Ok(host) => {
                 if seen.insert(host.clone()) {

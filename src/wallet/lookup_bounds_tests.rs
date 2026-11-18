@@ -41,6 +41,15 @@ impl Answer {
         }
     }
 
+    fn failing() -> Self {
+        Self {
+            status: "500 Internal Server Error",
+            headers: vec![],
+            body: Arc::new(Vec::new()),
+            framing: Framing::Length,
+        }
+    }
+
     fn redirect(to: &str) -> Self {
         Self {
             status: "307 Temporary Redirect",
@@ -449,4 +458,27 @@ async fn a_tracker_answer_past_the_output_bound_is_that_trackers_failure() {
     let (refused, _) = listener(Answer::ok(many, Framing::Length)).await;
     let (second, _) = listener(Answer::ok(slap_answer(&[&y]), Framing::Length)).await;
     assert_eq!(serials(vec![refused, second]).await, vec!["Y".to_string()]);
+}
+
+// =============================================================================
+// Hosts one tracker's answer may name
+// =============================================================================
+
+/// A tracker's answer naming one host past the bound: the bound's hosts are
+/// called, each failing, and the last one named is never called.
+#[tokio::test]
+async fn a_tracker_answer_names_at_most_the_bound_of_hosts() {
+    let mut urls = Vec::new();
+    let mut hits = Vec::new();
+    for _ in 0..=MAX_HOSTS_PER_TRACKER {
+        let (url, hit) = listener(Answer::failing()).await;
+        urls.push(url);
+        hits.push(hit);
+    }
+    let named: Vec<&str> = urls.iter().map(String::as_str).collect();
+    let (tracker, _) = listener(Answer::ok(slap_answer(&named), Framing::Length)).await;
+    assert!(serials(vec![tracker]).await.is_empty());
+    let called: usize = hits.iter().map(|h| h.load(Ordering::SeqCst)).sum();
+    assert_eq!(called, MAX_HOSTS_PER_TRACKER);
+    assert_eq!(hits[MAX_HOSTS_PER_TRACKER].load(Ordering::SeqCst), 0);
 }
