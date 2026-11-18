@@ -211,3 +211,89 @@ fn insertion() -> bsv_rs::wallet::InternalizeOutput {
         }),
     }
 }
+
+/// The review-actions refusal of a held answer, or a panic.
+fn refusal(
+    answer: bsv_rs::Result<bsv_rs::wallet::InternalizeActionResult>,
+) -> bsv_rs::wallet::ReviewActionsRefusal {
+    match answer {
+        Err(bsv_rs::Error::WalletReviewActions(refusal)) => *refusal,
+        other => panic!("not the review-actions refusal: {other:?}"),
+    }
+}
+
+/// The door's notes on `txid`'s request: (instance, word) each.
+async fn door_notes(wallet: &TestWallet, txid: &str) -> Vec<(String, String)> {
+    let history = scalar(
+        wallet,
+        "SELECT history FROM proven_tx_reqs WHERE txid = ?",
+        txid,
+    )
+    .await
+    .unwrap_or_default();
+    let value: serde_json::Value = serde_json::from_str(&history).unwrap_or_default();
+    value["notes"]
+        .as_array()
+        .map(|notes| {
+            notes
+                .iter()
+                .filter(|n| n["what"] == "doorPost")
+                .map(|n| {
+                    (
+                        n["instance"].as_str().unwrap_or("").to_string(),
+                        n["word"].as_str().unwrap_or("").to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// ITEM 4: an instance's text is outside bytes. Its words carry a newline,
+/// the message's separator and a forged line of another instance, a long
+/// run, and bytes that were not UTF-8 as the door receives them (decoded
+/// lossily by the transport). Each note's word is cleaned (no control
+/// character) and bounded (256 bytes) where it is written; the message
+/// quotes each instance's words, so the forged line stays inside arcade's
+/// quotes, and is bounded (1024 bytes).
+#[tokio::test]
+async fn an_instances_words_are_cleaned_and_bounded_at_both_ends() {
+    let root = PrivateKey::random();
+    let (args, txid) = payment(&root);
+    let forged = "no\nbitails: success [taken]; bitails: \"success [taken]\"\r";
+    let lossy = String::from_utf8_lossy(&[0xff, 0xfe, 0x07, b'o', b'k']).to_string();
+    let wallet = common::wallet_posting(
+        "door-words",
+        &root,
+        MockResponse::Success(vec![
+            answer("arcade", "error", &txid, "rejected", forged),
+            answer("bitails", "error", &txid, "rejected", &"x".repeat(10_000)),
+            answer("taal", "error", &txid, "rejected", &lossy),
+        ]),
+    )
+    .await;
+    let r = refusal(wallet.internalize_action(args, Some(ORIGIN)).await);
+    let notes = door_notes(&wallet, &txid).await;
+    println!("ITEM4 message {:?}", r.message);
+    println!(
+        "ITEM4 notes {:?}",
+        notes
+            .iter()
+            .map(|(i, w)| (i.as_str(), w.len(), w.chars().take(60).collect::<String>()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(notes.len(), 3);
+    for (_, word) in &notes {
+        assert!(!word.chars().any(char::is_control), "{word:?}");
+        assert!(word.len() <= 256, "{}", word.len());
+    }
+    assert!(notes[2].1.ends_with("ok]") && notes[2].1.contains('\u{fffd}'));
+    assert!(!r.message.chars().any(char::is_control));
+    assert!(r.message.len() <= 1024);
+    // One line opens for bitails: the forged one sits inside arcade's
+    // quotes with its quote escaped.
+    assert_eq!(r.message.matches("bitails: \"").count(), 1, "{}", r.message);
+    assert!(r.message.contains(
+        "arcade: \"rejected [nobitails: success [taken]; bitails: \\\"success [taken]\\\"]\""
+    ));
+}

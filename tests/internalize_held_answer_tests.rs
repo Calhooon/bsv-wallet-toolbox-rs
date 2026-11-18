@@ -198,8 +198,10 @@ async fn internalize_every_door_said_no_names_each_reason_and_the_competitor_sti
         "arcade: error [DOUBLE_SPEND_ATTEMPTED]",
         "bitails: rejected [bitails refuses the body]",
     ] {
-        assert!(r.message.contains(words), "message: {}", r.message);
+        // Each instance's line: its name, then its words quoted.
         let (instance, word) = words.split_once(": ").unwrap();
+        let line = format!("{instance}: \"{word}\"");
+        assert!(r.message.contains(&line), "message: {}", r.message);
         let history = history(&wallet, &txid).await;
         assert!(
             history.contains(&format!("\"instance\":\"{instance}\"")) && history.contains(word),
