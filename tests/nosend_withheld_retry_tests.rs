@@ -491,7 +491,8 @@ async fn an_own_row_made_before_the_outputs_row_withholds_it_at_the_unfail_reope
     assert_ne!(status, "failed", "T recovered");
     assert_eq!(spendable, 0, "O withheld while A could spend it");
     assert_eq!(records.len(), 1, "{records:?}");
-    if let Ok((_, spends)) = &later {
-        assert!(!spends.contains(&format!("{t_txid}.0")), "{spends:?}");
+    match &later {
+        Ok((_, spends)) => assert!(!spends.contains(&format!("{t_txid}.0")), "{spends:?}"),
+        Err(e) => assert!(e.contains("Insufficient funds"), "{e}"),
     }
 }
