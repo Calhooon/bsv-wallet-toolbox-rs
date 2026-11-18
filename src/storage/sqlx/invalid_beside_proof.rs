@@ -8,8 +8,8 @@
 //! A proof row this store has not checked (one a sync merged from a local
 //! reader, or one stored before migration 005) is checked before either word moves, as every
 //! read of an unchecked stored proof is on this line
-//! (`check_unchecked_stored_proof_on`): confirmed, it is recorded and
-//! stands; refuted, it is demoted (`demote_stale_proof_on`: the transaction
+//! (`check_unchecked_stored_proof_on`, here asked for its verdict alone):
+//! confirmed, it is recorded and stands; refuted, it is demoted (`demote_stale_proof_on`: the transaction
 //! `unproven` with its outputs counted, the request `unmined`, the proof task
 //! asks for its proof again); with no tracker, a tracker fault or a path that
 //! does not compute, nothing is written and the same row is a candidate next
@@ -41,21 +41,33 @@
 //! row of it meanwhile, since a proof row of the txid exists.
 //!
 //! The tracker is asked with neither the writer nor a write transaction
-//! held: the candidates are read on a reader, checked, and each is read
-//! again inside the write before its request moves: the request still
-//! `invalid`, the same proof row, its root still recorded as checked, and
-//! no transaction of its txid `failed`. A transaction another path failed
-//! meanwhile is left to the next pass, as it stands then (no longer a
-//! candidate): its request is not completed, so check 3 does not write a
-//! failed transaction `completed` beside outputs left unspendable.
+//! held, and nothing is written while it answers: the candidates are read on
+//! a reader and checked, then ONE write per pass reads each again and acts
+//! only on a transaction still as the pass read it: no transaction of its
+//! txid `failed`, its request still `invalid`, the same proof row with the
+//! same path. That holds for every arm: the record that a root was checked
+//! and the completion (the root then recorded as checked), and the
+//! demotion, which writes the request (`unmined`, attempts 0, its link
+//! cleared, its bytes kept, or a new `unmined` request with the bytes if
+//! there is none), every transaction row linked to the proof or `completed`
+//! with no link (`unproven`, the link cleared, its bytes kept; its outputs
+//! are not written, and count as an `unproven` row's do), the mined memory of the
+//! txid, the proof row and its root record (both deleted), and only while
+//! the row is still unchecked. A row that changed meanwhile is left to the
+//! next pass, as it stands then: a transaction another path failed is no
+//! longer a candidate, so neither its status, its request nor its proof row
+//! is written, and check 3 does not write a failed transaction `completed`
+//! beside outputs left unspendable.
 
 use bsv_rs::transaction::MerklePath;
 
 use super::monitor_state::{
     read_invalid_beside_proof_cursor_on, write_invalid_beside_proof_cursor_on,
 };
-use super::proof_root_checks::{check_unchecked_stored_proof_on, stored_proof_checked_on};
-use super::storage_sqlx::{append_req_history_note, commit, StorageSqlx};
+use super::proof_root_checks::{
+    check_unchecked_stored_proof_on, record_root_checked_on, stored_proof_checked_on, ReadCheck,
+};
+use super::storage_sqlx::{append_req_history_note, commit, demote_stale_proof_on, StorageSqlx};
 use crate::Result;
 
 /// At most this many candidates are checked per review pass, so at most
@@ -96,8 +108,11 @@ impl StorageSqlx {
             return Ok(0);
         }
 
+        // The tracker is asked with no lock held and nothing is written
+        // here: each verdict is acted on inside the one write below, after
+        // the row is read again.
         let tracker = self.get_chain_tracker().await;
-        let mut stands = Vec::new();
+        let mut verdicts = Vec::new();
         {
             let mut conn = self.pool().acquire().await?;
             for (txid, proven_tx_id, merkle_path) in &candidates {
@@ -110,26 +125,28 @@ impl StorageSqlx {
                 };
                 let check = check_unchecked_stored_proof_on(
                     &mut conn,
-                    Some(self.writer()),
+                    None,
                     tracker.as_deref(),
                     txid,
                     &path,
                 )
                 .await?;
-                if check.may_store() {
-                    stands.push((txid.clone(), *proven_tx_id));
-                } else {
+                if check == ReadCheck::Undecided {
                     tracing::debug!(
                         txid = %txid,
-                        check = ?check,
                         "review_status: a proof row beside an invalid request is not checked here; neither failed nor completed"
                     );
+                    continue;
                 }
+                verdicts.push((txid.clone(), *proven_tx_id, merkle_path.clone(), check));
             }
         }
         let mut tx = self.write_tx().await?;
         let mut completed = 0usize;
-        for (txid, proven_tx_id) in &stands {
+        for (txid, proven_tx_id, read_path, check) in &verdicts {
+            // The re-read: the request still `invalid`, the same proof row
+            // with the same path, and no transaction of the txid `failed`.
+            // A row that changed meanwhile is left for the next pass.
             let row: Option<(String, Vec<u8>)> = sqlx::query_as(
                 "SELECT r.history, p.merkle_path FROM proven_tx_reqs r \
                  JOIN proven_txs p ON p.txid = r.txid \
@@ -144,11 +161,42 @@ impl StorageSqlx {
             let Some((history, merkle_path)) = row else {
                 continue;
             };
+            if &merkle_path != read_path {
+                continue;
+            }
             let Ok(path) = MerklePath::from_binary(&merkle_path) else {
                 continue;
             };
-            if !stored_proof_checked_on(&mut tx, txid, &path).await? {
-                continue;
+            let checked = stored_proof_checked_on(&mut tx, txid, &path).await?;
+            match check {
+                ReadCheck::Demoted => {
+                    // Refuted: demoted only while still unchecked (a
+                    // record written meanwhile is the reorg task's).
+                    if !checked {
+                        demote_stale_proof_on(&mut tx, txid).await?;
+                        tracing::warn!(
+                            txid = %txid,
+                            height = path.block_height,
+                            marker = "unchecked_proof_demoted",
+                            "review_status: a proof row beside an invalid request was never checked and the chain tracker refutes it; demoted, the transaction is unproven again"
+                        );
+                    }
+                    continue;
+                }
+                ReadCheck::Confirmed if !checked => {
+                    let Ok(root) = path.compute_root(Some(txid)) else {
+                        continue;
+                    };
+                    record_root_checked_on(&mut tx, txid, path.block_height, &root).await?;
+                    tracing::info!(
+                        txid = %txid,
+                        height = path.block_height,
+                        marker = "unchecked_proof_confirmed",
+                        "review_status: a proof row beside an invalid request that was never checked is confirmed by the chain tracker"
+                    );
+                }
+                ReadCheck::AlreadyChecked if !checked => continue,
+                _ => {}
             }
             let history = append_req_history_note(
                 &history,
