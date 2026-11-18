@@ -644,11 +644,12 @@ async fn a_candidate_behind_150_that_never_leave_is_reached_within_two_passes() 
     );
 }
 
-/// A proof row whose path does not parse: the pass writes neither word on
-/// it (no tracker read, the transaction, request and outputs as they were)
-/// and it does not stop the pass: a candidate behind it is completed.
+/// A proof row whose path does not parse: the pass reads no header for it
+/// and writes no status, link, history or `updated_at` of its transaction,
+/// request or outputs, and it does not stop the pass: a candidate behind it
+/// is completed.
 #[tokio::test]
-async fn a_proof_row_whose_path_does_not_parse_moves_nothing_and_stops_nothing() {
+async fn a_proof_row_whose_path_does_not_parse_writes_no_status_link_or_history() {
     let (_, _, _, root) = mined(8);
     let headers = Headers::carrying(HEIGHT, &root);
     let s = one_store(Some(headers.clone())).await;
@@ -659,10 +660,22 @@ async fn a_proof_row_whose_path_does_not_parse_moves_nothing_and_stops_nothing()
     )
     .await;
     let behind = synced_proof_beside_invalid(&s, 8).await;
+    let stamps = format!(
+        "SELECT CAST(r.updated_at AS TEXT) || ' ' || CAST(t.updated_at AS TEXT) FROM proven_tx_reqs r JOIN transactions t ON t.txid = r.txid WHERE r.txid = '{garbled}'"
+    );
+    let stamped: String = ::sqlx::query_scalar(&stamps)
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
     let start = rows(&s, &garbled).await;
     MonitorStorage::review_status(&*s).await.unwrap();
     let after = rows(&s, &garbled).await;
     let done = rows(&s, &behind).await;
+    let restamped: String = ::sqlx::query_scalar(&stamps)
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+    assert_eq!(restamped, stamped);
     println!(
         "WITNESS a path that does not parse ({} reads): {after}; the one behind: {done}",
         headers.reads()
