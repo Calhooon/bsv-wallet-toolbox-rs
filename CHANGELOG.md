@@ -33,9 +33,10 @@ affected version exactly. This prerelease carries the pin alone.
 - A host that calls `GlobalKVStore::query`, `get_by_controller` or
   `get_by_tags` in its own code, through the `bsv-rs` this crate brings in,
   now gets only the entries that match its selector; an honest lookup host's
-  answer is unchanged. By `bsv-rs`'s note the lookup of the caller's
-  existing token that `set` and `remove` run reads the same path, and no
-  longer takes another controller's token for the caller's own.
+  answer is unchanged. `set` and `remove` answer as before on this line:
+  by `bsv-rs`'s note their lookup of the caller's existing token already
+  re-checked each returned entry's controller and protocol, so the three
+  read doors alone were affected.
 
 ## [0.14.0-beta.9] - 2026-11-17
 
