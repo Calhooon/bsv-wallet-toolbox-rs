@@ -235,8 +235,8 @@ async fn the_proof_rows_of_one_height_are_checked_once() {
     assert_eq!(rows_stored, (4, 4));
 }
 
-/// A manager over a local store, passed as the reader before its own first
-/// call, is a local reader: its new proof rows are stored as given, with
+/// A manager over a local store, passed as the reader before any call of
+/// its own, is a local reader: its new proof rows are stored as given, with
 /// no root check, by a writer whose tracker would refute them.
 #[tokio::test]
 async fn a_manager_passed_as_the_reader_before_its_own_use_is_local() {
