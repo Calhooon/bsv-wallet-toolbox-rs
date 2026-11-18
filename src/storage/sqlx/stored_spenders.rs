@@ -126,7 +126,8 @@ pub(crate) async fn stored_spenders_of(
 
 /// `stored_spenders_of` for the output row `output_id` of the outpoint:
 /// the unread count leaves out a row of that output's own user that an
-/// output row names as its spender (module docs).
+/// output row names as its spender, made after that output's row was
+/// written or before its outgoing transaction was (module docs).
 pub(crate) async fn stored_spenders_of_output(
     conn: &mut SqliteConnection,
     output_id: i64,
@@ -138,8 +139,9 @@ pub(crate) async fn stored_spenders_of_output(
 
 /// `stored_spenders_of`, the unread count leaving out the row `except`
 /// (an action being signed in the caller's write, whose own bytes the
-/// caller reads) and, with `output`, every row of that output row's user
-/// that an output row names as its spender.
+/// caller reads) and, with `output`, a row of that output row's user that
+/// an output row names as its spender, made after that output's row was
+/// written or before its outgoing transaction was.
 async fn stored_spenders_except(
     conn: &mut SqliteConnection,
     txid: &str,
@@ -222,6 +224,14 @@ async fn stored_spenders_except(
     let internal = needle[..32].to_vec();
     let mut display = internal.clone();
     display.reverse();
+    // With `output`, a row of that output's own user that an output row
+    // names as its spender is left out only by order: the output's row has
+    // a lower id than every output row of the action's own (`createAction`
+    // looks up the caller's inputs and inserts the action's outputs in one
+    // write, so a row of the output's user written before the action is
+    // one it looked up and recorded itself on if it took it), or the
+    // output's transaction is an outgoing action written after it and not
+    // stamped older (its txid did not exist when the action was made).
     let bare: i64 = sqlx::query(
         "SELECT COUNT(*) AS n FROM transactions t \
          LEFT JOIN proven_txs p ON p.proven_tx_id = t.proven_tx_id \
@@ -229,7 +239,14 @@ async fn stored_spenders_except(
            AND (t.raw_tx IS NULL OR length(t.raw_tx) = 0) \
            AND (p.raw_tx IS NULL OR length(p.raw_tx) = 0) \
            AND t.transaction_id != ? \
-           AND NOT (t.user_id IS (SELECT user_id FROM outputs WHERE output_id = ?) \
+           AND NOT (EXISTS (SELECT 1 FROM outputs me \
+                            JOIN transactions ot ON ot.transaction_id = me.transaction_id \
+                            WHERE me.output_id = ? AND me.user_id IS t.user_id \
+                              AND (me.output_id < (SELECT MIN(a.output_id) FROM outputs a \
+                                                   WHERE a.transaction_id = t.transaction_id) \
+                                   OR (ot.is_outgoing = 1 \
+                                       AND ot.transaction_id > t.transaction_id \
+                                       AND julianday(ot.created_at) >= julianday(t.created_at)))) \
                     AND EXISTS (SELECT 1 FROM outputs n WHERE n.spent_by = t.transaction_id)) \
            AND (? IS NULL \
                 OR t.input_beef IS NULL OR length(t.input_beef) = 0 \

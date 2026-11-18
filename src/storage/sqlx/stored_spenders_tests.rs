@@ -362,20 +362,73 @@ async fn another_users_unread_row_naming_the_outpoints_txid_or_with_no_input_bee
     }
 }
 
+/// An unsigned action of `who` with no bytes, named as the spender of the
+/// coin `coin`.0 (of transaction `c_owner`) unless `case` is
+/// `own-not-named`, with an output row of its own unless `case` is
+/// `own-no-output-of-its-own`.
+async fn own_action(s: &StorageSqlx, who: i64, c_owner: i64, coin: &str, case: &str) -> i64 {
+    let id = insert_tx(s, who, &"ef".repeat(32), "unsigned", None, None).await;
+    let named = (case != "own-not-named").then_some(id);
+    insert_output(s, who, c_owner, coin, 0, named).await;
+    if case != "own-no-output-of-its-own" {
+        insert_output(s, who, id, &"ef".repeat(32), 0, None).await;
+    }
+    id
+}
+
 /// For an output named by its row: an unread row of that output's own user
-/// with no input BEEF is not counted when an output row names it as its
-/// spender (it took a coin of the store, and `createAction` records itself
-/// on every coin of the store it takes); the same row named on no output (a
-/// row a sync brought), and another user's row named on its own coin, stay
-/// counted.
+/// with no input BEEF, that an output row names as its spender (it took a
+/// coin of the store), is left out of the count only when the output's row
+/// was written before it was made (its own output rows come later), or the
+/// output's transaction is an outgoing action written after it and not
+/// stamped older. Counted: the same row named on no output (a row a sync
+/// brought), another user's row, a row made before the output's row was
+/// written when the output's transaction is not an outgoing action of the
+/// store's (the late row), and an outgoing action written after it but
+/// stamped older.
 #[tokio::test]
 async fn an_own_users_unread_row_named_as_a_spender_elsewhere_is_not_counted_for_its_output() {
-    for case in ["own-named", "own-not-named", "other-named"] {
+    for (case, counted) in [
+        ("own-named", 0),
+        ("own-not-named", 1),
+        ("other-named", 1),
+        ("own-no-output-of-its-own", 1),
+        ("late-row", 1),
+        ("outgoing-after", 0),
+        ("outgoing-after-stamped-older", 1),
+    ] {
         let s = storage().await;
         let (x, _) = seed_user(&s).await;
         let (y, _) = s.find_or_insert_user(&"b".repeat(66)).await.unwrap();
+        let who = if case == "other-named" { y.user_id } else { x };
+        let action_first = matches!(
+            case,
+            "late-row" | "outgoing-after" | "outgoing-after-stamped-older"
+        );
         let (raw, source) = tx_of(&[(&"cd".repeat(32), 0)], P2PKH);
+        let (c_raw, coin) = tx_of(&[(&"99".repeat(32), 0)], P2PKH);
+        let c_owner = insert_tx(&s, who, &coin, "unproven", Some(&c_raw), None).await;
+        let mut unsigned = None;
+        if action_first {
+            unsigned = Some(own_action(&s, who, c_owner, &coin, case).await);
+        }
         let owner = insert_tx(&s, x, &source, "unproven", Some(&raw), None).await;
+        if case == "late-row" {
+            // An internalized transaction: not an outgoing action.
+            sqlx::query("UPDATE transactions SET is_outgoing = 0 WHERE transaction_id = ?")
+                .bind(owner)
+                .execute(s.writer())
+                .await
+                .unwrap();
+        }
+        if case == "outgoing-after-stamped-older" {
+            sqlx::query("UPDATE transactions SET created_at = ? WHERE transaction_id = ?")
+                .bind(chrono::Utc::now() - chrono::Duration::hours(1))
+                .bind(owner)
+                .execute(s.writer())
+                .await
+                .unwrap();
+        }
         insert_output(&s, x, owner, &source, 0, None).await;
         let output_id: i64 =
             sqlx::query_scalar("SELECT output_id FROM outputs WHERE txid = ? AND vout = 0")
@@ -383,19 +436,16 @@ async fn an_own_users_unread_row_named_as_a_spender_elsewhere_is_not_counted_for
                 .fetch_one(s.pool())
                 .await
                 .unwrap();
-        let who = if case == "other-named" { y.user_id } else { x };
-        let (c_raw, coin) = tx_of(&[(&"99".repeat(32), 0)], P2PKH);
-        let c_owner = insert_tx(&s, who, &coin, "unproven", Some(&c_raw), None).await;
-        let unsigned = insert_tx(&s, who, &"ef".repeat(32), "unsigned", None, None).await;
-        let named = (case != "own-not-named").then_some(unsigned);
-        insert_output(&s, who, c_owner, &coin, 0, named).await;
+        if !action_first {
+            unsigned = Some(own_action(&s, who, c_owner, &coin, case).await);
+        }
+        assert!(unsigned.is_some());
 
         let a = s
             .stored_spenders_of_output(output_id, &source, 0)
             .await
             .unwrap();
         assert!(a.spenders.is_empty(), "{case}: {a:?}");
-        let counted = u64::from(case != "own-named");
         assert_eq!(a.unreadable, counted, "{case}: {a:?}");
         // Asked with no output row, the row is counted whoever it is.
         assert_eq!(spenders(&s, &source, 0).await.unreadable, 1, "{case}");

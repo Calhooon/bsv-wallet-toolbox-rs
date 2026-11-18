@@ -362,17 +362,26 @@ async fn an_aborted_no_send_action_named_in_a_later_send_with_keeps_its_change_n
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pending_own_unsigned_action_with_no_input_beef_does_not_withhold_a_sent_change_at_once()
 {
-    pending_own_unsigned_action(false).await;
+    pending_own_unsigned_action(false, false).await;
 }
 
 /// The same, the last action accepting delayed broadcast.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pending_own_unsigned_action_with_no_input_beef_does_not_withhold_a_sent_change_delayed()
 {
-    pending_own_unsigned_action(true).await;
+    pending_own_unsigned_action(true, false).await;
 }
 
-async fn pending_own_unsigned_action(delayed: bool) {
+/// The same, the pending action made BEFORE the `noSend` action: it took a
+/// coin of the store and could not have named the `noSend` action's change,
+/// which did not exist yet, so the change is still not withheld.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pending_own_unsigned_action_made_before_the_no_send_action_does_not_withhold_its_change()
+{
+    pending_own_unsigned_action(true, true).await;
+}
+
+async fn pending_own_unsigned_action(delayed: bool, pending_first: bool) {
     let root = PrivateKey::random();
     let (wallet, store) = funded(&root).await;
     let sender = PrivateKey::random().public_key();
@@ -390,7 +399,10 @@ async fn pending_own_unsigned_action(delayed: bool) {
         )
         .await
         .expect("the third payment");
-    let (one, _) = create(&wallet, pay_no_send(1_000, None)).await.unwrap();
+    let mut one = String::new();
+    if !pending_first {
+        one = create(&wallet, pay_no_send(1_000, None)).await.unwrap().0;
+    }
     let mut unsigned = pay(500, true);
     {
         let options = unsigned.options.as_mut().unwrap();
@@ -402,6 +414,9 @@ async fn pending_own_unsigned_action(delayed: bool) {
         .await
         .map(|c| c.signable_transaction.is_some())
         .map_err(|e| e.to_string());
+    if pending_first {
+        one = create(&wallet, pay_no_send(1_000, None)).await.unwrap().0;
+    }
     let (beef_len, named): (i64, i64) = ::sqlx::query_as(
         "SELECT length(COALESCE(t.input_beef, X'')), \
          (SELECT COUNT(*) FROM outputs o WHERE o.spent_by = t.transaction_id) \
@@ -433,7 +448,7 @@ async fn pending_own_unsigned_action(delayed: bool) {
             .unwrap();
     let last = create(&wallet, pay(16_000, delayed)).await;
     println!(
-        "STEP pending unsigned delayed={delayed}\n  pending {pending:?}: input_beef {beef_len} \
+        "STEP pending unsigned delayed={delayed} pending_first={pending_first}\n  pending {pending:?}: input_beef {beef_len} \
          bytes, named as spender on {named} rows\n  sendWith {sent:?}: {after_send}\n  \
          send-waiting: {after_wait}, withheld records {withheld}\n  action of 16000: {last:?}"
     );
