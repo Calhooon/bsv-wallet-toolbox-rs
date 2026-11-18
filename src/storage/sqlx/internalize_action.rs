@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use super::beef_verification::{
     a8_beef_bytes, proofs_tracker, read_once, stream_error, verify_spends, ReadOnce,
 };
+use super::internalize_answer::{self, DoorAnswer};
 use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
 use super::StorageSqlx;
 
@@ -675,19 +676,27 @@ pub async fn internalize_action_internal(
     // Every error of the broadcast step is a write after the post: never the
     // call's error, the transaction is on the network (bsv-wallet-cli #44);
     // the req stays 'unsent' and the send-waiting task heals it.
-    if door_posts {
-        if let Err(e) = broadcast_new_internalized_req(storage, &txid, &args.tx).await {
+    // The answer (reading 10 of section 30): taken by any instance, no
+    // send result and `accepted`; taken by nobody, the txid `sending` and
+    // its review status, from which the wallet raises the review-actions
+    // refusal.
+    let (send_with_results, not_delayed_results) = if door_posts {
+        let (answer, written) = broadcast_new_internalized_req(storage, &txid, &args.tx).await;
+        if let Err(e) = written {
             crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
         }
-    }
+        answer.results(&txid)
+    } else {
+        (None, None)
+    };
 
     Ok(StorageInternalizeActionResult {
         base: InternalizeActionResult { accepted: true },
         is_merge,
         txid,
         satoshis: net_satoshis,
-        send_with_results: None,
-        not_delayed_results: None,
+        send_with_results,
+        not_delayed_results,
     })
 }
 
@@ -1482,43 +1491,34 @@ async fn restore_inputs_to_spendable(
 // Synchronous Broadcast (new-path internalize)
 // =============================================================================
 
-/// Synchronously broadcast a newly internalized (proof-less, non-merge)
-/// transaction.
+/// Synchronously broadcast a held presentation (a new row of this user
+/// with no checked proof and no recorded take) once to each named
+/// instance, and classify the answer (DECISIONS 29.1; readings 10 and 11
+/// of section 30). Returns the classification and the result of the
+/// status write after the post, which is never the call's error.
 ///
-/// TS reference (ts-stack@edf6e03): wallet-toolbox
-/// src/storage/methods/internalizeAction.ts:700-720 (newInternalize →
-/// shareReqsWithWorld; the reference restores the spent inputs and throws
-/// WERR_REVIEW_ACTIONS on any non-success, which this crate no longer does
-/// since 0.7.4, bsv-stack-lean #66).
-/// Posts the already-validated AtomicBEEF as-is — TS: "Skip looking up txids
-/// and building an aggregate beef, just this one txid and the already
-/// validated atomic beef."
+/// Posts the already-validated AtomicBEEF as-is (the reference's "Skip
+/// looking up txids and building an aggregate beef, just this one txid and
+/// the already validated atomic beef", ts-stack@edf6e03
+/// `storage/methods/internalizeAction.ts:700-720`).
 ///
-/// Outcome classes (as in `send_waiting_transactions` in storage_sqlx.rs):
-///
-/// - SUCCESS: accepted OR "already known / seen on network". The payer
-///   usually broadcast this tx already, so a duplicate-submission ack is the
-///   normal case (providers report it with status "success"). The req is
-///   advanced 'unsent' -> 'unmined' and the transaction, written 'sending'
-///   at the door, moves to 'unproven'; CheckForProofs owns it from here.
-/// - EVERY OTHER WORD (a 465 and every other refusal, a double-spend word
-///   named or not, an orphan-mempool hold, a transient word, no broadcaster
-///   reached): a hint (bsv-stack-lean #66). A refusal is first checked
-///   against the status sources (a tx they hold is a success). Otherwise the
-///   internalize succeeds, the word is recorded on the req's history, the
-///   req stays 'unsent' for the re-ask on the send-waiting cadence, and a
-///   competitor the word names is queued for a proof ask. The transaction
-///   stays 'sending' (held: not counted, not offered), and its outputs and
-///   the coins it spends keep their words. Until 0.7.4 a
-///   refusal marked the tx 'failed', its outputs unspendable and its req
-///   'invalid', and returned an error.
-/// - No services configured: the internalize succeeds and the req stays
-///   'unsent' for SendWaiting.
+/// - TAKEN: an instance accepted it (an "already known" ack included), or
+///   a refusal the status sources contradict. The take is written as
+///   [`record_door_take`] writes it; the answer is `DoorAnswer::Taken`.
+/// - TAKEN BY NOBODY (every refusal, a double-spend word named or not, an
+///   orphan-mempool hold, a transient word, no broadcaster reached, no
+///   services configured): a hint (bsv-stack-lean #66). Each instance's
+///   words go on the request's history (`record_door_post_hint`), a
+///   competitor named is queued for a proof ask, nothing is undone, the
+///   row stays `sending`, and the answer is `DoorAnswer::Held` with the
+///   review status of reading 10. Unlike the reference (ts-stack@11faa7d1
+///   `internalizeActionCore.ts:958-968`) no input is restored and no
+///   `failed` is written on a broadcaster's word.
 async fn broadcast_new_internalized_req(
     storage: &StorageSqlx,
     txid: &str,
     atomic_beef: &[u8],
-) -> Result<()> {
+) -> (DoorAnswer, Result<()>) {
     let services = match storage.get_services() {
         Ok(s) => s,
         Err(_) => {
@@ -1526,7 +1526,7 @@ async fn broadcast_new_internalized_req(
                 txid = %txid,
                 "internalize: no services configured — send_waiting will broadcast"
             );
-            return Ok(());
+            return (DoorAnswer::no_answer(), Ok(()));
         }
     };
 
@@ -1534,98 +1534,73 @@ async fn broadcast_new_internalized_req(
     let results_vec = match services.post_beef(atomic_beef, &txids).await {
         Ok(r) => r,
         Err(e) => {
-            storage
+            let written = storage
                 .record_door_post_hint(
                     txid,
                     "serviceError",
-                    serde_json::json!([{ "error": e.to_string() }]),
+                    serde_json::json!([format!("no instance answered: {e}")]),
                     &[],
                 )
-                .await?;
+                .await;
             tracing::warn!(
                 txid = %txid,
                 error = %e,
                 "internalize: transient broadcast error — req stays 'unsent', send_waiting will retry"
             );
-            return Ok(());
+            return (DoorAnswer::no_answer(), written);
         }
     };
 
     let success = results_vec.iter().any(|r| r.is_success());
 
     if !success {
-        // Same classification as send_waiting_transactions.
-        let is_orphan_mempool = results_vec
-            .iter()
-            .any(|r| r.txid_results.iter().any(|tr| tr.orphan_mempool));
-        let is_double_spend = results_vec.iter().any(|r| {
-            r.txid_results
-                .iter()
-                .any(|tr| tr.double_spend && !tr.orphan_mempool)
-        });
-        let is_invalid = results_vec.iter().any(|r| {
-            r.txid_results.iter().any(|tr| {
-                crate::storage::broadcast::is_definitive_rejection(tr)
-                    || (!tr.orphan_mempool
-                        && !tr.service_error
-                        && (tr.status.contains("46") || tr.status.contains("invalid")))
-            })
-        });
-        let refusal = is_double_spend || is_invalid;
-        let word = if is_double_spend {
-            "doubleSpend"
-        } else if is_invalid {
-            "invalidTx"
-        } else if is_orphan_mempool {
-            "orphanMempool"
-        } else {
-            "serviceError"
-        };
-
         // A refusal: the payer may have already broadcast this tx; a status
         // source that holds it makes it a success.
-        let alive = refusal
+        let alive = internalize_answer::any_refusal(&results_vec)
             && super::process_action::reconcile_tx_status_via_services(&*services, txid).await;
 
         if !alive {
-            let competitors: Vec<String> = results_vec
-                .iter()
-                .flat_map(|r| r.txid_results.iter())
-                .filter_map(|tr| tr.competing_txs.clone())
-                .flatten()
-                .collect();
-            let words = serde_json::Value::from(
-                results_vec
+            let status = internalize_answer::held_status(&results_vec);
+            let competitors = internalize_answer::named_competitors(&results_vec);
+            // The history's word, as the door has always written it.
+            let word = if results_vec.iter().any(|r| {
+                r.txid_results
                     .iter()
-                    .flat_map(|r| {
-                        r.txid_results.iter().map(move |tr| {
-                            format!(
-                                "{}: {} [{}]",
-                                r.name,
-                                tr.status,
-                                tr.data.as_deref().unwrap_or("")
-                            )
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            );
-            storage
+                    .any(|tr| tr.double_spend && !tr.orphan_mempool)
+            }) {
+                "doubleSpend"
+            } else if internalize_answer::any_refusal(&results_vec) {
+                "invalidTx"
+            } else if results_vec
+                .iter()
+                .any(|r| r.txid_results.iter().any(|tr| tr.orphan_mempool))
+            {
+                "orphanMempool"
+            } else {
+                "serviceError"
+            };
+            let words =
+                serde_json::Value::from(results_vec.iter().map(instance_words).collect::<Vec<_>>());
+            let written = storage
                 .record_door_post_hint(txid, word, words, &competitors)
-                .await?;
+                .await;
             tracing::warn!(
                 txid = %txid,
                 outcome = word,
-                "internalize: broadcast drew no accepting word: a hint; req stays 'unsent', send_waiting will re-ask"
+                "internalize: broadcast drew no accepting word: a hint; the transaction stays held"
             );
-            return Ok(());
+            return (
+                DoorAnswer::Held {
+                    status,
+                    competitors,
+                },
+                written,
+            );
         }
         // Refused but held by a status source: fall through to success.
     }
 
-    // Success (accepted, already known, or reconciled-alive): advance the
-    // req to 'unmined' so send_waiting never re-broadcasts it and
-    // CheckForProofs takes ownership. Matches the send_waiting success
-    // transition (req -> 'unmined', tx -> 'unproven').
+    // Success (accepted, already known, or reconciled-alive).
     let takers: Vec<(&str, &str)> = if success {
         results_vec
             .iter()
@@ -1635,6 +1610,58 @@ async fn broadcast_new_internalized_req(
     } else {
         vec![(BROADCAST_PROVIDER_CHAIN, BROADCAST_STATUS_SEEN)]
     };
+    (
+        DoorAnswer::Taken,
+        record_door_take(storage, txid, &takers).await,
+    )
+}
+
+/// The refusal predicate the door has always used: not an orphan hold, not a
+/// service error, and a double-spend word, a definitive rejection or an
+/// invalid word (`internalize_answer` reads every instance's word by it).
+pub(super) fn is_refusal(tr: &crate::services::PostTxResultForTxid) -> bool {
+    !tr.orphan_mempool
+        && !tr.service_error
+        && (tr.double_spend
+            || crate::storage::broadcast::is_definitive_rejection(tr)
+            || tr.status.contains("46")
+            || tr.status.contains("invalid"))
+}
+
+/// One instance's words for the request's history and the refusal's
+/// message: its name, its status per txid and the data it sent, or its
+/// error when it carried no txid result.
+fn instance_words(r: &crate::services::PostBeefResult) -> String {
+    if r.txid_results.is_empty() {
+        return format!(
+            "{}: {} [{}]",
+            r.name,
+            r.status,
+            r.error.as_deref().unwrap_or("")
+        );
+    }
+    r.txid_results
+        .iter()
+        .map(|tr| {
+            format!(
+                "{}: {} [{}]",
+                r.name,
+                tr.status,
+                tr.data.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A take of the door's post, written in one transaction: the request to
+/// `unmined` from every word but `completed`, every row of the txid that is
+/// neither `failed` nor `completed` to `unproven`, and each take recorded.
+async fn record_door_take(
+    storage: &StorageSqlx,
+    txid: &str,
+    takers: &[(&str, &str)],
+) -> Result<()> {
     #[cfg(test)]
     if storage.take_busy_next_status_write() {
         return Err(crate::error::Error::StoreBusy {
@@ -1678,7 +1705,6 @@ async fn broadcast_new_internalized_req(
         txid = %txid,
         "internalize: tx broadcast/acknowledged — req advanced to 'unmined'"
     );
-
     Ok(())
 }
 

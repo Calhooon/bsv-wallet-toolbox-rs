@@ -234,3 +234,26 @@ pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
 pub fn proven_beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
     spend_beef_with(5, lock, true)
 }
+
+/// The internalize call's answer as a host reads it: `accepted` for
+/// `accepted: true`, `held` for the review-actions refusal whose every send
+/// result is `sending` (the ruling of 2026-11-17, DECISIONS 29.1: valid,
+/// held, still being sent). Any other answer panics naming `case`.
+pub fn answer_word(
+    answer: bsv_rs::Result<bsv_rs::wallet::InternalizeActionResult>,
+    case: &str,
+) -> &'static str {
+    match answer {
+        Ok(result) if result.accepted => "accepted",
+        Err(bsv_rs::Error::WalletReviewActions(refusal))
+            if !refusal.send_with_results.is_empty()
+                && refusal
+                    .send_with_results
+                    .iter()
+                    .all(|r| r.status == bsv_rs::wallet::SendWithResultStatus::Sending) =>
+        {
+            "held"
+        }
+        other => panic!("{case}: neither accepted nor held: {other:?}"),
+    }
+}

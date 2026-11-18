@@ -8,8 +8,9 @@
 //! receipt from `unproven` to `sending` on open, and leaves a taken one and
 //! a coin the wallet's own action already spent as they are.
 //!
-//! The call's answer is unchanged by this change: `accepted: true` in every
-//! case below.
+//! The call's answer (the answer piece of the same ruling): `accepted: true`
+//! for a receipt an instance took, else the review-actions refusal with the
+//! status `sending` (`common::answer_word`'s `held`).
 //!
 //! Real SQLite storage, a mock broadcaster and tracker; nothing is sent.
 
@@ -252,15 +253,14 @@ async fn must_spend(wallet: &TestWallet, txid: &str) -> Result<(), String> {
 
 /// Internalize a payment whose post meets `outcome`; answers the wallet,
 /// the txid and the call's answer.
-async fn internalized(outcome: Outcome) -> (TestWallet, String, bool) {
+async fn internalized(outcome: Outcome) -> (TestWallet, String, &'static str) {
     let root = PrivateKey::random();
     let (args, txid) = paying(&root, "c3VmZml4");
     let wallet = wallet_posting(&root, post_words(outcome, &txid)).await;
-    let answer = wallet
-        .internalize_action(args, Some(ORIGIN))
-        .await
-        .expect("the call's answer is unchanged here: accepted")
-        .accepted;
+    let answer = common::answer_word(
+        wallet.internalize_action(args, Some(ORIGIN)).await,
+        "internalized",
+    );
     (wallet, txid, answer)
 }
 
@@ -268,7 +268,7 @@ async fn internalized(outcome: Outcome) -> (TestWallet, String, bool) {
 #[tokio::test]
 async fn internalize_refused_by_every_instance_is_held_sending_and_not_in_the_balance() {
     let (wallet, txid, answer) = internalized(Outcome::EveryRefuses).await;
-    assert!(answer, "the call's answer is unchanged here");
+    assert_eq!(answer, "held", "the review-actions answer, `sending`");
     let s = seen(&wallet, &txid).await;
     println!("every instance refused: {s:?}");
     assert_eq!((s.tx.as_str(), s.req.as_str()), ("sending", "unsent"));
@@ -287,7 +287,7 @@ async fn internalize_refused_by_every_instance_is_held_sending_and_not_in_the_ba
 #[tokio::test]
 async fn internalize_with_no_answer_is_held_sending_and_not_offered_even_under_the_label() {
     let (wallet, txid, answer) = internalized(Outcome::NoAnswer).await;
-    assert!(answer, "the call's answer is unchanged here");
+    assert_eq!(answer, "held", "the review-actions answer, `sending`");
     let s = seen(&wallet, &txid).await;
     println!("no instance answered: {s:?}");
     assert_eq!((s.tx.as_str(), s.req.as_str()), ("sending", "unsent"));
@@ -321,7 +321,7 @@ async fn internalize_with_no_answer_is_held_sending_and_not_offered_even_under_t
 #[tokio::test]
 async fn internalize_taken_by_one_instance_is_unproven_and_counted() {
     let (wallet, txid, answer) = internalized(Outcome::OneTakes).await;
-    assert!(answer);
+    assert_eq!(answer, "accepted");
     let s = seen(&wallet, &txid).await;
     println!("one instance took it: {s:?}");
     assert_eq!((s.tx.as_str(), s.req.as_str()), ("unproven", "unmined"));
@@ -387,13 +387,8 @@ async fn held_receipt_taken_later_by_send_waiting_is_unproven_counted_and_offere
         MockResponse::Success(vec![took("bitails", &txid)]),
     ]);
     let wallet = wallet_posting(&root, post).await;
-    assert!(
-        wallet
-            .internalize_action(args, Some(ORIGIN))
-            .await
-            .unwrap()
-            .accepted
-    );
+    let answer = wallet.internalize_action(args, Some(ORIGIN)).await;
+    assert_eq!(common::answer_word(answer, "every refuses"), "held");
     let before = seen(&wallet, &txid).await;
     assert_eq!((before.tx.as_str(), before.balance), ("sending", 0));
 
@@ -438,13 +433,8 @@ async fn own_change_of_a_sending_action_is_still_counted() {
         MockResponse::Error(MockErrorKind::NetworkError, "no instance answered".into()),
     ]);
     let wallet = wallet_posting(&root, post).await;
-    assert!(
-        wallet
-            .internalize_action(args, Some(ORIGIN))
-            .await
-            .unwrap()
-            .accepted
-    );
+    let answer = wallet.internalize_action(args, Some(ORIGIN)).await;
+    assert_eq!(common::answer_word(answer, "one takes"), "accepted");
     assert_eq!(seen(&wallet, &txid).await.balance, PAID);
 
     let mut sent = spend(true);
@@ -526,7 +516,7 @@ async fn beta8_store(root: &PrivateKey) -> (TestWallet, [String; 4], i64) {
     let txids = paid.clone().map(|(_, txid)| txid);
     for (args, txid) in paid {
         let answer = wallet.internalize_action(args, Some(ORIGIN)).await;
-        assert!(answer.unwrap().accepted);
+        assert_eq!(common::answer_word(answer, "beta8 store"), "held");
         as_beta8(&wallet, &txid).await;
     }
     let storage = wallet.storage();

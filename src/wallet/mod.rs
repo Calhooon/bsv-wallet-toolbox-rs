@@ -93,6 +93,7 @@
 
 mod certificate_issuance;
 pub(crate) mod create_args;
+pub(crate) mod internalize_answer;
 pub(crate) mod internalize_args;
 pub(crate) mod label;
 pub mod lookup;
