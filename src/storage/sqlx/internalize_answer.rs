@@ -21,6 +21,9 @@
 //!
 //! The wallet raises the review-actions refusal from these two fields.
 
+// The refusal predicate stays beside the door (`internalize_action.rs`),
+// where the architecture ratchet counts its two text sites.
+use super::internalize_action::is_refusal;
 use crate::services::PostBeefResult;
 use crate::storage::traits::{ReviewActionResult, ReviewActionResultStatus, SendWithResult};
 
@@ -96,7 +99,16 @@ pub(crate) enum InstanceWord {
     NoAnswer,
 }
 
-use super::internalize_action::is_refusal;
+/// The word of a review status, as the request's history records the
+/// door's outcome: the history's word and the answer's status are one.
+pub(crate) fn status_word(status: ReviewActionResultStatus) -> &'static str {
+    match status {
+        ReviewActionResultStatus::Success => "success",
+        ReviewActionResultStatus::DoubleSpend => "doubleSpend",
+        ReviewActionResultStatus::InvalidTx => "invalidTx",
+        ReviewActionResultStatus::ServiceError => "serviceError",
+    }
+}
 
 /// The instances whose word in `words` accepted `txid`: an acceptance with
 /// no per-txid result, or one whose result for `txid` is a success. The one
@@ -246,6 +258,21 @@ mod tests {
         assert_eq!(
             held_status(&[unnamed.clone(), unnamed], &"aa".repeat(32)),
             InvalidTx
+        );
+    }
+
+    #[test]
+    fn the_history_word_is_the_answer_status() {
+        let txid = "aa".repeat(32);
+        let unnamed = answer("d", "error", true, None);
+        let no = answer("a", "rejected", false, None);
+        let silent = answer("c", "serviceError", false, None);
+        // An unnamed double-spend word and a mix of refusals and silence:
+        // the two arms where the history's word once differed.
+        assert_eq!(status_word(held_status(&[unnamed], &txid)), "invalidTx");
+        assert_eq!(
+            status_word(held_status(&[no, silent], &txid)),
+            "serviceError"
         );
     }
 

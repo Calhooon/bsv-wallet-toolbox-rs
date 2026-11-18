@@ -623,9 +623,11 @@ async fn internalize_action_answered_465_is_a_hint_not_an_error() {
     assert_eq!(queued(&storage, &txid).await, vec![competitor]);
     // The door's note (`doorPost`, one per instance, naming the door and
     // the presenting user), not the immediate hint of the wallet's own post.
+    // Its outcome is the answer's status: a refusal naming a competitor is
+    // `doubleSpend` (reading 10), where the note once said `invalidTx`.
     assert!(note_is_door_post(
         &history(&storage, &txid).await,
-        "invalidTx"
+        "doubleSpend"
     ));
     let kept: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM outputs WHERE txid = ? AND spendable = 1")

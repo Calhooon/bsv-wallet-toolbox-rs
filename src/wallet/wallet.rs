@@ -1844,23 +1844,8 @@ where
                 }),
                 send_with_results: process_result.send_with_results.map(|results| {
                     results
-                        .into_iter()
-                        .map(|r| {
-                            let mut txid = [0u8; 32];
-                            if let Ok(bytes) = hex::decode(&r.txid) {
-                                if bytes.len() == 32 {
-                                    txid.copy_from_slice(&bytes);
-                                }
-                            }
-                            bsv_rs::wallet::SendWithResult {
-                                txid,
-                                status: match r.status.as_str() {
-                                    "unproven" => bsv_rs::wallet::SendWithResultStatus::Unproven,
-                                    "sending" => bsv_rs::wallet::SendWithResultStatus::Sending,
-                                    _ => bsv_rs::wallet::SendWithResultStatus::Failed,
-                                },
-                            }
-                        })
+                        .iter()
+                        .map(super::internalize_answer::send_result)
                         .collect()
                 }),
                 signable_transaction: None,
@@ -2683,23 +2668,8 @@ where
             tx: Some(atomic_tx),
             send_with_results: process_result.send_with_results.map(|results| {
                 results
-                    .into_iter()
-                    .map(|r| {
-                        let mut result_txid = [0u8; 32];
-                        if let Ok(bytes) = hex::decode(&r.txid) {
-                            if bytes.len() == 32 {
-                                result_txid.copy_from_slice(&bytes);
-                            }
-                        }
-                        bsv_rs::wallet::SendWithResult {
-                            txid: result_txid,
-                            status: match r.status.as_str() {
-                                "unproven" => bsv_rs::wallet::SendWithResultStatus::Unproven,
-                                "sending" => bsv_rs::wallet::SendWithResultStatus::Sending,
-                                _ => bsv_rs::wallet::SendWithResultStatus::Failed,
-                            },
-                        }
-                    })
+                    .iter()
+                    .map(super::internalize_answer::send_result)
                     .collect()
             }),
         })
@@ -2882,11 +2852,7 @@ where
         // `Wallet.ts:1604-1612`), its message the reference's sentence and
         // each instance's words from this user's door notes on the
         // request's history (`door_words_for`).
-        if result
-            .send_with_results
-            .as_ref()
-            .is_some_and(|sends| sends.iter().any(|r| r.status != "unproven"))
-        {
+        if super::internalize_answer::needs_review(&result) {
             let words = match self
                 .storage
                 .find_proven_tx_reqs(crate::storage::FindProvenTxReqsArgs {

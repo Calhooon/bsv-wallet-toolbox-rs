@@ -80,7 +80,10 @@ fn txid_bytes(txid: &str) -> [u8; 32] {
     out
 }
 
-fn send_result(r: &SendWithResult) -> bsv_rs::wallet::SendWithResult {
+/// A storage send result as the SDK's: `unproven`, `sending`, else
+/// `failed`, the txid's 32 bytes (zeros for a malformed one). The one
+/// mapping `createAction`, `signAction` and `internalizeAction` answer with.
+pub(crate) fn send_result(r: &SendWithResult) -> bsv_rs::wallet::SendWithResult {
     use bsv_rs::wallet::SendWithResultStatus as Send;
     bsv_rs::wallet::SendWithResult {
         txid: txid_bytes(&r.txid),
@@ -152,16 +155,26 @@ pub(crate) fn message(sentence: &str, lines: &[String]) -> String {
     cut(&message, MAX_MESSAGE_BYTES).to_string()
 }
 
+/// Does the storage result need review: is any send result not
+/// `unproven`? The reference's `throwIfUnsuccessfulInternalizeAction` test,
+/// written once.
+pub(crate) fn needs_review(result: &StorageInternalizeActionResult) -> bool {
+    result
+        .send_with_results
+        .as_ref()
+        .is_some_and(|sends| sends.iter().any(|r| r.status != "unproven"))
+}
+
 /// The review-actions refusal for a storage result whose send results are
 /// not all `unproven`, else `None` (the call answers `accepted: true`).
 pub(crate) fn held_refusal(
     result: &StorageInternalizeActionResult,
     words: &[String],
 ) -> Option<bsv_rs::wallet::ReviewActionsRefusal> {
-    let sends = result.send_with_results.as_ref()?;
-    if sends.iter().all(|r| r.status == "unproven") {
+    if !needs_review(result) {
         return None;
     }
+    let sends = result.send_with_results.as_ref()?;
     let mut refusal = bsv_rs::wallet::ReviewActionsRefusal::with_members(
         result
             .not_delayed_results
