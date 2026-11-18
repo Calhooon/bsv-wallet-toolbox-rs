@@ -1,8 +1,8 @@
 //! A store behind the storage traits that forwards to a local store, with
 //! hooks: it can answer as a store that is not local (from the start,
 //! from a chunk on, or until a chunk is served), serve scripted chunks as a reader, answer every chunk
-//! with a fixed result, refuse `set_active`, write its row and then lose
-//! the answer, write its row and then never answer or panic, refuse to
+//! with a fixed result or merge it and lose the answer, refuse
+//! `set_active`, write its row and then lose the answer, write its row and then never answer or panic, refuse to
 //! read its user row or never answer that read, and record its
 //! `set_active` calls and count its user reads. Shared by the sync manager tests.
 #![allow(dead_code)]
@@ -36,6 +36,9 @@ pub struct Double {
     pub script: Mutex<Option<std::collections::VecDeque<SyncChunk>>>,
     /// Every `process_sync_chunk_mapped` answers this, when set.
     pub answer: Mutex<Option<ProcessSyncChunkResult>>,
+    /// `process_sync_chunk_mapped` merges the chunk and then answers an
+    /// error, when set.
+    pub lose_sync_answer: AtomicBool,
     /// Chunks handed to this store as a writer.
     pub chunks: AtomicUsize,
     /// The user row's active storage of each chunk handed to this store as
@@ -73,6 +76,7 @@ impl Double {
             served: AtomicUsize::new(0),
             script: Mutex::new(None),
             answer: Mutex::new(None),
+            lose_sync_answer: AtomicBool::new(false),
             chunks: AtomicUsize::new(0),
             user_rows: Mutex::new(Vec::new()),
             fail_set_active: AtomicBool::new(false),
@@ -348,9 +352,16 @@ impl WalletStorageSync for Double {
         if let Some(answer) = self.answer.lock().unwrap().clone() {
             return Ok(answer);
         }
-        self.inner
+        let r = self
+            .inner
             .process_sync_chunk_mapped(args, chunk, sync_map)
-            .await
+            .await;
+        if self.lose_sync_answer.load(Ordering::SeqCst) {
+            r?;
+            let name = self.inner.storage_name();
+            return Err(Error::StorageError(format!("{name} sync answer lost")));
+        }
+        r
     }
 }
 
