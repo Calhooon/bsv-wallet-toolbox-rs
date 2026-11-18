@@ -16,6 +16,7 @@ use super::lookup_checks::{
     allowed_public_hostname, answers_attributes, answers_identity_key, identity_output_certificate,
     slap_advertisement_domain, MAX_IDENTITY_RESULTS,
 };
+use super::lookup_public_network::{public_target, PublicResolver};
 use crate::Result;
 
 // =============================================================================
@@ -225,12 +226,28 @@ pub(crate) async fn read_lookup_body(
 /// The resolver's HTTP client: it follows no redirect. A tracker's or a
 /// host's 3xx is not a success, so it is that tracker's or host's failure,
 /// as the reference resolver's `redirect: 'error'` makes it; the query is
-/// never sent on to a URL the answering host names.
-fn lookup_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+/// never sent on to a URL the answering host names. Unless HTTP is enabled
+/// (every configured tracker plain `http`), it connects to public addresses
+/// only, as the reference's `createPublicNetworkFetch` does
+/// (`lookup_public_network`).
+fn lookup_client(trackers: &[String]) -> reqwest::Client {
+    let builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    let builder = if http_enabled(trackers) {
+        builder
+    } else {
+        builder.dns_resolver(std::sync::Arc::new(PublicResolver))
+    };
+    builder
         .build()
         .expect("the lookup client builds as reqwest::Client::new() does")
+}
+
+/// Whether HTTP is enabled for a resolver of `trackers`: every one is plain
+/// `http` (the local preset's `http://localhost:8080`, or a caller's own
+/// plain-HTTP trackers), as the reference enables HTTP for its local preset
+/// alone.
+fn http_enabled(trackers: &[String]) -> bool {
+    !trackers.is_empty() && trackers.iter().all(|t| t.trim().starts_with("http://"))
 }
 
 /// HTTP-based lookup resolver that queries overlay services.
@@ -250,17 +267,18 @@ pub struct HttpLookupResolver {
 impl HttpLookupResolver {
     /// Create a new resolver with the given SLAP tracker URL.
     pub fn new(slap_tracker: &str) -> Self {
+        let slap_trackers = vec![slap_tracker.to_string()];
         Self {
-            slap_trackers: vec![slap_tracker.to_string()],
-            client: lookup_client(),
+            client: lookup_client(&slap_trackers),
+            slap_trackers,
         }
     }
 
     /// Create a new resolver with multiple SLAP tracker endpoints.
     pub fn with_endpoints(slap_trackers: Vec<String>) -> Self {
         Self {
+            client: lookup_client(&slap_trackers),
             slap_trackers,
-            client: lookup_client(),
         }
     }
 
@@ -278,8 +296,8 @@ impl HttpLookupResolver {
             NetworkPreset::Local => vec!["http://localhost:8080".to_string()],
         };
         Self {
+            client: lookup_client(&slap_trackers),
             slap_trackers,
-            client: lookup_client(),
         }
     }
 
@@ -293,16 +311,17 @@ impl HttpLookupResolver {
         Self::for_network(NetworkPreset::Testnet)
     }
 
-    /// Whether a host a tracker names may be plain `http`: only when every
-    /// configured tracker is itself `http` (the local preset's
-    /// `http://localhost:8080`, or a caller's own plain-HTTP trackers), as the
-    /// reference allows HTTP for its local preset alone.
+    /// Whether a host a tracker names may be plain `http`: only when HTTP
+    /// is enabled ([`http_enabled`]).
     fn allows_http_hosts(&self) -> bool {
-        !self.slap_trackers.is_empty()
-            && self
-                .slap_trackers
-                .iter()
-                .all(|t| t.trim().starts_with("http://"))
+        http_enabled(&self.slap_trackers)
+    }
+
+    /// Whether this resolver may send to `url`: any URL when HTTP is
+    /// enabled; otherwise only a target the public client admits
+    /// ([`public_target`]).
+    fn may_send_to(&self, url: &str) -> bool {
+        self.allows_http_hosts() || reqwest::Url::parse(url).is_ok_and(|u| public_target(&u))
     }
 
     /// Resolve competent hosts for a given lookup service via SLAP.
@@ -317,6 +336,13 @@ impl HttpLookupResolver {
 
         for tracker in &self.slap_trackers {
             let url = format!("{}/lookup", tracker.trim_end_matches('/'));
+            if !self.may_send_to(&url) {
+                tracing::debug!(
+                    "SLAP tracker {} is not a public https target (trying next)",
+                    tracker
+                );
+                continue;
+            }
 
             let response = match self
                 .client
@@ -448,6 +474,13 @@ impl HttpLookupResolver {
         // Step 2: Query each competent host until one succeeds
         for host in &hosts {
             let lookup_url = format!("{}/lookup", host.trim_end_matches('/'));
+            if !self.may_send_to(&lookup_url) {
+                tracing::debug!(
+                    "Overlay host {} is not a public https target (trying next)",
+                    host
+                );
+                continue;
+            }
 
             let response = match self
                 .client

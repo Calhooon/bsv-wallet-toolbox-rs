@@ -94,6 +94,7 @@ pub mod lookup;
 mod lookup_checks;
 #[cfg(test)]
 mod lookup_identity_fixtures;
+mod lookup_public_network;
 mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;
