@@ -45,7 +45,10 @@ fn post_beef_words(results: &[crate::services::PostBeefResult]) -> serde_json::V
 /// `history` (a request's `{"notes": [...]}`) with `note` appended and only
 /// the newest [`REQ_HISTORY_NOTES_KEPT`] notes kept. A history that is not
 /// a JSON object is kept whole under `previous`.
-pub(super) fn append_req_history_note(history: &str, note: serde_json::Value) -> String {
+pub(in crate::storage::sqlx) fn append_req_history_note(
+    history: &str,
+    note: serde_json::Value,
+) -> String {
     let mut object = match serde_json::from_str::<serde_json::Value>(history) {
         Ok(serde_json::Value::Object(map)) => map,
         _ if history.trim().is_empty() => serde_json::Map::new(),
@@ -410,18 +413,21 @@ impl StorageSqlx {
                             .filter(|r| r.is_success())
                             .map(|r| r.name.as_str())
                             .collect();
-                        self.promote_taken(
-                            req.proven_tx_req_id,
-                            &req.txid,
-                            &takers,
-                            BROADCAST_STATUS_ACCEPTED,
-                            now,
-                        )
-                        .await?;
+                        // Nothing raised while a competitor's checked proof
+                        // stands: the result stays `sending`.
+                        let applied = self
+                            .promote_taken(
+                                req.proven_tx_req_id,
+                                &req.txid,
+                                &takers,
+                                BROADCAST_STATUS_ACCEPTED,
+                                now,
+                            )
+                            .await?;
 
                         send_with_results.push(SendWithResult {
                             txid: req.txid.clone(),
-                            status: "unproven".to_string(),
+                            status: if applied { "unproven" } else { "sending" }.to_string(),
                         });
                     } else {
                         // Check for orphan mempool (parent not propagated — NOT double-spend)
@@ -465,21 +471,23 @@ impl StorageSqlx {
                             if reconciled {
                                 // Tx is actually alive on chain: treat as
                                 // success, the status source's word recorded.
-                                self.promote_taken(
-                                    req.proven_tx_req_id,
-                                    &req.txid,
-                                    &[BROADCAST_PROVIDER_CHAIN],
-                                    BROADCAST_STATUS_SEEN,
-                                    now,
-                                )
-                                .await?;
+                                let applied = self
+                                    .promote_taken(
+                                        req.proven_tx_req_id,
+                                        &req.txid,
+                                        &[BROADCAST_PROVIDER_CHAIN],
+                                        BROADCAST_STATUS_SEEN,
+                                        now,
+                                    )
+                                    .await?;
                                 tracing::info!(
                                     "send_waiting: tx {} reported as orphan mempool but found alive on chain — treating as success",
                                     req.txid
                                 );
                                 send_with_results.push(SendWithResult {
                                     txid: req.txid.clone(),
-                                    status: "unproven".to_string(),
+                                    status: if applied { "unproven" } else { "sending" }
+                                        .to_string(),
                                 });
                                 continue;
                             }

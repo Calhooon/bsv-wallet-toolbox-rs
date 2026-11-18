@@ -581,7 +581,10 @@ mod concurrent {
 
         // #165: acceptance and abort serialize at the write lock. An
         // acceptance already committed refuses the abort; an abort already
-        // committed is not reopened by the later status write.
+        // committed is not reopened by the later status write: the row stays
+        // `failed` and its inputs released, while the request takes the one
+        // rule of a take (`unmined` from every word but `completed`, the
+        // keeper's ruling of 2026-11-18): the network holds it.
         assert!(
             broadcast_result.is_ok(),
             "Broadcast status update should succeed: {:?}",
@@ -624,7 +627,7 @@ mod concurrent {
                 .await
                 .unwrap();
         let expected = if aborted {
-            ("failed", "invalid", None)
+            ("failed", "unmined", None)
         } else {
             ("unproven", "unmined", Some(tx_id))
         };
