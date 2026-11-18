@@ -3625,6 +3625,21 @@ The programme line's (epic #80) opening prerelease, cut from beta on the owner's
 - **For hosts (#103):** `internalize_action` now needs the chain tracker's `mining_tip` (bsv-rs `ChainTracker::mining_tip`, default `None`): a tracker that answers no tip makes the door hold every unproven payment with `ServiceError` ("the header service supplied no mining tip"), nothing stored, never a verdict. The toolbox's Chaintracks client and `services::mock::MockChainTracker` supply one; a host's own tracker or test mock must, or wrap one that does (as `benches/common` does).
 - `internalize_action` now requires bsv-rs's streaming spend verifier to accept the submitted AtomicBEEF before storing anything (#103, wallet.md:61 and :87). It checks structure, roots, scripts and mining context; a failing spend returns `SpendRefused`, invalid bytes return `InvalidBeef`, and unavailable headers or mining context return `ServiceError` with nothing stored or broadcast. The header adapter supplies the active tip and the median time past from one eleven-header range; network activation heights come from the service's network. Proof-root transport faults also return `ServiceError`, preserving the hold instead of declaring the payment invalid. This deliberately goes beyond the reference: `internalizeAction` calls `Beef.verify`, which checks structure and roots only. Filed upstream under the owner's name as bsv-blockchain/ts-stack#1380 (2026-10-26), with the vector under `conformance/upstream/103-internalize-script/`. The two-pass verifier retains referenced output scripts until spent; the storage door retains only the subject, its proof and element metadata beside the submitted bytes.
 
+## [0.13.8] - 2026-11-18
+
+The stable line's patch of 2026-11-18 that moves its bsv-rs floor to 0.8.13, recorded here as `main` has it (the sync of `main` into `beta` after a stable patch, RELEASING.md); the section below is main's, verbatim. This line's pin is still `=0.9.0-beta.9`, which the same advisory names; the pin moves on the owner's word when bsv-rs's next prerelease is on the index.
+
+A security patch on the stable line, and nothing else. The bsv-rs requirement moves from "0.8.12" to "0.8.13", which closes GHSA-j4w5-4g84-q3f4: that advisory names every 0.8 release through 0.8.12. A build of 0.13.7 with a fresh resolve already takes 0.8.13; one with a lock that holds 0.8.12 or earlier does not until `cargo update -p bsv-rs` moves it. This release makes the floor binding: a host's next build moves such a lock to 0.8.13, and a build with `--locked` asks for that update instead. No public signature of this crate moves.
+
+### Security
+
+- [GHSA-j4w5-4g84-q3f4](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-j4w5-4g84-q3f4) (medium): bsv-rs's `GlobalKVStore` selector reads (`query`, `get_by_controller`, `get_by_tags`) returned an overlay lookup host's answer without re-checking the selector, so a lookup host could answer with another controller's or other tags' validly signed token; 0.8.13 drops such an entry. This crate does not call `GlobalKVStore`, so none of its doors was reached.
+
+### Hosts
+
+- A host that does not use bsv-rs's `GlobalKVStore` selector reads in its own code takes the release and changes nothing: every test of 0.13.7 answers the same on bsv-rs 0.8.13, and no answer of this crate changes.
+- A host that calls `GlobalKVStore::query`, `get_by_controller` or `get_by_tags` in its own code, through the bsv-rs this crate brings in, now gets only the entries that match its selector; an honest lookup host's answer is unchanged. By bsv-rs's note the lookup of the caller's existing token that `set` and `remove` run reads the same path, and no longer takes another controller's token for the caller's own.
+
 ## [0.13.7] - 2026-11-18
 
 The stable line's patch of 2026-11-18, recorded here as `main` has it (the sync of `main` into `beta` after a stable patch, RELEASING.md); the section below is main's, verbatim. This line has run a received BEEF's input scripts at its door since 0.14.0-beta.1, under #422's word since 0.14.0-beta.4.
