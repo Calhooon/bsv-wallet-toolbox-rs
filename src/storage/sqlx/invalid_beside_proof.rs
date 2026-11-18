@@ -108,6 +108,11 @@ impl StorageSqlx {
         // A proof row this store's tracker refuted (a refutation mark) is
         // no candidate of the invalid or the linked kind: nothing reads its
         // header again a pass. Check 1 takes a marked row as no proof.
+        // Whether a linked proof row is checked is not judged here: the
+        // write's reader decides by the root the stored path computes
+        // (`stored_proof_checked_on`), so a checked one costs no header
+        // read and is completed, and one whose `merkle_root` column and
+        // computed root differ is asked as an unchecked one.
         let sql = format!(
             r#"
             SELECT DISTINCT p.txid, p.proven_tx_id, p.merkle_path,
@@ -140,9 +145,6 @@ impl StorageSqlx {
                    AND EXISTS (SELECT 1 FROM transactions t
                                WHERE t.txid = p.txid AND t.proven_tx_id = p.proven_tx_id
                                  AND t.status != 'completed')
-                   AND NOT EXISTS (SELECT 1 FROM proof_root_checks c
-                                   WHERE c.txid = p.txid AND c.height = p.height
-                                     AND c.merkle_root = lower(p.merkle_root))
                    AND NOT {marked})
             ORDER BY p.proven_tx_id <= ?, p.proven_tx_id
             LIMIT ?
@@ -333,7 +335,10 @@ impl StorageSqlx {
 }
 
 /// The arm of the pass for a transaction that is not `completed` and links
-/// a proof row this store has not checked, beside no request or a request
+/// a proof row (checked or not: this arm's reader decides by the root the
+/// stored path computes; a proof checked before the pass completes with no
+/// header read, and beside a `failed` row of the txid is left to the
+/// unfail task as check 1 leaves it), beside no request or a request
 /// whose word neither the proof task (`unmined`, `unknown`, `callback`,
 /// `sending`, `unconfirmed`), the send task (`unsent`) nor the unfail
 /// task's consumer (`unfail`) asks, and that is not check 1's (`invalid`
@@ -448,6 +453,22 @@ async fn complete_linked_to_checked_proof(
             );
         }
         ReadCheck::AlreadyChecked if !checked => return Ok(0),
+        ReadCheck::AlreadyChecked => {
+            // A proof this store had checked before the pass, beside a
+            // `failed` row of the txid: left to the unfail task, which
+            // recovers the row with its unspent outputs, and the proof
+            // task, which then completes every row, as check 1 leaves such
+            // a txid. No header is read for it.
+            let failed: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM transactions WHERE txid = ? AND status = 'failed'",
+            )
+            .bind(txid)
+            .fetch_one(&mut *tx)
+            .await?;
+            if failed > 0 {
+                return Ok(0);
+            }
+        }
         ReadCheck::Undecided => return Ok(0),
         _ => {}
     }
