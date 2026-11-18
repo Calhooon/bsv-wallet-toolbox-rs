@@ -1362,22 +1362,6 @@ pub async fn update_transaction_status_after_broadcast_internal(
     update_transaction_status_after_post_words(storage, txid, outcome, &[]).await
 }
 
-/// The instances whose word in `words` accepted `txid`: an acceptance with
-/// no per-txid result, or one whose result for `txid` is a success.
-pub(crate) fn accepting_instances<'a>(words: &'a [PostBeefResult], txid: &str) -> Vec<&'a str> {
-    words
-        .iter()
-        .filter(|w| {
-            w.is_success()
-                && (w.txid_results.is_empty()
-                    || w.txid_results
-                        .iter()
-                        .any(|r| r.txid == txid && r.is_success()))
-        })
-        .map(|w| w.name.as_str())
-        .collect()
-}
-
 /// [`update_transaction_status_after_broadcast_internal`] with the post's
 /// per-instance `words`: a success records the take in the same write as
 /// the status moves (`held_receipts::record_take_on`), each accepting
@@ -1425,15 +1409,16 @@ pub(crate) async fn update_transaction_status_after_post_words(
                 crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
                 crate::services::broadcast_memory::BROADCAST_STATUS_SEEN,
             )];
-            let named: Vec<(&str, &str)> = accepting_instances(words, txid)
-                .into_iter()
-                .map(|p| {
-                    (
-                        p,
-                        crate::services::broadcast_memory::BROADCAST_STATUS_ACCEPTED,
-                    )
-                })
-                .collect();
+            let named: Vec<(&str, &str)> =
+                super::internalize_answer::accepting_instances(words, txid)
+                    .into_iter()
+                    .map(|p| {
+                        (
+                            p,
+                            crate::services::broadcast_memory::BROADCAST_STATUS_ACCEPTED,
+                        )
+                    })
+                    .collect();
             let takers: &[(&str, &str)] = if reconciled { &chain } else { &named };
             let mut tx = storage.write_tx().await?;
             super::competitor_proof::apply_take_on(
