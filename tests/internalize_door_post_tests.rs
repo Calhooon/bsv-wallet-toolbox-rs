@@ -330,9 +330,9 @@ async fn one_post_per_presentation_none_per_repeat() {
         common::wallet_posting("door-post", &root, answer_to(Outcome::NoAnswer, &txid)).await;
     let args = common::args(beef, common::payment(&sender, PREFIX, "bG9hZA=="));
     let _ = wallet.internalize_action(args.clone(), Some(ORIGIN)).await;
-    let first = wallet.services().call_count("post_beef");
+    let presented = wallet.services().call_count("post_beef");
     let _ = wallet.internalize_action(args, Some(ORIGIN)).await;
-    let second = wallet.services().call_count("post_beef");
-    println!("LOAD posts after the presentation {first}, after the repeat {second}");
-    assert_eq!((first, second), (1, 1));
+    let repeated = wallet.services().call_count("post_beef");
+    println!("LOAD posts after the presentation {presented}, after the repeat {repeated}");
+    assert_eq!((presented, repeated), (1, 1));
 }

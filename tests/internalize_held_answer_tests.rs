@@ -122,7 +122,7 @@ async fn history(wallet: &TestWallet, txid: &str) -> String {
 }
 
 /// The held answer's shape: the txid, one send result `sending`, one
-/// review result with `status`, the message the sentence first.
+/// review result with `status`, the message opening with the sentence.
 fn assert_held(refusal: &ReviewActionsRefusal, txid: &str, status: Review) {
     let bytes = hex::decode(txid).unwrap();
     assert_eq!(refusal.txid.map(|t| t.to_vec()), Some(bytes.clone()));
