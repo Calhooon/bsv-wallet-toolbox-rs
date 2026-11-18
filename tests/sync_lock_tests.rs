@@ -161,3 +161,119 @@ async fn a_store_that_never_answers_make_available_keeps_no_reader_waiting() {
     assert!(!opening.is_finished());
     opening.abort();
 }
+
+/// A store with no row of the wallet's user yet.
+async fn double_without_user(sik: &str) -> Arc<Double> {
+    let s = bsv_wallet_toolbox_rs::StorageSqlx::in_memory()
+        .await
+        .unwrap();
+    s.migrate(name(sik), sik).await.unwrap();
+    s.make_available().await.unwrap();
+    Arc::new(Double::new(s))
+}
+
+/// Each store's `(make_available, find_or_insert_user)` calls.
+fn calls(doubles: &[Arc<Double>]) -> Vec<(usize, usize)> {
+    doubles
+        .iter()
+        .map(|d| {
+            (
+                d.make_available_calls.load(Ordering::SeqCst),
+                d.user_reads.load(Ordering::SeqCst),
+            )
+        })
+        .collect()
+}
+
+/// Two opens at once over three stores with no row of the wallet's user:
+/// the one ahead waits inside the store at index 0; the second waits for
+/// it and then finds every store open. Both answer Ok, and each store's
+/// `make_available` and `find_or_insert_user` are called once in all. A
+/// third task reads `is_active_enabled` meanwhile: it answers, false.
+#[tokio::test]
+async fn two_opens_at_once_open_each_store_once() {
+    let doubles = vec![
+        double_without_user(SRC).await,
+        double_without_user(DST).await,
+        double_without_user(THIRD).await,
+    ];
+    doubles[0].hold_make_available.store(true, Ordering::SeqCst);
+    let mgr = Arc::new(manager_over(&doubles));
+    let one = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.make_available().await })
+    };
+    bounded(
+        "the open's store call begins",
+        doubles[0].make_available_entered.notified(),
+    )
+    .await;
+    let mut two = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.make_available().await })
+    };
+    let enabled = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.is_active_enabled().await })
+    };
+    let enabled = bounded("is_active_enabled while an open waits", enabled)
+        .await
+        .unwrap();
+    // Room for the second open to run, were nothing holding it.
+    let early = tokio::time::timeout(std::time::Duration::from_millis(300), &mut two)
+        .await
+        .ok();
+    let second_ended_early = early.is_some();
+    doubles[0].make_available_release.notify_one();
+    let one = bounded("the open ahead", one).await.unwrap();
+    let two = match early {
+        Some(two) => two.unwrap(),
+        None => bounded("the second open", two).await.unwrap(),
+    };
+    let counted = calls(&doubles);
+    println!(
+        "WITNESS two opens at once: one {}; two {}; second ended while the store waited {second_ended_early}; is_active_enabled meanwhile {enabled}; (make_available, find_or_insert_user) per store {counted:?}",
+        refusal(&one),
+        refusal(&two)
+    );
+    assert_eq!(refusal(&one), "ok");
+    assert_eq!(refusal(&two), "ok");
+    assert!(!enabled);
+    assert!(!second_ended_early);
+    assert_eq!(counted, vec![(1, 1); 3]);
+}
+
+/// A `set_active` and an open at once: the open waits inside a store, the
+/// `set_active` waits for it; once the store answers both complete.
+#[tokio::test]
+async fn a_set_active_beside_an_open_waits_for_it_and_completes() {
+    let doubles = vec![double_naming(SRC, SRC).await, double_naming(DST, SRC).await];
+    doubles[0].hold_make_available.store(true, Ordering::SeqCst);
+    let mgr = Arc::new(manager_over(&doubles));
+    let open = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.make_available().await })
+    };
+    bounded(
+        "the open's store call begins",
+        doubles[0].make_available_entered.notified(),
+    )
+    .await;
+    let switch = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.set_active(DST).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    doubles[0].make_available_release.notify_one();
+    let opened = bounded("the open", open).await.unwrap();
+    let switched = bounded("set_active beside the open", switch).await.unwrap();
+    println!(
+        "WITNESS set_active beside an open: open {}; set_active {}; {:?}",
+        refusal(&opened),
+        refusal(&switched),
+        state(&mgr).await
+    );
+    assert_eq!(refusal(&opened), "ok");
+    assert_eq!(refusal(&switched), "ok");
+    assert_eq!(state(&mgr).await, ("B".into(), true));
+}

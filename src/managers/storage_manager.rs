@@ -75,6 +75,12 @@ impl ManagedStorage {
             user: None,
         }
     }
+
+    /// Whether the manager has opened this store: it answered
+    /// `make_available` and the wallet's user row, both held here.
+    fn is_open(&self) -> bool {
+        self.is_available && self.settings.is_some() && self.user.is_some()
+    }
 }
 
 /// Default lock acquisition timeout in seconds.
@@ -159,6 +165,12 @@ pub struct WalletStorageManager {
 
     /// One `set_active` transition at a time; no other operation waits on it.
     set_active_lock: tokio::sync::Mutex<()>,
+
+    /// One open (`make_available` past its answer when every store is
+    /// open) at a time: a second open waits for the one running and then
+    /// finds the stores it opened open. Never taken while a state lock is
+    /// held; taken under the transition lock when a `set_active` opens.
+    open_lock: tokio::sync::Mutex<()>,
 
     /// Set before any call of a `set_active` transition that can write a
     /// store's row, cleared when the transition completes or when the rows
@@ -391,6 +403,7 @@ impl WalletStorageManager {
             sync_locks: Arc::new(tokio::sync::Semaphore::new(1)),
             provider_locks: Arc::new(tokio::sync::Semaphore::new(1)),
             set_active_lock: tokio::sync::Mutex::new(()),
+            open_lock: tokio::sync::Mutex::new(()),
             rows_in_doubt: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -478,6 +491,22 @@ impl WalletStorageManager {
             .all(|s| s.user.as_ref().and_then(|u| u.active_storage.as_deref()) == Some(key))
     }
 
+    /// The active's settings when the manager is available and every store
+    /// has been opened: `make_available` then calls no store.
+    async fn opened_settings(&self) -> Option<TableSettings> {
+        if !*self.is_available.read().await {
+            return None;
+        }
+        let stores = self.stores.read().await;
+        let active_idx = self.active_index.read().await;
+        if !stores.iter().all(ManagedStorage::is_open) {
+            return None;
+        }
+        (*active_idx)
+            .and_then(|idx| stores.get(idx))
+            .and_then(|store| store.settings.clone())
+    }
+
     /// Initializes and makes the storage available.
     ///
     /// This method:
@@ -489,17 +518,15 @@ impl WalletStorageManager {
     ///
     /// The settings from the active storage.
     pub async fn make_available(&self) -> Result<TableSettings> {
-        // Check if already available
-        if *self.is_available.read().await {
-            let stores = self.stores.read().await;
-            let active_idx = self.active_index.read().await;
-            if let Some(idx) = *active_idx {
-                if let Some(store) = stores.get(idx) {
-                    if let Some(settings) = &store.settings {
-                        return Ok(settings.clone());
-                    }
-                }
-            }
+        if let Some(settings) = self.opened_settings().await {
+            return Ok(settings);
+        }
+        // One open at a time: the open lock is held across the stores'
+        // calls (no state lock is), so a second open waits here and then
+        // finds every store the open ahead of it opened open.
+        let _open = self.open_lock.lock().await;
+        if let Some(settings) = self.opened_settings().await {
+            return Ok(settings);
         }
 
         // Reset state
@@ -520,7 +547,7 @@ impl WalletStorageManager {
             stores
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| !s.is_available || s.settings.is_none() || s.user.is_none())
+                .filter(|(_, s)| !s.is_open())
                 .map(|(i, s)| (i, s.storage.clone()))
                 .collect()
         };
@@ -587,10 +614,12 @@ impl WalletStorageManager {
     /// ahead of the five as every other taker does, and a writer queued on
     /// the stores holds no other state lock while it waits.
     ///
-    /// The manager's locks. The transition lock (`set_active_lock`, one
-    /// `set_active` at a time) is the outermost and the one lock held across
-    /// store calls, by design; no state lock is held when it is taken. A
-    /// state lock (`stores`, `active_index`, `backup_indices`,
+    /// The manager's locks, in their one order: the transition lock
+    /// (`set_active_lock`, one `set_active` at a time), then the open lock
+    /// (`open_lock`, one open of the stores at a time), then the state locks.
+    /// The two outer locks are the only ones held across store calls, by
+    /// design; neither is ever taken while a state lock is held, and an open
+    /// never takes the transition lock. A state lock (`stores`, `active_index`, `backup_indices`,
     /// `conflicting_indices`, `auth_id`, `is_available`, `services`) is held
     /// only to copy out what a function needs (the stores it will call,
     /// cloned; the indices; the auth) or to write the manager's own fields:
