@@ -221,7 +221,7 @@ async fn cell(request: Option<&str>, other_row: &str, outcome: Outcome) -> Readi
         )
         .await
         .unwrap_or_default(),
-        notes: history.matches("immediateBroadcastHint").count(),
+        notes: history.matches("\"doorPost\"").count(),
         taken: scalar(
             &wallet,
             "SELECT status FROM broadcast_seen WHERE txid = ? AND status = 'accepted'",
@@ -280,7 +280,13 @@ async fn matrix(outcome: Outcome) {
             } else {
                 left_by_no_take(request)
             },
-            notes: usize::from(!taken),
+            // One door note per instance (two named; one `*` when none
+            // answered); none when taken.
+            notes: match outcome {
+                Outcome::Taken => 0,
+                Outcome::Refused => 2,
+                Outcome::NoAnswer => 1,
+            },
             taken,
         };
         println!(

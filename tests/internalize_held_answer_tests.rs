@@ -199,7 +199,12 @@ async fn internalize_every_door_said_no_names_each_reason_and_the_competitor_sti
         "bitails: rejected [bitails refuses the body]",
     ] {
         assert!(r.message.contains(words), "message: {}", r.message);
-        assert!(history(&wallet, &txid).await.contains(words), "history");
+        let (instance, word) = words.split_once(": ").unwrap();
+        let history = history(&wallet, &txid).await;
+        assert!(
+            history.contains(&format!("\"instance\":\"{instance}\"")) && history.contains(word),
+            "history {history}"
+        );
     }
     assert_eq!(tx_status(&wallet, &txid).await, "sending");
     assert_eq!(wallet.services().call_count("post_beef"), 1);

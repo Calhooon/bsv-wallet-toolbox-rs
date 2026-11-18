@@ -33,7 +33,9 @@ use super::beef_verification::{
     a8_beef_bytes, proofs_tracker, read_once, stream_error, verify_spends, ReadOnce,
 };
 use super::internalize_answer::{self, DoorAnswer};
-use super::storage_sqlx::{store_validated_proof_on, StoreProofOutcome, ValidatedProofRow};
+use super::storage_sqlx::{
+    store_validated_proof_on, InstanceNote, StoreProofOutcome, ValidatedProofRow,
+};
 use super::StorageSqlx;
 
 // =============================================================================
@@ -682,11 +684,14 @@ pub async fn internalize_action_internal(
     // - unconfirmable BUMP -> 'unmined': the payer asserts it is already
     //   mined, so do NOT re-broadcast; let CheckForProofs chain-verify it and
     //   fetch a proof from a service (a bogus BUMP simply fails triage there).
+    // Whether this presentation created the request: only then does the
+    // door's post count on its sending clock (`door_notes.rs`).
+    let mut own_request = false;
     if !proof_stored && !is_merge {
         let req_status = if has_proof { "unmined" } else { "unsent" };
         // A request another user's act wrote for this txid keeps its word;
         // it is no verdict for this user's presentation (reading 11).
-        create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, req_status).await?;
+        own_request = create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, req_status).await?;
     }
 
     // Commit the SQL transaction. All DB operations above are now atomically persisted.
@@ -718,8 +723,14 @@ pub async fn internalize_action_internal(
     // refusal.
     let (send_with_results, not_delayed_results) = if door_posts {
         let check = competitor.unwrap_or_default();
-        let (answer, written) =
-            broadcast_new_internalized_req(storage, &txid, &args.tx, &check).await;
+        let (answer, written) = broadcast_new_internalized_req(
+            storage,
+            &txid,
+            &args.tx,
+            &check,
+            (user_id, own_request),
+        )
+        .await;
         if let Err(e) = written {
             crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
         }
@@ -1557,6 +1568,7 @@ async fn broadcast_new_internalized_req(
     txid: &str,
     atomic_beef: &[u8],
     check: &super::competitor_proof::CompetitorCheck,
+    (user, own_request): (i64, bool),
 ) -> (DoorAnswer, Result<()>) {
     let services = match storage.get_services() {
         Ok(s) => s,
@@ -1574,10 +1586,15 @@ async fn broadcast_new_internalized_req(
         Ok(r) => r,
         Err(e) => {
             let written = storage
-                .record_door_post_hint(
+                .record_door_post_note(
                     txid,
+                    user,
+                    own_request,
                     "serviceError",
-                    serde_json::json!([format!("no instance answered: {e}")]),
+                    &[InstanceNote {
+                        instance: NO_INSTANCE.to_string(),
+                        word: format!("no instance answered: {e}"),
+                    }],
                     &[],
                 )
                 .await;
@@ -1621,10 +1638,10 @@ async fn broadcast_new_internalized_req(
             } else {
                 "serviceError"
             };
-            let words =
-                serde_json::Value::from(results_vec.iter().map(instance_words).collect::<Vec<_>>());
+            let instances: Vec<InstanceNote> =
+                results_vec.iter().map(|r| instance_note(r, txid)).collect();
             let written = storage
-                .record_door_post_hint(txid, word, words, &competitors)
+                .record_door_post_note(txid, user, own_request, word, &instances, &competitors)
                 .await;
             tracing::warn!(
                 txid = %txid,
@@ -1672,30 +1689,28 @@ pub(super) fn is_refusal(tr: &crate::services::PostTxResultForTxid) -> bool {
             || tr.status.contains("invalid"))
 }
 
-/// One instance's words for the request's history and the refusal's
-/// message: its name, its status per txid and the data it sent, or its
-/// error when it carried no txid result.
-fn instance_words(r: &crate::services::PostBeefResult) -> String {
-    if r.txid_results.is_empty() {
-        return format!(
-            "{}: {} [{}]",
-            r.name,
-            r.status,
-            r.error.as_deref().unwrap_or("")
-        );
-    }
-    r.txid_results
+/// The instance name of the door's note when no instance answered (the
+/// post itself faulted) or none could be asked.
+const NO_INSTANCE: &str = "*";
+
+/// One instance's note: its name, and its status and the data it sent for
+/// `txid` (each result for `txid`, else its overall status and error).
+fn instance_note(r: &crate::services::PostBeefResult, txid: &str) -> InstanceNote {
+    let mine: Vec<String> = r
+        .txid_results
         .iter()
-        .map(|tr| {
-            format!(
-                "{}: {} [{}]",
-                r.name,
-                tr.status,
-                tr.data.as_deref().unwrap_or("")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
+        .filter(|tr| tr.txid == txid)
+        .map(|tr| format!("{} [{}]", tr.status, tr.data.as_deref().unwrap_or("")))
+        .collect();
+    let word = if mine.is_empty() {
+        format!("{} [{}]", r.status, r.error.as_deref().unwrap_or(""))
+    } else {
+        mine.join(", ")
+    };
+    InstanceNote {
+        instance: r.name.clone(),
+        word,
+    }
 }
 
 /// A take of the door's post, through the one write that applies a take
