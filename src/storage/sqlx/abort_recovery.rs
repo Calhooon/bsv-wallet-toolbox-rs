@@ -482,7 +482,7 @@ pub(crate) fn transaction_of(txid: &str, raw: &[u8]) -> Option<bsv_rs::transacti
 }
 
 /// The store's own copy of `txid`'s transaction (the request's, a row's or
-/// the proof row's), the first that hashes to `txid` ([`transaction_of`]);
+/// the proof row's), one that hashes to `txid` ([`transaction_of`]);
 /// `None` when no copy is held or none hashes to it. One read.
 pub(crate) async fn held_transaction_on(
     conn: &mut SqliteConnection,

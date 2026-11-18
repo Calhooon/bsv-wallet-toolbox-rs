@@ -84,17 +84,20 @@
   no row of this user written. Every writer of a take (the door, the
   send-waiting task, the retire path's status source, the unfail task and
   the wallet's own post) applies it through one write that raises nothing
-  while such a proof stands (no request moved to `unmined`, no row to
-  `unproven`, no take recorded; a note on the request); when a reorg has
-  taken the competitor's root away, a take heard after counts. That write
-  has one rule: the request to `unmined` from every word but `completed`,
-  every row of the txid neither `failed` nor `completed` to `unproven` (the
-  unfail task's recovery also lifts `failed`). So the wallet's own accepted
-  post now moves another user's `invalid` or `doubleSpend` request with no
-  competitor's proof behind it to `unmined`, where it left it, and a
-  request an abort wrote `invalid` reads `unmined` when the network took
-  the transaction after all (the row stays `failed`)
-  (`tests/internalize_competitor_proof_tests.rs`: six standing requests by
+  while such a proof stands, or while one is on record as a verdict
+  against a `failed` transaction of the wallet's own for that txid (no
+  request moved to `unmined`, no row to `unproven`, no take recorded; a
+  `takeNotCounted` note on the request); when a reorg has taken the
+  competitor's root away, a take heard after counts. That write has one
+  rule: the request to `unmined` from every word but `completed`, every
+  row of the txid neither `failed` nor `completed` to `unproven` (the
+  unfail task's recovery also lifts `failed`), except that a `failed`
+  transaction of the wallet's own for that txid is read by its state
+  in that write (below): one that stays ended keeps the request's word unless
+  another user's live row of the txid needs it raised. So the wallet's own
+  accepted post now moves another user's `invalid` or `doubleSpend`
+  request with no competitor's proof behind it to `unmined`, where it left
+  it (`tests/internalize_competitor_proof_tests.rs`: six standing requests by
   three proofs by five acts). Its load: one indexed read per input and one
   header read per competitor found, none when none is held, asked before
   any writer is held; no post at all for a refuted presentation
@@ -118,7 +121,7 @@
   presentation at the door), the one write that applies it reads each
   `failed` transaction of the wallet's own for that txid, behind the
   competitor guard (nothing moves while a competitor's checked proof
-  stands):
+  stands, stored or on record as a verdict):
   - its inputs released and no competitor's checked proof on record
     against it (an abort landing while the post was in flight, an end by
     count, a fail on a broadcaster's word): the action is put back, the
@@ -129,33 +132,58 @@
     history key `abort`, written by the abort: the transaction it failed
     and the outputs it closed) names the outputs, `takenAfterRelease`
     where no mark is there and the outputs are read from the row;
-  - an input still locked by it (the retire path's `failed`): nothing is
-    recovered, the take is recorded as a hint (`takeHeldAsHint`), and the
+  - an input still locked by it (the retire path's `failed`, all of its
+    inputs or some, the locked-input re-check having given the others
+    back): it stays ended, every input of it still free is marked spent by
+    it again, the take is recorded as a hint (`takeHeldAsHint`), and the
     request keeps its word unless another user's live row of the txid
     needs it raised;
   - a competitor's checked proof on record against it (a `spent-proven`
-    check at one of its input outpoints): nothing is recovered and the
-    request keeps its word; the unfail task's lift and its output restore
-    pass over it.
+    check at one of its input outpoints): the take is refused as a stored
+    competitor's standing proof refuses it: nothing recovered, no row of
+    the txid lifted (another user's held receipt keeps `sending`), no take
+    recorded, the request keeps its word, a `takeNotCounted` note naming
+    the rows; at the internalize door the answer is `doubleSpend` with the
+    send result `failed`, naming no competitor where only the verdict is
+    kept. The monitor's status review then fails another user's row of
+    the txid on the request's `invalid` word, as it does any row beside an
+    `invalid` request.
   A refusal of the wallet's own run leaves no `failed` row: the signing
   check refuses before anything is written. So no take leaves a request
-  `unmined` beside a `failed` transaction whose inputs are released. An
-  input another action of the wallet spent meanwhile stays with that
-  action: the two are competitors and a proof decides; the recovered
-  transaction reads `unproven` meanwhile. A received transaction's
-  `failed` is not recovered by a take (its failure released no coin of
-  the store); the unfail task's recovery on chain evidence is unchanged,
-  and it marks the inputs in the same write as its take. The descendants
-  an abort ended stay ended when their root is recovered; each is
-  recovered only by its own take, by its own state, and a root's output
-  an ended descendant spent stays spent by it, not offered
-  (`tests/held_answer_descendant_take_tests.rs`). At 0.14.0-beta.10 the
+  `unmined` beside a `failed` transaction with an input free. The
+  inputs are read from the store's own copy of the transaction that
+  hashes to its txid: with none (no copy, or every copy naming other
+  bytes) the take writes nothing but a `takeNotRecovered` note, and at
+  the door answers `serviceError`. An input another action of the wallet
+  spent meanwhile stays with that action: the two are competitors, and
+  the recovery queues the recovered txid on that action's request as its
+  competitor (`competitorsQueued`), so the competitor proof ask retires
+  that action as `doubleSpend` when the recovered transaction's proof
+  meets our headers; the recovered transaction reads `unproven`
+  meanwhile (`tests/held_answer_recovered_loser_tests.rs`). A received
+  transaction's `failed` is not recovered by a take (its failure released
+  no coin of the store); the unfail task's recovery on chain evidence is
+  unchanged, and it marks the inputs in the same write as its take. The
+  descendants an abort ended stay ended when their root is recovered. A
+  root's output an ended descendant spent follows that descendant's own
+  end, in the write that recovers the root: where the store holds no
+  record that the descendant's bytes left for an instance (no request,
+  or none of the post notes `doorPost`, `processActionPost`,
+  `immediateBroadcastHint`, `sendWaitingHint`, `broadcasterRefusalHint`
+  and `lostProofAnnounce` on its request's history, and no recorded word
+  of an instance for its txid), the output is released, spendable as the
+  root's other outputs are (`givenUpSpends` on the recovery's note);
+  where it holds one, or cannot read the history whole, the output stays
+  spent by the descendant, which returns it by its own take, its proof
+  or a competitor's proof against it. Only the root's own outputs are
+  read (`tests/held_answer_descendant_take_tests.rs`). At 0.14.0-beta.10 the
   wallet's own post's take after such an abort left the request `invalid`
   and the transaction `failed` with its inputs released and offered
   (`test_race_broadcast_status_vs_abort`;
   `tests/held_answer_abort_take_tests.rs`, five writers by six causes;
-  `tests/held_answer_release_take_tests.rs`, five writers by four states
-  by another user's live row present or not).
+  `tests/held_answer_release_take_tests.rs`, five writers by five states,
+  one with an input given back and one locked, by another user's live row
+  present or not, and the evidence cells through a status review pass).
 - A checked proof completes every row of its txid in the store, a
   `failed` one included (the keeper's readings 19 and 20 of section 30):
   the proof path, the create door's broadcast with a proof in hand and
@@ -166,9 +194,45 @@
   action of the wallet spent meanwhile stays with that action, the loser
   of a proven conflict: the proven txid is queued on its request as its
   competitor and the competitor proof ask retires it through the release
-  rule. At 0.14.0-beta.10 the proof completed a `failed` row and left its
-  inputs free and offered and its change closed
+  rule. The inputs and the losers are read from the store's own copy of
+  the transaction that hashes to its txid; with none, the completion
+  marks no input and queues no loser, and its note says so
+  (`inputsMarked: false`; `tests/held_answer_bytes_tests.rs`). At
+  0.14.0-beta.10 the proof completed a `failed` row the host's abort had
+  released and left its inputs free and offered and its change closed; a
+  `failed` row the retire path had ended, its inputs still spent by it,
+  it completed with its change closed
   (`tests/held_answer_proof_failed_row_tests.rs`, one cell per state).
+  The create door's broadcast with a proof in hand commits the proof and
+  the completion as one write: an error in either rolls both back and
+  the walk continues with the raw leg (`src/storage/sqlx/proof_fetch_tests.rs`).
+- The status review (the monitor's `ReviewStatusTask`) completes a
+  transaction beside a request `completed` with a proof linked only on a
+  proof this store checked (the keeper's reading 23 of section 30): the
+  store's record of a root check for the root the linked proof row's
+  own path computes. Otherwise the review asks the chain tracker, with no
+  lock held, and then writes once, reading every row again: confirmed,
+  the record and the completion; refuted, the stored proof is demoted as
+  an unchecked proof is everywhere else (the request `unmined` with no
+  link, the proof row and its record gone, each other row linked to it
+  `unproven`), a `failed` row keeping its word, its inputs and its
+  outputs; no tracker, a tracker fault, or a row moved meanwhile, nothing
+  written and the same at the next pass. A request and a proof row the
+  store's sync wrote are read the same way
+  (`tests/held_answer_review_proof_tests.rs`). Its load: one reader query
+  a pass; one header read of the tracker for each txid in that state
+  whose proof is not yet checked, and one short write; a checked or
+  refuted txid leaves the state in its pass, so a pass over 500 such rows
+  asks 500 header reads once, and only those the tracker could not answer
+  again at the next pass.
+- The load of the take and the proof over `failed` rows: a take beside a
+  released row and a proof over a `failed` row each read `outputs` once
+  per input of the txid's `failed` rows, by scan (`outputs` has no index
+  on its txid or spender): 11.3 ms and 34.2 ms at 10,000 transactions and
+  20,000 outputs, under the test profile, bounded by the txid's `failed`
+  rows times their inputs; a proof with no `failed` row does one indexed
+  read. The indexes are their own change. Each read of a transaction's
+  stored copy adds one double hash per copy read and no query.
 - A send-waiting hint (a post drawing no take that counts) keeps a
   request another write moved during the post: an abort's `invalid` stays
   `invalid`, so an aborted action is not queued to be posted again.
@@ -185,10 +249,10 @@
   each instance's line its name then its words in quotes with each quote
   and backslash escaped, so one instance's words cannot read as another
   instance's line; the message is cut to 1024 bytes.
-- The message's words come from this call alone: the storage result has
-  no field for them (a field there would change the public result), so the
-  wallet reads back only the door notes that name its own user; a call
-  that made no post answers the reference's sentence alone.
+- The message's words come from this user's own door notes: the storage
+  result has no field for them (a field there would change the public
+  result), so the wallet reads back only the door notes that name its own
+  user; a call that made no post answers the reference's sentence alone.
 - A store with a chain tracker and no services has no instance to ask:
   every receipt with no checked proof is held and answers the
   review-actions refusal with `serviceError`, where 0.14.0-beta.9
@@ -203,9 +267,10 @@
   receipt was posted by nobody at the door. A take moves every row of the
   txid that is neither `failed` nor `completed` to `unproven` and the
   request to `unmined` from every word but `completed`, the take recorded
-  in the same write; a post nobody took writes each instance's words on
-  the request's history, leaves a request `unsent` or `sending` as
-  `unsent`, and leaves any other request word (`nosend`, `unmined`,
+  in the same write, except beside a `failed` transaction of the wallet's
+  own that stays ended (above); a post nobody took writes each
+  instance's words on the request's history, leaves a request `unsent`,
+  `sending` or `unprocessed` as `unsent`, and leaves any other request word (`nosend`, `unmined`,
   `invalid`, `doubleSpend`) and its attempts as they were
   (`tests/internalize_door_post_tests.rs`, the matrix of seven standing
   requests by three outcomes).
@@ -338,6 +403,13 @@ alone, so their answers here are 0.14.0-beta.8.1's):
   a status source, a post): the action `unproven`, its inputs spent by it
   again, its change counted, the cause `takenAfterRelease`; and a proof
   for it makes it `completed` with the same rows.
+- The door's post writes a `doorPost` note on the request's history
+  where 0.14.0-beta.10 wrote `immediateBroadcastHint`; a host that reads
+  the history for the door's words reads the new name.
+- A host whose action an abort ended as a descendant of the aborted
+  action, and whose bytes never left for an instance, reads the coin it
+  spent back in its balance when the aborted action is taken after all;
+  the descendant itself stays `failed`.
 - A store a host opens with a chain tracker and no services: every
   received payment with no checked proof is held and answers
   `serviceError`, with the door's note saying no services were
