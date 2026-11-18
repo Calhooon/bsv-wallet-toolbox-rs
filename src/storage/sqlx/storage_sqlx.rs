@@ -2856,29 +2856,64 @@ impl WalletStorageWriter for StorageSqlx {
         .fetch_all(self.pool())
         .await?;
 
-        // 3. Fix mismatches
-        for (tx_id, txid, tx_status, req_status, proven_tx_id) in &mismatches {
-            if tx_status == "unproven" && req_status == "completed" {
-                // Transaction should be completed since proof exists
-                sqlx::query("UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE transaction_id = ?")
+        // 3. Fix mismatches, in one write that reads each row again. A
+        // transaction is written `completed` only beside a request that
+        // reads `completed` linking a proof whose root this store has
+        // checked against its own headers (a `proof_root_checks` record).
+        // An unchecked one is left as it is for the monitor's status review,
+        // whose pass asks the chain tracker with no lock held: this call
+        // holds the writer from its reads to its commit and asks no
+        // tracker (a tracker is never awaited with the writer held).
+        if !mismatches.is_empty() {
+            let mut wtx = self.write_tx().await?;
+            for (tx_id, txid, tx_status, req_status, proven_tx_id) in &mismatches {
+                let completes = req_status == "completed"
+                    && (tx_status == "unproven" || tx_status == "sending");
+                let moves_to_unproven = tx_status == "sending" && req_status == "unmined";
+                if !completes && !moves_to_unproven {
+                    continue;
+                }
+                let still: Option<(String,)> = sqlx::query_as(
+                    "SELECT t.status FROM transactions t JOIN proven_tx_reqs r ON r.txid = t.txid \
+                     WHERE t.transaction_id = ? AND t.status = ? AND r.status = ? \
+                       AND r.proven_tx_id IS ?",
+                )
+                .bind(tx_id)
+                .bind(tx_status)
+                .bind(req_status)
+                .bind(proven_tx_id)
+                .fetch_optional(&mut *wtx)
+                .await?;
+                if still.is_none() {
+                    continue;
+                }
+                if completes {
+                    let path: Option<(Vec<u8>,)> = sqlx::query_as(
+                        "SELECT merkle_path FROM proven_txs WHERE proven_tx_id = ? AND txid = ?",
+                    )
                     .bind(proven_tx_id)
-                    .bind(chrono::Utc::now())
-                    .bind(tx_id)
-                    .execute(&mut *self.writer_conn().await?)
+                    .bind(txid)
+                    .fetch_optional(&mut *wtx)
                     .await?;
-                log.push_str(&format!(
-                    "Fixed tx {}: unproven -> completed (proof exists).\n",
-                    txid
-                ));
-            } else if tx_status == "sending"
-                && (req_status == "completed" || req_status == "unmined")
-            {
-                // Transaction was sent; update status
-                let new_status = if req_status == "completed" {
-                    "completed"
-                } else {
-                    "unproven"
-                };
+                    let checked = match path
+                        .as_ref()
+                        .and_then(|(bytes,)| MerklePath::from_binary(bytes).ok())
+                    {
+                        Some(path) => {
+                            super::proof_root_checks::stored_proof_checked_on(&mut wtx, txid, &path)
+                                .await?
+                        }
+                        None => false,
+                    };
+                    if !checked {
+                        log.push_str(&format!(
+                            "Left tx {}: {} beside a completed request whose proof this store has not checked.\n",
+                            txid, tx_status
+                        ));
+                        continue;
+                    }
+                }
+                let new_status = if completes { "completed" } else { "unproven" };
                 sqlx::query(
                     "UPDATE transactions SET status = ?, proven_tx_id = ?, updated_at = ? WHERE transaction_id = ?",
                 )
@@ -2886,13 +2921,21 @@ impl WalletStorageWriter for StorageSqlx {
                 .bind(proven_tx_id)
                 .bind(chrono::Utc::now())
                 .bind(tx_id)
-                .execute(&mut *self.writer_conn().await?)
+                .execute(&mut *wtx)
                 .await?;
-                log.push_str(&format!(
-                    "Fixed tx {}: sending -> {} (req={}).\n",
-                    txid, new_status, req_status
-                ));
+                if tx_status == "unproven" {
+                    log.push_str(&format!(
+                        "Fixed tx {}: unproven -> completed (proof exists).\n",
+                        txid
+                    ));
+                } else {
+                    log.push_str(&format!(
+                        "Fixed tx {}: sending -> {} (req={}).\n",
+                        txid, new_status, req_status
+                    ));
+                }
             }
+            commit(wtx).await?;
         }
 
         if !mismatches.is_empty() {
