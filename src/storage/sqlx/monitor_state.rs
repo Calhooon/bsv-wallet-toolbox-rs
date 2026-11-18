@@ -15,6 +15,9 @@
 //! - the header tracker's state (`header_tracker`): the last observed tip,
 //!   the queued header and the ring of recent tips, as JSON, so a one-shot
 //!   process conforms to the same "survived a cycle" rule across runs.
+//! - the status review's cursor over proof rows beside an `invalid` request
+//!   (`invalid_beside_proof_cursor`): the proof row number its last pass
+//!   looked at last, so the next pass takes the ones after it.
 //!
 //! Divergences from the reference are recorded in `docs/REORG-DIVERGENCES.md`.
 
@@ -38,6 +41,12 @@ pub const MONITOR_STATE_KEY_PROOF_ATTEMPT_HEIGHT: &str = "proof_attempt_height";
 
 /// The header tracker's row key (JSON in `text_value`).
 pub const MONITOR_STATE_KEY_HEADER_TRACKER: &str = "header_tracker";
+
+/// Where the status review's pass over proof rows beside an `invalid`
+/// request stopped: the proof row number it looked at last (`value`). The
+/// next pass starts after it and comes round, so no request's own
+/// `updated_at` is written to keep the order.
+pub const MONITOR_STATE_KEY_INVALID_BESIDE_PROOF_CURSOR: &str = "invalid_beside_proof_cursor";
 
 /// Make sure the `monitor_state` table exists (migration 004; idempotent).
 pub(crate) async fn ensure_monitor_state_schema(pool: &Pool<Sqlite>) -> Result<()> {
@@ -79,6 +88,35 @@ pub(crate) async fn write_proof_attempt_height_on(
     )
     .bind(MONITOR_STATE_KEY_PROOF_ATTEMPT_HEIGHT)
     .bind(height as i64)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// The status review's cursor over proof rows beside an `invalid` request:
+/// `0` when absent (the pass starts at the lowest proof row number).
+pub(crate) async fn read_invalid_beside_proof_cursor_on(
+    conn: &mut SqliteConnection,
+) -> Result<i64> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT value FROM monitor_state WHERE key = ?")
+        .bind(MONITOR_STATE_KEY_INVALID_BESIDE_PROOF_CURSOR)
+        .fetch_optional(&mut *conn)
+        .await?;
+    Ok(row.map(|(v,)| v).unwrap_or(0))
+}
+
+/// Record where the status review's pass over proof rows beside an
+/// `invalid` request stopped.
+pub(crate) async fn write_invalid_beside_proof_cursor_on(
+    conn: &mut SqliteConnection,
+    proven_tx_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO monitor_state (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(MONITOR_STATE_KEY_INVALID_BESIDE_PROOF_CURSOR)
+    .bind(proven_tx_id)
     .execute(&mut *conn)
     .await?;
     Ok(())
