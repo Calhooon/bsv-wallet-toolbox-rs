@@ -38,9 +38,10 @@ pub(crate) enum DoorAnswer {
         competitors: Vec<String>,
     },
     /// A competitor's checked proof stands against it (reading 11's second
-    /// case, reading 7's answer): `doubleSpend` naming the competitor, the
-    /// send result `failed`, no post.
-    Refuted { competitor: String },
+    /// case, reading 7's answer): `doubleSpend` naming the competitor (none
+    /// when the store keeps the proof's verdict alone), the send result
+    /// `failed`.
+    Refuted { competitor: Option<String> },
 }
 
 impl DoorAnswer {
@@ -83,7 +84,7 @@ impl DoorAnswer {
                 Some(vec![ReviewActionResult {
                     txid: txid.to_string(),
                     status: ReviewActionResultStatus::DoubleSpend,
-                    competing_txs: Some(vec![competitor.clone()]),
+                    competing_txs: competitor.clone().map(|c| vec![c]),
                     competing_beef: None,
                 }]),
             ),
