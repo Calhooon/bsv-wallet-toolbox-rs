@@ -296,44 +296,14 @@ impl StorageSqlx {
         // paths in: update_transaction_status_after_broadcast (process_action.rs),
         // send_waiting_transactions, and abort_abandoned.
 
-        // Check 3: Mark transactions completed when proof exists
-        let rows: Vec<(String, String, i64)> = sqlx::query_as(
-            r#"
-            SELECT ptr.txid, t.status, ptr.proven_tx_id
-            FROM proven_tx_reqs ptr
-            JOIN transactions t ON t.txid = ptr.txid
-            WHERE ptr.status = 'completed'
-              AND t.status != 'completed'
-              AND ptr.proven_tx_id IS NOT NULL
-            "#,
-        )
-        .fetch_all(self.pool())
-        .await?;
-
-        if !rows.is_empty() {
-            for (txid, old_status, proven_tx_id) in &rows {
-                // Every row of the txid, a `failed` one included
-                // (`proof_completion`), in one write.
-                let mut tx = self.write_tx().await?;
-                super::super::proof_completion::complete_on_proof(
-                    &mut tx,
-                    txid,
-                    *proven_tx_id,
-                    now,
-                )
-                .await?;
-                commit(tx).await?;
-
-                tracing::debug!(
-                    "review_status: synced transaction {} from {} to completed",
-                    txid,
-                    old_status
-                );
-            }
-
+        // Check 3: a request `completed` with a proof linked completes the
+        // rows of its txid only on a proof this store has checked
+        // (`review_proofs`).
+        let check3 = self.complete_checked_proofs(now, &mut log).await?;
+        if check3.completed > 0 {
             log.push_str(&format!(
                 "Updated {} transaction statuses to completed\n",
-                rows.len()
+                check3.completed
             ));
         }
 

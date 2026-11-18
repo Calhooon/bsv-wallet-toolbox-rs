@@ -12,8 +12,9 @@ use super::{
 ///    link; when the completed row had been purged, a new `unmined` row is
 ///    inserted with the raw bytes taken from the proof row, so the bytes
 ///    survive even after the 30-day purge cleared `transactions.raw_tx`.
-/// 2. `transactions`: every row linked to the proof (and a `completed` row
-///    for the txid left without a link) goes back to `unproven`, its
+/// 2. `transactions`: every row linked to the proof but a `failed` one
+///    (and a `completed` row for the txid left without a link) goes back
+///    to `unproven`, its
 ///    `raw_tx` restored from the proof row when the purge had cleared it.
 ///    `unproven` is in every spendable set (coin selection, `list_outputs`,
 ///    `list_actions`, the adoption pass), so the coins stay visible.
@@ -67,12 +68,23 @@ pub(in crate::storage::sqlx) async fn demote_stale_proof_on(
     // 2. the transactions: back to unproven, bytes restored.
     sqlx::query(
         "UPDATE transactions SET status = 'unproven', proven_tx_id = NULL, raw_tx = COALESCE(raw_tx, ?), updated_at = ? \
-         WHERE proven_tx_id = ? OR (txid = ? AND status = 'completed' AND proven_tx_id IS NULL)",
+         WHERE (proven_tx_id = ? AND status <> 'failed') \
+            OR (txid = ? AND status = 'completed' AND proven_tx_id IS NULL)",
     )
     .bind(&raw_tx)
     .bind(now)
     .bind(proven_tx_id)
     .bind(txid)
+    .execute(&mut *conn)
+    .await?;
+    // A `failed` row linked to the proof keeps its word and its coins; only
+    // the link goes with the proof row.
+    sqlx::query(
+        "UPDATE transactions SET proven_tx_id = NULL, updated_at = ? \
+         WHERE proven_tx_id = ? AND status = 'failed'",
+    )
+    .bind(now)
+    .bind(proven_tx_id)
     .execute(&mut *conn)
     .await?;
     // 3. the mined memory: the one sanctioned downgrade.

@@ -4,9 +4,13 @@
 //! The proof is evidence; no word stands against it. Every writer of a
 //! proof's completion (the proof path's `ingest_merkle_proof`, the create
 //! door's broadcast with a proof in hand, the status review's check 3)
-//! writes it through [`complete_on_proof`], on its own write transaction:
-//! every row of the txid `completed` with the proof linked, and for each row
-//! that read `failed` before the proof:
+//! writes it through [`complete_on_proof`], on its own write transaction,
+//! and only with a [`CheckedProof`]: the one value that names a stored
+//! proof whose root this store checked, made by reading the root-check
+//! record in that write ([`CheckedProof::read_on`]), so a completion on a
+//! proof this store has not checked cannot be written. It writes every row
+//! of the txid `completed` with the proof linked, and for each row that
+//! read `failed` before the proof:
 //!
 //! - its inputs marked spent by it (they are, on chain), through the one
 //!   recovery of a failed transaction's inputs
@@ -25,15 +29,57 @@ use sqlx::SqliteConnection;
 
 use crate::Result;
 
+/// A stored proof whose root this store checked: the `proven_txs` row
+/// `proven_tx_id` of `txid`, whose stored path computes a root that
+/// `proof_root_checks` records at its height (the definition of a checked
+/// row, `proof_root_checks::stored_proof_checked_on`). Made only by
+/// [`CheckedProof::read_on`], on the write that completes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheckedProof {
+    txid: String,
+    proven_tx_id: i64,
+}
+
+impl CheckedProof {
+    /// Read, on the caller's write, whether the proof row `proven_tx_id` of
+    /// `txid` is one this store checked. `None`: no such row, a path that
+    /// does not parse, or no root-check record for the root its path
+    /// computes.
+    pub(crate) async fn read_on(
+        conn: &mut SqliteConnection,
+        txid: &str,
+        proven_tx_id: i64,
+    ) -> Result<Option<Self>> {
+        let path: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT merkle_path FROM proven_txs WHERE proven_tx_id = ? AND txid = ?",
+        )
+        .bind(proven_tx_id)
+        .bind(txid)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some(path) = path.and_then(|p| bsv_rs::transaction::MerklePath::from_binary(&p).ok())
+        else {
+            return Ok(None);
+        };
+        let checked =
+            super::proof_root_checks::stored_proof_checked_on(&mut *conn, txid, &path).await?;
+        Ok(checked.then(|| Self {
+            txid: txid.to_string(),
+            proven_tx_id,
+        }))
+    }
+}
+
 /// THE COMPLETION OF A CHECKED PROOF, on the caller's write (see the
-/// module): every row of `txid` `completed` with `proven_tx_id` linked.
-/// Returns the rows that read `failed` before it.
+/// module): every row of the proof's txid `completed` with the proof
+/// linked. Returns the rows that read `failed` before it.
 pub(crate) async fn complete_on_proof(
     conn: &mut SqliteConnection,
-    txid: &str,
-    proven_tx_id: i64,
+    proof: &CheckedProof,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<i64>> {
+    let txid = proof.txid.as_str();
+    let proven_tx_id = proof.proven_tx_id;
     let failed: Vec<i64> = sqlx::query_scalar(
         "SELECT transaction_id FROM transactions WHERE txid = ? AND status = 'failed' \
          ORDER BY transaction_id",
