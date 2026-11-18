@@ -4,7 +4,9 @@
 //! with a fixed result or merge it and lose the answer, refuse
 //! `set_active`, write its row and then lose the answer, write its row and then never answer or panic, refuse to
 //! read its user row or never answer that read, and record its
-//! `set_active` calls and count its user reads. Shared by the sync manager tests.
+//! `set_active` calls and count its user reads, wait inside one sync chunk
+//! until released, or never answer `make_available`. Shared by the sync
+//! manager tests.
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -64,6 +66,17 @@ pub struct Double {
     pub set_active_delay_ms: u64,
     /// `<storage name> enter|leave <key>` per `set_active` call.
     pub events: Arc<Mutex<Vec<String>>>,
+    /// The next chunk handed to this store as a writer waits until
+    /// `sync_release` is notified, when set (once: the flag is cleared).
+    pub hold_sync: AtomicBool,
+    /// Notified when a held chunk has arrived.
+    pub sync_entered: tokio::sync::Notify,
+    /// Releases a held chunk.
+    pub sync_release: tokio::sync::Notify,
+    /// `make_available` never answers, when set.
+    pub hang_make_available: AtomicBool,
+    /// Notified when a `make_available` that never answers has begun.
+    pub make_available_entered: tokio::sync::Notify,
 }
 
 impl Double {
@@ -89,6 +102,11 @@ impl Double {
             user_reads: AtomicUsize::new(0),
             set_active_delay_ms: 0,
             events: Arc::new(Mutex::new(Vec::new())),
+            hold_sync: AtomicBool::new(false),
+            sync_entered: tokio::sync::Notify::new(),
+            sync_release: tokio::sync::Notify::new(),
+            hang_make_available: AtomicBool::new(false),
+            make_available_entered: tokio::sync::Notify::new(),
         }
     }
 }
@@ -156,6 +174,10 @@ impl WalletStorageReader for Double {
 #[async_trait]
 impl WalletStorageWriter for Double {
     async fn make_available(&self) -> Result<TableSettings> {
+        if self.hang_make_available.load(Ordering::SeqCst) {
+            self.make_available_entered.notify_one();
+            std::future::pending::<()>().await;
+        }
         self.inner.make_available().await
     }
     async fn migrate(&self, storage_name: &str, storage_identity_key: &str) -> Result<String> {
@@ -342,6 +364,10 @@ impl WalletStorageSync for Double {
         chunk: SyncChunk,
         sync_map: &mut SyncMap,
     ) -> Result<ProcessSyncChunkResult> {
+        if self.hold_sync.swap(false, Ordering::SeqCst) {
+            self.sync_entered.notify_one();
+            self.sync_release.notified().await;
+        }
         self.chunks.fetch_add(1, Ordering::SeqCst);
         if let Some(user) = chunk.user.as_ref() {
             self.user_rows
