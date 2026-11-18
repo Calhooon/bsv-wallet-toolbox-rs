@@ -635,58 +635,48 @@ impl WalletStorageManager {
     /// queued on a lock included.
     async fn partition(&self) -> Result<TableSettings> {
         let stores = self.stores.read().await;
-        // Partition stores into active, backups, and conflicting
-        let mut active_idx: Option<usize> = None;
-        let mut backups_temp: Vec<usize> = Vec::new();
+        // Only the stores the manager has opened: a store pushed by
+        // `add_wallet_storage_provider` whose open has not ended is not yet
+        // one of the stores the partition answers for.
+        let open: Vec<(usize, &TableUser, &TableSettings)> = stores
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| match (s.is_available, &s.user, &s.settings) {
+                (true, Some(user), Some(settings)) => Some((i, user, settings)),
+                _ => None,
+            })
+            .collect();
+        let names_itself = |user: &TableUser, settings: &TableSettings| {
+            user.active_storage.as_ref() == Some(&settings.storage_identity_key)
+        };
 
-        for (i, store) in stores.iter().enumerate() {
-            if active_idx.is_none() {
-                // First store becomes default active
-                active_idx = Some(i);
-            } else {
-                let user_active = store.user.as_ref().unwrap().active_storage.clone();
-                let store_identity = store
-                    .settings
-                    .as_ref()
-                    .unwrap()
-                    .storage_identity_key
-                    .clone();
-
-                // Check if this store's user record selects it as active
-                if user_active.as_ref() == Some(&store_identity) {
-                    // Check if current active is not enabled
-                    let current_active = &stores[active_idx.unwrap()];
-                    let current_settings = current_active.settings.as_ref().unwrap();
-                    let current_user = current_active.user.as_ref().unwrap();
-
-                    if current_user.active_storage.as_ref()
-                        != Some(&current_settings.storage_identity_key)
+        // Partition stores into active, backups, and conflicting: the
+        // store ahead in the order is the default active; a later store
+        // whose row names it becomes the active while the current one's
+        // row does not name the current one.
+        let mut active: Option<(usize, &TableUser, &TableSettings)> = None;
+        let mut backups_temp: Vec<(usize, &TableUser)> = Vec::new();
+        for &(i, user, settings) in &open {
+            match active {
+                None => active = Some((i, user, settings)),
+                Some((current, current_user, current_settings)) => {
+                    if names_itself(user, settings) && !names_itself(current_user, current_settings)
                     {
-                        // Swap: this store should be active
-                        backups_temp.push(active_idx.unwrap());
-                        active_idx = Some(i);
-                        continue;
+                        backups_temp.push((current, current_user));
+                        active = Some((i, user, settings));
+                    } else {
+                        backups_temp.push((i, user));
                     }
                 }
-                backups_temp.push(i);
             }
         }
 
         // Now partition backups into actual backups and conflicting
         let mut backups: Vec<usize> = Vec::new();
         let mut conflicting: Vec<usize> = Vec::new();
-
-        if let Some(active) = active_idx {
-            let active_storage_identity = stores[active]
-                .settings
-                .as_ref()
-                .unwrap()
-                .storage_identity_key
-                .clone();
-
-            for idx in backups_temp {
-                let user_active = stores[idx].user.as_ref().unwrap().active_storage.clone();
-                if user_active.as_ref() != Some(&active_storage_identity) {
+        if let Some((_, _, active_settings)) = active {
+            for (idx, user) in backups_temp {
+                if user.active_storage.as_ref() != Some(&active_settings.storage_identity_key) {
                     conflicting.push(idx);
                 } else {
                     backups.push(idx);
@@ -694,12 +684,10 @@ impl WalletStorageManager {
             }
         }
 
-        let active = active_idx.map(|idx| {
-            let user = stores[idx].user.as_ref().unwrap();
-            let settings = stores[idx].settings.clone().unwrap();
-            let is_active = user.active_storage.as_ref() == Some(&settings.storage_identity_key)
-                && conflicting.is_empty();
-            (user.user_id, is_active, settings)
+        let active_idx = active.map(|(idx, _, _)| idx);
+        let active = active.map(|(_, user, settings)| {
+            let is_active = names_itself(user, settings) && conflicting.is_empty();
+            (user.user_id, is_active, settings.clone())
         });
 
         // Every lock, in the order above, the stores still held; then every

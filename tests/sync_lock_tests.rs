@@ -335,3 +335,108 @@ async fn update_backups_never_syncs_a_store_to_itself() {
     assert!(log.contains("passes over C"), "{log}");
     assert_eq!(state(&mgr).await, ("C".into(), true));
 }
+
+/// A store's join answer, or the text of its panic.
+fn joined<T>(r: std::result::Result<T, tokio::task::JoinError>) -> std::result::Result<T, String> {
+    r.map_err(|e| match e.try_into_panic() {
+        Ok(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .map_or_else(|| "a panic".to_string(), |text| format!("panic: {text}")),
+        Err(e) => e.to_string(),
+    })
+}
+
+/// An open over three stores waits inside the store at index 0 while a
+/// fourth store is added from another task, whose own open is held in the
+/// fourth store's user read. The open over three answers (no panic) with
+/// the active of the stores that are open; meanwhile `get_stores` lists
+/// the fourth, pushed and not yet opened, with no key, no user and no role
+/// (and, while the fourth's open runs, the three with no role: an open
+/// resets the partition until it ends). Once the fourth's open ends, the
+/// partition that follows takes it in, a backup.
+#[tokio::test]
+async fn a_partition_reads_only_the_stores_that_are_open() {
+    let doubles = vec![
+        double_naming(SRC, SRC).await,
+        double_naming(DST, SRC).await,
+        double_naming(THIRD, SRC).await,
+    ];
+    doubles[0].hold_make_available.store(true, Ordering::SeqCst);
+    let mgr = Arc::new(manager_over(&doubles));
+    let open = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.make_available().await })
+    };
+    bounded(
+        "the open's store call begins",
+        doubles[0].make_available_entered.notified(),
+    )
+    .await;
+
+    let fourth = double_naming(FOURTH, SRC).await;
+    fourth.hold_user_read.store(true, Ordering::SeqCst);
+    let add = {
+        let (mgr, fourth) = (mgr.clone(), fourth.clone());
+        tokio::spawn(async move {
+            mgr.add_wallet_storage_provider(fourth as Arc<dyn MonitorStorage>)
+                .await
+        })
+    };
+    bounded("the fourth store is pushed", async {
+        while mgr.get_stores().await.len() < 4 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    // Room for the fourth's open to reach its held user read, were nothing
+    // holding it.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        fourth.user_read_entered.notified(),
+    )
+    .await;
+    doubles[0].make_available_release.notify_one();
+    let opened = joined(bounded("the open over three stores", open).await);
+    let opened_word = match &opened {
+        Ok(Ok(settings)) => format!("ok, active {}", name(&settings.storage_identity_key)),
+        Ok(r) => refusal(r),
+        Err(panic) => panic.clone(),
+    };
+    let held = mgr.get_stores().await;
+    let held_names: Vec<(String, bool, bool, bool)> = held
+        .iter()
+        .map(|s| {
+            (
+                name(&s.storage_identity_key).to_string(),
+                s.is_active,
+                s.is_backup,
+                s.is_conflicting,
+            )
+        })
+        .collect();
+    fourth.user_read_release.notify_one();
+    let added = joined(bounded("the fourth store's open", add).await);
+    let added_word = match &added {
+        Ok(r) => refusal(r),
+        Err(panic) => panic.clone(),
+    };
+    let backups_after = mgr.get_backup_stores().await;
+    println!(
+        "WITNESS a partition beside a store not yet opened: open {opened_word}; get_stores (name, active, backup, conflicting) {held_names:?}, the fourth's user id {}; add {added_word}; backups after {}",
+        held[3].user_id,
+        backups_after.len()
+    );
+    assert_eq!(opened_word, "ok, active A");
+    assert_eq!(held.len(), 4);
+    let held_keys: Vec<&str> = held_names.iter().map(|n| n.0.as_str()).collect();
+    assert_eq!(held_keys, vec!["A", "B", "C", "?"]);
+    assert_eq!(held_names[3], ("?".to_string(), false, false, false));
+    assert!(held[3].storage_identity_key.is_empty());
+    assert_eq!(held[3].user_id, 0);
+    assert_eq!(added_word, "ok");
+    assert_eq!(backups_after.len(), 3);
+    assert!(backups_after.iter().any(|k| k == FOURTH));
+    assert_eq!(state(&mgr).await, ("A".into(), true));
+}
