@@ -8866,17 +8866,21 @@ mod tests {
         s
     }
 
+    /// The height of the assembly's proven ancestor: after mainnet's
+    /// Genesis, so a spend of its coin is judged under the node's word.
+    const L2_23_PROOF_HEIGHT: u32 = bsv_rs::script::ProtocolEra::MAINNET_GENESIS_HEIGHT + 100;
+
     async fn l2_23_assembly(tracker: bool) -> (StorageSqlx, Vec<u8>, Vec<(Vec<u8>, String)>) {
         use bsv_rs::transaction::MockChainTracker;
         let s = l2_23_storage().await;
         let chain = synth_chain(3);
-        seed_proven_chain_tx(&s, &chain[0].1, &chain[0].0, 100).await;
+        seed_proven_chain_tx(&s, &chain[0].1, &chain[0].0, L2_23_PROOF_HEIGHT).await;
         let mut stub = Beef::new();
         stub.merge_raw_tx(chain[1].0.clone(), None);
         seed_unproven_tx(&s, &chain[1].1, &chain[1].0, Some(&stub.to_binary())).await;
         seed_unproven_tx(&s, &chain[2].1, &chain[2].0, None).await;
-        let mut t = MockChainTracker::new(101);
-        t.add_root(100, chain[0].1.clone());
+        let mut t = MockChainTracker::new(L2_23_PROOF_HEIGHT + 1);
+        t.add_root(L2_23_PROOF_HEIGHT, chain[0].1.clone());
         let mut conn = s.pool().acquire().await.unwrap();
         let bytes = build_input_beef(
             &mut conn,
@@ -8948,8 +8952,8 @@ mod tests {
         use bsv_rs::transaction::MockChainTracker;
         let (s, bytes, chain) = l2_23_assembly(true).await;
         let (user, _) = s.find_or_insert_user("03abcd").await.unwrap();
-        let mut t = MockChainTracker::new(101);
-        t.add_root(100, chain[0].1.clone());
+        let mut t = MockChainTracker::new(L2_23_PROOF_HEIGHT + 1);
+        t.add_root(L2_23_PROOF_HEIGHT, chain[0].1.clone());
         s.set_chain_tracker(std::sync::Arc::new(t)).await;
         let mut beef = Beef::from_binary(&bytes).unwrap();
         let result = super::super::internalize_action::internalize_action_internal(
