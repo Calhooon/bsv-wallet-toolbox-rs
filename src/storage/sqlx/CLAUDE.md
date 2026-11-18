@@ -10,7 +10,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module definition and public exports (44 lines) |
-| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (10295 lines) |
+| `storage_sqlx.rs` | Complete `StorageSqlx` implementation (10310 lines) |
 | `create_action.rs` | Transaction creation implementation (3823 lines) |
 | `process_action.rs` | Signed transaction processing (1884 lines) |
 | `abort_action.rs` | Transaction abort/cancellation; since 0.3.60 a broadcast (`unproven` / `sending`) transaction with NO chain evidence (no `chain|seen`, no `mined` row, no proof) is aborted too: inputs released, own outputs dead, memory `rejected`, unproven descendants retired |
