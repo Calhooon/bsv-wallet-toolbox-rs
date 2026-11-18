@@ -3451,7 +3451,10 @@ impl StorageSqlx {
     ///    walk asks for the proof through the store funnel, and a row with
     ///    no req is a candidate of `MonitorStorage::review_status`'s pass,
     ///    which checks the root (confirmed: completed; refuted: the link
-    ///    cleared; no tracker: nothing written). No header is read here.
+    ///    cleared, the proof row kept and marked refuted, a request made
+    ///    asking for the proof where none is held; no tracker: nothing
+    ///    written). A proof row so marked is never linked here. No header
+    ///    is read here.
     /// 2. **Adopt.** For up to [`ADOPT_UNPROVEN_TX_LIMIT`] remaining
     ///    proof-less rows (status `'completed'`/`'unproven'`, a txid, raw
     ///    bytes, NO req), create the req as `'unmined'` — "broadcast
@@ -3493,6 +3496,9 @@ impl StorageSqlx {
             WHERE t.proven_tx_id IS NULL
               AND t.txid IS NOT NULL
               AND t.status IN ('completed', 'unproven')
+              AND NOT EXISTS (SELECT 1 FROM proof_root_checks m
+                              WHERE m.txid = p.txid AND m.height = p.height
+                                AND m.merkle_root LIKE 'refuted:%')
               AND NOT EXISTS (SELECT 1 FROM proven_tx_reqs r WHERE r.txid = t.txid
                               AND r.status NOT IN ('unmined', 'unknown', 'callback', 'sending', 'unconfirmed'))
             ORDER BY t.transaction_id ASC
@@ -3503,13 +3509,19 @@ impl StorageSqlx {
         if !candidates.is_empty() {
             let mut wtx = self.write_tx().await?;
             for (transaction_id, txid, proven_tx_id, merkle_path) in candidates {
-                let checked = match MerklePath::from_binary(&merkle_path) {
-                    Ok(path) => {
+                let (checked, refuted) = match MerklePath::from_binary(&merkle_path) {
+                    Ok(path) => (
                         super::proof_root_checks::stored_proof_checked_on(&mut wtx, &txid, &path)
-                            .await?
-                    }
-                    Err(_) => false,
+                            .await?,
+                        super::proof_root_checks::stored_proof_refuted_on(&mut wtx, &txid, &path)
+                            .await?,
+                    ),
+                    Err(_) => (false, false),
                 };
+                // A proof row this store's tracker refuted is never linked.
+                if refuted {
+                    continue;
+                }
                 // Read again inside the write: the same proof row, the row
                 // still unlinked, in an eligible status, beside no request
                 // or a proof-eligible one.
@@ -6088,6 +6100,9 @@ impl MonitorStorage for StorageSqlx {
               )
               AND NOT EXISTS (
                 SELECT 1 FROM proven_txs p WHERE p.txid = transactions.txid
+                  AND NOT EXISTS (SELECT 1 FROM proof_root_checks m
+                                  WHERE m.txid = p.txid AND m.height = p.height
+                                    AND m.merkle_root LIKE 'refuted:%')
               )
             RETURNING transaction_id
             "#,

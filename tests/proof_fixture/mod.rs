@@ -218,7 +218,7 @@ pub async fn view(s: &StorageSqlx, n: u8) -> String {
         .unwrap_or_else(|| "none".into());
     let checked = count(
         s,
-        &format!("SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{txid}'"),
+        &format!("SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{txid}' AND merkle_root NOT LIKE 'refuted:%'"),
     )
     .await;
     format!("{} | req {req} | checked {checked}", rows.join(" "))
@@ -232,4 +232,69 @@ pub async fn history(s: &StorageSqlx, n: u8) -> String {
         .fetch_one(s.pool())
         .await
         .unwrap()
+}
+
+/// Services that hold `n` mined at HEIGHT and serve its proof.
+pub fn chain_holds(n: u8) -> MockWalletServices {
+    use bsv_wallet_toolbox_rs::services::mock::MockResponse;
+    use bsv_wallet_toolbox_rs::services::{
+        BlockHeader, GetMerklePathResult, GetStatusForTxidsResult, TxStatusDetail,
+    };
+    let (txid, _, path, root) = mined(n);
+    MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+            name: "MockProvider".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: vec![TxStatusDetail {
+                txid,
+                status: "mined".to_string(),
+                depth: Some(1),
+                merkle_path: None,
+                block_height: None,
+                block_hash: None,
+            }],
+        }))
+        .is_utxo_response(MockResponse::Success(true))
+        .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
+            name: Some("MockProvider".to_string()),
+            merkle_path: Some(hex::encode(path)),
+            header: Some(BlockHeader {
+                version: 1,
+                previous_hash: "00".repeat(32),
+                merkle_root: root,
+                time: 1,
+                bits: 1,
+                nonce: 1,
+                hash: "e".repeat(64),
+                height: HEIGHT,
+            }),
+            error: None,
+            notes: vec![],
+        }))
+        .build()
+}
+
+/// The proof row of `n` on `s` and its root-check record, as
+/// `rows:<count> record:<root or refuted:root or none>`.
+pub async fn proof_state(s: &StorageSqlx, n: u8) -> String {
+    let (txid, _, _, root) = mined(n);
+    let rows = count(
+        s,
+        &format!("SELECT COUNT(*) FROM proven_txs WHERE txid = '{txid}'"),
+    )
+    .await;
+    let record: Option<String> =
+        ::sqlx::query_scalar("SELECT merkle_root FROM proof_root_checks WHERE txid = ?")
+            .bind(&txid)
+            .fetch_optional(s.pool())
+            .await
+            .unwrap();
+    let record = match record {
+        None => "none".to_string(),
+        Some(r) if r == root => "checked".to_string(),
+        Some(r) if r == format!("refuted:{root}") => "refuted".to_string(),
+        Some(r) => r,
+    };
+    format!("proof rows {rows} record {record}")
 }

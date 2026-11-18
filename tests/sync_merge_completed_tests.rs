@@ -169,7 +169,7 @@ async fn view(s: &StorageSqlx, n: u8) -> String {
         .unwrap_or_else(|| "none".into());
     let checked = count(
         s,
-        &format!("SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{txid}'"),
+        &format!("SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{txid}' AND merkle_root NOT LIKE 'refuted:%'"),
     )
     .await;
     let spendable = count(
