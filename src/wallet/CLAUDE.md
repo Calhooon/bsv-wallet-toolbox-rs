@@ -63,9 +63,16 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 | `wallet.rs` | ~3547 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `WalletBalance`, `UtxoInfo`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, balance/sweep helpers, permission checks, and helper functions |
 | `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1090 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
-| `lookup.rs` | 703 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, the bounds on an answering host (body, outputs, hosts, host URL, redirects), BEEF/PushDrop certificate parsing, deduplication |
+| `lookup.rs` | 779 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, the bounds on an answering host (body, outputs, hosts, host URL, redirects, the call's deadline), certificate parsing, deduplication |
+| `lookup_checks.rs` | 433 | The checks on what a host answers: a SLAP advertisement's decode and verify, an identity output's decode and the certificate's verify, the bounds on an answered certificate, the identity-key filter |
+| `lookup_attribute_match.rs` | 191 | The attribute filter (the reference's `filterCertificatesByAttributes`) |
+| `lookup_public_network.rs` | 125 | The public-address rule of the lookup client without HTTP enabled (`isPublicNetworkAddress`, a DNS resolver that refuses non-public answers) |
 | `lookup_tests.rs` | 269 | `lookup.rs`'s unit tests (certificate conversion, dedup, answer parsing) |
-| `lookup_bounds_tests.rs` | 539 | Witnesses of `lookup.rs`'s bounds against local listeners on 127.0.0.1 |
+| `lookup_bounds_tests.rs` | 556 | Witnesses of `lookup.rs`'s bounds against local listeners on 127.0.0.1 |
+| `lookup_verify_tests.rs` | 294 | Witnesses of the advertisement and certificate checks and the deadline |
+| `lookup_identity_bounds_tests.rs` | 77 | Witnesses of the bounds on an answered certificate, at each bound and one past it |
+| `lookup_identity_fixtures.rs` | 142 | Test fixtures: signed certificates revealed to `anyone`, in signed identity outputs |
+| `lookup_public_network_tests.rs` | 84 | Witnesses of the public-address rule |
 
 ## Key Exports
 
@@ -259,13 +266,18 @@ Default implementation that queries overlay `/lookup` endpoints via HTTP POST, i
 - Bounds on what an answering host chooses (the reference resolver's figures): `MAX_LOOKUP_RESPONSE_BYTES` 32 MiB per body (`read_lookup_body`: a declared length past it refused before the body is read, chunks stopped at it), `MAX_LOOKUP_OUTPUTS` 4096 per answer, `MAX_HOSTS_PER_TRACKER` 64 hosts called per tracker answer, 10 s per request (connect to the body's end), no redirect followed (`lookup_client`)
 - A named host must be an `https` origin (`named_host`: at most 2048 bytes, no credentials, query, fragment or path); `http` only when every configured tracker is `http`
 - One output of an answered BEEF is read unlinked (`Transaction::from_beef_subject`): only its locking script is used
-- The load of one call: at most one request per configured tracker plus 64 to named hosts (67 on mainnet), sequential, no cache, no retry
-- Parses BEEF-encoded PushDrop transaction outputs into `OverlayCertificate` structs; an output that does not parse (no such output, no PushDrop field, not a certificate) is skipped
+- A SLAP output names a host only when `slap_advertisement_domain` decodes and verifies it (the reference's `decodeAndVerifyOverlayAdvertisement`): one satoshi, a canonical five-field PushDrop (4096 bytes a field, 8192 together), protocol `SLAP`, the service asked (`ls_identity`), signed and locked by the identity key's key for `anyone` under `service lookup availability`; an `https` host's name is not `localhost` and has no `xn--` label
+- Without HTTP enabled (any tracker not plain `http`) the client calls public addresses only (`lookup_public_network`: `public_target` for the URL and an address literal, `PublicResolver` for a name: 1 to 64 addresses, all public)
+- `LOOKUP_DEADLINE` 10 s for the whole call (trackers and hosts); past it the call answers `Ok(vec![])`
+- An overlay output yields a certificate only by `identity_output_certificate` (the reference wallet's `decodeIdentityOutput`): the subject's signed and locked two-field PushDrop, the record's eight keys, the certifier's signature (ported `Certificate.verify`: the certifier's key for `anyone` under `certificate signature`, key ID `{type} {serialNumber}`), fields revealed to `anyone` decrypted into `decrypted_fields`; bounds 256 KiB a certificate, 100 fields and keyring entries, 2048 units a keyring value
+- The certificate must answer the lookup: `answers_identity_key` (subject equals the key, case-insensitive) or `answers_attributes` (decrypted fields against the attributes; `userName` exact, other fields by words in order, `any` the all-fields search); at most `MAX_IDENTITY_RESULTS` 256 returned
+- The load of one call: at most one request per configured tracker plus 64 to named hosts (67 on mainnet), sequential, all within 10 s, no cache, no retry
+- An output that does not pass is skipped and the call answers with the others
 
 ### Helper Functions
 
 - `parse_overlay_answer(answer)` - Parse `LookupAnswer` into certificates (handles `OutputList` variant)
-- `parse_single_output(beef, output_index)` - Parse single BEEF output via PushDrop decode (field 0 as the certificate JSON)
+- `parse_single_output(beef, output_index)` - Parse single BEEF output by `identity_output_certificate`
 - `dedup_certificates(certs)` - Deduplicate by `(type_id, serial_number)`, keeping first occurrence
 
 ## WalletInterface Methods
