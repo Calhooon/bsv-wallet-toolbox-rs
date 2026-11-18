@@ -274,3 +274,41 @@ pub(crate) async fn withheld_to_try(pool: &sqlx::SqlitePool) -> Result<Vec<(i64,
     .fetch_all(pool)
     .await?)
 }
+
+/// A `nosend` transaction being sent (`txid`): each change output of it
+/// that records no spender becomes spendable in the caller's write, unless
+/// a transaction this store holds spends it (by its bytes or as a recorded
+/// spender on a row of it) or an unread row could hide one; one withheld
+/// only for an unread row is recorded for the unfail task to try again.
+/// Answers how many were set spendable.
+pub(crate) async fn release_sent_change(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<u64> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT output_id, vout FROM outputs \
+         WHERE txid = ? AND change = 1 AND spendable = 0 AND spent_by IS NULL",
+    )
+    .bind(txid)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut released = 0;
+    for (output_id, vout) in rows {
+        let held = stored_spenders_of(&mut *conn, txid, vout as u32).await?;
+        if held.none_held() {
+            released += sqlx::query(
+                "UPDATE outputs SET spendable = 1, updated_at = ? \
+                 WHERE output_id = ? AND spendable = 0 AND spent_by IS NULL",
+            )
+            .bind(now)
+            .bind(output_id)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+        } else if held.spenders.is_empty() {
+            record_withheld(&mut *conn, output_id, txid, vout as u32, now).await?;
+        }
+    }
+    Ok(released)
+}

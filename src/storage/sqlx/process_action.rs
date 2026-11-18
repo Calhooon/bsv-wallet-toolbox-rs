@@ -672,7 +672,8 @@ pub(super) async fn process_action_writes(
         )
         .await?;
 
-        // nosend outputs stay spendable=false until the tx is actually broadcast
+        // nosend outputs stay spendable=false until the tx is sent
+        // (`stored_spenders::release_sent_change`, below and at internalize)
         let mark_spendable = !args.is_no_send || args.is_send_with;
 
         let settings = storage.get_settings();
@@ -755,6 +756,14 @@ pub(super) async fn process_action_writes(
             let already_sent = current_status == proven_tx_req_status::UNMINED
                 || current_status == "completed"
                 || current_status == "unproven";
+
+            // A `nosend` transaction sent now: its change becomes a coin
+            // in this write, as the reference writes every output of a
+            // signed transaction spendable and lets the transaction's status
+            // gate it (ts-stack `processAction.ts` `buildOutputUpdates`).
+            if !already_sent && current_status == proven_tx_req_status::NOSEND {
+                super::stored_spenders::release_sent_change(&mut *tx, txid, Utc::now()).await?;
+            }
 
             if already_sent {
                 send_with_results.push(SendWithResult {
