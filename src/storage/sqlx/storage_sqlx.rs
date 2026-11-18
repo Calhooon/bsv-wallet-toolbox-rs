@@ -555,6 +555,20 @@ impl StorageSqlx {
         acquire_writer(&self.writer).await
     }
 
+    /// Which transactions of this store that are not failed spend
+    /// `txid`.`vout`, by their bytes, read on a reader connection (never
+    /// the writer), and how many such transactions cannot be read
+    /// (`super::stored_spenders`).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn stored_spenders(
+        &self,
+        txid: &str,
+        vout: u32,
+    ) -> Result<super::stored_spenders::StoredSpenders> {
+        let mut conn = self.reader.acquire().await?;
+        super::stored_spenders::stored_spenders_of(&mut conn, txid, vout).await
+    }
+
     /// The persisted broadcast acceptance memory over this storage's pool
     /// (`broadcast_seen` / `broadcast_prefs`). A shared handle: the same
     /// instance the wallet and the monitor attach to the services.
