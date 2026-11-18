@@ -173,10 +173,11 @@ pub async fn internalize_action_internal(
     crate::storage::received_beef::check_roots(&roots, chain_tracker).await?;
     // Step 7: every input of each transaction the BEEF does not prove run
     // against the output it spends, the tracker's tip asked and the
-    // scripts run before the writer is taken.
+    // scripts run before the writer is taken. The network is the calling
+    // wallet's when a wallet called, else the store's own word.
     crate::storage::received_beef::check_input_scripts(
         &args.tx,
-        &storage.get_settings().chain,
+        &crate::storage::received_beef::door_network(storage.get_settings().chain),
         chain_tracker,
     )
     .await?;
