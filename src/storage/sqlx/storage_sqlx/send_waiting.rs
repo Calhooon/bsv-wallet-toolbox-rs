@@ -155,6 +155,67 @@ impl StorageSqlx {
         self.queue_competitors(txid, competitors).await?;
         Ok(())
     }
+
+    /// The internalize door's post of a held presentation drew no take
+    /// (DECISIONS 29.1, reading 11 of section 30): every instance's word
+    /// goes on the request's history (`immediateBroadcastHint`, as
+    /// [`Self::record_immediate_broadcast_hint`] writes it) whatever the
+    /// request's word. A request `unsent`, `sending` or `unprocessed` is
+    /// the door's to send: it is left `unsent` with `attempts` counted, as
+    /// the immediate hint leaves it. Any other word (another user's
+    /// `nosend`, an `unmined` request with no recorded take, an `invalid`
+    /// or `doubleSpend` word) is not overwritten by a post nobody took:
+    /// its status and `attempts` stay, the note alone is added. A named
+    /// competitor is queued for a proof ask.
+    pub(in crate::storage::sqlx) async fn record_door_post_hint(
+        &self,
+        txid: &str,
+        outcome: &str,
+        words: serde_json::Value,
+        competitors: &[String],
+    ) -> Result<()> {
+        let row: Option<(i64, i64, String, String)> = sqlx::query_as(
+            "SELECT proven_tx_req_id, attempts, history, status FROM proven_tx_reqs WHERE txid = ?",
+        )
+        .bind(txid)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some((proven_tx_req_id, attempts, history, status)) = row else {
+            return Ok(());
+        };
+        let sends = matches!(status.as_str(), "unsent" | "sending" | "unprocessed");
+        let attempts = if sends {
+            attempts.saturating_add(1)
+        } else {
+            attempts
+        };
+        let now = chrono::Utc::now();
+        let next = crate::services::cadence::send_waiting_reask_minutes(
+            u32::try_from(attempts).unwrap_or(u32::MAX),
+        );
+        let history = append_req_history_note(
+            &history,
+            serde_json::json!({
+                "when": now.to_rfc3339(),
+                "what": "immediateBroadcastHint",
+                "outcome": outcome,
+                "attempts": attempts,
+                "words": words,
+                "nextReaskMinutes": next,
+            }),
+        );
+        let status = if sends { "unsent" } else { status.as_str() };
+        sqlx::query("UPDATE proven_tx_reqs SET status = ?, attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+            .bind(status)
+            .bind(attempts)
+            .bind(history)
+            .bind(now)
+            .bind(proven_tx_req_id)
+            .execute(&mut *self.writer_conn().await?)
+            .await?;
+        self.queue_competitors(txid, competitors).await?;
+        Ok(())
+    }
 }
 
 impl StorageSqlx {

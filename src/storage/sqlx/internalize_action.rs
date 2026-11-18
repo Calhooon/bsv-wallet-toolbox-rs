@@ -274,6 +274,10 @@ pub async fn internalize_action_internal(
     // (a validated proof the LAG gate defers writes none): the status and
     // the request below follow the row, never the claim.
     let mut proof_stored = false;
+    // Whether the door posts this presentation (DECISIONS 30, reading 11): a
+    // new row of this user written held (no checked proof, no recorded
+    // take), whatever request the store already holds for the txid.
+    let mut door_posts = false;
 
     let transaction_id = if is_merge {
         let etx = existing_tx
@@ -418,6 +422,7 @@ pub async fn internalize_action_internal(
         } else {
             "unproven"
         };
+        door_posts = status == "sending";
 
         let result = sqlx::query(
             r#"
@@ -640,18 +645,25 @@ pub async fn internalize_action_internal(
     // - unconfirmable BUMP -> 'unmined': the payer asserts it is already
     //   mined, so do NOT re-broadcast; let CheckForProofs chain-verify it and
     //   fetch a proof from a service (a bogus BUMP simply fails triage there).
-    let mut new_req_created = false;
     if !proof_stored && !is_merge {
         let req_status = if has_proof { "unmined" } else { "unsent" };
-        let created = create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, req_status).await?;
-        // Only an 'unsent' req is ours to broadcast.
-        new_req_created = created && req_status == "unsent";
+        // A request another user's act wrote for this txid keeps its word;
+        // it is no verdict for this user's presentation (reading 11).
+        create_proven_tx_req(&mut tx, &txid, &raw_tx, &args.tx, req_status).await?;
     }
 
     // Commit the SQL transaction. All DB operations above are now atomically persisted.
     super::storage_sqlx::commit(tx).await?;
 
-    // Step 11: Synchronous broadcast for a brand-new req.
+    // Step 11: Synchronous broadcast of a held presentation.
+    // The door posts once to each named instance for EACH USER'S
+    // presentation of a transaction the store holds no checked proof of
+    // and no recorded take for (DECISIONS 29.1 and 30, reading 11),
+    // whatever request already stands for the txid: another user's
+    // `nosend`, `unsent`, `sending` or `unmined` request, or an `invalid` or
+    // `doubleSpend` word, is no verdict for this user. A merge (a repeat by
+    // this user) posts nothing. Before this the door posted only a request
+    // this call created.
     // TS parity: wallet-toolbox storage/methods/internalizeAction.ts:598-623
     // (newInternalize), which calls shareReqsWithWorld inline when `pr.isNew`
     // and aborts the internalize on hard rejection. Deferring the broadcast
@@ -663,7 +675,7 @@ pub async fn internalize_action_internal(
     // Every error of the broadcast step is a write after the post: never the
     // call's error, the transaction is on the network (bsv-wallet-cli #44);
     // the req stays 'unsent' and the send-waiting task heals it.
-    if new_req_created {
+    if door_posts {
         if let Err(e) = broadcast_new_internalized_req(storage, &txid, &args.tx).await {
             crate::storage::broadcast::post_broadcast_status_write_failed(&txid, &e);
         }
@@ -1523,7 +1535,7 @@ async fn broadcast_new_internalized_req(
         Ok(r) => r,
         Err(e) => {
             storage
-                .record_immediate_broadcast_hint(
+                .record_door_post_hint(
                     txid,
                     "serviceError",
                     serde_json::json!([{ "error": e.to_string() }]),
@@ -1598,7 +1610,7 @@ async fn broadcast_new_internalized_req(
                     .collect::<Vec<_>>(),
             );
             storage
-                .record_immediate_broadcast_hint(txid, word, words, &competitors)
+                .record_door_post_hint(txid, word, words, &competitors)
                 .await?;
             tracing::warn!(
                 txid = %txid,
@@ -1630,18 +1642,24 @@ async fn broadcast_new_internalized_req(
         });
     }
     let now = Utc::now();
-    // The request and the held transaction move together: taken, the
-    // transaction is `unproven` (counted, offered under the action's rule).
+    // The request and the held transactions move together: taken, every
+    // row of the txid that is neither `failed` nor `completed` is
+    // `unproven` (counted, offered under the action's rule), the rule of
+    // `process_action`'s success arm; the request is `unmined` from every
+    // word but `completed`, another user's `nosend`, `unsent`, `sending`,
+    // `invalid` or `doubleSpend` included (a broadcaster's take outweighs a
+    // word no proof stands behind, reading 11).
     let mut tx = storage.write_tx().await?;
     sqlx::query(
-        "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status = 'unsent'",
+        "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status <> 'completed'",
     )
     .bind(now)
     .bind(txid)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "UPDATE transactions SET status = 'unproven', updated_at = ? WHERE txid = ? AND status = 'sending'",
+        "UPDATE transactions SET status = 'unproven', updated_at = ? \
+         WHERE txid = ? AND status NOT IN ('failed', 'completed')",
     )
     .bind(now)
     .bind(txid)
