@@ -1108,7 +1108,11 @@ impl WalletStorageManager {
             // partitioned from those rows as at open: that store is its
             // active (the target, when the switch in fact completed and one
             // answer was lost; the old active, when nothing was written).
-            // Otherwise it stays on the active it had, not enabled.
+            // Otherwise it stays on the active it had, not enabled. The
+            // condition that every store was read cannot by itself decide
+            // the outcome: the row of a store that cannot be read is held as
+            // naming no active, so `rows_name_one_store` is already false
+            // then. It is kept as a safety net, should that hold ever change.
             if self.reread_user_rows_after_error().await && self.rows_name_one_store().await {
                 // The partition reads no store; it fails only without an
                 // active, which a manager with stores always has.
