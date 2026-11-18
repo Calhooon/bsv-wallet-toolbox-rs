@@ -193,6 +193,17 @@ pub(crate) async fn read_lookup_body(
     }
 }
 
+/// The resolver's HTTP client: it follows no redirect. A tracker's or a
+/// host's 3xx is not a success, so it is that tracker's or host's failure,
+/// as the reference resolver's `redirect: 'error'` makes it; the query is
+/// never sent on to a URL the answering host names.
+fn lookup_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("the lookup client builds as reqwest::Client::new() does")
+}
+
 /// HTTP-based lookup resolver that queries overlay services.
 ///
 /// Uses two-step SLAP resolution matching the TypeScript SDK:
@@ -212,7 +223,7 @@ impl HttpLookupResolver {
     pub fn new(slap_tracker: &str) -> Self {
         Self {
             slap_trackers: vec![slap_tracker.to_string()],
-            client: reqwest::Client::new(),
+            client: lookup_client(),
         }
     }
 
@@ -220,7 +231,7 @@ impl HttpLookupResolver {
     pub fn with_endpoints(slap_trackers: Vec<String>) -> Self {
         Self {
             slap_trackers,
-            client: reqwest::Client::new(),
+            client: lookup_client(),
         }
     }
 
@@ -239,7 +250,7 @@ impl HttpLookupResolver {
         };
         Self {
             slap_trackers,
-            client: reqwest::Client::new(),
+            client: lookup_client(),
         }
     }
 

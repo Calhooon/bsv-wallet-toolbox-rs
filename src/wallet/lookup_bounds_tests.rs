@@ -40,6 +40,15 @@ impl Answer {
             framing,
         }
     }
+
+    fn redirect(to: &str) -> Self {
+        Self {
+            status: "307 Temporary Redirect",
+            headers: vec![format!("Location: {to}/lookup")],
+            body: Arc::new(Vec::new()),
+            framing: Framing::Length,
+        }
+    }
 }
 
 /// A listener on 127.0.0.1 answering every request with `answer`; its base
@@ -366,4 +375,27 @@ async fn a_slap_output_with_no_field_or_no_such_output_names_no_host() {
     outputs.push((named[0].beef.clone(), 0));
     let (tracker, _) = listener(Answer::ok(answer_of(outputs), Framing::Length)).await;
     assert_eq!(serials(vec![tracker]).await, vec!["Y".to_string()]);
+}
+
+// =============================================================================
+// Redirects
+// =============================================================================
+
+/// A tracker's and a host's 307 are their failures: the URL each names is
+/// never called, and the next tracker's and host's answers stand.
+#[tokio::test]
+async fn a_redirect_is_that_hosts_failure_and_is_not_followed() {
+    let (elsewhere, elsewhere_hits) =
+        listener(Answer::ok(cert_answer(&["R"]), Framing::Length)).await;
+    let (y, _) = listener(Answer::ok(cert_answer(&["Y"]), Framing::Length)).await;
+    let (redirecting_host, _) = listener(Answer::redirect(&elsewhere)).await;
+    let (redirecting_tracker, _) = listener(Answer::redirect(&elsewhere)).await;
+    let (tracker, _) = listener(Answer::ok(
+        slap_answer(&[&redirecting_host, &y]),
+        Framing::Length,
+    ))
+    .await;
+    let serials = serials(vec![redirecting_tracker, tracker]).await;
+    assert_eq!(serials, vec!["Y".to_string()]);
+    assert_eq!(elsewhere_hits.load(Ordering::SeqCst), 0);
 }
