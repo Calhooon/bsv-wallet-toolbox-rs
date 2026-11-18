@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bsv_wallet_toolbox_rs::managers::WalletStorageManager;
+use bsv_wallet_toolbox_rs::storage::entities::TableCertificate;
 use bsv_wallet_toolbox_rs::storage::*;
 use bsv_wallet_toolbox_rs::StorageSqlx;
 
@@ -225,45 +226,137 @@ async fn active_rows(stores: &[&StorageSqlx]) -> Vec<Option<String>> {
     out
 }
 
-/// A `set_active` whose call fails at a store part way leaves the manager
-/// not available: its next call reads every store again before anything is
-/// written, and answers by what the stores now hold.
-#[tokio::test]
-async fn a_set_active_that_fails_part_way_reads_every_store_again() {
+fn cert(uid: i64, sn: &str) -> TableCertificate {
+    TableCertificate {
+        certificate_id: 0,
+        user_id: uid,
+        cert_type: "t".into(),
+        serial_number: sn.into(),
+        certifier: "c".into(),
+        subject: "s".into(),
+        verifier: None,
+        revocation_outpoint: "o.0".into(),
+        signature: "sig".into(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    }
+}
+
+async fn certs(s: &StorageSqlx) -> i64 {
+    count(s, "SELECT COUNT(*) FROM certificates").await
+}
+
+/// Stores A (active) and B (its backup, whose `set_active` fails), both
+/// rows naming A, under a made-available manager.
+async fn part_way() -> (StorageSqlx, Arc<Double>, WalletStorageManager) {
     let a = store(SRC).await;
     let b = Double::new((*store(DST).await).clone());
     b.fail_set_active.store(true, Ordering::SeqCst);
-    let b_inner = b.inner.clone();
     let a_inner = (*a).clone();
-    name_active(&[&a_inner, &b_inner], SRC).await;
+    name_active(&[&a_inner, &b.inner], SRC).await;
     let b = Arc::new(b);
     let mgr = WalletStorageManager::new(
         ALICE.to_string(),
         Some(a.clone() as Arc<dyn MonitorStorage>),
         Some(vec![b.clone() as Arc<dyn MonitorStorage>]),
     );
-    // Both rows name A: A is the enabled active, B its backup.
     mgr.make_available().await.unwrap();
-    let before = active_rows(&[&a_inner, &b_inner]).await;
+    (a_inner, b, mgr)
+}
 
+/// A `set_active` whose call fails at a store part way leaves the manager
+/// available on the active it had, not enabled; backups and plain writes go
+/// on to the old active; a retry once the store answers completes the
+/// switch.
+#[tokio::test]
+async fn a_set_active_that_fails_part_way_is_finished_by_a_retry() {
+    let (a, b, mgr) = part_way().await;
     let failed = mgr.set_active(DST).await;
-    let rows = active_rows(&[&a_inner, &b_inner]).await;
+    let rows = active_rows(&[&a, &b.inner]).await;
     let available = mgr.is_available().await;
-    let next = mgr.update_backups().await;
     let enabled = mgr.is_active_enabled().await;
+    let active = mgr.get_active_store().await.unwrap();
+    let backups = mgr.update_backups().await;
+    let auth = mgr.get_auth(false).await.unwrap();
+    let write =
+        WalletStorageWriter::insert_certificate(&mgr, &auth, cert(auth.user_id.unwrap(), "w1"))
+            .await;
+    let written = (certs(&a).await, certs(&b.inner).await);
+    let still = mgr.set_active(DST).await;
+    b.fail_set_active.store(false, Ordering::SeqCst);
+    let retry = mgr.set_active(DST).await;
+    let after = active_rows(&[&a, &b.inner]).await;
+    let now = (
+        mgr.get_active_store().await.unwrap(),
+        mgr.is_active_enabled().await,
+    );
     println!(
-        "WITNESS M7 set_active(B) failing at B: {}; rows (A, B) {before:?} -> {rows:?}; available after it {available}; next update_backups {}; active enabled {enabled}",
+        "WITNESS set_active(B) failing at B: {}; rows (A, B) {rows:?}; available {available}; enabled {enabled}; active A {}; update_backups {}; plain write {} certificates (A, B) {written:?}; set_active(B) while B fails {}; once B answers {}; rows {after:?}; active B {}, enabled {}",
         refusal(&failed),
-        refusal(&next)
+        active == SRC,
+        refusal(&backups),
+        refusal(&write),
+        refusal(&still),
+        refusal(&retry),
+        now.0 == DST,
+        now.1
     );
     assert_eq!(refusal(&failed), "Storage error: rows refused set_active");
     assert_eq!(rows, vec![Some(DST.to_string()), Some(SRC.to_string())]);
-    assert!(!available);
+    assert!(available);
+    assert!(!enabled);
+    assert_eq!(active, SRC);
+    assert_eq!(refusal(&backups), "ok");
+    assert_eq!(refusal(&write), "ok");
+    assert_eq!(written, (1, 0));
+    assert_eq!(refusal(&still), "Storage error: rows refused set_active");
+    assert_eq!(refusal(&retry), "ok");
+    assert_eq!(after, vec![Some(DST.to_string()), Some(DST.to_string())]);
+    assert_eq!(now, (DST.to_string(), true));
+}
+
+/// After a `set_active` that fails part way, a call back to the old active
+/// completes once the store answers, and every row names the old active
+/// again. A manager made over the stores while they still disagree answers
+/// its active as not enabled and refuses its backups.
+#[tokio::test]
+async fn a_set_active_that_fails_part_way_is_undone_by_a_call_back() {
+    let (a, b, mgr) = part_way().await;
+    let failed = mgr.set_active(DST).await;
+    let fresh = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(Arc::new(a.clone()) as Arc<dyn MonitorStorage>),
+        Some(vec![b.clone() as Arc<dyn MonitorStorage>]),
+    );
+    let fresh_settings = fresh.make_available().await.map(|s| s.storage_identity_key);
+    let fresh_enabled = fresh.is_active_enabled().await;
+    let fresh_backups = fresh.update_backups().await;
+    b.fail_set_active.store(false, Ordering::SeqCst);
+    let undo = mgr.set_active(SRC).await;
+    let after = active_rows(&[&a, &b.inner]).await;
+    let now = (
+        mgr.get_active_store().await.unwrap(),
+        mgr.is_active_enabled().await,
+    );
+    println!(
+        "WITNESS set_active(B) failing at B, then set_active(A): {} then {}; rows {after:?}; active A {}, enabled {}; a fresh manager meanwhile: active A {}, enabled {fresh_enabled}, update_backups {}",
+        refusal(&failed),
+        refusal(&undo),
+        now.0 == SRC,
+        now.1,
+        fresh_settings.as_deref().ok() == Some(SRC),
+        refusal(&fresh_backups)
+    );
+    assert_eq!(refusal(&failed), "Storage error: rows refused set_active");
+    assert_eq!(refusal(&undo), "ok");
+    assert_eq!(after, vec![Some(SRC.to_string()), Some(SRC.to_string())]);
+    assert_eq!(now, (SRC.to_string(), true));
+    assert_eq!(fresh_settings.as_deref().ok(), Some(SRC));
+    assert!(!fresh_enabled);
     assert_eq!(
-        refusal(&next),
+        refusal(&fresh_backups),
         "Access denied: Operation requires active storage"
     );
-    assert!(!enabled);
 }
 
 /// Two `set_active` calls at once run one after the other: no store's

@@ -931,9 +931,11 @@ impl WalletStorageManager {
     ///
     /// One transition at a time: a second call waits for the one running, on a
     /// lock no other operation of the manager takes. A transition that fails
-    /// part way leaves the manager not available, with no cached user row of
-    /// any store, so its next call reads every store again before anything
-    /// is written (the reference's setActive).
+    /// part way leaves the manager available on the active it had: the
+    /// stores whose call succeeded already name the new active, in their
+    /// rows and in the manager's cached rows, so the manager no longer
+    /// answers its active as enabled, and a retry of the call, or a call
+    /// back to the old active, runs the transition again over every store.
     pub async fn set_active(&self, storage_identity_key: &str) -> Result<String> {
         let _transition = self.set_active_lock.lock().await;
         if !*self.is_available.read().await {
@@ -966,25 +968,7 @@ impl WalletStorageManager {
 
         drop(stores);
 
-        match self.set_active_transition(storage_identity_key).await {
-            Ok(log) => Ok(log),
-            Err(e) => {
-                self.discard_partition().await;
-                Err(e)
-            }
-        }
-    }
-
-    /// Forget the partition and every store's cached user row: the stores
-    /// may disagree on the active store after a transition failed part way.
-    async fn discard_partition(&self) {
-        *self.is_available.write().await = false;
-        self.auth_id.write().await.is_active = Some(false);
-        let mut stores = self.stores.write().await;
-        for store in stores.iter_mut() {
-            store.is_available = false;
-            store.user = None;
-        }
+        self.set_active_transition(storage_identity_key).await
     }
 
     async fn set_active_transition(&self, storage_identity_key: &str) -> Result<String> {
