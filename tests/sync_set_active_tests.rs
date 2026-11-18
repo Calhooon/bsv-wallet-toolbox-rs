@@ -50,7 +50,7 @@ struct Cell {
 
 impl Cell {
     /// The active when the call is made, and the call's target.
-    fn from_to(&self) -> (&'static str, &'static str) {
+    fn old_and_new(&self) -> (&'static str, &'static str) {
         if self.switched {
             (DST, SRC)
         } else {
@@ -58,7 +58,7 @@ impl Cell {
         }
     }
     fn failing(&self) -> usize {
-        let (from, to) = self.from_to();
+        let (from, to) = self.old_and_new();
         let key = match self.role {
             Role::Active => from,
             Role::Target => to,
@@ -152,7 +152,7 @@ struct Answers {
 }
 
 async fn run(cell: Cell) -> Answers {
-    let (from, to) = cell.from_to();
+    let (from, to) = cell.old_and_new();
     let i = cell.failing();
 
     let (doubles, mgr) = setup(cell).await;
@@ -213,7 +213,7 @@ fn cells() -> Vec<Cell> {
 async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
     let mut bad = Vec::new();
     for cell in cells() {
-        let (from, to) = cell.from_to();
+        let (from, to) = cell.old_and_new();
         let (from, to) = (name(from).to_string(), name(to).to_string());
         let a = run(cell).await;
         println!(
