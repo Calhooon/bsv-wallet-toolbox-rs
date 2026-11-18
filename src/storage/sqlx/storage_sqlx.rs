@@ -583,7 +583,8 @@ impl StorageSqlx {
 
     /// `stored_spenders` for the output row `output_id` of the outpoint: a
     /// row of that output's own user that an output row names as its
-    /// spender is not counted as unread (`super::stored_spenders`).
+    /// spender is not counted as unread when its order shows it could not
+    /// have taken the output unrecorded (`super::stored_spenders`).
     pub(crate) async fn stored_spenders_of_output(
         &self,
         output_id: i64,
