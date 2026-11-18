@@ -37,6 +37,37 @@ fn cut(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
+/// The bound on an instance's name in a note and in the message, in bytes.
+pub(crate) const MAX_INSTANCE_NAME_BYTES: usize = 64;
+
+/// Text an instance chose (or its name), cleaned and bounded: every
+/// control character out (a newline, a carriage return, an escape), at most
+/// `max` bytes, cut on a character boundary. The door writes its notes with
+/// it and the wallet reads them with it again, so a storage server's words
+/// are bounded and cleaned on arrival too.
+pub(crate) fn clean_words(text: &str, max: usize) -> String {
+    let cleaned: String = text.chars().filter(|c| !c.is_control()).collect();
+    cut(&cleaned, max).to_string()
+}
+
+/// One instance's line of the message: its name cleaned, its words cleaned
+/// and quoted, each `"` and `\` escaped, so no instance's words can read as
+/// another instance's line; the words bounded to
+/// [`MAX_INSTANCE_WORDS_BYTES`] before the quotes.
+fn instance_line(instance: &str, word: &str) -> String {
+    let mut quoted = String::new();
+    for c in clean_words(word, MAX_INSTANCE_WORDS_BYTES).chars() {
+        if c == '"' || c == '\\' {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    format!(
+        "{}: \"{quoted}\"",
+        clean_words(instance, MAX_INSTANCE_NAME_BYTES)
+    )
+}
+
 /// A hex txid as the SDK's 32 bytes (all zeros for a malformed one, as the
 /// create door's send results read it).
 fn txid_bytes(txid: &str) -> [u8; 32] {
@@ -94,7 +125,7 @@ pub(crate) fn last_door_words(history: &str) -> Vec<String> {
                 .filter(|n| n.get("what").and_then(|w| w.as_str()) == Some("doorPost"))
                 .map(|n| {
                     let text = |k: &str| n.get(k).and_then(|v| v.as_str()).unwrap_or("");
-                    format!("{}: {}", text("instance"), text("word"))
+                    instance_line(text("instance"), text("word"))
                 })
                 .collect()
         })
@@ -102,12 +133,13 @@ pub(crate) fn last_door_words(history: &str) -> Vec<String> {
 }
 
 /// The refusal's message: the reference's sentence, then each instance's
-/// words, bounded.
-pub(crate) fn message(sentence: &str, words: &[String]) -> String {
+/// line ([`instance_line`], already bounded), the whole bounded to
+/// [`MAX_MESSAGE_BYTES`].
+pub(crate) fn message(sentence: &str, lines: &[String]) -> String {
     let mut message = sentence.to_string();
-    for (i, word) in words.iter().enumerate() {
+    for (i, line) in lines.iter().enumerate() {
         message.push_str(if i == 0 { " " } else { "; " });
-        message.push_str(cut(word, MAX_INSTANCE_WORDS_BYTES));
+        message.push_str(line);
     }
     cut(&message, MAX_MESSAGE_BYTES).to_string()
 }
@@ -145,12 +177,23 @@ mod tests {
     #[test]
     fn the_message_is_bounded() {
         let long = "x".repeat(4 * MAX_INSTANCE_WORDS_BYTES);
-        let words = vec![long; 8];
-        let text = message("The sentence.", &words);
+        let lines: Vec<String> = (0..8)
+            .map(|i| instance_line(&format!("i{i}"), &long))
+            .collect();
+        let text = message("The sentence.", &lines);
         assert_eq!(text.len(), MAX_MESSAGE_BYTES);
-        assert!(text.starts_with("The sentence. xxx"));
-        let one = message("S.", &["é".repeat(300)]);
-        assert!(one.len() <= 3 + MAX_INSTANCE_WORDS_BYTES);
+        assert!(text.starts_with("The sentence. i0: \"xxx"));
+        let one = instance_line("a", &"é".repeat(300));
+        assert!(one.len() <= "a: \"\"".len() + MAX_INSTANCE_WORDS_BYTES);
+    }
+
+    #[test]
+    fn an_instances_words_are_cleaned_and_quoted() {
+        let line = instance_line("a\nb", "no\r\n\u{7}; b: \"success\" \\ [ok]");
+        assert_eq!(line, "ab: \"no; b: \\\"success\\\" \\\\ [ok]\"");
+        assert!(!line.chars().any(char::is_control));
+        let lossy = String::from_utf8_lossy(&[0xff, 0xfe, 0x07, b'o', b'k']).to_string();
+        assert_eq!(clean_words(&lossy, 256), "\u{fffd}\u{fffd}ok");
     }
 
     #[test]
@@ -158,7 +201,10 @@ mod tests {
         let history = r#"{"notes":[{"what":"immediateBroadcastHint","words":["a: old"]},{"what":"doorPost","instance":"a","word":"rejected [no]"},{"what":"other"},{"what":"doorPost","instance":"b","word":"465 []"}]}"#;
         assert_eq!(
             last_door_words(history),
-            vec!["a: rejected [no]".to_string(), "b: 465 []".to_string()]
+            vec![
+                "a: \"rejected [no]\"".to_string(),
+                "b: \"465 []\"".to_string()
+            ]
         );
         assert!(last_door_words("{}").is_empty());
     }

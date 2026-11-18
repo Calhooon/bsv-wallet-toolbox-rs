@@ -1591,10 +1591,10 @@ async fn broadcast_new_internalized_req(
                     user,
                     own_request,
                     "serviceError",
-                    &[InstanceNote {
-                        instance: NO_INSTANCE.to_string(),
-                        word: format!("no instance answered: {e}"),
-                    }],
+                    &[door_note(
+                        NO_INSTANCE,
+                        &format!("no instance answered: {e}"),
+                    )],
                     &[],
                 )
                 .await;
@@ -1707,9 +1707,17 @@ fn instance_note(r: &crate::services::PostBeefResult, txid: &str) -> InstanceNot
     } else {
         mine.join(", ")
     };
+    door_note(&r.name, &word)
+}
+
+/// An instance's note, its name and words cleaned and bounded where they
+/// are written (`wallet::internalize_answer::clean_words`, 256 bytes a
+/// word): an instance's text is outside bytes.
+fn door_note(instance: &str, word: &str) -> InstanceNote {
+    use crate::wallet::internalize_answer as answer;
     InstanceNote {
-        instance: r.name.clone(),
-        word,
+        instance: answer::clean_words(instance, answer::MAX_INSTANCE_NAME_BYTES),
+        word: answer::clean_words(word, answer::MAX_INSTANCE_WORDS_BYTES),
     }
 }
 
