@@ -98,13 +98,16 @@ pub async fn store(sik: &str, name: &str, headers: Option<Arc<Headers>>) -> Arc<
 }
 
 /// W, with the tracker `tracker` names over `headers`.
+/// The proof gate stands above HEIGHT, so a proof at HEIGHT is stored.
 pub async fn w_store(tracker: Tracker, headers: &Arc<Headers>) -> Arc<StorageSqlx> {
-    store(
+    let w = store(
         DST,
         "W",
         (tracker != Tracker::None).then(|| headers.clone()),
     )
-    .await
+    .await;
+    w.set_max_acceptable_proof_height(HEIGHT + 5).await.unwrap();
+    w
 }
 
 /// R, the reader: no tracker.
