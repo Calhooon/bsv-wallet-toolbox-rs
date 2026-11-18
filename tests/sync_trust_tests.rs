@@ -141,6 +141,42 @@ async fn one_chain_under_either_word_syncs() {
     assert!(ref_test_txs > 0);
 }
 
+/// Two stores that declare one word outside the reference's list of sync
+/// chains (an empty word, a private chain's) are one chain with each other
+/// and with no other word.
+#[tokio::test]
+async fn two_stores_declaring_one_other_word_sync() {
+    let text = "Sync error: Live sync requires matching declared network chains on both storage providers.";
+    let mut answers = Vec::new();
+    for (word, other) in [
+        ("", ""),
+        ("private", "private"),
+        ("", "mainnet"),
+        ("private", "main"),
+    ] {
+        let reader = chain_store(SRC, "reader", word).await;
+        reader.find_or_insert_user(ALICE).await.unwrap();
+        seed_all(&reader, 1, 'a', true, true).await;
+        let mgr = WalletStorageManager::new(
+            ALICE.to_string(),
+            Some(Arc::new(reader) as Arc<dyn MonitorStorage>),
+            None,
+        );
+        let writer = Arc::new(chain_store(DST, "writer", other).await);
+        let r = mgr.sync_to_writer(ALICE, writer.clone()).await;
+        let txs = count(&writer, "SELECT COUNT(*) FROM transactions").await;
+        println!(
+            "WITNESS chain words {word:?} -> {other:?}: {} ({txs} txs)",
+            refusal(&r)
+        );
+        answers.push((refusal(&r), txs > 0));
+    }
+    assert_eq!(answers[0], ("ok".to_string(), true));
+    assert_eq!(answers[1], ("ok".to_string(), true));
+    assert_eq!(answers[2], (text.to_string(), false));
+    assert_eq!(answers[3], (text.to_string(), false));
+}
+
 /// A writer that answers a chunk that carried no row with `done = false`
 /// is refused at once, not drained for ever under the manager's sync lock.
 #[tokio::test]
