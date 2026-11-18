@@ -8,13 +8,12 @@
 //! one (a proof stored with no header service to read it from), so an empty
 //! block hash is admitted and left empty, and two rows that differ only in
 //! that one of their block hashes is empty are the same proof.
-//! A proof row whose txid this store does not hold is taken as given when
-//! the sync's reader is a local store (a new proof row keeps the trust a
-//! direct sync gives it), and validated when it is not (a storage client:
-//! the manager marks the drain, `crate::storage::remote_sync`), as the
+//! A proof row whose txid this store does not hold is validated, as the
 //! reference's storage server validates every proof row of a chunk it
 //! receives (ts-stack 11faa7d16 `storage/remoting/validateRpcSyncProofs.ts`
-//! 7-38). A proof row that differs from the one this store holds replaces
+//! 7-38), unless the chunk arrives through a manager's drain whose reader is
+//! a local store (the wallet's own rows: `crate::storage::sync_scope`),
+//! which takes it as given. A proof row that differs from the one this store holds replaces
 //! it only once it is validated: its bytes hash to its txid, its path is at its height with the
 //! transaction at its index, the path's root is its root, the tracker holds
 //! that root at that height, and the header at that height hashes to its
@@ -345,9 +344,10 @@ async fn validate_rows(
 
 /// The preflight over the chunk's proof rows, on the reader pool and the
 /// network, before any write: canonicalize every row, then validate every
-/// row that would replace a held row that differs and, in a sync whose
-/// reader is not local (`crate::storage::remote_sync`), every new row too.
-/// A validated new row without a block hash takes the active header's.
+/// row that would replace a held row that differs and every new row,
+/// unless the chunk comes through a manager's drain whose reader is local
+/// (`crate::storage::sync_scope`). A validated new row without a block hash
+/// takes the active header's.
 pub(super) async fn preflight(
     storage: &StorageSqlx,
     proofs: &mut [TableProvenTx],
@@ -356,14 +356,15 @@ pub(super) async fn preflight(
     for p in proofs.iter_mut() {
         canonicalize(p)?;
     }
-    let remote = crate::storage::remote_sync::current();
+    let scope = crate::storage::sync_scope::current();
+    let validate_new = !scope.as_ref().is_some_and(|s| s.local_reader);
     let mut which = Vec::new();
     let mut helds = Vec::new();
     for (i, p) in proofs.iter().enumerate() {
         match held_proof(storage.pool(), &p.txid).await? {
             None => {
                 decisions.insert_only.insert(p.txid.clone());
-                if remote.is_some() {
+                if validate_new {
                     which.push(i);
                     helds.push(None);
                 }
@@ -380,7 +381,7 @@ pub(super) async fn preflight(
         return Ok(decisions);
     }
     let local = Mutex::new(HashMap::new());
-    let answered = match &remote {
+    let answered = match &scope {
         Some(r) => &r.answers,
         None => &local,
     };

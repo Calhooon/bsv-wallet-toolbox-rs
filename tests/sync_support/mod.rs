@@ -164,6 +164,24 @@ pub fn proof(id: i64, txid: &str) -> TableProvenTx {
     }
 }
 
+/// The store holds `p` as its own proof row (written by SQL, not through
+/// the sync door, which validates a proof row it does not hold).
+pub async fn hold(s: &StorageSqlx, p: &TableProvenTx) {
+    ::sqlx::query("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
+        .bind(&p.txid)
+        .bind(p.height)
+        .bind(p.index)
+        .bind(&p.block_hash)
+        .bind(&p.merkle_root)
+        .bind(&p.merkle_path)
+        .bind(&p.raw_tx)
+        .bind(p.created_at)
+        .bind(p.updated_at)
+        .execute(s.writer())
+        .await
+        .unwrap();
+}
+
 pub fn request(id: i64, txid: &str, proof_id: Option<i64>) -> TableProvenTxReq {
     TableProvenTxReq {
         proven_tx_req_id: id,

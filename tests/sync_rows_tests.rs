@@ -125,6 +125,8 @@ async fn a_proof_link_is_mapped_through_the_chunks_proof_rows() {
     let mined = "d".repeat(64);
     let pending = "f".repeat(64);
     let mut chunk = chunk_for(ALICE);
+    // The store holds the chunk's proof row: a new one is validated.
+    hold(&s, &proof(7, &mined)).await;
     chunk.proven_txs = Some(vec![proof(7, &mined)]);
     chunk.proven_tx_reqs = Some(vec![
         request(3, &mined, Some(7)),
@@ -406,6 +408,8 @@ async fn an_existing_request_is_merged_not_replaced() {
     exec(&s, &format!("INSERT INTO proven_tx_reqs (txid,status,attempts,history,notified,notify,raw_tx,input_beef,created_at,updated_at) VALUES ('{t}','unmined',2,'{{\"notes\":[{{\"what\":\"a\",\"when\":\"2026-01-01T00:00:00Z\"}}]}}',1,'{{\"transactionIds\":[{held_tx}]}}',X'aa',X'bb','2026-01-01 00:00:00','2026-01-01 00:00:00')")).await;
     let other = "b".repeat(64);
     let mut chunk = chunk_for(ALICE);
+    // The store holds the chunk's proof row: a new one is validated.
+    hold(&s, &proof(7, &t)).await;
     chunk.proven_txs = Some(vec![proof(7, &t)]);
     chunk.transactions = Some(vec![transaction(50, "theirs", Some(&other))]);
     let mut theirs = request(3, &t, Some(7));
@@ -525,6 +529,8 @@ async fn an_older_transaction_row_merges_only_its_proof_evidence() {
     quiet_row.status = TransactionStatus::Failed;
     quiet_row.updated_at = at(5);
     let mut chunk = chunk_for(ALICE);
+    // The store holds the chunk's proof row: a new one is validated.
+    hold(&s, &proof(7, &t)).await;
     chunk.proven_txs = Some(vec![proof(7, &t)]);
     chunk.transactions = Some(vec![proven, quiet_row]);
     s.process_sync_chunk(args_for(ALICE), chunk).await.unwrap();
