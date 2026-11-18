@@ -31,7 +31,7 @@ async fn double_naming(sik: &str, active: &str) -> Arc<Double> {
     Arc::new(Double::new(s))
 }
 
-/// `update_backups` over two backups, the first waiting inside its sync:
+/// `update_backups` over two backups, the one it syncs ahead waiting inside its sync:
 /// meanwhile a store is added (a writer on the stores lock) and
 /// `set_active` to the active runs from another task. Both complete while
 /// the backup waits; once it is released `update_backups` completes too,
