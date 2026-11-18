@@ -587,6 +587,32 @@ async fn a_transaction_failed_between_the_read_and_the_write_is_left() {
     assert!(after.ends_with("spendable [0]"), "{after}");
 }
 
+/// The same race on the refuted arm: a transaction another path fails
+/// while a tracker that does NOT carry its root is answering. The demotion
+/// is written inside the pass's write after the same re-read, so the
+/// transaction stays `failed`, its request `invalid` and its proof row
+/// kept: nothing of it is written at this pass.
+#[tokio::test]
+async fn a_transaction_failed_while_a_refuting_tracker_answers_is_left() {
+    let headers = Arc::new(Headers::default());
+    let s = one_store(Some(headers.clone())).await;
+    let txid = synced_proof_beside_invalid(&s, 9).await;
+    *headers.fail_on_read.lock().unwrap() = Some((s.clone(), txid.clone()));
+    MonitorStorage::review_status(&*s).await.unwrap();
+    let after = rows(&s, &txid).await;
+    println!(
+        "WITNESS failed while a refuting tracker answers ({} reads): {after}",
+        headers.reads()
+    );
+    assert_eq!(headers.reads(), 1);
+    assert!(
+        after.starts_with("tx failed link true | proof true checked 0"),
+        "{after}"
+    );
+    assert!(after.contains("req invalid"), "{after}");
+    assert!(after.ends_with("spendable [0]"), "{after}");
+}
+
 /// No candidate holds a slot for good: 150 candidates the tracker errors on
 /// at every read, and one behind them (a higher proof row number) whose
 /// root the headers carry. A pass takes 100 after where the last pass
