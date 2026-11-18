@@ -288,7 +288,7 @@ pub async fn internalize_action_internal(
 
 ### Functionality
 - AtomicBEEF parsing with atomic_txid validation
-- The received-BEEF check (`storage::received_beef`): structure, every transaction whole, every root against the store's tracker or the services', then every input of an unproven subject run against the output it spends (`spend refused at offset <n>, input <i> of <txid>: <why>`), all before the writer is taken
+- The received-BEEF check (`storage::received_beef`): structure, every transaction whole, every root against the store's tracker or the services', then every input of every transaction the BEEF does not prove (the subject and each unproven ancestor) run against the output it spends, under the calling wallet's network or else the store's `chain` setting (`spend refused at offset <n>, input <i> of <txid>: <why>`), all before the writer is taken
 - Output extraction (satoshis, locking scripts)
 - Merge support for existing transactions (completed/unproven/nosend)
 - Balance tracking with net satoshi change calculation
