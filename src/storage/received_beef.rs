@@ -33,6 +33,34 @@ use crate::error::{Error, Result};
 
 mod input_scripts;
 
+tokio::task_local! {
+    /// The network of the wallet whose call reached a local store's door
+    /// (the wallet's `Chain` word), set by `Wallet::internalize_action`
+    /// around its storage call. Read by the store's step 7 in place of the
+    /// store's own `chain` word; a store called without a wallet in the
+    /// task judges under its own word.
+    static CALLER_NETWORK: &'static str;
+}
+
+/// Runs `call` with `network` as the caller's network for a local store's
+/// step 7 (the wallet's `Chain`, its door's word).
+pub(crate) async fn with_caller_network<F: std::future::Future>(
+    network: &'static str,
+    call: F,
+) -> F::Output {
+    CALLER_NETWORK.scope(network, call).await
+}
+
+/// The network step 7 judges under at a local store's door: the calling
+/// wallet's when one set it ([`with_caller_network`]), else `store_word`
+/// (the store's `chain` setting).
+#[cfg(any(feature = "sqlite", feature = "mysql"))]
+pub(crate) fn door_network(store_word: String) -> String {
+    CALLER_NETWORK
+        .try_with(|network| (*network).to_string())
+        .unwrap_or(store_word)
+}
+
 /// The refusal of an AtomicBEEF when nothing at hand has a chain tracker to
 /// verify its merkle roots (one sentence at both doors).
 pub(crate) const NO_CHAIN_TRACKER_REFUSAL: &str =
@@ -71,7 +99,8 @@ pub fn refuse_invalid_beef_bytes(bytes: &[u8]) -> Result<()> {
 pub(crate) struct ReceivedBeef {
     /// The BEEF as read (its structure checked).
     pub(crate) beef: Beef,
-    /// The AtomicBEEF's subject txid.
+    /// The AtomicBEEF's subject txid (the storage door reads it).
+    #[cfg_attr(not(any(feature = "sqlite", feature = "mysql")), allow(dead_code))]
     pub(crate) txid: String,
     roots: HashMap<u32, String>,
 }

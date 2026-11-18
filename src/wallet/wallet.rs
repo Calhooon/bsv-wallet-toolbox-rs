@@ -2445,7 +2445,13 @@ where
 
         let auth = self.auth();
 
-        let result = self.storage.internalize_action(&auth, args).await?;
+        // A local store's door judges the input scripts under this wallet's
+        // network, not the store's own word.
+        let result = crate::storage::received_beef::with_caller_network(
+            self.chain.as_str(),
+            self.storage.internalize_action(&auth, args),
+        )
+        .await?;
 
         // Broadcast happens synchronously inside the storage layer's
         // internalize_action (TS parity: wallet-toolbox storage/methods/
