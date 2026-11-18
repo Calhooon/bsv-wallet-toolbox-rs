@@ -519,7 +519,10 @@ async fn a_set_active_beside_an_add_calls_only_the_open_stores() {
         backups.len(),
         state(&mgr).await
     );
-    assert_eq!(reads_by_switch, 0, "the transition read the store being added");
+    assert_eq!(
+        reads_by_switch, 0,
+        "the transition read the store being added"
+    );
     assert!(set_actives_on_new.is_empty(), "{set_actives_on_new:?}");
     assert!(ended_while_held);
     // While the new store's open runs the manager is not enabled (its
