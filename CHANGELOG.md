@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## [0.14.0-beta.10] - 2026-11-18
+
+The version moves for the `bsv-rs` `=0.9.0-beta.10` pin, the 0.9.0
+prerelease that carries the fix of GHSA-j4w5-4g84-q3f4 (the stable line's
+0.8.13 fix): GHSA-j4w5-4g84-q3f4 names every `bsv-rs` prerelease through
+0.9.0-beta.9, so every 0.14.0 prerelease through 0.14.0-beta.9 pins an
+affected version exactly. This prerelease carries the pin alone.
+
+### Security
+- [GHSA-j4w5-4g84-q3f4](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-j4w5-4g84-q3f4)
+  (medium): `bsv-rs`'s `GlobalKVStore` selector reads (`query`,
+  `get_by_controller`, `get_by_tags`) returned an overlay lookup host's
+  answer without re-checking the selector, so a lookup host could answer
+  with another controller's or other tags' token; 0.9.0-beta.10 drops such
+  an entry. This crate names `GlobalKVStore` nowhere and calls no `bsv-rs`
+  module that reaches it (`bsv-rs` changed `src/kvstore/` alone since
+  0.9.0-beta.9), so none of its doors was reached.
+
+### Changed
+- #533 (the owner's word of 2026-11-18): `bsv-rs` pinned at `=0.9.0-beta.10`
+  in `Cargo.toml` and `fuzz/Cargo.toml`. Its note states no public item
+  changed shape since 0.9.0-beta.9; this tree built with no error and every
+  test kept its answer.
+
+### Hosts
+- A host that does not use `bsv-rs`'s `GlobalKVStore` selector reads in its
+  own code moves its pin and changes nothing: no answer of this crate
+  changes.
+- A host that calls `GlobalKVStore::query`, `get_by_controller` or
+  `get_by_tags` in its own code, through the `bsv-rs` this crate brings in,
+  now gets only the entries that match its selector; an honest lookup host's
+  answer is unchanged. By `bsv-rs`'s note the lookup of the caller's
+  existing token that `set` and `remove` run reads the same path, and no
+  longer takes another controller's token for the caller's own.
+
 ## [0.14.0-beta.9] - 2026-11-17
 
 The version moves for the `bsv-rs` `=0.9.0-beta.9` pin, the 0.9.0
