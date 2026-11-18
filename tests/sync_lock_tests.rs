@@ -440,3 +440,92 @@ async fn a_partition_reads_only_the_stores_that_are_open() {
     assert!(backups_after.iter().any(|k| k == FOURTH));
     assert_eq!(state(&mgr).await, ("A".into(), true));
 }
+
+/// A `set_active` from A to B waits inside its backup's sync while a third
+/// store is added from another task, whose open is held in the new store's
+/// user read. Once the sync is released the transition calls nothing on
+/// the new store (no user read, no `set_active`) and completes over the
+/// two open stores while the new store's open is still held (the active is
+/// B; the manager answers not enabled until the open ends). Once that
+/// open ends the new store is a backup, and the next `set_active` to B
+/// reads its row too and answers unchanged.
+#[tokio::test]
+async fn a_set_active_beside_an_add_calls_only_the_open_stores() {
+    let doubles = vec![double_naming(SRC, SRC).await, double_naming(DST, SRC).await];
+    let mgr = Arc::new(manager_over(&doubles));
+    mgr.make_available().await.unwrap();
+    doubles[1].hold_sync.store(true, Ordering::SeqCst);
+    let mut switch = {
+        let mgr = mgr.clone();
+        tokio::spawn(async move { mgr.set_active(DST).await })
+    };
+    bounded(
+        "the transition's backup sync begins",
+        doubles[1].sync_entered.notified(),
+    )
+    .await;
+
+    let fourth = double_naming(FOURTH, DST).await;
+    fourth.hold_user_read.store(true, Ordering::SeqCst);
+    let add = {
+        let (mgr, fourth) = (mgr.clone(), fourth.clone());
+        tokio::spawn(async move {
+            mgr.add_wallet_storage_provider(fourth as Arc<dyn MonitorStorage>)
+                .await
+        })
+    };
+    bounded(
+        "the new store's open reaches its user read",
+        fourth.user_read_entered.notified(),
+    )
+    .await;
+    let reads_at_hold = fourth.user_reads.load(Ordering::SeqCst);
+    doubles[1].sync_release.notify_one();
+    let early = tokio::time::timeout(std::time::Duration::from_secs(3), &mut switch)
+        .await
+        .ok();
+    let ended_while_held = early.is_some();
+    let reads_by_switch = fourth.user_reads.load(Ordering::SeqCst) - reads_at_hold;
+    let set_actives_on_new: Vec<String> = fourth
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| e.contains("enter"))
+        .cloned()
+        .collect();
+    let held_state = state(&mgr).await;
+
+    fourth.user_read_release.notify_one();
+    let added = bounded("the new store's open", add).await.unwrap();
+    let switched = match early {
+        Some(switched) => switched.unwrap(),
+        None => bounded("set_active once the open ends", switch)
+            .await
+            .unwrap(),
+    };
+    let reads_before_next = fourth.user_reads.load(Ordering::SeqCst);
+    let next = mgr.set_active(DST).await;
+    let reads_by_next = fourth.user_reads.load(Ordering::SeqCst) - reads_before_next;
+    let backups = mgr.get_backup_stores().await;
+    println!(
+        "WITNESS set_active beside an add: ended while the open was held {ended_while_held}; the new store's user reads by the transition {reads_by_switch}, its set_active calls {set_actives_on_new:?}; state while held {held_state:?}; set_active {}; add {}; next {:?}, its reads of the new store {reads_by_next}; backups {}; {:?}",
+        refusal(&switched),
+        refusal(&added),
+        next.as_ref().map(|s| s.trim().to_string()).map_err(|e| e.to_string()),
+        backups.len(),
+        state(&mgr).await
+    );
+    assert_eq!(reads_by_switch, 0, "the transition read the store being added");
+    assert!(set_actives_on_new.is_empty(), "{set_actives_on_new:?}");
+    assert!(ended_while_held);
+    // While the new store's open runs the manager is not enabled (its
+    // row is not yet read); the active is the target.
+    assert_eq!(held_state.0, "B");
+    assert_eq!(refusal(&switched), "ok");
+    assert_eq!(refusal(&added), "ok");
+    assert_eq!(next.unwrap(), format!("setActive to {DST} unchanged\n"));
+    assert_eq!(reads_by_next, 1);
+    assert!(backups.iter().any(|k| k == FOURTH));
+    assert_eq!(state(&mgr).await, ("B".into(), true));
+}

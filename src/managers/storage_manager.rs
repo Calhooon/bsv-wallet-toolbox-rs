@@ -459,35 +459,47 @@ impl WalletStorageManager {
             .store(in_doubt, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Reads each store's row of the wallet's user again into the manager's
-    /// cached rows: a sync may have moved a backup's row since the manager
-    /// read it.
-    async fn refresh_user_rows(&self) -> Result<()> {
-        let identity_key = self.auth_id.read().await.identity_key.clone();
-        let storages: Vec<_> = self
-            .stores
+    /// The stores that are open (`ManagedStorage::is_open`), each with its
+    /// index, copied out under the stores read lock: a store pushed by
+    /// `add_wallet_storage_provider` and not yet opened is not one of the
+    /// manager's stores for a transition, and its open calls it alone.
+    async fn open_storages(&self) -> Vec<(usize, Arc<dyn MonitorStorage>)> {
+        self.stores
             .read()
             .await
             .iter()
-            .map(|s| s.storage.clone())
-            .collect();
+            .enumerate()
+            .filter(|(_, s)| s.is_open())
+            .map(|(i, s)| (i, s.storage.clone()))
+            .collect()
+    }
+
+    /// Reads each open store's row of the wallet's user again into the
+    /// manager's cached rows: a sync may have moved a backup's row since the
+    /// manager read it.
+    async fn refresh_user_rows(&self) -> Result<()> {
+        let identity_key = self.auth_id.read().await.identity_key.clone();
+        let storages = self.open_storages().await;
         let mut users = Vec::with_capacity(storages.len());
-        for storage in &storages {
-            users.push(storage.find_or_insert_user(&identity_key).await?.0);
+        for (i, storage) in &storages {
+            users.push((*i, storage.find_or_insert_user(&identity_key).await?.0));
         }
         let mut stores = self.stores.write().await;
-        for (store, user) in stores.iter_mut().zip(users) {
-            store.user = Some(user);
+        for (i, user) in users {
+            if let Some(store) = stores.get_mut(i) {
+                store.user = Some(user);
+            }
         }
         Ok(())
     }
 
-    /// Whether every store's cached row of the wallet's user names `key`.
+    /// Whether every open store's cached row of the wallet's user names `key`.
     async fn every_row_names(&self, key: &str) -> bool {
         self.stores
             .read()
             .await
             .iter()
+            .filter(|s| s.is_open())
             .all(|s| s.user.as_ref().and_then(|u| u.active_storage.as_deref()) == Some(key))
     }
 
@@ -1258,20 +1270,17 @@ impl WalletStorageManager {
     /// store was read.
     async fn reread_user_rows_after_error(&self) -> bool {
         let identity_key = self.auth_id.read().await.identity_key.clone();
-        let storages: Vec<_> = self
-            .stores
-            .read()
-            .await
-            .iter()
-            .map(|s| s.storage.clone())
-            .collect();
+        let storages = self.open_storages().await;
         let mut users = Vec::with_capacity(storages.len());
-        for storage in &storages {
-            users.push(storage.find_or_insert_user(&identity_key).await.ok());
+        for (i, storage) in &storages {
+            users.push((*i, storage.find_or_insert_user(&identity_key).await.ok()));
         }
-        let every_read = users.iter().all(Option::is_some);
+        let every_read = users.iter().all(|(_, user)| user.is_some());
         let mut stores = self.stores.write().await;
-        for (store, user) in stores.iter_mut().zip(users) {
+        for (i, user) in users {
+            let Some(store) = stores.get_mut(i) else {
+                continue;
+            };
             match user {
                 Some((user, _)) => store.user = Some(user),
                 None => {
@@ -1284,19 +1293,19 @@ impl WalletStorageManager {
         every_read
     }
 
-    /// Whether every store's held row names one store, and that store is one
-    /// of the manager's.
+    /// Whether every open store's held row names one store, and that store
+    /// is one of the manager's open stores.
     async fn rows_name_one_store(&self) -> bool {
         let stores = self.stores.read().await;
         let Some(key) = stores
             .iter()
-            .next()
+            .find(|s| s.is_open())
             .and_then(|s| s.user.as_ref())
             .and_then(|u| u.active_storage.clone())
         else {
             return false;
         };
-        let managed = stores.iter().any(|s| {
+        let managed = stores.iter().filter(|s| s.is_open()).any(|s| {
             s.settings
                 .as_ref()
                 .is_some_and(|t| t.storage_identity_key == key)
@@ -1321,18 +1330,23 @@ impl WalletStorageManager {
         // released before any store answers; the cached rows of the stores
         // whose call succeeded are written after, under the write lock, as
         // the reference's setActive sets each store's cached row (the
-        // re-partition below reads them).
-        let auth = self.get_auth(false).await?;
-        let calls: Vec<(Arc<dyn MonitorStorage>, Option<TableUser>)> = self
+        // re-partition below reads them). Only the open stores: a store
+        // being added is opened by its own open, which `set_active` neither
+        // calls nor waits for, so the auth is the manager's own, made at the
+        // call's entry.
+        let auth = self.auth_id.read().await.clone();
+        let calls: Vec<(usize, Arc<dyn MonitorStorage>, Option<TableUser>)> = self
             .stores
             .read()
             .await
             .iter()
-            .map(|s| (s.storage.clone(), s.user.clone()))
+            .enumerate()
+            .filter(|(_, s)| s.is_open())
+            .map(|(i, s)| (i, s.storage.clone(), s.user.clone()))
             .collect();
         let mut done = Vec::with_capacity(calls.len());
         let mut outcome = Ok(());
-        for (i, (storage, row)) in calls.into_iter().enumerate() {
+        for (i, storage, row) in calls {
             let Some(user) = row else {
                 outcome = Err(Error::StorageNotAvailable);
                 break;
