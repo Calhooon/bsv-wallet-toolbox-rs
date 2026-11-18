@@ -136,6 +136,21 @@ const OVERLAY_TIMEOUT_SECS: u64 = 10;
 /// figure bsv-rs names for its resolver's `max_response_bytes`.
 pub(crate) const MAX_LOOKUP_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
+/// The most outputs one lookup answer may carry: 4096, the reference's
+/// `MAX_LOOKUP_OUTPUTS` (`LookupResolver.ts`, `DEFAULT_LOOKUP_LIMITS.maxOutputs`).
+/// An answer with more is that tracker's or host's failure.
+pub(crate) const MAX_LOOKUP_OUTPUTS: usize = 4096;
+
+/// The output count of an output-list answer past [`MAX_LOOKUP_OUTPUTS`].
+fn outputs_past_bound(answer: &LookupAnswer) -> Option<usize> {
+    match answer {
+        LookupAnswer::OutputList { outputs } if outputs.len() > MAX_LOOKUP_OUTPUTS => {
+            Some(outputs.len())
+        }
+        _ => None,
+    }
+}
+
 /// A lookup answer's body refused by [`read_lookup_body`]: why, and how many
 /// of its bytes were read before the refusal.
 #[derive(Debug)]
@@ -338,6 +353,16 @@ impl HttpLookupResolver {
                 }
             };
 
+            if let Some(count) = outputs_past_bound(&answer) {
+                tracing::debug!(
+                    "SLAP response from {} carries {} outputs, past {} (trying next)",
+                    tracker,
+                    count,
+                    MAX_LOOKUP_OUTPUTS
+                );
+                continue;
+            }
+
             let hosts = parse_slap_hosts(&answer);
             if !hosts.is_empty() {
                 tracing::debug!(
@@ -442,6 +467,16 @@ impl HttpLookupResolver {
                     continue;
                 }
             };
+
+            if let Some(count) = outputs_past_bound(&answer) {
+                tracing::debug!(
+                    "Overlay response from {} carries {} outputs, past {} (trying next)",
+                    host,
+                    count,
+                    MAX_LOOKUP_OUTPUTS
+                );
+                continue;
+            }
 
             return parse_overlay_answer(&answer);
         }

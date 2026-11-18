@@ -399,3 +399,54 @@ async fn a_redirect_is_that_hosts_failure_and_is_not_followed() {
     assert_eq!(serials, vec!["Y".to_string()]);
     assert_eq!(elsewhere_hits.load(Ordering::SeqCst), 0);
 }
+
+// =============================================================================
+// Outputs one answer may carry
+// =============================================================================
+
+/// A host's answer of `count` outputs, each the certificate of serial `serial`.
+fn many_certs(serial: &str, count: usize) -> Vec<u8> {
+    let beef = beef_of(cert_lock(serial));
+    answer_of((0..count).map(|_| (beef.clone(), 0)).collect())
+}
+
+/// A host's answer one output past the bound is that host's failure: the
+/// next host answers. An answer at the bound is read whole.
+#[tokio::test]
+async fn an_overlay_answer_past_the_output_bound_is_that_hosts_failure() {
+    let (x, _) = listener(Answer::ok(
+        many_certs("X", MAX_LOOKUP_OUTPUTS + 1),
+        Framing::Length,
+    ))
+    .await;
+    let (y, _) = listener(Answer::ok(cert_answer(&["Y"]), Framing::Length)).await;
+    let (tracker, _) = listener(Answer::ok(slap_answer(&[&x, &y]), Framing::Length)).await;
+    assert_eq!(serials(vec![tracker]).await, vec!["Y".to_string()]);
+
+    let (x, _) = listener(Answer::ok(
+        many_certs("X", MAX_LOOKUP_OUTPUTS),
+        Framing::Length,
+    ))
+    .await;
+    let (tracker, _) = listener(Answer::ok(slap_answer(&[&x]), Framing::Length)).await;
+    assert_eq!(serials(vec![tracker]).await.len(), MAX_LOOKUP_OUTPUTS);
+}
+
+/// A tracker's answer one output past the bound is that tracker's failure:
+/// the next tracker's host answers.
+#[tokio::test]
+async fn a_tracker_answer_past_the_output_bound_is_that_trackers_failure() {
+    let (x, y) = hosts_x_and_y().await;
+    let named: LookupAnswer = serde_json::from_slice(&slap_answer(&[&x])).unwrap();
+    let LookupAnswer::OutputList { outputs: named } = named else {
+        unreachable!()
+    };
+    let many = answer_of(
+        (0..=MAX_LOOKUP_OUTPUTS)
+            .map(|_| (named[0].beef.clone(), 0))
+            .collect(),
+    );
+    let (refused, _) = listener(Answer::ok(many, Framing::Length)).await;
+    let (second, _) = listener(Answer::ok(slap_answer(&[&y]), Framing::Length)).await;
+    assert_eq!(serials(vec![refused, second]).await, vec!["Y".to_string()]);
+}
