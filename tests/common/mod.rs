@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 pub mod forwarding;
+pub mod lookup_identity;
 
 use bsv_rs::primitives::bsv::{parse_transaction, TxInput, TxOutput};
 use bsv_rs::primitives::{hash160, PrivateKey, PublicKey};
@@ -194,13 +195,26 @@ pub fn p2pkh_sweep_beef_of(outputs: u32, lock: LockingScript) -> (Vec<u8>, Strin
     sweep_beef_of_parent(proven_parent_locked(outputs, other_lock()), outputs, lock)
 }
 
+/// `p2pkh_sweep_beef_of` whose sweep output carries one satoshi, as an
+/// overlay advertisement's does.
+pub fn p2pkh_sweep_beef_of_one_satoshi(outputs: u32, lock: LockingScript) -> (Vec<u8>, String) {
+    let parent = proven_parent_locked(outputs, other_lock());
+    let mut swept = child(&parent.id(), outputs, lock);
+    swept.outputs[0].satoshis = Some(1);
+    sweep_beef_of_child(parent, swept)
+}
+
 fn sweep_beef_of_parent(
     parent: Transaction,
     outputs: u32,
     lock: LockingScript,
 ) -> (Vec<u8>, String) {
+    let child = child(&parent.id(), outputs, lock);
+    sweep_beef_of_child(parent, child)
+}
+
+fn sweep_beef_of_child(parent: Transaction, child: Transaction) -> (Vec<u8>, String) {
     let parent_txid = parent.id();
-    let child = child(&parent_txid, outputs, lock);
     let txid = child.id();
     let mut beef = Beef::new();
     let bump = beef.merge_bump(MerklePath::from_coinbase_txid(
@@ -222,6 +236,16 @@ pub fn beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
 /// proves with a BUMP at `PAYING_PROOF_HEIGHT`, and its txid: the parent carried
 /// whole when `whole`, else by its txid alone beside its BUMP.
 pub fn beef_paying_with(lock: LockingScript, whole: bool) -> (Vec<u8>, String) {
+    beef_paying_satoshis(lock, whole, 9_500)
+}
+
+/// `beef_paying` whose output carries one satoshi, as an overlay
+/// advertisement's does.
+pub fn beef_paying_one_satoshi(lock: LockingScript) -> (Vec<u8>, String) {
+    beef_paying_satoshis(lock, true, 1)
+}
+
+fn beef_paying_satoshis(lock: LockingScript, whole: bool, satoshis: u64) -> (Vec<u8>, String) {
     let mut parent = Transaction::new();
     let mut parent_input = TransactionInput::new("22".repeat(32), 0);
     parent_input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
@@ -238,7 +262,7 @@ pub fn beef_paying_with(lock: LockingScript, whole: bool) -> (Vec<u8>, String) {
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
     child.inputs.push(input);
     child.outputs.push(TransactionOutput {
-        satoshis: Some(9_500),
+        satoshis: Some(satoshis),
         locking_script: lock,
         change: false,
     });

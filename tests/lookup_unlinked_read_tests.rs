@@ -8,36 +8,29 @@ mod common;
 
 use bsv_rs::overlay::{LookupAnswer, OutputListItem};
 use bsv_rs::primitives::PrivateKey;
-use bsv_rs::script::templates::PushDrop;
 use bsv_rs::script::LockingScript;
 use bsv_rs::transaction::Transaction;
 use bsv_wallet_toolbox_rs::{HttpLookupResolver, OverlayLookupResolver};
-use common::{beef_paying, p2pkh_sweep_beef_of};
+use common::lookup_identity::{certificate_record, identity_lock, serial_of, slap_lock};
+use common::{
+    beef_paying, beef_paying_one_satoshi, p2pkh_sweep_beef_of, p2pkh_sweep_beef_of_one_satoshi,
+};
 
 /// The sweep the linking door refuses (586 link, 587 do not).
 const REFUSED_SWEEP: u32 = 587;
 
-fn pushdrop(fields: Vec<Vec<u8>>) -> LockingScript {
-    PushDrop::new(PrivateKey::random().public_key(), fields).lock()
+/// The subject the lookups ask for.
+fn subject() -> PrivateKey {
+    PrivateKey::from_hex(&"11".repeat(32)).unwrap()
 }
 
-fn slap_lock(host: &str) -> LockingScript {
-    pushdrop(vec![
-        b"SLAP".to_vec(),
-        vec![2; 33],
-        host.as_bytes().to_vec(),
-        b"ls_identity".to_vec(),
-    ])
-}
-
-fn cert_lock(serial: &str) -> LockingScript {
-    let cert = serde_json::json!({
-        "type": "dGVzdA==",
-        "serialNumber": serial,
-        "subject": "02aa",
-        "certifier": "03bb",
-    });
-    pushdrop(vec![serde_json::to_vec(&cert).unwrap()])
+/// The identity output of the subject's certificate tagged `tag`.
+fn cert_lock(tag: &str) -> LockingScript {
+    let certifier = PrivateKey::from_hex(&"22".repeat(32)).unwrap();
+    identity_lock(
+        &subject(),
+        &certificate_record(&subject(), &certifier, tag, &[("tag", tag)]),
+    )
 }
 
 /// The answer of one output: `beef`'s subject's output 0.
@@ -52,9 +45,14 @@ fn answer_of(beef: Vec<u8>) -> String {
     .unwrap()
 }
 
-/// A BEEF the linking door refuses, its subject's output 0 locked by `lock`.
-fn refused_beef(lock: LockingScript) -> Vec<u8> {
-    let (beef, _) = p2pkh_sweep_beef_of(REFUSED_SWEEP, lock);
+/// A BEEF the linking door refuses, its subject's output 0 locked by `lock`
+/// (of one satoshi when `one_satoshi`, as an advertisement's).
+fn refused_beef(lock: LockingScript, one_satoshi: bool) -> Vec<u8> {
+    let (beef, _) = if one_satoshi {
+        p2pkh_sweep_beef_of_one_satoshi(REFUSED_SWEEP, lock)
+    } else {
+        p2pkh_sweep_beef_of(REFUSED_SWEEP, lock)
+    };
     assert!(
         Transaction::from_beef(&beef, None).is_err(),
         "the linking door must refuse the sweep"
@@ -81,7 +79,7 @@ async fn lookup_with(slap_beef: impl Fn(&str) -> Vec<u8>, cert_beef: Vec<u8>) ->
         .create_async()
         .await;
     HttpLookupResolver::new(&tracker.url())
-        .lookup_by_identity_key("02aa")
+        .lookup_by_identity_key(&subject().public_key().to_hex())
         .await
         .unwrap()
         .into_iter()
@@ -94,11 +92,11 @@ async fn lookup_with(slap_beef: impl Fn(&str) -> Vec<u8>, cert_beef: Vec<u8>) ->
 #[tokio::test]
 async fn a_slap_output_in_a_beef_the_linking_door_refuses_is_read() {
     let serials = lookup_with(
-        |host| refused_beef(slap_lock(host)),
+        |host| refused_beef(slap_lock(host), true),
         beef_paying(cert_lock("S")).0,
     )
     .await;
-    assert_eq!(serials, vec!["S".to_string()]);
+    assert_eq!(serials, vec![serial_of("S")]);
 }
 
 /// An overlay host's certificate output in a BEEF the linking door refuses
@@ -106,9 +104,9 @@ async fn a_slap_output_in_a_beef_the_linking_door_refuses_is_read() {
 #[tokio::test]
 async fn a_certificate_output_in_a_beef_the_linking_door_refuses_is_read() {
     let serials = lookup_with(
-        |host| beef_paying(slap_lock(host)).0,
-        refused_beef(cert_lock("S")),
+        |host| beef_paying_one_satoshi(slap_lock(host)).0,
+        refused_beef(cert_lock("S"), false),
     )
     .await;
-    assert_eq!(serials, vec!["S".to_string()]);
+    assert_eq!(serials, vec![serial_of("S")]);
 }
