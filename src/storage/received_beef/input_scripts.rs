@@ -1,26 +1,30 @@
 //! Step 7 of the received-AtomicBEEF check: the unlocking script of every
-//! input of the subject is run against the locking script and satoshis of
-//! the output it spends, under the node's mempool word for that input.
+//! input of every transaction the BEEF does not prove (the subject and
+//! each unproven ancestor) is run against the locking script and satoshis
+//! of the output it spends, under the node's mempool word for that input.
 //!
 //! The rule is the 0.14 line's (toolbox #422, `live_word::input_word` and
 //! `judge_input` there), built here from what bsv-rs 0.8 offers
 //! (`ProtocolEra`, `ScriptFlags::standard`, `Spend::with_transaction`):
 //!
-//! - a subject the BEEF proves (its BUMP, whose root step 6 confirmed) is
-//!   not run: a mined transaction is the chain's word;
+//! - the transactions are run in the order the BEEF carries them, one read
+//!   before a parent held until the parent is read (the 0.14 line's
+//!   `WordPass`); a transaction the BEEF proves (its own BUMP, or its txid
+//!   in a BUMP, whose root step 6 confirmed) is not run: a mined
+//!   transaction is the chain's word;
 //! - the spend takes the era of the block after the tracker's mining tip,
 //!   or with no tip the latest activation the network knows;
 //! - the coin takes the era of the height its parent's BUMP proves, an
 //!   unproven parent the spend's; a spend or a coin below the network's
 //!   Genesis height is not judged, and refused;
 //! - each input runs under 2^31 units of work and the node's stack memory
-//!   policy (100,000,000 bytes); the transaction's inputs together under
-//!   2^31 units.
+//!   policy (100,000,000 bytes); each transaction's inputs together under
+//!   2^31 units (the 0.14 line bounds the BEEF as a whole by nothing more).
 //!
 //! Every refusal is `spend refused at offset <n>, input <i> of <txid>:
 //! <why>`, the 0.14 line's sentence, as a validation error.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use bsv_rs::primitives::bsv::sighash::{TxInput, TxOutput, TxSighashCache};
@@ -37,7 +41,7 @@ use crate::error::{Error, Result};
 /// `DOOR_WORK_BUDGET.per_input`.
 pub(crate) const INPUT_WORK_LIMIT: u64 = 1 << 31;
 
-/// The work bound of the subject's inputs together: 2^31, the 0.14 line's
+/// The work bound of one transaction's inputs together: 2^31, the 0.14 line's
 /// `DOOR_WORK_BUDGET.per_transaction`.
 pub(crate) const TRANSACTION_WORK_LIMIT: u64 = 1 << 31;
 
@@ -185,17 +189,50 @@ struct Coin {
     script: Vec<u8>,
 }
 
-/// Runs every input of the subject `subject` (display hex) of `bytes`
-/// under its word. A subject the BEEF proves is not run.
-pub(crate) fn verify_subject_inputs(
+/// A transaction of the BEEF as the pass holds it: whole (`raw`) or by its
+/// txid alone, with the outputs a later unproven input names and no input
+/// of the BEEF has spent yet.
+#[derive(Default)]
+struct Entry {
+    raw: bool,
+    outputs: HashMap<u32, Coin>,
+}
+
+/// An unproven transaction read before one of its parents: held until
+/// every parent is read.
+struct Pending {
+    txid: Hash32,
+    body: TxBody,
+    missing: usize,
+}
+
+/// The pass over the BEEF's transactions in the order they are read (an
+/// unproven one held until its parents are read), the 0.14 line's
+/// `WordPass` without its mining and value rules.
+struct Pass<'a> {
+    network: &'a str,
+    tip: Option<ChainTip>,
+    heights: HashMap<Hash32, u64>,
+    wanted: HashSet<(Hash32, u32)>,
+    entries: HashMap<Hash32, Entry>,
+    held: HashMap<u64, Pending>,
+    waiting: HashMap<Hash32, Vec<u64>>,
+    ready: BTreeSet<u64>,
+}
+
+/// Runs every input of every transaction of `bytes` that the BEEF does not
+/// prove (no BUMP of its own, its txid in no BUMP) against the output it
+/// spends, under its word: the subject and every unproven ancestor. A
+/// transaction the BEEF proves is not run.
+pub(crate) fn verify_unproven_inputs(
     bytes: &[u8],
-    subject: &str,
     network: &str,
     tip: Option<ChainTip>,
 ) -> Result<()> {
-    // One read: the subject's body and the heights the BUMPs prove.
+    // One read: the heights the BUMPs prove and the outputs an unproven
+    // transaction's inputs name.
     let mut heights: HashMap<Hash32, u64> = HashMap::new();
-    let mut found: Option<(u64, Hash32, bool, TxBody)> = None;
+    let mut unproven: Vec<(Hash32, Vec<(Hash32, u32)>)> = Vec::new();
     for element in BeefStream::new(bytes) {
         match element.map_err(|_| stream_fault())? {
             Element::Bump(bump) => {
@@ -204,85 +241,200 @@ pub(crate) fn verify_subject_inputs(
                 }
             }
             Element::Tx {
-                offset,
                 txid,
-                bump_index,
+                bump_index: None,
                 body,
-            } if display_hex(&txid) == subject => {
-                found = Some((offset, txid, bump_index.is_some(), body));
-            }
+                ..
+            } => unproven.push((txid, body.inputs.iter().map(|i| (i.prev, i.vout)).collect())),
             _ => {}
         }
     }
-    let Some((_, txid, proven, body)) = found else {
-        return Err(Error::ValidationError(format!(
-            "Could not find transaction {subject} in AtomicBEEF"
-        )));
+    let wanted = unproven
+        .into_iter()
+        .filter(|(txid, _)| !heights.contains_key(txid))
+        .flat_map(|(_, spends)| spends)
+        .collect();
+    let mut pass = Pass {
+        network,
+        tip,
+        heights,
+        wanted,
+        entries: HashMap::new(),
+        held: HashMap::new(),
+        waiting: HashMap::new(),
+        ready: BTreeSet::new(),
     };
-    if proven || heights.contains_key(&txid) {
-        return Ok(());
-    }
-
-    // Second read: only the outputs the subject's inputs name.
-    let wanted: HashSet<(Hash32, u32)> = body.inputs.iter().map(|i| (i.prev, i.vout)).collect();
-    let mut coins: HashMap<(Hash32, u32), Coin> = HashMap::new();
+    // Second read: each transaction run once its parents are read.
     for element in BeefStream::new(bytes) {
-        if let Element::Tx {
-            txid: parent,
-            body: parent_body,
-            ..
-        } = element.map_err(|_| stream_fault())?
-        {
-            for (vout, output) in parent_body.outputs.iter().enumerate() {
-                let Ok(vout) = u32::try_from(vout) else {
-                    continue;
-                };
-                if wanted.contains(&(parent, vout)) {
-                    coins.entry((parent, vout)).or_insert_with(|| Coin {
-                        satoshis: output.satoshis,
-                        script: parent_body.raw[output.script.clone()].to_vec(),
-                    });
+        pass.fold(element.map_err(|_| stream_fault())?)?;
+        while let Some(offset) = pass.ready.pop_first() {
+            let pending = pass
+                .held
+                .remove(&offset)
+                .ok_or_else(|| Error::Internal("a ready spend has no held transaction".into()))?;
+            pass.accept(pending.txid, false, &pending.body)?;
+        }
+    }
+    if !pass.held.is_empty() {
+        return Err(Error::Internal(
+            "a checked structure left an unresolved spend".into(),
+        ));
+    }
+    Ok(())
+}
+
+impl Pass<'_> {
+    fn wake(&mut self, txid: Hash32) {
+        for offset in self.waiting.remove(&txid).unwrap_or_default() {
+            if let Some(pending) = self.held.get_mut(&offset) {
+                pending.missing -= 1;
+                if pending.missing == 0 {
+                    self.ready.insert(offset);
                 }
             }
         }
     }
 
-    let transaction = transaction_cache(&body);
-    let (input_limit, transaction_limit) = work_limits();
-    let mut total: u64 = 0;
-    let mut spent_once: HashSet<(Hash32, u32)> = HashSet::new();
-    for (vin, input) in body.inputs.iter().enumerate() {
-        let index = u32::try_from(vin).unwrap_or(u32::MAX);
-        let refusal = |why: String| refused(input.at, &txid, index, why);
-        let coin = match coins.get(&(input.prev, input.vout)) {
-            Some(coin) if spent_once.insert((input.prev, input.vout)) => coin,
-            _ => {
-                return Err(refusal(format!(
-                    "the parent has no unspent output at vout {}",
-                    input.vout
-                )))
+    fn fold(&mut self, element: Element) -> Result<()> {
+        match element {
+            Element::Bump(_) => {}
+            Element::TxidOnly { txid, .. } => {
+                if let std::collections::hash_map::Entry::Vacant(slot) = self.entries.entry(txid) {
+                    slot.insert(Entry::default());
+                    self.wake(txid);
+                }
             }
-        };
-        let proven = heights.get(&input.prev).copied();
-        let word = input_word(network, tip, proven).map_err(|no| refusal(no.why(index)))?;
-        let spent = judge_input(
-            word,
-            &body,
-            vin,
-            coin,
-            Arc::clone(&transaction),
-            input_limit,
-        )
-        .map_err(|why| refusal(why.text(index)))?;
-        total = total.saturating_add(spent);
-        if total > transaction_limit {
-            return Err(refusal(format!(
-                "input {index} not judged: exceeded transaction work budget \
-                 {transaction_limit} units after {total} units of work."
-            )));
+            Element::Tx {
+                offset,
+                txid,
+                bump_index,
+                body,
+            } => {
+                let proven = bump_index.is_some() || self.heights.contains_key(&txid);
+                if !proven {
+                    let missing: HashSet<Hash32> = body
+                        .inputs
+                        .iter()
+                        .map(|i| i.prev)
+                        .filter(|prev| !self.entries.contains_key(prev))
+                        .collect();
+                    if !missing.is_empty() {
+                        for prev in &missing {
+                            self.waiting.entry(*prev).or_default().push(offset);
+                        }
+                        self.held.insert(
+                            offset,
+                            Pending {
+                                txid,
+                                body,
+                                missing: missing.len(),
+                            },
+                        );
+                        return Ok(());
+                    }
+                }
+                self.accept(txid, proven, &body)?;
+            }
         }
+        Ok(())
     }
-    Ok(())
+
+    fn accept(&mut self, txid: Hash32, proven: bool, body: &TxBody) -> Result<()> {
+        if self.entries.get(&txid).is_some_and(|entry| entry.raw) {
+            return Ok(());
+        }
+        if !proven {
+            self.spends(txid, body)?;
+        }
+        for input in &body.inputs {
+            self.wanted.remove(&(input.prev, input.vout));
+            if let Some(parent) = self.entries.get_mut(&input.prev) {
+                parent.outputs.remove(&input.vout);
+            }
+        }
+        let outputs = self.retain_outputs(txid, body);
+        let new = self
+            .entries
+            .insert(txid, Entry { raw: true, outputs })
+            .is_none();
+        if new {
+            self.wake(txid);
+        }
+        Ok(())
+    }
+
+    fn retain_outputs(&self, txid: Hash32, body: &TxBody) -> HashMap<u32, Coin> {
+        body.outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(vout, output)| {
+                let vout = u32::try_from(vout).ok()?;
+                self.wanted.contains(&(txid, vout)).then(|| {
+                    (
+                        vout,
+                        Coin {
+                            satoshis: output.satoshis,
+                            script: body.raw[output.script.clone()].to_vec(),
+                        },
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Every input of the unproven `txid` run against the output it spends,
+    /// in input order, each under the per-input bound, their work together
+    /// under the transaction's.
+    fn spends(&self, txid: Hash32, body: &TxBody) -> Result<()> {
+        // Two inputs of one transaction naming one output: the second has
+        // none unspent.
+        let mut spent_once: HashSet<(Hash32, u32)> = HashSet::new();
+        let mut sources = Vec::with_capacity(body.inputs.len());
+        for (vin, input) in body.inputs.iter().enumerate() {
+            let index = u32::try_from(vin).unwrap_or(u32::MAX);
+            let refusal = |why: String| refused(input.at, &txid, index, why);
+            let parent = self
+                .entries
+                .get(&input.prev)
+                .ok_or_else(|| Error::Internal("a checked input has no indexed parent".into()))?;
+            if !parent.raw {
+                return Err(refusal(
+                    "the parent is a txid-only entry: its output is not in the BEEF".into(),
+                ));
+            }
+            let coin = parent
+                .outputs
+                .get(&input.vout)
+                .filter(|_| spent_once.insert((input.prev, input.vout)))
+                .ok_or_else(|| {
+                    refusal(format!(
+                        "the parent has no unspent output at vout {}",
+                        input.vout
+                    ))
+                })?;
+            sources.push(coin);
+        }
+        let transaction = transaction_cache(body);
+        let (input_limit, transaction_limit) = work_limits();
+        let mut total: u64 = 0;
+        for (vin, (input, coin)) in body.inputs.iter().zip(sources).enumerate() {
+            let index = u32::try_from(vin).unwrap_or(u32::MAX);
+            let refusal = |why: String| refused(input.at, &txid, index, why);
+            let proven = self.heights.get(&input.prev).copied();
+            let word =
+                input_word(self.network, self.tip, proven).map_err(|no| refusal(no.why(index)))?;
+            let spent = judge_input(word, body, vin, coin, Arc::clone(&transaction), input_limit)
+                .map_err(|why| refusal(why.text(index)))?;
+            total = total.saturating_add(spent);
+            if total > transaction_limit {
+                return Err(refusal(format!(
+                    "input {index} not judged: exceeded transaction work budget \
+                     {transaction_limit} units after {total} units of work."
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Why one input's run refused.
