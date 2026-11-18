@@ -32,6 +32,8 @@ const HEIGHT: u32 = 100;
 struct Headers {
     roots: Mutex<HashMap<u32, String>>,
     silent: AtomicBool,
+    /// Heights the tracker errors at every time.
+    silent_at: Mutex<std::collections::HashSet<u32>>,
     reads: AtomicUsize,
     /// A write another path makes while the review waits on this answer:
     /// the store and the txid whose transaction it fails, taken once.
@@ -73,7 +75,7 @@ impl ChainTracker for Headers {
             )
             .await;
         }
-        if self.silent.load(Ordering::SeqCst) {
+        if self.silent.load(Ordering::SeqCst) || self.silent_at.lock().unwrap().contains(&height) {
             return Err(ChainTrackerError::NetworkError("no answer".to_string()));
         }
         Ok(self.roots.lock().unwrap().get(&height).map(String::as_str) == Some(root))
@@ -87,13 +89,18 @@ impl ChainTracker for Headers {
 /// its raw bytes, its proof as the only transaction of a block at HEIGHT,
 /// and that proof's root.
 fn mined(n: u8) -> (String, Vec<u8>, Vec<u8>, String) {
+    mined_at(n, HEIGHT)
+}
+
+/// As `mined`, the block at `height`.
+fn mined_at(n: u8, height: u32) -> (String, Vec<u8>, Vec<u8>, String) {
     let mut raw = hex::decode(TX_HEX).unwrap();
     let last = raw.len() - 4;
     raw[last] = n;
     let tx = bsv_rs::transaction::Transaction::from_binary(&raw).unwrap();
     let txid = tx.id();
     let path = MerklePath::new(
-        HEIGHT,
+        height,
         vec![vec![MerklePathLeaf::new_txid(0, txid.clone())]],
     )
     .unwrap();
@@ -335,12 +342,17 @@ async fn one_store(headers: Option<Arc<Headers>>) -> Arc<StorageSqlx> {
 /// as the sync writer stores a local reader's row), the transaction
 /// `completed` and linked to it, its request `invalid`.
 async fn synced_proof_beside_invalid(s: &StorageSqlx, n: u8) -> String {
-    let (txid, raw, path, root) = mined(n);
+    synced_proof_beside_invalid_at(s, n, HEIGHT).await
+}
+
+/// As `synced_proof_beside_invalid`, the proof's block at `height`.
+async fn synced_proof_beside_invalid_at(s: &StorageSqlx, n: u8, height: u32) -> String {
+    let (txid, raw, path, root) = mined_at(n, height);
     let txid2 = seed(s, n, "completed", 1, "invalid").await;
     assert_eq!(txid, txid2);
     ::sqlx::query("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES (?,?,0,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)")
         .bind(&txid)
-        .bind(HEIGHT as i64)
+        .bind(height as i64)
         .bind("e".repeat(64))
         .bind(&root)
         .bind(&path)
@@ -573,4 +585,72 @@ async fn a_transaction_failed_between_the_read_and_the_write_is_left() {
     assert!(after.contains("req invalid"), "{after}");
     assert!(!after.contains("invalidRequestProofStands"), "{after}");
     assert!(after.ends_with("spendable [0]"), "{after}");
+}
+
+/// No candidate holds a slot for good: 150 candidates the tracker errors on
+/// at every read, and one behind them whose root the headers carry. A pass
+/// takes the 100 it has waited longest to look at and stamps the ones it
+/// leaves, so the one behind 150 is looked at within ceil(151 / 100) = 2
+/// passes and completed; no pass reads more than 100 headers.
+#[tokio::test]
+async fn a_candidate_behind_150_that_never_leave_is_reached_within_two_passes() {
+    const STUCK: u32 = HEIGHT - 1;
+    let (_, _, _, root) = mined(200);
+    let headers = Headers::carrying(HEIGHT, &root);
+    headers.silent_at.lock().unwrap().insert(STUCK);
+    let s = one_store(Some(headers.clone())).await;
+    for n in 10..160u8 {
+        synced_proof_beside_invalid_at(&s, n, STUCK).await;
+    }
+    let behind = synced_proof_beside_invalid(&s, 200).await;
+    let mut per_pass = Vec::new();
+    let mut reached = None;
+    for pass in 1..=3 {
+        let before = headers.reads();
+        MonitorStorage::review_status(&*s).await.unwrap();
+        per_pass.push(headers.reads() - before);
+        if reached.is_none() && rows(&s, &behind).await.contains("req completed link true") {
+            reached = Some(pass);
+        }
+    }
+    let stuck = count(
+        &s,
+        "SELECT COUNT(*) FROM proven_tx_reqs WHERE status = 'invalid'",
+    )
+    .await;
+    let last = rows(&s, &behind).await;
+    println!("WITNESS 150 that never leave and one behind: reads per pass {per_pass:?}, completed at pass {reached:?}, still invalid {stuck}; the one behind: {last}");
+    assert_eq!(reached, Some(2), "{last}");
+    assert!(per_pass.iter().all(|r| *r <= 100), "{per_pass:?}");
+    assert_eq!(stuck, 150);
+    assert!(last.starts_with("tx completed link true"), "{last}");
+}
+
+/// A proof row whose path does not parse: the pass writes neither word on
+/// it (no tracker read, the transaction, request and outputs as they were)
+/// and it does not stop the pass: a candidate behind it is completed.
+#[tokio::test]
+async fn a_proof_row_whose_path_does_not_parse_moves_nothing_and_stops_nothing() {
+    let (_, _, _, root) = mined(8);
+    let headers = Headers::carrying(HEIGHT, &root);
+    let s = one_store(Some(headers.clone())).await;
+    let garbled = synced_proof_beside_invalid(&s, 7).await;
+    exec(
+        &s,
+        &format!("UPDATE proven_txs SET merkle_path = X'ff' WHERE txid = '{garbled}'"),
+    )
+    .await;
+    let behind = synced_proof_beside_invalid(&s, 8).await;
+    let start = rows(&s, &garbled).await;
+    MonitorStorage::review_status(&*s).await.unwrap();
+    let after = rows(&s, &garbled).await;
+    let done = rows(&s, &behind).await;
+    println!(
+        "WITNESS a path that does not parse ({} reads): {after}; the one behind: {done}",
+        headers.reads()
+    );
+    assert_eq!(after, start);
+    assert!(after.contains("req invalid"), "{after}");
+    assert_eq!(headers.reads(), 1);
+    assert!(done.contains("req completed link true"), "{done}");
 }

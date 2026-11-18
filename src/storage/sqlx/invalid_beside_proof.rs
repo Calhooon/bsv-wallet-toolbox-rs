@@ -15,6 +15,16 @@
 //! does not compute, nothing is written and the same row is a candidate next
 //! pass.
 //!
+//! The order: a pass takes the candidates it has waited longest to look at,
+//! by the request's `updated_at` (then the proof row's number), and stamps
+//! `updated_at` on every candidate it looks at and leaves `invalid` (a path
+//! that does not parse, no tracker, a tracker fault). A candidate that
+//! never leaves the set goes to the back at each look, so it holds no slot
+//! for good: with `INVALID_BESIDE_PROOF_PER_PASS` = 100, a candidate behind
+//! N others is looked at within ceil((N + 1) / 100) passes, whatever the
+//! others do, and a pass reads at most 100 headers. No status, link or
+//! history moves on that stamp.
+//!
 //! The tracker is asked with neither the writer nor a write transaction
 //! held: the candidates are read on a reader, checked, and each is read
 //! again inside the write before its request moves: the request still
@@ -51,7 +61,7 @@ impl StorageSqlx {
             JOIN transactions t ON t.txid = r.txid
             WHERE r.status = 'invalid'
               AND t.status != 'failed'
-            ORDER BY p.proven_tx_id
+            ORDER BY julianday(r.updated_at), p.proven_tx_id
             LIMIT ?
             "#,
         )
@@ -93,12 +103,9 @@ impl StorageSqlx {
                 }
             }
         }
-        if stands.is_empty() {
-            return Ok(0);
-        }
-
         let mut tx = self.write_tx().await?;
         let mut completed = 0usize;
+        let mut completed_txids = std::collections::HashSet::new();
         for (txid, proven_tx_id) in &stands {
             let row: Option<(String, Vec<u8>)> = sqlx::query_as(
                 "SELECT r.history, p.merkle_path FROM proven_tx_reqs r \
@@ -157,6 +164,21 @@ impl StorageSqlx {
                 "review_status: a transaction holds a proof this store checked; its invalid request is completed, the transaction is not failed"
             );
             completed += 1;
+            completed_txids.insert(txid.as_str());
+        }
+        // Every candidate looked at and left `invalid` goes to the back of
+        // the order (a demoted one is `unmined` and not touched).
+        for (txid, _, _) in &candidates {
+            if completed_txids.contains(txid.as_str()) {
+                continue;
+            }
+            sqlx::query(
+                "UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ? AND status = 'invalid'",
+            )
+            .bind(now)
+            .bind(txid)
+            .execute(&mut *tx)
+            .await?;
         }
         commit(tx).await?;
         Ok(completed)
