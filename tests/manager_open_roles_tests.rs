@@ -94,9 +94,9 @@ async fn an_add_whose_open_is_held_or_fails_leaves_every_role() {
     let held = answers(&mgr).await;
     let held_syncs = synced(&doubles) - before;
     // `get_stores` answers the active's `is_enabled` as `is_active_enabled`.
-    let listed_enabled = mgr
-        .get_stores()
+    let listed_enabled = within(mgr.get_stores())
         .await
+        .unwrap_or_default()
         .iter()
         .any(|s| s.is_active && s.is_enabled);
 
@@ -106,12 +106,12 @@ async fn an_add_whose_open_is_held_or_fails_leaves_every_role() {
     let before = synced(&doubles);
     let failed = answers(&mgr).await;
     let failed_syncs = synced(&doubles) - before;
-    let stores = mgr.get_stores().await;
+    let stores = within(mgr.get_stores()).await.unwrap_or_default();
     let listed: Vec<String> = stores
         .iter()
         .map(|s| name(&s.storage_identity_key).to_string())
         .collect();
-    let available = mgr.is_available().await;
+    let available = within(mgr.is_available()).await.unwrap_or(false);
 
     fourth.refuse_user_reads.store(false, Ordering::SeqCst);
     let again = within(mgr.make_available()).await.map(|r| refusal(&r));
@@ -133,7 +133,9 @@ async fn an_add_whose_open_is_held_or_fails_leaves_every_role() {
     assert_eq!(failed, expected);
     assert!(failed_syncs >= 2, "{failed_syncs}");
     assert_eq!(listed, vec!["A", "B", "C", "?"]);
-    assert!(stores[3].storage_identity_key.is_empty());
+    assert!(stores
+        .get(3)
+        .is_some_and(|s| s.storage_identity_key.is_empty()));
     assert!(available);
     assert!(again_ok, "{again:?}");
     assert_eq!(backups_after, 3);
@@ -196,11 +198,7 @@ async fn a_switch_beside_an_add_backs_up_every_backup_it_had() {
                 .await
         })
     };
-    bounded(
-        "the added store's open reaches its user read",
-        fourth.user_read_entered.notified(),
-    )
-    .await;
+    let reached = within(fourth.user_read_entered.notified()).await.is_ok();
     doubles[1].sync_release.notify_one();
     let early = tokio::time::timeout(Duration::from_secs(3), &mut switch)
         .await
@@ -235,12 +233,13 @@ async fn a_switch_beside_an_add_backs_up_every_backup_it_had() {
     let conflicting = mgr.get_conflicting_stores().await;
     let retry = mgr.set_active(THIRD).await;
     println!(
-        "WITNESS a switch beside an add: ended while the open was held {ended_while_held}; A synced to {writers:?}; the row on C {on_target}; set_active {}; add {}; active {active:?}; conflicting {}; a retry {}",
+        "WITNESS a switch beside an add: the add's open reached its store {reached}; ended while the open was held {ended_while_held}; A synced to {writers:?}; the row on C {on_target}; set_active {}; add {}; active {active:?}; conflicting {}; a retry {}",
         refusal(&switched),
         refusal(&added),
         conflicting.len(),
         refusal(&retry)
     );
+    assert!(reached, "the add waited for the backup's sync");
     assert!(ended_while_held, "the switch waited for the add's open");
     assert_eq!(writers, vec!["B", "C"]);
     assert_eq!(on_target, 1);
