@@ -1,7 +1,8 @@
 //! What the manager answers about its active from the rows it holds, apart
 //! from the `set_active` matrix (`tests/sync_set_active_tests.rs`): a
-//! no-op call dropped while it reads the rows, and what `get_stores`
-//! answers after a call dropped part way.
+//! no-op call dropped while it reads the rows, what `get_stores` answers
+//! after a call dropped part way, and the user row a sync hands the active
+//! after a row the manager could not read.
 #![cfg(feature = "sqlite")]
 
 use std::sync::atomic::Ordering;
@@ -123,4 +124,47 @@ async fn get_stores_answers_not_enabled_after_a_dropped_switch() {
     );
     assert_eq!(retry, "ok");
     assert_eq!(after_retry, (Some((false, true)), true));
+}
+
+/// A switch from A to B in which A writes its row, loses its answer and
+/// then refuses the read of its row: the manager holds A's row as naming no
+/// active. Once A answers again, a `sync_from_reader` from a store whose
+/// row names A hands A chunks whose user row names A, as the reader holds
+/// it, never an empty one.
+#[tokio::test]
+async fn a_sync_after_an_unreadable_active_carries_the_readers_active() {
+    let (doubles, mgr) = two().await;
+    let a = &doubles[0];
+    a.lose_set_active_answer.store(true, Ordering::SeqCst);
+    a.refuse_reads_after_lost_answer
+        .store(true, Ordering::SeqCst);
+    let failed = refusal(&mgr.set_active(DST).await);
+    a.lose_set_active_answer.store(false, Ordering::SeqCst);
+    a.refuse_reads_after_lost_answer
+        .store(false, Ordering::SeqCst);
+    a.refuse_user_reads.store(false, Ordering::SeqCst);
+
+    let reader = bsv_wallet_toolbox_rs::StorageSqlx::in_memory()
+        .await
+        .unwrap();
+    let r_key = "3333333333333333333333333333333333333333333333333333333333333333";
+    reader.migrate("R", r_key).await.unwrap();
+    reader.make_available().await.unwrap();
+    let (u, _) = reader.find_or_insert_user(ALICE).await.unwrap();
+    reader
+        .update_user_active_storage(u.user_id, SRC)
+        .await
+        .unwrap();
+    let synced = refusal(
+        &mgr.sync_from_reader(ALICE, Arc::new(reader) as Arc<dyn MonitorStorage>)
+            .await,
+    );
+    let recorded = a.user_rows.lock().unwrap().clone();
+    println!(
+        "WITNESS A loses its answer and is unreadable: {failed}; sync_from_reader {synced}; user rows handed to A: {recorded:?}"
+    );
+    assert_eq!(failed, "Storage error: A answer lost");
+    assert_eq!(synced, "ok");
+    assert!(!recorded.is_empty());
+    assert!(recorded.iter().all(|r| r.as_deref() == Some(SRC)));
 }
