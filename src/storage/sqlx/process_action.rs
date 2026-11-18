@@ -1195,7 +1195,29 @@ pub(super) async fn process_action_writes(
         None
     };
 
+    // The action this write signs is sent by its own rows; every other txid
+    // (one `sendWith` names, or the txid of a re-send) is sent only when
+    // the caller's own transaction row of it reads `nosend`. For any other
+    // nothing is written, and the answer says what that row reads.
+    let own = args.txid.as_deref().filter(|_| args.is_new_tx);
     for txid in &txids_to_broadcast {
+        if own != Some(txid.as_str()) {
+            let word: Option<String> = sqlx::query_scalar(
+                "SELECT status FROM transactions WHERE txid = ? AND user_id = ? \
+                 ORDER BY transaction_id LIMIT 1",
+            )
+            .bind(txid)
+            .bind(user_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if word.as_deref() != Some(TransactionStatus::NoSend.as_str()) {
+                send_with_results.push(SendWithResult {
+                    txid: txid.clone(),
+                    status: named_txid_not_sent(word.as_deref()).to_string(),
+                });
+                continue;
+            }
+        }
         let req = find_proven_tx_req_by_txid(&mut *tx, txid).await?;
 
         if let Some((req_id, current_status)) = req {
@@ -1268,6 +1290,20 @@ pub(super) async fn process_action_writes(
         not_delayed_results: None,
         log: None,
     })
+}
+
+/// The answer for a txid named to be sent whose caller's row does not read
+/// `nosend`, from that row's word, in the reference's `sendWithResults`
+/// words: on its way (`sending`), already sent (`unproven`, for an
+/// `unproven` or `completed` row), else not sent (`failed`): a row the
+/// wallet ended, a row not yet signed, or no row of the caller's, the same
+/// answer whatever the store holds for anyone else.
+fn named_txid_not_sent(word: Option<&str>) -> &'static str {
+    match word {
+        Some("sending") => "sending",
+        Some("unproven" | "completed") => "unproven",
+        _ => "failed",
+    }
 }
 
 // =============================================================================

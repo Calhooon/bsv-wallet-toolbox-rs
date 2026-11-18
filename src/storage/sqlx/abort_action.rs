@@ -175,6 +175,25 @@ async fn abort_pending(
         .await?;
     }
 
+    // A `noSend` transaction's request ends with its row, in this write, as
+    // a broadcast abort's does: `invalid`, so no reader of the request alone
+    // takes it for a transaction still to send. Left as it is while another
+    // row of the txid that is not failed stands beside it.
+    if let Some(txid) = tx.txid.as_deref().filter(|t| !t.is_empty()) {
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET status = 'invalid', updated_at = ? \
+             WHERE txid = ? AND status = 'nosend' AND NOT EXISTS \
+             (SELECT 1 FROM transactions WHERE txid = ? AND transaction_id != ? \
+              AND status != 'failed')",
+        )
+        .bind(Utc::now())
+        .bind(txid)
+        .bind(txid)
+        .bind(tx.transaction_id)
+        .execute(&mut *db_tx)
+        .await?;
+    }
+
     // Commit the transaction to make all changes durable.
     super::storage_sqlx::commit(db_tx).await?;
 
