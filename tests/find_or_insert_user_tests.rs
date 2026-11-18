@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
+use ::sqlx::Row;
 use bsv_wallet_toolbox_rs::storage::*;
 use bsv_wallet_toolbox_rs::StorageSqlx;
-use ::sqlx::Row;
 
 const SIK: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const IDENTITY: &str = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
