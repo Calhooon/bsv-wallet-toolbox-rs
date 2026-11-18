@@ -383,6 +383,19 @@ async fn a_linked_row_beside_a_request_no_task_asks_is_a_candidate_of_the_pass()
                     reviewed.contains("w22:completed:linked | req completed+link | checked 1"),
                     "{reviewed}"
                 );
+                for n in [x, y] {
+                    let history: String =
+                        ::sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+                            .bind(mined(n).0)
+                            .fetch_one(w.pool())
+                            .await
+                            .unwrap();
+                    println!("WITNESS linked {tracker:?} history of {n}: {history}");
+                    assert!(
+                        history.contains("\"what\":\"linkedProofCompletesRequest\""),
+                        "{history}"
+                    );
+                }
             }
             Tracker::Refutes => {
                 assert!(
