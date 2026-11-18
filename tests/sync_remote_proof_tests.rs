@@ -1,7 +1,17 @@
 //! Sync rows: the proof rows of a sync whose reader is not a local store.
 #![cfg(feature = "sqlite")]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
+use bsv_wallet_toolbox_rs::services::{
+    FiatCurrency, GetBeefResult, GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult,
+    GetUtxoStatusOutputFormat, GetUtxoStatusResult, NLockTimeInput, PostBeefResult, UtxoVerdict,
+    WalletServices,
+};
+use bsv_wallet_toolbox_rs::Result;
 
 use bsv_rs::primitives::{sha256d, to_hex};
 use bsv_rs::transaction::{MerklePath, MerklePathLeaf, Transaction};
@@ -34,7 +44,8 @@ fn parent(left: &str, right: &str) -> String {
     hash_hex(&bytes)
 }
 
-/// `n` transactions (n a power of two) (TX_HEX with lock times 0 to n - 1) mined as the whole
+/// `n` transactions (n a power of two) (TX_HEX with lock times 0 to n - 1,
+/// and the height's low byte above them) mined as the whole
 /// of one block at `height`: their proof rows and the block's header.
 fn block_at(height: u32, n: u8) -> (Vec<TableProvenTx>, BlockHeader) {
     let raws: Vec<Vec<u8>> = (0..n)
@@ -42,6 +53,7 @@ fn block_at(height: u32, n: u8) -> (Vec<TableProvenTx>, BlockHeader) {
             let mut raw = hex::decode(TX_HEX).unwrap();
             let last = raw.len() - 4;
             raw[last] = i;
+            raw[last + 1] = (height & 0xff) as u8;
             raw
         })
         .collect();
@@ -191,8 +203,8 @@ async fn a_new_proof_row_from_a_reader_that_is_not_local_is_validated() {
 }
 
 /// From a reader that is not local, the proof rows of one height cost one
-/// root check and one header read for the whole sync, and a row the
-/// writer already holds as the same proof costs none.
+/// root check and one header call of the store's services for the whole
+/// sync, and a row the writer already holds as the same proof costs none.
 #[tokio::test]
 async fn the_proof_rows_of_one_height_are_checked_once() {
     let (rows, header) = block_at(400, 4);
@@ -212,7 +224,7 @@ async fn the_proof_rows_of_one_height_are_checked_once() {
     );
     let rows_stored = stored(&act).await;
     println!(
-        "WITNESS 8 load, four rows at one height: {} (root checks, header reads) {after_once:?}; the same sync again: {} {after_again:?}; rows {rows_stored:?}",
+        "WITNESS 8 load, four rows at one height: {} (root checks, header calls) {after_once:?}; the same sync again: {} {after_again:?}; rows {rows_stored:?}",
         refusal(&once),
         refusal(&again)
     );
@@ -344,4 +356,196 @@ async fn a_local_backup_with_no_services_takes_the_wallets_own_proof_rows() {
     );
     assert_eq!(refusal(&r), "ok");
     assert_eq!(rows_stored, (2, 2));
+}
+
+/// From a reader that is not local, rows at two heights of which the
+/// writer already holds some as the same proof: one root check and one
+/// header call of the store's services per height that has a row the
+/// writer does not hold, and none when the sync runs again.
+#[tokio::test]
+async fn the_load_counts_only_heights_with_rows_not_held() {
+    let (r5, h5) = block_at(500, 4);
+    let (r6, h6) = block_at(600, 4);
+    let all: Vec<TableProvenTx> = r5.iter().chain(r6.iter()).cloned().collect();
+    let mut answers = Vec::new();
+    for held in [
+        vec![&r5[0], &r6[0], &r6[1]],
+        vec![&r6[0], &r6[1], &r6[2], &r6[3]],
+    ] {
+        let services = Arc::new(MockWalletServices::builder().roots_valid(true).build());
+        services.set_header_for_height(h5.clone());
+        services.set_header_for_height(h6.clone());
+        let (act, mgr) = wallet(services.clone()).await;
+        for p in &held {
+            hold(&act, p).await;
+        }
+        let reader = reader_with(&all, true).await;
+        let calls = || {
+            (
+                services.root_check_count(),
+                services.call_count("get_header_for_height"),
+            )
+        };
+        let once = mgr.sync_from_reader(ALICE, reader.clone()).await;
+        let after_once = calls();
+        let again = mgr.sync_from_reader(ALICE, reader).await;
+        let after_again = calls();
+        let proofs = count(&act, "SELECT COUNT(*) FROM proven_txs").await;
+        println!(
+            "WITNESS load, 4 rows at 500 and 4 at 600, {} held: {} (root checks, header calls) {after_once:?}; again: {} {after_again:?}; proof rows {proofs}",
+            held.len(),
+            refusal(&once),
+            refusal(&again)
+        );
+        answers.push((
+            refusal(&once),
+            after_once,
+            refusal(&again),
+            after_again,
+            proofs,
+        ));
+    }
+    let ok = || "ok".to_string();
+    assert_eq!(answers[0], (ok(), (2, 2), ok(), (2, 2), 8));
+    assert_eq!(answers[1], (ok(), (1, 1), ok(), (1, 1), 8));
+}
+
+/// A tracker that confirms every root and counts the checks in flight: each
+/// check yields to the scheduler before it answers, so every check started
+/// together is in flight together.
+#[derive(Default)]
+struct Inflight {
+    now: AtomicUsize,
+    most: AtomicUsize,
+}
+
+#[async_trait]
+impl ChainTracker for Inflight {
+    async fn is_valid_root_for_height(
+        &self,
+        _root: &str,
+        _height: u32,
+    ) -> std::result::Result<bool, ChainTrackerError> {
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(now, Ordering::SeqCst);
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        Ok(true)
+    }
+    async fn current_height(&self) -> std::result::Result<u32, ChainTrackerError> {
+        Ok(0)
+    }
+}
+
+/// Mock services with the [`Inflight`] tracker.
+struct Counting {
+    mock: MockWalletServices,
+    tracker: Inflight,
+}
+
+#[async_trait]
+impl WalletServices for Counting {
+    async fn get_chain_tracker(&self) -> Result<&dyn ChainTracker> {
+        Ok(&self.tracker)
+    }
+    async fn get_height(&self) -> Result<u32> {
+        self.mock.get_height().await
+    }
+    async fn get_header_for_height(&self, height: u32) -> Result<Vec<u8>> {
+        self.mock.get_header_for_height(height).await
+    }
+    async fn hash_to_header(&self, hash: &str) -> Result<BlockHeader> {
+        self.mock.hash_to_header(hash).await
+    }
+    async fn get_raw_tx(&self, txid: &str, use_next: bool) -> Result<GetRawTxResult> {
+        self.mock.get_raw_tx(txid, use_next).await
+    }
+    async fn get_merkle_path(&self, txid: &str, use_next: bool) -> Result<GetMerklePathResult> {
+        self.mock.get_merkle_path(txid, use_next).await
+    }
+    async fn post_beef(&self, beef: &[u8], txids: &[String]) -> Result<Vec<PostBeefResult>> {
+        self.mock.post_beef(beef, txids).await
+    }
+    async fn get_utxo_status(
+        &self,
+        output: &str,
+        output_format: Option<GetUtxoStatusOutputFormat>,
+        outpoint: Option<&str>,
+        use_next: bool,
+    ) -> Result<GetUtxoStatusResult> {
+        self.mock
+            .get_utxo_status(output, output_format, outpoint, use_next)
+            .await
+    }
+    async fn get_status_for_txids(
+        &self,
+        txids: &[String],
+        use_next: bool,
+    ) -> Result<GetStatusForTxidsResult> {
+        self.mock.get_status_for_txids(txids, use_next).await
+    }
+    async fn get_bsv_exchange_rate(&self) -> Result<f64> {
+        self.mock.get_bsv_exchange_rate().await
+    }
+    async fn get_fiat_exchange_rate(
+        &self,
+        currency: FiatCurrency,
+        base: Option<FiatCurrency>,
+    ) -> Result<f64> {
+        self.mock.get_fiat_exchange_rate(currency, base).await
+    }
+    fn hash_output_script(&self, script: &[u8]) -> String {
+        self.mock.hash_output_script(script)
+    }
+    async fn is_utxo(&self, txid: &str, vout: u32, locking_script: &[u8]) -> UtxoVerdict {
+        self.mock.is_utxo(txid, vout, locking_script).await
+    }
+    async fn n_lock_time_is_final(&self, n_lock_time: u32) -> Result<bool> {
+        self.mock.n_lock_time_is_final(n_lock_time).await
+    }
+    async fn n_lock_time_is_final_for_tx(&self, input: NLockTimeInput) -> Result<bool> {
+        self.mock.n_lock_time_is_final_for_tx(input).await
+    }
+    async fn get_beef(&self, txid: &str, known_txids: &[String]) -> Result<GetBeefResult> {
+        self.mock.get_beef(txid, known_txids).await
+    }
+}
+
+/// From a reader that is not local, a chunk of proof rows at twenty
+/// heights has no more than eight root checks in flight at once.
+#[tokio::test]
+async fn no_more_than_eight_heights_are_asked_at_once() {
+    let mock = MockWalletServices::builder().roots_valid(true).build();
+    let mut rows = Vec::new();
+    for h in 700..720 {
+        let (r, header) = block_at(h, 1);
+        mock.set_header_for_height(header);
+        rows.extend(r);
+    }
+    let services = Arc::new(Counting {
+        mock,
+        tracker: Inflight::default(),
+    });
+    let act = store(DST).await;
+    act.set_services(services.clone());
+    act.find_or_insert_user(ALICE).await.unwrap();
+    let mgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(act.clone() as Arc<dyn MonitorStorage>),
+        None,
+    );
+    let r = mgr
+        .sync_from_reader(ALICE, reader_with(&rows, true).await)
+        .await;
+    let most = services.tracker.most.load(Ordering::SeqCst);
+    let rows_stored = stored(&act).await;
+    println!(
+        "WITNESS in flight, 20 heights: {} most root checks at once {most}; rows {rows_stored:?}",
+        refusal(&r)
+    );
+    assert_eq!(refusal(&r), "ok");
+    assert_eq!(rows_stored, (20, 20));
+    assert_eq!(most, 8);
 }
