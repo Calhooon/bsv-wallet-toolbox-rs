@@ -17,8 +17,10 @@
 //! it only once it is validated: its bytes hash to its txid, its path is at its height with the
 //! transaction at its index, the path's root is its root, the tracker holds
 //! that root at that height, and the header at that height hashes to its
-//! block hash and carries that root. The tracker and the header are asked
-//! once per height in a sync, up to eight heights at once, with no retry.
+//! block hash and carries that root. Per height, one root check and one
+//! header call of the store's services (which may itself try more than one
+//! header source) are made once in a manager's sync, or once per chunk at a
+//! store's own door, up to eight heights at once, with no retry.
 //! Every tracker and header read happens here, before the writer is taken (the write lock rule: never await a
 //! service or a tracker while holding the writer).
 
@@ -271,7 +273,8 @@ const IN_FLIGHT: usize = 8;
 
 /// The reference's `validateSyncProof` for the rows `which` of `proofs`.
 /// Every row's own checks run before any network call; then each distinct height not yet
-/// answered in this sync is asked once (one root check, one header read),
+/// answered in this sync is asked once (one root check, one header call of
+/// the store's services, which may itself try more than one header source),
 /// up to eight heights at once, with no retry. A row whose root is not the
 /// one its height was confirmed with is refused. Answers, for each row, the
 /// hash of the active header at its height.
