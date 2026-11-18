@@ -293,3 +293,80 @@ async fn withheld_change_hint_then_unspent(delayed: bool) {
     let (_, spends) = taken.expect("the action of 8000");
     assert!(spends.contains(&format!("{one}.1")), "{spends:?}");
 }
+
+/// A `noSend` action that also puts an output of its own in a basket, then
+/// a later action that sends it through `sendWith`: the basket output is
+/// listed from the send on (not before), and a later action names it as an
+/// input. The output it paid to another key keeps its row as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sent_no_send_actions_basket_output_is_listed_and_spent() {
+    let root = PrivateKey::random();
+    let (wallet, store) = funded(&root).await;
+    let mut args = pay_no_send(1_000);
+    args.outputs.as_mut().unwrap().push(CreateActionOutput {
+        locking_script: common::anyone_lock().to_binary(),
+        satoshis: 600,
+        output_description: "kept by the wallet".to_string(),
+        basket: Some("kept".to_string()),
+        custom_instructions: None,
+        tags: None,
+    });
+    let (one, _) = create(&wallet, args).await.unwrap();
+    let before = kept(&wallet).await;
+    let mut send = pay(1_000, false);
+    send.options.as_mut().unwrap().send_with = Some(vec![hex_txid(&one)]);
+    create(&wallet, send).await.expect("the sendWith action");
+    let after = kept(&wallet).await;
+    let paid: (i64, Option<i64>) =
+        ::sqlx::query_as("SELECT spendable, basket_id FROM outputs WHERE txid = ? AND vout = 0")
+            .bind(&one)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    send_waiting(&store).await;
+    let mut spend = pay(300, true);
+    spend.inputs = Some(vec![bsv_rs::wallet::CreateActionInput {
+        outpoint: bsv_rs::wallet::Outpoint::from_string(&format!("{one}.1")).unwrap(),
+        input_description: "the kept output".to_string(),
+        unlocking_script: Some(common::anyone_unlock().to_binary()),
+        unlocking_script_length: None,
+        sequence_number: Some(0xffff_ffff),
+    }]);
+    let named = create(&wallet, spend).await;
+    println!(
+        "STEP basket output\n  before the send: {before:?}\n  after: {after:?}\n  \
+         the output paid away (spendable, basket): {paid:?}\n  a later action \
+         naming {one}.1: {named:?}"
+    );
+    assert!(before.is_empty(), "{before:?}");
+    assert_eq!(after, vec![format!("{one}.1")]);
+    assert_eq!(paid, (0, None));
+    let (_, spends) = named.expect("the action naming the kept output");
+    assert!(spends.contains(&format!("{one}.1")), "{spends:?}");
+}
+
+/// The outpoints `listOutputs` shows in the basket `kept`.
+async fn kept(wallet: &W) -> Vec<String> {
+    wallet
+        .list_outputs(
+            bsv_rs::wallet::ListOutputsArgs {
+                basket: "kept".to_string(),
+                tags: None,
+                tag_query_mode: None,
+                include: None,
+                include_custom_instructions: None,
+                include_tags: None,
+                include_labels: None,
+                limit: Some(100),
+                offset: Some(0),
+                seek_permission: None,
+            },
+            "test.local",
+        )
+        .await
+        .expect("the listing")
+        .outputs
+        .iter()
+        .map(|o| o.outpoint.to_string())
+        .collect()
+}
