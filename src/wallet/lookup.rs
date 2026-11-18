@@ -13,6 +13,7 @@ use bsv_rs::script::templates::PushDrop;
 use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{IdentityCertificate, WalletCertificate};
 
+use super::lookup_checks::{allowed_public_hostname, slap_advertisement_domain};
 use crate::Result;
 
 // =============================================================================
@@ -380,7 +381,7 @@ impl HttpLookupResolver {
                 continue;
             }
 
-            let hosts = parse_slap_hosts(&answer, self.allows_http_hosts());
+            let hosts = parse_slap_hosts(&answer, service, self.allows_http_hosts());
             if !hosts.is_empty() {
                 tracing::debug!(
                     "SLAP resolved {} competent hosts for {}: {:?}",
@@ -530,10 +531,12 @@ impl OverlayLookupResolver for HttpLookupResolver {
 
 /// Parse a SLAP `LookupAnswer` to extract competent host URLs.
 ///
-/// Each output is a BEEF-encoded PushDrop transaction. The host URL is
-/// extracted from the PushDrop fields by finding the first field that
-/// looks like an HTTP(S) URL; it is a host only by [`named_host`]'s rule.
-fn parse_slap_hosts(answer: &LookupAnswer, allow_http: bool) -> Vec<String> {
+/// Each output is a BEEF-encoded SLAP advertisement; it names a host only
+/// when it is decoded and verified as the reference does at the resolver
+/// (`slap_advertisement_domain`: one satoshi, the protocol `SLAP`, the
+/// `service` asked for, signed and locked by its identity key's linked
+/// key), and its domain is a host by [`named_host`]'s rule.
+fn parse_slap_hosts(answer: &LookupAnswer, service: &str, allow_http: bool) -> Vec<String> {
     let mut hosts = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -550,7 +553,7 @@ fn parse_slap_hosts(answer: &LookupAnswer, allow_http: bool) -> Vec<String> {
             );
             break;
         }
-        match extract_host_from_beef(&output.beef, output.output_index, allow_http) {
+        match extract_host_from_beef(&output.beef, output.output_index, service, allow_http) {
             Ok(host) => {
                 if seen.insert(host.clone()) {
                     hosts.push(host);
@@ -565,8 +568,13 @@ fn parse_slap_hosts(answer: &LookupAnswer, allow_http: bool) -> Vec<String> {
     hosts
 }
 
-/// Extract a host URL from a BEEF-encoded SLAP PushDrop output.
-fn extract_host_from_beef(beef: &[u8], output_index: u32, allow_http: bool) -> Result<String> {
+/// Extract a host URL from a BEEF-encoded SLAP advertisement output.
+fn extract_host_from_beef(
+    beef: &[u8],
+    output_index: u32,
+    service: &str,
+    allow_http: bool,
+) -> Result<String> {
     // One output's locking script is all this reads: the subject is read
     // unlinked, its inputs' ancestry never built.
     let tx = Transaction::from_beef_subject(beef, None)
@@ -577,24 +585,11 @@ fn extract_host_from_beef(beef: &[u8], output_index: u32, allow_http: bool) -> R
         .get(output_index as usize)
         .ok_or_else(|| crate::Error::ServiceError("SLAP output index out of bounds".into()))?;
 
-    let decoded = PushDrop::decode(&output.locking_script)
-        .map_err(|e| crate::Error::ServiceError(format!("SLAP PushDrop decode failed: {}", e)))?;
-
-    // Search PushDrop fields for a URL string
-    for field in &decoded.fields {
-        if let Ok(s) = String::from_utf8(field.clone()) {
-            let trimmed = s.trim();
-            if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-                return named_host(trimmed, allow_http).ok_or_else(|| {
-                    crate::Error::ServiceError("SLAP URL is not a host origin".into())
-                });
-            }
-        }
-    }
-
-    Err(crate::Error::ServiceError(
-        "No URL found in SLAP PushDrop fields".into(),
-    ))
+    let domain = slap_advertisement_domain(output, service).ok_or_else(|| {
+        crate::Error::ServiceError("SLAP output is not a verified advertisement".into())
+    })?;
+    named_host(&domain, allow_http)
+        .ok_or_else(|| crate::Error::ServiceError("SLAP URL is not a host origin".into()))
 }
 
 /// The longest host URL a SLAP answer may name, in bytes: 2048, the
@@ -605,14 +600,17 @@ const MAX_HOST_URL_BYTES: usize = 2048;
 /// advertised host (`LookupResolver.ts` `canonicalOverlayEndpoint`): an
 /// `https` origin (`http` too when `allow_http`) of at most 2048 bytes,
 /// with no user name or password, no query, no fragment, and no path but
-/// `/`.
+/// `/`; an `https` host's name not `localhost` and no label of it in the
+/// `xn--` form (`OverlayAdminTokenTemplate.ts` `isAllowedPublicHostname`).
 fn named_host(text: &str, allow_http: bool) -> Option<String> {
     if text.len() > MAX_HOST_URL_BYTES {
         return None;
     }
     let url = reqwest::Url::parse(text).ok()?;
     let scheme = url.scheme() == "https" || (allow_http && url.scheme() == "http");
+    let public = url.scheme() == "http" || url.host_str().is_some_and(allowed_public_hostname);
     let origin = url.host().is_some()
+        && public
         && url.username().is_empty()
         && url.password().is_none()
         && url.query().is_none()
@@ -705,3 +703,7 @@ mod tests;
 #[cfg(test)]
 #[path = "lookup_bounds_tests.rs"]
 mod bounds_tests;
+
+#[cfg(test)]
+#[path = "lookup_verify_tests.rs"]
+mod verify_tests;

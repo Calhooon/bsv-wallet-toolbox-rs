@@ -91,6 +91,7 @@
 
 mod certificate_issuance;
 pub mod lookup;
+mod lookup_checks;
 mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;

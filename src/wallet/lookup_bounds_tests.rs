@@ -13,7 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 /// How a local listener frames its answer.
 #[derive(Clone)]
-enum Framing {
+pub(super) enum Framing {
     /// `Content-Length` equal to the body's length.
     Length,
     /// `Transfer-Encoding: chunked`, no length.
@@ -24,7 +24,7 @@ enum Framing {
 
 /// A local listener's answer: status line, extra headers, body, framing.
 #[derive(Clone)]
-struct Answer {
+pub(super) struct Answer {
     status: &'static str,
     headers: Vec<String>,
     body: Arc<Vec<u8>>,
@@ -32,7 +32,7 @@ struct Answer {
 }
 
 impl Answer {
-    fn ok(body: Vec<u8>, framing: Framing) -> Self {
+    pub(super) fn ok(body: Vec<u8>, framing: Framing) -> Self {
         Self {
             status: "200 OK",
             headers: vec![],
@@ -62,7 +62,7 @@ impl Answer {
 
 /// A listener on 127.0.0.1 answering every request with `answer`; its base
 /// URL and the count of requests it took.
-async fn listener(answer: Answer) -> (String, Arc<AtomicUsize>) {
+pub(super) async fn listener(answer: Answer) -> (String, Arc<AtomicUsize>) {
     let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", socket.local_addr().unwrap());
     let hits = Arc::new(AtomicUsize::new(0));
@@ -147,7 +147,7 @@ async fn answer_one(mut stream: TcpStream, answer: Answer) {
 
 /// An AtomicBEEF whose subject's output 0 is locked by `lock`, spending a
 /// parent proven by a BUMP.
-fn beef_of(lock: LockingScript) -> Vec<u8> {
+pub(super) fn beef_of(lock: LockingScript) -> Vec<u8> {
     let mut parent = Transaction::new();
     let mut input = TransactionInput::new("22".repeat(32), 0);
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
@@ -163,7 +163,7 @@ fn beef_of(lock: LockingScript) -> Vec<u8> {
     input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
     child.inputs.push(input);
     child.outputs.push(TransactionOutput {
-        satoshis: Some(9_500),
+        satoshis: Some(1),
         locking_script: lock,
         change: false,
     });
@@ -176,12 +176,12 @@ fn beef_of(lock: LockingScript) -> Vec<u8> {
 }
 
 /// A PushDrop lock carrying `fields`.
-fn pushdrop(fields: Vec<Vec<u8>>) -> LockingScript {
+pub(super) fn pushdrop(fields: Vec<Vec<u8>>) -> LockingScript {
     PushDrop::new(PrivateKey::random().public_key(), fields).lock()
 }
 
 /// An output-list answer of `outputs`, as JSON bytes.
-fn answer_of(outputs: Vec<(Vec<u8>, u32)>) -> Vec<u8> {
+pub(super) fn answer_of(outputs: Vec<(Vec<u8>, u32)>) -> Vec<u8> {
     serde_json::to_vec(&LookupAnswer::OutputList {
         outputs: outputs
             .into_iter()
@@ -195,26 +195,39 @@ fn answer_of(outputs: Vec<(Vec<u8>, u32)>) -> Vec<u8> {
     .unwrap()
 }
 
-/// A SLAP answer naming each of `hosts`, one output each.
-fn slap_answer(hosts: &[&str]) -> Vec<u8> {
+/// A SLAP answer naming each of `hosts`, one output each: each a signed
+/// SLAP advertisement for `ls_identity` by a key of its own.
+pub(super) fn slap_answer(hosts: &[&str]) -> Vec<u8> {
     answer_of(
         hosts
             .iter()
             .map(|h| {
-                let lock = pushdrop(vec![
-                    b"SLAP".to_vec(),
-                    vec![2; 33],
-                    h.as_bytes().to_vec(),
-                    b"ls_identity".to_vec(),
-                ]);
-                (beef_of(lock), 0)
+                (
+                    beef_of(slap_lock(&PrivateKey::random(), "SLAP", h, "ls_identity")),
+                    0,
+                )
             })
             .collect(),
     )
 }
 
+/// A signed advertisement by `key` of `protocol` (`SHIP` or `SLAP`) naming
+/// `domain` for `service`.
+pub(super) fn slap_lock(
+    key: &PrivateKey,
+    protocol: &str,
+    domain: &str,
+    service: &str,
+) -> LockingScript {
+    let protocol = match protocol {
+        "SHIP" => bsv_rs::overlay::Protocol::Ship,
+        _ => bsv_rs::overlay::Protocol::Slap,
+    };
+    bsv_rs::overlay::create_signed_overlay_admin_token(key, protocol, domain, service)
+}
+
 /// The PushDrop lock of a certificate of serial number `serial`.
-fn cert_lock(serial: &str) -> LockingScript {
+pub(super) fn cert_lock(serial: &str) -> LockingScript {
     let cert = serde_json::json!({
         "type": "dGVzdA==",
         "serialNumber": serial,
@@ -225,7 +238,7 @@ fn cert_lock(serial: &str) -> LockingScript {
 }
 
 /// An overlay answer of one certificate per serial number.
-fn cert_answer(serials: &[&str]) -> Vec<u8> {
+pub(super) fn cert_answer(serials: &[&str]) -> Vec<u8> {
     answer_of(serials.iter().map(|s| (beef_of(cert_lock(s)), 0)).collect())
 }
 
@@ -237,7 +250,7 @@ fn padded(mut body: Vec<u8>, len: usize) -> Vec<u8> {
 }
 
 /// The serial numbers a lookup through `trackers` answers.
-async fn serials(trackers: Vec<String>) -> Vec<String> {
+pub(super) async fn serials(trackers: Vec<String>) -> Vec<String> {
     HttpLookupResolver::with_endpoints(trackers)
         .lookup_by_identity_key("02aa")
         .await
@@ -533,6 +546,8 @@ fn the_named_host_rule() {
     assert!(named_host("ftp://overlay.example", true).is_none());
     assert!(named_host("https://u@overlay.example", false).is_none());
     assert!(named_host("https://overlay.example/x", false).is_none());
+    assert!(named_host("https://localhost", false).is_none());
+    assert!(named_host("https://xn--bcher-kva.example", false).is_none());
     assert!(HttpLookupResolver::for_network(NetworkPreset::Local).allows_http_hosts());
     assert!(!HttpLookupResolver::mainnet().allows_http_hosts());
     assert!(!HttpLookupResolver::testnet().allows_http_hosts());
