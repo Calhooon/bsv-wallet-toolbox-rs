@@ -18,7 +18,9 @@
 //!   names the outputs it closed, `takenAfterRelease` where no mark is
 //!   there and the outputs are read from the row).
 //! - LOCKED (an input still marked spent by it: the retire path's
-//!   `failed`): nothing is recovered; the take is recorded as a hint
+//!   `failed`, whichever of its inputs the locked-input re-check gave
+//!   back): it stays ended; every input of it still free is marked spent
+//!   by it again in the take's write; the take is recorded as a hint
 //!   (`takeHeldAsHint`) and the request keeps its word, raised only for a
 //!   live row of another user of the store.
 //! - EVIDENCE (a `locked_input_checks` row `spent-proven` at one of its
@@ -39,11 +41,11 @@
 //! action: the two are competitors, and the proof path decides between
 //! them. The recovered transaction reads `unproven` meanwhile.
 //!
-//! THE ONE RECOVERY OF INPUTS ([`remark_inputs_spent_on`]) has three
-//! callers: the take after a release, the unfail task's recovery of a
-//! transaction failed on a false word (`TakeRows::LiftFailed`), both inside
-//! the take's write, and a checked proof's completion of a `failed` row
-//! (`proof_completion`).
+//! THE ONE RECOVERY OF INPUTS ([`remark_inputs_spent_on`]) has four
+//! callers: the take after a release, the take beside a locked row, the
+//! unfail task's recovery of a transaction failed on a false word
+//! (`TakeRows::LiftFailed`), each inside the take's write, and a checked
+//! proof's completion of a `failed` row (`proof_completion`).
 
 use sqlx::{Row, SqliteConnection};
 
