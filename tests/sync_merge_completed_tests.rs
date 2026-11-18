@@ -288,11 +288,13 @@ async fn a_drain_leaves_the_held_status_and_a_confirming_tracker_completes_both(
 }
 
 #[tokio::test]
-async fn a_refuting_tracker_demotes_and_leaves_both_as_they_were() {
+async fn a_refuting_tracker_demotes_and_brings_the_failed_row_back_unproven() {
     for shape in SHAPES {
         let v = cell(shape, Tracker::Refutes, false).await;
         assert_drain_leaves_status(shape, &v);
-        assert!(v[2].contains("wx:failed:-"), "{}", v[2]);
+        // The failed row unproven beside its request asking.
+        assert!(v[2].contains("wx:unproven:-"), "{}", v[2]);
+        assert!(v[2].contains("req unmined"), "{}", v[2]);
         assert!(v[2].contains("wy:unproven:-"), "{}", v[2]);
         assert!(
             !v[2].contains("wx:completed") && !v[2].contains("wy:completed"),
@@ -328,8 +330,9 @@ async fn a_proof_this_store_had_checked_completes_in_the_merge_as_before() {
 /// a `nosend` request; the drain
 /// keeps both requests (the merge of a held request) and links both rows to
 /// an unchecked proof. The review's pass takes them: confirmed, every row
-/// and the request `completed`; refuted, the links cleared and the status
-/// left; no tracker, nothing written.
+/// and the request `completed`; refuted, the links cleared, the `failed`
+/// row `unproven` with its request asking, the `nosend` row's status and
+/// request left; no tracker, nothing written.
 #[tokio::test]
 async fn a_linked_row_beside_a_request_no_task_asks_is_a_candidate_of_the_pass() {
     let (x, y) = (21u8, 22u8);
@@ -399,7 +402,7 @@ async fn a_linked_row_beside_a_request_no_task_asks_is_a_candidate_of_the_pass()
             }
             Tracker::Refutes => {
                 assert!(
-                    reviewed.contains("w21:failed:- | req invalid | checked 0"),
+                    reviewed.contains("w21:unproven:- | req unmined | checked 0"),
                     "{reviewed}"
                 );
                 assert!(
