@@ -159,6 +159,13 @@ pub struct WalletStorageManager {
 
     /// One `set_active` transition at a time; no other operation waits on it.
     set_active_lock: tokio::sync::Mutex<()>,
+
+    /// Set before any call of a `set_active` transition that can write a
+    /// store's row, cleared when the transition completes or when the rows
+    /// have been read again after its error: while set, the rows the manager
+    /// holds may not be the stores' rows (a call dropped at an await, or a
+    /// store's panic), so the manager answers its active as not enabled.
+    rows_in_doubt: std::sync::atomic::AtomicBool,
 }
 
 const ENTITY_NAMES: [&str; 12] = [
@@ -371,6 +378,7 @@ impl WalletStorageManager {
             sync_locks: Arc::new(tokio::sync::Semaphore::new(1)),
             provider_locks: Arc::new(tokio::sync::Semaphore::new(1)),
             set_active_lock: tokio::sync::Mutex::new(()),
+            rows_in_doubt: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -394,7 +402,12 @@ impl WalletStorageManager {
     /// 3. There are no conflicting actives
     /// 4. Every store's row of the wallet's user, as the manager holds it,
     ///    names it (a `set_active` that failed part way leaves them apart)
+    /// 5. No `set_active` transition has begun to write without completing
+    ///    or reading every store's row again (a call dropped at an await)
     pub async fn is_active_enabled(&self) -> bool {
+        if self.rows_in_doubt() {
+            return false;
+        }
         let active_index = self.active_index.read().await;
         let conflicting = self.conflicting_indices.read().await;
         let stores = self.stores.read().await;
@@ -409,6 +422,15 @@ impl WalletStorageManager {
             }
         }
         false
+    }
+
+    fn rows_in_doubt(&self) -> bool {
+        self.rows_in_doubt.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn set_rows_in_doubt(&self, in_doubt: bool) {
+        self.rows_in_doubt
+            .store(in_doubt, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Reads each store's row of the wallet's user again into the manager's
@@ -747,6 +769,7 @@ impl WalletStorageManager {
         let active_idx = self.active_index.read().await;
         let backup_indices = self.backup_indices.read().await;
         let conflicting_indices = self.conflicting_indices.read().await;
+        let in_doubt = self.rows_in_doubt();
 
         let mut result = Vec::new();
 
@@ -759,6 +782,7 @@ impl WalletStorageManager {
                 if let (Some(settings), Some(user)) = (&store.settings, &store.user) {
                     user.active_storage.as_ref() == Some(&settings.storage_identity_key)
                         && conflicting_indices.is_empty()
+                        && !in_doubt
                 } else {
                     false
                 }
@@ -980,6 +1004,9 @@ impl WalletStorageManager {
     /// error the manager reads every store's row again (a store may have
     /// written its row and lost its answer); the row of a store that cannot
     /// be read is held as naming no active until a later call reads it.
+    /// A call dropped once its transition has begun (a host's timeout), or
+    /// one whose store panics, leaves the manager answering not enabled
+    /// until a later call completes or reads every store's row again.
     pub async fn set_active(&self, storage_identity_key: &str) -> Result<String> {
         let _transition = self.set_active_lock.lock().await;
         if !*self.is_available.read().await {
@@ -1018,9 +1045,18 @@ impl WalletStorageManager {
                 *self.is_available.write().await = false;
                 self.make_available().await?;
             }
+            // Every row was read back and names the active: nothing a
+            // dropped transition left is in doubt.
+            self.set_rows_in_doubt(false);
             return Ok(format!("setActive to {} unchanged\n", storage_identity_key));
         }
 
+        // From here a store's row may be written (the backups' syncs carry
+        // the active's row): until the transition completes, or the rows are
+        // read again after its error, the manager answers not enabled. A
+        // call dropped at any await below, or a store's panic, leaves the
+        // mark set; the lock above is released with the dropped future.
+        self.set_rows_in_doubt(true);
         let outcome = self.set_active_transition(storage_identity_key).await;
         if outcome.is_err() {
             // A store may have written its row and then failed to answer
@@ -1028,6 +1064,7 @@ impl WalletStorageManager {
             // trusted after an error inside the transition.
             self.reread_user_rows_after_error().await;
         }
+        self.set_rows_in_doubt(false);
         outcome
     }
 

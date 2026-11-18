@@ -4,11 +4,14 @@
 //! active, and every store's row read back. A store fails by refusing,
 //! by refusing the backup's sync, or by writing its row and then losing its
 //! answer (as a storage client whose reply the network drops), with or
-//! without refusing the read of its row after.
+//! without refusing the read of its row after, or by writing its row and
+//! then never answering (the call dropped by the test's own bound, as a
+//! host's timeout drops it) or panicking (the call run on a spawned task).
 #![cfg(feature = "sqlite")]
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bsv_wallet_toolbox_rs::managers::WalletStorageManager;
 use bsv_wallet_toolbox_rs::storage::*;
@@ -43,6 +46,12 @@ enum Fails {
     /// As `AnswerLost`, and the store then refuses to read its row until
     /// it answers again.
     AnswerLostUnread,
+    /// Its own `set_active` writes the row and never answers: the call is
+    /// dropped by a bound around it.
+    Dropped,
+    /// Its own `set_active` writes the row and panics: the call runs on a
+    /// spawned task, whose join error is the answer.
+    Panics,
 }
 
 /// One cell: the number of stores, whether the manager has already
@@ -78,6 +87,8 @@ impl Cell {
 
 fn arm(d: &Double, fails: Fails, on: bool) {
     match fails {
+        Fails::Dropped => d.hang_after_write.store(on, Ordering::SeqCst),
+        Fails::Panics => d.panic_after_write.store(on, Ordering::SeqCst),
         Fails::SetActive => d.fail_set_active.store(on, Ordering::SeqCst),
         Fails::AnswerLost => d.lose_set_active_answer.store(on, Ordering::SeqCst),
         Fails::AnswerLostUnread => {
@@ -101,7 +112,7 @@ fn arm(d: &Double, fails: Fails, on: bool) {
 
 /// The stores (every row naming the store at index 0), the manager over
 /// them made available and, for a switched cell, switched to index 1.
-async fn setup(cell: Cell) -> (Vec<Arc<Double>>, WalletStorageManager) {
+async fn setup(cell: Cell) -> (Vec<Arc<Double>>, Arc<WalletStorageManager>) {
     let mut doubles = Vec::new();
     for sik in &KEYS[..cell.n] {
         let s = bsv_wallet_toolbox_rs::StorageSqlx::in_memory()
@@ -113,16 +124,7 @@ async fn setup(cell: Cell) -> (Vec<Arc<Double>>, WalletStorageManager) {
         s.update_user_active_storage(u.user_id, SRC).await.unwrap();
         doubles.push(Arc::new(Double::new(s)));
     }
-    let mgr = WalletStorageManager::new(
-        ALICE.to_string(),
-        Some(doubles[0].clone() as Arc<dyn MonitorStorage>),
-        Some(
-            doubles[1..]
-                .iter()
-                .map(|d| d.clone() as Arc<dyn MonitorStorage>)
-                .collect(),
-        ),
-    );
+    let mgr = Arc::new(manager_over(&doubles));
     mgr.make_available().await.unwrap();
     if cell.switched {
         mgr.set_active(DST).await.unwrap();
@@ -167,13 +169,53 @@ struct Answers {
     after_call_back: (Vec<String>, (String, bool)),
 }
 
+/// One `set_active` call: a call whose store never answers is dropped by
+/// a bound around it (`dropped`); a call whose store may panic runs on a
+/// spawned task (`panicked` when it does).
+async fn attempt(mgr: &Arc<WalletStorageManager>, key: &str, fails: Fails) -> String {
+    match fails {
+        Fails::Dropped => {
+            match tokio::time::timeout(Duration::from_millis(300), mgr.set_active(key)).await {
+                Ok(r) => refusal(&r),
+                Err(_) => "dropped".to_string(),
+            }
+        }
+        Fails::Panics => {
+            let (m, k) = (mgr.clone(), key.to_string());
+            let task = tokio::spawn(async move { m.set_active(&k).await });
+            match bounded("a set_active whose store panics", task).await {
+                Ok(r) => refusal(&r),
+                Err(e) if e.is_panic() => "panicked".to_string(),
+                Err(e) => format!("join error: {e}"),
+            }
+        }
+        _ => refusal(&bounded("set_active", mgr.set_active(key)).await),
+    }
+}
+
+/// The rows each store holds right after the failing call: a store ahead
+/// of the failing one in the order was written; the failing one was
+/// written when its failure comes after its write.
+fn rows_after_failure(cell: Cell) -> Vec<String> {
+    let (from, to) = cell.old_and_new();
+    let i = cell.failing();
+    let through = match cell.fails {
+        Fails::Sync => 0,
+        Fails::SetActive => i,
+        _ => i + 1,
+    };
+    (0..cell.n)
+        .map(|j| name(if j < through { to } else { from }).to_string())
+        .collect()
+}
+
 async fn run(cell: Cell) -> Answers {
     let (from, to) = cell.old_and_new();
     let i = cell.failing();
 
     let (doubles, mgr) = setup(cell).await;
     arm(&doubles[i], cell.fails, true);
-    let failed = refusal(&mgr.set_active(to).await);
+    let failed = attempt(&mgr, to, cell.fails).await;
     let after_failure = (rows(&doubles).await, state(&mgr).await);
     arm(&doubles[i], cell.fails, false);
     let retry = refusal(&mgr.set_active(to).await);
@@ -181,7 +223,7 @@ async fn run(cell: Cell) -> Answers {
 
     let (doubles, mgr) = setup(cell).await;
     arm(&doubles[i], cell.fails, true);
-    let _ = mgr.set_active(to).await;
+    let _ = attempt(&mgr, to, cell.fails).await;
     arm(&doubles[i], cell.fails, false);
     let call_back = refusal(&mgr.set_active(from).await);
     let after_call_back = (rows(&doubles).await, state(&mgr).await);
@@ -206,6 +248,8 @@ fn cells() -> Vec<Cell> {
                     Fails::Sync,
                     Fails::AnswerLost,
                     Fails::AnswerLostUnread,
+                    Fails::Dropped,
+                    Fails::Panics,
                 ] {
                     // The active is no backup: no sync writes to it.
                     let reachable = (n == 3 || role != Role::Third)
@@ -226,7 +270,8 @@ fn cells() -> Vec<Cell> {
 }
 
 /// Every cell: after the failure the manager answers its active as enabled
-/// only when every store's row names it (never after a lost answer); a retry to the same target, once
+/// only when every store's row names it (never after a lost answer, nor
+/// after a call that never returned); a retry to the same target, once
 /// the store answers, makes every row name the target; a call back to the
 /// old active makes every row name it; after either the manager is enabled
 /// on that store.
@@ -265,13 +310,18 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
             Fails::AnswerLost | Fails::AnswerLostUnread => {
                 format!("Storage error: {} answer lost", name(KEYS[cell.failing()]))
             }
+            Fails::Dropped => "dropped".to_string(),
+            Fails::Panics => "panicked".to_string(),
         };
         // A store that wrote its row and lost its answer moved its row: the
-        // rows no longer name the manager's active.
+        // rows no longer name the manager's active. A call that never
+        // returned leaves the manager not enabled whatever the rows name.
         let lost = matches!(cell.fails, Fails::AnswerLost | Fails::AnswerLostUnread);
+        let never_returned = matches!(cell.fails, Fails::Dropped | Fails::Panics);
         let every = |r: &[String], k: &str| r.len() == cell.n && r.iter().all(|x| x == k);
         let ok = a.failed == expected_failure
-            && *enabled == agree
+            && *rows == rows_after_failure(cell)
+            && *enabled == (agree && !never_returned)
             && !(lost && *enabled)
             && *active == from
             && a.retry == "ok"
