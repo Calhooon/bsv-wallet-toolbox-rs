@@ -1635,23 +1635,9 @@ async fn broadcast_new_internalized_req(
         if !alive {
             let status = internalize_answer::held_status(&results_vec, txid);
             let competitors = internalize_answer::named_competitors(&results_vec);
-            // The history's word, as the door has always written it.
-            let word = if results_vec.iter().any(|r| {
-                r.txid_results
-                    .iter()
-                    .any(|tr| tr.double_spend && !tr.orphan_mempool)
-            }) {
-                "doubleSpend"
-            } else if internalize_answer::any_refusal(&results_vec, txid) {
-                "invalidTx"
-            } else if results_vec
-                .iter()
-                .any(|r| r.txid_results.iter().any(|tr| tr.orphan_mempool))
-            {
-                "orphanMempool"
-            } else {
-                "serviceError"
-            };
+            // The history's word is the answer's status (one rule,
+            // `internalize_answer::held_status`).
+            let word = internalize_answer::status_word(status);
             let instances: Vec<InstanceNote> =
                 results_vec.iter().map(|r| instance_note(r, txid)).collect();
             let written = storage
@@ -1691,9 +1677,9 @@ async fn broadcast_new_internalized_req(
     }
 }
 
-/// The refusal predicate the door has always used: not an orphan hold, not a
-/// service error, and a double-spend word, a definitive rejection or an
-/// invalid word (`internalize_answer` reads every instance's word by it).
+/// The refusal predicate: not an orphan hold, not a service error, and a
+/// double-spend word, a definitive rejection or an invalid word
+/// (`internalize_answer` reads every instance's word by it).
 pub(super) fn is_refusal(tr: &crate::services::PostTxResultForTxid) -> bool {
     !tr.orphan_mempool
         && !tr.service_error
