@@ -104,9 +104,39 @@
   competitor's proof only where the spent outpoint is one of its own
   output rows: the proof path's competitor ask checks a fetched proof and
   keeps its verdict, not the competitor's bytes or path.
-- A take is read per txid at the door, as the wallet's own post reads it:
-  an instance whose answer says success for another txid did not take
-  this one.
+- A take is read per txid at the door, by the send-waiting task and in
+  the wallet's own post, by one reader: an instance whose answer says
+  success for another txid did not take this one, so send-waiting neither
+  raises its request nor records a take under its name
+  (`a_success_for_another_txid_is_no_take_at_send_waiting`).
+- A take heard after the host's own abort undoes the abort (the keeper's
+  reading 18 of section 30; the broadcaster charter's B4 (d), a template
+  already handed to an instance is never abandoned). When `abortAction`
+  lands while the post of the wallet's own action is in flight and an
+  instance's take is heard after it (the post's answer, the send-waiting
+  task, the retire path's status source, the unfail task, or another
+  user's presentation at the door), the one write that applies the take
+  puts the action back: the transaction `unproven`, its request
+  `unmined`, each input still free marked spent by it again, the outputs
+  the abort closed spendable again where nothing spent them, and the
+  cause on the request's history (a `takenAfterAbort` note naming the
+  instances). The abort writes its mark for this on the request's history
+  (the key `abort`: the transaction it failed and the outputs it closed);
+  a take recovers a `failed` transaction only under that mark, once, and
+  never while a competitor's checked proof stands. An input another
+  action of the wallet spent meanwhile stays with that action: the two
+  are competitors and a proof decides; the recovered transaction reads
+  `unproven` meanwhile. A transaction failed on evidence (a competitor's
+  checked proof, the wallet's own refusal, a received transaction) is not
+  recovered by a take; the unfail task's recovery on chain evidence is
+  unchanged, and it marks the inputs in the same write as its take. At
+  0.14.0-beta.10 the wallet's own post's take after such an abort left the
+  request `invalid` and the transaction `failed` with its inputs released
+  and offered (its `test_race_broadcast_status_vs_abort`;
+  `tests/held_answer_abort_take_tests.rs`, five writers by six causes).
+- A send-waiting hint (a post drawing no take that counts) keeps a
+  request another write moved during the post: an abort's `invalid` stays
+  `invalid`, so an aborted action is not queued to be posted again.
 - The door's note of a post nobody took is its own (`doorPost`), names the
   presenting user and the instance, and is kept once per instance per
   request (the newest replaces the door's older one), so presentations
@@ -259,6 +289,15 @@ alone, so their answers here are 0.14.0-beta.8.1's):
   wallet error code`: that client, as the reference's, reads code 5 with
   its results for `createAction` and `signAction` alone (bsv-rs issue
   1058; ts-stack@11faa7d1 `HTTPWalletJSON.ts` 272 to 275).
+- A host that aborted an action an instance then took reads its abort
+  undone: `listActions` lists the action `unproven` again, its inputs are
+  spent by it again (not offered, not in the balance), its change is
+  counted again, and the request's history names the cause
+  (`takenAfterAbort`, with the instances). The `abortAction` call itself
+  answered `aborted: true`; nothing else tells the host, so a host that
+  must know reads the action's status after a later take. A host that
+  re-spent an input meanwhile keeps that spend; the proof decides which
+  of the two is mined.
 - A store a host opens with a chain tracker and no services: every
   received payment with no checked proof is held and answers
   `serviceError`, with the door's note saying no services were

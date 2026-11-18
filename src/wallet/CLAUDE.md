@@ -180,6 +180,17 @@ The reference's on-chain abort answers `aborted: false`
 (`StorageProvider.ts:878-889`); a dedicated abort-on-chain variant remains
 an owner's public API decision under #185.
 
+An honoured abort of an action whose post was in flight is undone by a
+take heard after it (the keeper's reading 18 of section 30): the abort's
+write leaves its mark on the request's history, and the one write that
+applies the take (any of its five writers) puts the action back
+`unproven`, its free inputs spent by it again, the outputs it closed
+spendable, with a `takenAfterAbort` note naming the instances
+(`src/storage/sqlx/abort_recovery.rs`). The call answered `aborted: true`
+and is not answered again: the host reads the undo from `listActions`
+(the action `unproven`) and the balance. A `failed` on evidence is never
+recovered by a take; the competitor guard stands in front.
+
 The direct SDK guards below carry classed refusals too, with their
 message bytes unchanged. Hosts matching `WalletError` at these doors must
 read `WalletRefusalClass`; SDK Display loses the generic `wallet error: `
