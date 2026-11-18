@@ -34,7 +34,7 @@ a8-beef-bytes = []
 
 [dependencies]
 # BSV SDK - provides primitives, transactions, wallet traits
-bsv-rs = { version = "=0.9.0-beta.9", features = ["full", "http"] }
+bsv-rs = { version = "=0.9.0-beta.10", features = ["full", "http"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
