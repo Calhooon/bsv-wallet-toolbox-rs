@@ -55,6 +55,9 @@ mod reorg_tests;
 #[cfg(test)]
 mod sibling_bump_tests;
 mod storage_sqlx;
+mod stored_spenders;
+#[cfg(test)]
+mod stored_spenders_tests;
 mod sync;
 mod sync_proof;
 #[cfg(test)]
