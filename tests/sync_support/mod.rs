@@ -1,6 +1,7 @@
 //! Shared fixtures of the sync row tests: stores, chunk and row builders.
 #![allow(dead_code)]
 
+pub mod cells;
 pub mod double;
 
 use std::sync::Arc;
