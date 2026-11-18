@@ -150,30 +150,22 @@ async fn scalar(wallet: &TestWallet, sql: &str, txid: &str) -> Option<String> {
         .unwrap()
 }
 
-/// The answer as a host reads it.
+/// The answer as a host reads it (`common::read_answer`), with the count
+/// of competitors the review results name.
 fn read_answer(answer: bsv_rs::Result<bsv_rs::wallet::InternalizeActionResult>) -> String {
-    match answer {
-        Ok(result) if result.accepted => "accepted".to_string(),
-        Ok(_) => "not accepted".to_string(),
-        Err(bsv_rs::Error::WalletReviewActions(refusal)) => format!(
-            "review {:?} {:?} competitors {}",
-            refusal
-                .review_action_results
-                .iter()
-                .map(|r| r.status)
-                .collect::<Vec<_>>(),
-            refusal
-                .send_with_results
-                .iter()
-                .map(|r| r.status)
-                .collect::<Vec<_>>(),
-            refusal
-                .review_action_results
+    let competitors = match &answer {
+        Err(bsv_rs::Error::WalletReviewActions(r)) => Some(
+            r.review_action_results
                 .iter()
                 .map(|r| r.competing_txs.as_ref().map_or(0, Vec::len))
-                .sum::<usize>()
+                .sum::<usize>(),
         ),
-        Err(other) => format!("error {other}"),
+        _ => None,
+    };
+    let read = common::read_answer(answer);
+    match competitors {
+        Some(n) => format!("{read} competitors {n}"),
+        None => read,
     }
 }
 

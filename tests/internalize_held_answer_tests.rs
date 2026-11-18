@@ -258,7 +258,7 @@ async fn internalize_one_door_took_it_is_accepted() {
 }
 
 #[tokio::test]
-async fn internalize_with_a_checked_proof_is_accepted_with_no_post() {
+async fn internalize_with_a_proof_the_gate_defers_is_accepted_with_no_post() {
     let root = PrivateKey::random();
     let (_, proven, txid) = paying(&root, "cHJvb2Y=");
     let wallet = common::wallet_posting("held-answer", &root, no_answer()).await;
@@ -266,7 +266,7 @@ async fn internalize_with_a_checked_proof_is_accepted_with_no_post() {
     assert!(answer.expect("accepted").accepted);
     let posts = wallet.services().call_count("post_beef");
     println!(
-        "checked proof: status {} posts {posts}",
+        "deferred proof: status {} posts {posts}",
         tx_status(&wallet, &txid).await
     );
     // The proof was checked; the proof gate defers storing a proof this

@@ -273,25 +273,52 @@ pub fn proven_beef_paying(lock: LockingScript) -> (Vec<u8>, String) {
     spend_beef_with(5, lock, true)
 }
 
-/// The internalize call's answer as a host reads it: `accepted` for
-/// `accepted: true`, `held` for the review-actions refusal whose every send
-/// result is `sending` (the ruling of 2026-11-17, DECISIONS 29.1: valid,
-/// held, still being sent). Any other answer panics naming `case`.
+/// THE ONE READER of the internalize call's answer as a host reads it:
+/// `accepted` for `accepted: true`, else the review-actions refusal's
+/// review statuses and send statuses (`review [InvalidTx] [Sending]`). Any
+/// other answer panics.
+pub fn read_answer(answer: bsv_rs::Result<bsv_rs::wallet::InternalizeActionResult>) -> String {
+    match answer {
+        Ok(result) if result.accepted => "accepted".to_string(),
+        Ok(_) => "not accepted".to_string(),
+        Err(bsv_rs::Error::WalletReviewActions(refusal)) => format!(
+            "review {:?} {:?}",
+            refusal
+                .review_action_results
+                .iter()
+                .map(|r| r.status)
+                .collect::<Vec<_>>(),
+            refusal
+                .send_with_results
+                .iter()
+                .map(|r| r.status)
+                .collect::<Vec<_>>()
+        ),
+        Err(other) => panic!("unexpected answer: {other:?}"),
+    }
+}
+
+/// [`read_answer`] as two words: `accepted`, or `held` for the
+/// review-actions refusal whose every send result is `sending` (the ruling
+/// of 2026-11-17, DECISIONS 29.1: valid, held, still being sent). Any other
+/// answer panics naming `case`.
 pub fn answer_word(
     answer: bsv_rs::Result<bsv_rs::wallet::InternalizeActionResult>,
     case: &str,
 ) -> &'static str {
-    match answer {
-        Ok(result) if result.accepted => "accepted",
-        Err(bsv_rs::Error::WalletReviewActions(refusal))
-            if !refusal.send_with_results.is_empty()
-                && refusal
-                    .send_with_results
-                    .iter()
-                    .all(|r| r.status == bsv_rs::wallet::SendWithResultStatus::Sending) =>
+    let read = read_answer(answer);
+    let sends = read
+        .rsplit_once(" [")
+        .map(|(_, sends)| sends.trim_end_matches(']'))
+        .unwrap_or("");
+    match read.as_str() {
+        "accepted" => "accepted",
+        r if r.starts_with("review ")
+            && !sends.is_empty()
+            && sends.split(", ").all(|s| s == "Sending") =>
         {
             "held"
         }
-        other => panic!("{case}: neither accepted nor held: {other:?}"),
+        other => panic!("{case}: neither accepted nor held: {other}"),
     }
 }

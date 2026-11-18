@@ -115,29 +115,6 @@ async fn scalar(wallet: &TestWallet, sql: &str, txid: &str) -> Option<String> {
         .unwrap()
 }
 
-/// The call's answer as a host reads it: `accepted`, or the review-actions
-/// refusal's review status and send status.
-fn read_answer(answer: bsv_rs::Result<bsv_rs::wallet::InternalizeActionResult>) -> String {
-    match answer {
-        Ok(result) if result.accepted => "accepted".to_string(),
-        Ok(_) => "not accepted".to_string(),
-        Err(bsv_rs::Error::WalletReviewActions(refusal)) => format!(
-            "review {:?} {:?}",
-            refusal
-                .review_action_results
-                .iter()
-                .map(|r| r.status)
-                .collect::<Vec<_>>(),
-            refusal
-                .send_with_results
-                .iter()
-                .map(|r| r.status)
-                .collect::<Vec<_>>()
-        ),
-        Err(other) => panic!("unexpected answer: {other:?}"),
-    }
-}
-
 /// User B presents a payment whose txid the store already holds under user
 /// A's `request` (and A's row), the door's post answered by `outcome`.
 async fn cell(request: Option<&str>, other_row: &str, outcome: Outcome) -> Reading {
@@ -211,7 +188,7 @@ async fn cell(request: Option<&str>, other_row: &str, outcome: Outcome) -> Readi
     .unwrap_or_default();
     Reading {
         posts: wallet.services().call_count("post_beef"),
-        answer: read_answer(answer),
+        answer: common::read_answer(answer),
         mine,
         other,
         request: scalar(

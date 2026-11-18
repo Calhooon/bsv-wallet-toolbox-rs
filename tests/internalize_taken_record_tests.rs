@@ -96,11 +96,12 @@ fn insertion(vout: u32) -> InternalizeOutput {
     }
 }
 
-/// Internalize `args`: accepted, or held (the review-actions answer,
-/// `sending`); the rows are what these tests read.
-async fn internalize(wallet: &TestWallet, args: InternalizeActionArgs) {
+/// Internalize `args` and assert the call's answer is `want`: `accepted`
+/// (a checked proof or a take), or `held` (the review-actions answer, the
+/// txid `sending`).
+async fn internalize(wallet: &TestWallet, args: InternalizeActionArgs, want: &str) {
     let answer = wallet.internalize_action(args, Some(ORIGIN)).await;
-    common::answer_word(answer, "taken record");
+    assert_eq!(common::answer_word(answer, "taken record"), want);
 }
 
 async fn user_id(wallet: &TestWallet, root: &PrivateKey) -> i64 {
@@ -206,7 +207,7 @@ async fn nosend_merged_by_its_owner() -> (
     let (fund, fund_output, fund_txid) =
         paying(&root_a, &PrivateKey::random().public_key(), "ZnVuZA==");
     let wallet_a = common::wallet(&root_a.public_key().to_hex()[..8], &root_a, &fund_txid).await;
-    internalize(&wallet_a, args(fund.clone(), fund_output)).await;
+    internalize(&wallet_a, args(fund.clone(), fund_output), "accepted").await;
     assert_eq!(wallet_a.balance().await.unwrap().total, PAID);
 
     let root_b = PrivateKey::random();
@@ -232,7 +233,12 @@ async fn nosend_merged_by_its_owner() -> (
     atomic.merge_raw_tx(raw, None).unwrap();
     let beef_t = atomic.to_binary_atomic(&t).unwrap();
 
-    internalize(&wallet_a, args(beef_t.clone(), insertion(paid_vout))).await;
+    internalize(
+        &wallet_a,
+        args(beef_t.clone(), insertion(paid_vout)),
+        "accepted",
+    )
+    .await;
     assert_eq!(request_word(&wallet_a, &t).await, "unmined");
     assert!(records(&wallet_a, &t).await.is_empty(), "nobody posted T");
 
@@ -246,7 +252,7 @@ async fn nosend_merged_by_its_owner() -> (
 #[tokio::test]
 async fn a_request_merged_unmined_by_its_owner_does_not_make_another_users_receipt_taken() {
     let (_a, wallet_b, root_b, beef_t, payment, t) = nosend_merged_by_its_owner().await;
-    internalize(&wallet_b, args(beef_t, payment)).await;
+    internalize(&wallet_b, args(beef_t, payment), "held").await;
     assert_held(
         &wallet_b,
         &root_b,
@@ -261,7 +267,7 @@ async fn a_request_merged_unmined_by_its_owner_does_not_make_another_users_recei
 #[tokio::test]
 async fn the_per_user_review_status_does_not_heal_a_receipt_on_a_request_word() {
     let (_a, wallet_b, root_b, beef_t, payment, t) = nosend_merged_by_its_owner().await;
-    internalize(&wallet_b, args(beef_t, payment)).await;
+    internalize(&wallet_b, args(beef_t, payment), "held").await;
     sql(
         &wallet_b,
         "UPDATE transactions SET status = 'sending' WHERE txid = ?",
@@ -343,7 +349,7 @@ async fn a_request_word_a_sync_chunk_wrote_does_not_make_a_receipt_taken() {
             .expect("the chunk");
         let stored = request_word(&wallet, &txid).await;
         assert_eq!(serde_json::to_value(word).unwrap(), stored.as_str());
-        internalize(&wallet, args(beef, output)).await;
+        internalize(&wallet, args(beef, output), "held").await;
         assert_held(
             &wallet,
             &root,
@@ -367,7 +373,7 @@ async fn a_recorded_take_makes_a_receipt_taken() {
         &txid,
     )
     .await;
-    internalize(&wallet, args(beef, output)).await;
+    internalize(&wallet, args(beef, output), "accepted").await;
     assert_eq!(status_of(&wallet, &root, &txid).await, "unproven");
     assert_eq!(wallet.balance().await.unwrap().total, PAID);
     assert_eq!(offered_under_label(&wallet).await, Ok(()));
@@ -382,7 +388,7 @@ async fn the_door_records_its_own_take() {
     let root = PrivateKey::random();
     let (beef, output, txid) = paying(&root, &PrivateKey::random().public_key(), "ZG9vcg==");
     let wallet = common::wallet("taken-record", &root, &txid).await;
-    internalize(&wallet, args(beef.clone(), output)).await;
+    internalize(&wallet, args(beef.clone(), output), "accepted").await;
     let written = records(&wallet, &txid).await;
     println!(
         "the door's post accepted: status {} records {written:?}",
@@ -393,7 +399,7 @@ async fn the_door_records_its_own_take() {
 
     let second = PrivateKey::random();
     let wallet_c = beside(&wallet, &second, no_answer()).await;
-    internalize(&wallet_c, args(beef, insertion(0))).await;
+    internalize(&wallet_c, args(beef, insertion(0)), "accepted").await;
     assert_eq!(status_of(&wallet_c, &second, &txid).await, "unproven");
 }
 
@@ -411,7 +417,7 @@ async fn migration_006_keeps_the_request_word_for_legacy_rows() {
         ("a2VwdA==", "unsent", true),
     ] {
         let (beef, output, txid) = paying(&root, &PrivateKey::random().public_key(), suffix);
-        internalize(&wallet, args(beef, output)).await;
+        internalize(&wallet, args(beef, output), "held").await;
         sql(
             &wallet,
             "UPDATE transactions SET status = 'unproven' WHERE txid = ?",
@@ -506,7 +512,7 @@ async fn a_proof_row_a_sync_chunk_wrote_does_not_make_a_receipt_taken() {
         .unwrap();
     assert_eq!(rows, 1, "the chunk wrote the proof row");
 
-    internalize(&wallet_b, args(beef, output)).await;
+    internalize(&wallet_b, args(beef, output), "held").await;
     assert_held(&wallet_b, &root_b, &txid, "B beside a synced proof row").await;
 
     // The request's word as a chunk could also write it: B's own heal
@@ -598,6 +604,7 @@ async fn a_checked_stored_proof_makes_a_receipt_taken_and_migration_006_agrees()
     internalize(
         &wallet_a,
         args(proven, common::payment(&sender, PREFIX, suffix)),
+        "accepted",
     )
     .await;
     assert_eq!(status_of(&wallet_a, &root_a, &txid).await, "completed");
@@ -624,7 +631,7 @@ async fn a_checked_stored_proof_makes_a_receipt_taken_and_migration_006_agrees()
 
     let root_b = PrivateKey::random();
     let wallet_b = beside(&wallet_a, &root_b, no_answer()).await;
-    internalize(&wallet_b, args(beef, insertion(0))).await;
+    internalize(&wallet_b, args(beef, insertion(0)), "accepted").await;
     let door = status_of(&wallet_b, &root_b, &txid).await;
     let request = request_word(&wallet_b, &txid).await;
     println!("B at the door: status {door} request {request}");
