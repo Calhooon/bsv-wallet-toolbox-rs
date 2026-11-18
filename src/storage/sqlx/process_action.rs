@@ -914,7 +914,7 @@ async fn finish_stored_posts(
             },
         );
         if let Err(error) =
-            update_transaction_status_after_broadcast_internal(storage, txid, &outcome).await
+            update_transaction_status_after_post_words(storage, txid, &outcome, &words).await
         {
             crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
         }
@@ -1359,13 +1359,50 @@ pub async fn update_transaction_status_after_broadcast_internal(
     txid: &str,
     outcome: &BroadcastOutcome,
 ) -> Result<()> {
+    update_transaction_status_after_post_words(storage, txid, outcome, &[]).await
+}
+
+/// The instances whose word in `words` accepted `txid`: an acceptance with
+/// no per-txid result, or one whose result for `txid` is a success.
+pub(crate) fn accepting_instances<'a>(words: &'a [PostBeefResult], txid: &str) -> Vec<&'a str> {
+    words
+        .iter()
+        .filter(|w| {
+            w.is_success()
+                && (w.txid_results.is_empty()
+                    || w.txid_results
+                        .iter()
+                        .any(|r| r.txid == txid && r.is_success()))
+        })
+        .map(|w| w.name.as_str())
+        .collect()
+}
+
+/// [`update_transaction_status_after_broadcast_internal`] with the post's
+/// per-instance `words`: a success records the take in the same write as
+/// the status moves (`held_receipts::record_take_on`), each accepting
+/// instance's name with `accepted`, or `chain` with `seen` when a status
+/// source holds a refused transaction, as the internalize door and
+/// send-waiting record theirs. So another user's held receipt of the txid,
+/// moved to `unproven` here, and a later receipt of it read the take
+/// whichever services a host built (DECISIONS 29.1, the held word). With
+/// no words and no status source (a host's bare success) nothing is
+/// recorded, as before.
+pub(crate) async fn update_transaction_status_after_post_words(
+    storage: &StorageSqlx,
+    txid: &str,
+    outcome: &BroadcastOutcome,
+    words: &[PostBeefResult],
+) -> Result<()> {
     // Before starting a DB transaction, read the status sources for a
     // refusal or an orphan hold: a transaction they hold is promoted.
+    let mut reconciled = false;
     let effective_outcome = match outcome {
         BroadcastOutcome::DoubleSpend { .. }
         | BroadcastOutcome::InvalidTx { .. }
         | BroadcastOutcome::OrphanMempool { .. } => {
             if reconcile_tx_status(storage, txid).await {
+                reconciled = true;
                 &BroadcastOutcome::Success
             } else {
                 outcome
@@ -1402,6 +1439,21 @@ pub async fn update_transaction_status_after_broadcast_internal(
             .bind(txid)
             .execute(&mut *tx)
             .await?;
+
+            // The take, recorded in the same write.
+            if reconciled {
+                super::held_receipts::record_chain_seen_on(&mut tx, txid).await?;
+            } else {
+                for provider in accepting_instances(words, txid) {
+                    super::held_receipts::record_take_on(
+                        &mut tx,
+                        txid,
+                        provider,
+                        crate::services::broadcast_memory::BROADCAST_STATUS_ACCEPTED,
+                    )
+                    .await?;
+                }
+            }
 
             super::storage_sqlx::commit(tx).await?;
             return Ok(());
