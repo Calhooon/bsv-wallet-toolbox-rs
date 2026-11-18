@@ -163,9 +163,8 @@ alone, so their answers here are 0.14.0-beta.8.1's):
   (its change and a 1000-satoshi merged payment read the change plus
   1000, and two outputs).
 - The call's answer: `internalizeAction` answers the review-actions
-  refusal for a held receipt (this sentence said its answer was
-  `accepted: true`, as before; the answer piece of the same ruling, in
-  the same release, makes it the refusal, below).
+  refusal for a held receipt (the entry on the answer, above, and the
+  Hosts lines below).
 - A host's `internalizeAction` may now answer `WalletReviewActions`
   (wire code 5). A payee reads it as VALID, HELD, STILL BEING SENT, never
   as refused: the bytes, the request and the rows are kept, the
