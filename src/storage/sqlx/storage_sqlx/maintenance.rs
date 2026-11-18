@@ -312,14 +312,17 @@ impl StorageSqlx {
 
         if !rows.is_empty() {
             for (txid, old_status, proven_tx_id) in &rows {
-                sqlx::query(
-                    "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
+                // Every row of the txid, a `failed` one included
+                // (`proof_completion`), in one write.
+                let mut tx = self.write_tx().await?;
+                super::super::proof_completion::complete_on_proof(
+                    &mut tx,
+                    txid,
+                    *proven_tx_id,
+                    now,
                 )
-                .bind(proven_tx_id)
-                .bind(now)
-                .bind(txid)
-                .execute(&mut *self.writer_conn().await?)
                 .await?;
+                commit(tx).await?;
 
                 tracing::debug!(
                     "review_status: synced transaction {} from {} to completed",

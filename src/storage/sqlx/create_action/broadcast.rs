@@ -185,14 +185,9 @@ pub(super) async fn fetch_and_store_merkle_path(
     .execute(&mut *wtx)
     .await;
 
-    let _ = sqlx::query(
-        "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
-    )
-    .bind(proven_tx_id)
-    .bind(now)
-    .bind(txid)
-    .execute(&mut *wtx)
-    .await;
+    // Every row of the txid, a `failed` one included (`proof_completion`).
+    let _ =
+        super::super::proof_completion::complete_on_proof(&mut wtx, txid, proven_tx_id, now).await;
 
     if let Err(e) = wtx.commit().await {
         tracing::debug!(txid = %txid, error = %e, "could not commit the proven tx");
