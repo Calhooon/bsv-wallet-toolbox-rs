@@ -648,11 +648,15 @@ impl WalletStorageManager {
     /// the stores holds no other state lock while it waits.
     ///
     /// The manager's locks, in their one order: the transition lock
-    /// (`set_active_lock`, one `set_active` at a time), then the open lock
-    /// (`open_lock`, one open of the stores at a time), then the state locks.
-    /// The two outer locks are the only ones held across store calls, by
-    /// design; neither is ever taken while a state lock is held, and an open
-    /// never takes the transition lock. A state lock (`stores`, `active_index`, `backup_indices`,
+    /// (`set_active_lock`, one `set_active` at a time), then the queues'
+    /// permits (reader, then writer, then sync: `run_as_*`, a transition's
+    /// backup syncs included), then the open lock (`open_lock`, one open of
+    /// the stores at a time, taken by `make_available` only while the
+    /// manager is not available or a store is not yet open), then the state
+    /// locks. The transition lock, the permits and the open lock are held
+    /// across store calls, by design; none is ever taken while a state lock
+    /// is held, an open takes no permit and never the transition lock, and
+    /// an open changes the roles only through this partition. A state lock (`stores`, `active_index`, `backup_indices`,
     /// `conflicting_indices`, `auth_id`, `is_available`, `services`) is held
     /// only to copy out what a function needs (the stores it will call,
     /// cloned; the indices; the auth) or to write the manager's own fields:
