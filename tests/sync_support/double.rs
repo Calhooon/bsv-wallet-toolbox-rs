@@ -1,6 +1,6 @@
 //! A store behind the storage traits that forwards to a local store, with
-//! hooks: it can answer as a store that is not local (from the start, or
-//! from a chunk on), serve scripted chunks as a reader, answer every chunk
+//! hooks: it can answer as a store that is not local (from the start,
+//! from a chunk on, or until a chunk is served), serve scripted chunks as a reader, answer every chunk
 //! with a fixed result, refuse `set_active`, write its row and then lose
 //! the answer, refuse to read its user row, and record its `set_active`
 //! calls and count its user reads. Shared by the sync manager tests.
@@ -27,6 +27,8 @@ pub struct Double {
     pub not_local: bool,
     /// Answer local only while at most this many chunks have been served.
     pub local_through: Option<usize>,
+    /// Answer local only once at least this many chunks have been served.
+    pub local_from: Option<usize>,
     /// Chunks served as a reader.
     pub served: AtomicUsize,
     /// As a reader, serve these in order (then an empty chunk), when set.
@@ -57,6 +59,7 @@ impl Double {
             inner,
             not_local: false,
             local_through: None,
+            local_from: None,
             served: AtomicUsize::new(0),
             script: Mutex::new(None),
             answer: Mutex::new(None),
@@ -325,7 +328,9 @@ impl WalletStorageSync for Double {
 impl WalletStorageProvider for Double {
     async fn checks_received_beef_in_process(&self) -> bool {
         let served = self.served.load(Ordering::SeqCst);
-        !self.not_local && self.local_through.is_none_or(|n| served <= n)
+        !self.not_local
+            && self.local_through.is_none_or(|n| served <= n)
+            && self.local_from.is_none_or(|n| served >= n)
     }
     fn storage_identity_key(&self) -> String {
         self.inner.storage_identity_key()
