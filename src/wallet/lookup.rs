@@ -14,7 +14,7 @@ use bsv_rs::wallet::{IdentityCertificate, WalletCertificate};
 
 use super::lookup_checks::{
     allowed_public_hostname, answers_attributes, answers_identity_key, identity_output_certificate,
-    slap_advertisement_domain,
+    slap_advertisement_domain, MAX_IDENTITY_RESULTS,
 };
 use crate::Result;
 
@@ -540,6 +540,7 @@ impl HttpLookupResolver {
                     }
                     kept
                 })
+                .take(MAX_IDENTITY_RESULTS)
                 .collect());
         }
 
@@ -739,3 +740,7 @@ mod bounds_tests;
 #[cfg(test)]
 #[path = "lookup_verify_tests.rs"]
 mod verify_tests;
+
+#[cfg(test)]
+#[path = "lookup_identity_bounds_tests.rs"]
+mod identity_bounds_tests;

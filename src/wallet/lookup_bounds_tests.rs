@@ -448,7 +448,12 @@ async fn an_overlay_answer_past_the_output_bound_is_that_hosts_failure() {
     ))
     .await;
     let (tracker, _) = listener(Answer::ok(slap_answer(&[&x]), Framing::Length)).await;
-    assert_eq!(serials(vec![tracker]).await.len(), MAX_LOOKUP_OUTPUTS);
+    // The answer at the bound is read; the call returns at most
+    // MAX_IDENTITY_RESULTS of its certificates.
+    assert_eq!(
+        serials(vec![tracker]).await.len(),
+        MAX_LOOKUP_OUTPUTS.min(crate::wallet::lookup_checks::MAX_IDENTITY_RESULTS)
+    );
 }
 
 /// A tracker's answer one output past the bound is that tracker's failure:

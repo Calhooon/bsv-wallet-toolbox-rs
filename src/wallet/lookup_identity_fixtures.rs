@@ -97,7 +97,12 @@ pub(crate) fn certificate_record(
 /// The identity output of `record`, signed and locked by `subject` as the
 /// reference's identity client publishes it.
 pub(crate) fn identity_lock(subject: &PrivateKey, record: &serde_json::Value) -> LockingScript {
-    let bytes = serde_json::to_vec(record).unwrap();
+    identity_lock_of_bytes(subject, serde_json::to_vec(record).unwrap())
+}
+
+/// The identity output of a certificate field of `bytes`, signed and
+/// locked by `subject`.
+pub(crate) fn identity_lock_of_bytes(subject: &PrivateKey, bytes: Vec<u8>) -> LockingScript {
     let owner = ProtoWallet::new(Some(subject.clone()));
     let protocol = Protocol::new(SecurityLevel::App, "identity");
     let lock_key = owner

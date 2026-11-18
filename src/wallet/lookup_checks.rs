@@ -121,6 +121,23 @@ pub(crate) fn allowed_public_hostname(host: &str) -> bool {
 // A host's identity output
 // =============================================================================
 
+/// The most bytes an identity output's certificate field may carry (the
+/// reference's `MAX_IDENTITY_CERTIFICATE_BYTES`, `identityUtils.ts` 24).
+pub(crate) const MAX_IDENTITY_CERTIFICATE_BYTES: usize = 256 * 1024;
+
+/// The most fields, and the most keyring entries, one answered certificate
+/// may carry (the reference's `MAX_IDENTITY_FIELDS`, `identityUtils.ts` 25).
+pub(crate) const MAX_IDENTITY_FIELDS: usize = 100;
+
+/// The longest keyring value, in UTF-16 units as the reference counts a
+/// string's length (`certificateRecord`: `key.length > 2048`).
+pub(crate) const MAX_KEYRING_VALUE_UNITS: usize = 2048;
+
+/// The most certificates one lookup returns (the reference's
+/// `MAX_IDENTITY_RESULTS`, `identityUtils.ts` 23, applied by
+/// `transformVerifiableCertificatesWithTrust` to the filtered certificates).
+pub(crate) const MAX_IDENTITY_RESULTS: usize = 256;
+
 /// The keys an answered certificate carries, each of them and no other
 /// (`certificateRecord`'s `allowed`).
 const CERTIFICATE_KEYS: [&str; 8] = [
@@ -250,11 +267,12 @@ pub(crate) fn certificate_signature_verifies(cert: &OverlayCertificate) -> bool 
     check().unwrap_or(false)
 }
 
-/// The certificate record of an identity output's first field, by the
+/// The certificate record an identity output's certificate field carries, by the
 /// reference's `certificateRecord`: strict UTF-8 JSON of exactly the eight
-/// keys, `fields` and `keyring` objects of at least one entry each, every
-/// keyring name a field's, every value a string.
-fn certificate_record(bytes: &[u8]) -> std::result::Result<OverlayCertificate, Refusal> {
+/// keys, `fields` and `keyring` objects of 1 to 100 entries each, every
+/// keyring name a field's, every value a string, every keyring value at
+/// most 2048 units.
+pub(crate) fn certificate_record(bytes: &[u8]) -> std::result::Result<OverlayCertificate, Refusal> {
     let text = std::str::from_utf8(bytes).map_err(|_| "certificate is not UTF-8")?;
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|_| "certificate is not JSON")?;
@@ -270,14 +288,18 @@ fn certificate_record(bytes: &[u8]) -> std::result::Result<OverlayCertificate, R
     let keyring = record["keyring"]
         .as_object()
         .ok_or("keyring is not an object")?;
-    if fields.is_empty() || keyring.is_empty() {
-        return Err("fields or keyring is empty");
+    let counted = 1..=MAX_IDENTITY_FIELDS;
+    if !counted.contains(&fields.len()) || !counted.contains(&keyring.len()) {
+        return Err("fields or keyring count out of bounds");
     }
     for (name, key) in keyring {
         if !fields.contains_key(name) {
             return Err("keyring names an absent field");
         }
-        key.as_str().ok_or("keyring value is not a string")?;
+        let key = key.as_str().ok_or("keyring value is not a string")?;
+        if key.encode_utf16().count() > MAX_KEYRING_VALUE_UNITS {
+            return Err("keyring value past its bound");
+        }
     }
     let text_of = |k: &str| record[k].as_str().map(str::to_string);
     let strings = |m: &serde_json::Map<String, serde_json::Value>| {
@@ -334,8 +356,8 @@ fn decrypt_revealed_fields(
 
 /// The certificate an overlay host's identity output carries, when the
 /// output and its certificate pass the reference's `decodeIdentityOutput`:
-/// a canonical PushDrop of two fields (the certificate, and the subject's
-/// signature over it, 8 to 80 bytes) locked with the
+/// a canonical PushDrop of two fields (the certificate, 1 to 256 KiB, and
+/// the subject's signature over it, 8 to 80 bytes) locked with the
 /// subject's identity child for `anyone` (protocol `[1, identity]`, key
 /// ID `1`); that signature valid; the certificate record well formed
 /// ([`certificate_record`]); its certifier's signature valid
@@ -348,8 +370,8 @@ pub(crate) fn identity_output_certificate(
     let [certificate, signature] = token.fields.as_slice() else {
         return Err("PushDrop does not carry two fields");
     };
-    if certificate.is_empty() {
-        return Err("certificate field is empty");
+    if !(1..=MAX_IDENTITY_CERTIFICATE_BYTES).contains(&certificate.len()) {
+        return Err("certificate field out of bounds");
     }
     if !(8..=80).contains(&signature.len()) {
         return Err("signature field out of bounds");
