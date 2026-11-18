@@ -51,6 +51,61 @@
   other word (`unsent`, `sending`, another user's `nosend`, ...), no
   recorded take and no such proof moves to `sending`. `migrate()`
   reports `006_held_receipts`.
+- `internalizeAction` answers the review-actions refusal when no
+  broadcaster takes a received transaction that carries no checked proof
+  (the owner's ruling of 2026-11-17): `accepted: true` now means a checked
+  proof or at least one named instance's take. Taken by nobody, the
+  transaction stays held (`sending`), nothing is undone, and the call
+  answers `Error::ReviewActions` (bsv-rs's `WalletReviewActions`, wire
+  code 5) with the txid, one send result `{txid, sending}` (never
+  `failed`: no broadcaster's word writes `failed` at this door) and one
+  review result whose status is `doubleSpend` when any refusal named a
+  competitor (the competitors in `competing_txs`), `invalidTx` only when
+  every named instance said no and none named a competitor, and
+  `serviceError` otherwise (no instance answered, or some said no and some
+  did not answer). Its message is the reference's sentence, then each
+  instance's words as the door recorded them on the request's history,
+  each cut to 256 bytes and the whole to 1024: `Undelayed createAction or
+  signAction results require review. no instance answered: Network error:
+  no instance answered`, or `Undelayed createAction or signAction results
+  require review. arcade: error [DOUBLE_SPEND_ATTEMPTED]; bitails:
+  rejected [bitails refuses the body]` (from runs of
+  `tests/internalize_held_answer_tests.rs`). The storage result carries
+  the two fields (`send_with_results` and `not_delayed_results`, on the
+  wire `sendWithResults` and `notDelayedResults`), so a `StorageClient`
+  and a `WalletStorageManager` give the same answer.
+- The door posts a received transaction for each user's presentation of
+  it: a new row of this user with no checked proof and no recorded take
+  is posted once to each named instance whatever request the store
+  already holds for the txid (another user's `nosend`, `unsent`,
+  `sending` or `unmined` request, or an `invalid` or `doubleSpend` word).
+  Before, the door posted only a request the call created, and such a
+  receipt was posted by nobody at the door. A take moves every row of the
+  txid that is neither `failed` nor `completed` to `unproven` and the
+  request to `unmined` from every word but `completed`, the take recorded
+  in the same write; a post nobody took writes each instance's words on
+  the request's history, leaves a request `unsent` or `sending` as
+  `unsent`, and leaves any other request word (`nosend`, `unmined`,
+  `invalid`, `doubleSpend`) and its attempts as they were
+  (`tests/internalize_door_post_tests.rs`, the matrix of seven standing
+  requests by three outcomes).
+- The load of this change (the owner's load clause of 2026-11-17): what
+  starts it is a user's presentation of a received transaction the store
+  holds no checked proof of and no recorded take for; the act is one POST
+  to each named instance, once per presentation; a repeat by the same
+  user (the merge path) posts nothing; nothing here runs on a clock (the
+  send-waiting task is unchanged); asserted by
+  `one_post_per_presentation_none_per_repeat`.
+- The wallet's own accepted post of a signed transaction
+  (`process_action`'s success arm) records its take in the same write
+  that moves the rows: each accepting instance's name with `accepted`,
+  or `chain` with `seen` when a status source holds a refused
+  transaction. With a host's own `WalletServices`, which records nothing,
+  a later receipt of that txid by another user of the store now reads it
+  taken (`unproven`, counted, no post) where it was held
+  (`tests/internalize_own_post_take_tests.rs`). The three door fixtures
+  (`door_build_then_post`, `door_composition`, `door_post_twice`) record
+  that row.
 
 ### Hosts
 
@@ -107,8 +162,38 @@ alone, so their answers here are 0.14.0-beta.8.1's):
   output it carries: its change, and a wallet payment merged into it
   (its change and a 1000-satoshi merged payment read the change plus
   1000, and two outputs).
-- The call's answer is unchanged in this change: `internalizeAction`
-  answers `accepted: true` for a held receipt, as before.
+- The call's answer: `internalizeAction` answers the review-actions
+  refusal for a held receipt (this sentence said its answer was
+  `accepted: true`, as before; the answer piece of the same ruling, in
+  the same release, makes it the refusal, below).
+- A host's `internalizeAction` may now answer `WalletReviewActions`
+  (wire code 5). A payee reads it as VALID, HELD, STILL BEING SENT, never
+  as refused: the bytes, the request and the rows are kept, the
+  transaction is `sending`, out of the balance and `listOutputs`, and the
+  wallet keeps sending it. `accepted: true` means a checked proof or a
+  broadcaster's take. A host reads the class and the statuses (the send
+  result `sending`; the review status `doubleSpend`, `invalidTx` or
+  `serviceError`), never the message. Before this change the same call
+  answered `accepted: true`: a 4500-satoshi payment no instance answered
+  read `accepted: true` at 0.14.0-beta.9 and `WalletReviewActions` with
+  `sending` and `serviceError` now.
+- A host that ignores the class and calls again with the same body makes
+  a repeat: today it answers `accepted: true` from the merge path,
+  posting nothing, the row still `sending` (pinned in
+  `after_the_refusal_the_held_rows_read_as_held_and_a_repeat_answers_todays_merge`;
+  the repeat's own answer from the stored word is a later piece).
+- The reference, by commit: at its main of 2026-11-16 (ts-stack@11faa7d1,
+  `storage/methods/internalizeActionCore.ts:944-968`, `Wallet.ts:1604-1612`,
+  `utility/aggregateResults.ts`) it posts a new transaction with no proof
+  at its door and, on any result but success, restores the inputs it
+  marked spent, stores no output of the recipient's, writes the
+  transaction `failed` on a double-spend or invalid word (`sending` on a
+  service error), and throws `WERR_REVIEW_ACTIONS` with `sendWithResults`
+  `failed` or `sending`. The owner's ruling keeps this line apart: it
+  holds everything and answers `sending` always, never `failed` on a
+  broadcaster's word, and classes the review status by every instance's
+  word (`invalidTx` only when every instance said no) where the
+  reference's aggregate answers `invalidTx` on any status error.
 
 ## [0.14.0-beta.10] - 2026-11-18
 
