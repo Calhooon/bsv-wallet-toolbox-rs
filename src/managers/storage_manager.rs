@@ -976,7 +976,10 @@ impl WalletStorageManager {
     /// whose call succeeded already name the new active, in their rows and
     /// in the manager's cached rows, so while the rows disagree the manager
     /// does not answer its active as enabled, and a retry of the call, or a
-    /// call back to the old active, runs the transition again.
+    /// call back to the old active, runs the transition again. After an
+    /// error the manager reads every store's row again (a store may have
+    /// written its row and lost its answer); the row of a store that cannot
+    /// be read is held as naming no active until a later call reads it.
     pub async fn set_active(&self, storage_identity_key: &str) -> Result<String> {
         let _transition = self.set_active_lock.lock().await;
         if !*self.is_available.read().await {
@@ -1018,7 +1021,44 @@ impl WalletStorageManager {
             return Ok(format!("setActive to {} unchanged\n", storage_identity_key));
         }
 
-        self.set_active_transition(storage_identity_key).await
+        let outcome = self.set_active_transition(storage_identity_key).await;
+        if outcome.is_err() {
+            // A store may have written its row and then failed to answer
+            // (a storage client whose reply was lost): no cached row is
+            // trusted after an error inside the transition.
+            self.reread_user_rows_after_error().await;
+        }
+        outcome
+    }
+
+    /// Reads each store's row of the wallet's user again into the manager's
+    /// cached rows, store by store; the row of a store that cannot be read
+    /// is held as naming no active, so the manager does not answer its
+    /// active as enabled until a later call reads it.
+    async fn reread_user_rows_after_error(&self) {
+        let identity_key = self.auth_id.read().await.identity_key.clone();
+        let storages: Vec<_> = self
+            .stores
+            .read()
+            .await
+            .iter()
+            .map(|s| s.storage.clone())
+            .collect();
+        let mut users = Vec::with_capacity(storages.len());
+        for storage in &storages {
+            users.push(storage.find_or_insert_user(&identity_key).await.ok());
+        }
+        let mut stores = self.stores.write().await;
+        for (store, user) in stores.iter_mut().zip(users) {
+            match user {
+                Some((user, _)) => store.user = Some(user),
+                None => {
+                    if let Some(user) = store.user.as_mut() {
+                        user.active_storage = None;
+                    }
+                }
+            }
+        }
     }
 
     async fn set_active_transition(&self, storage_identity_key: &str) -> Result<String> {

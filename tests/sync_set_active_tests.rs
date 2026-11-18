@@ -1,7 +1,10 @@
 //! `set_active` over two stores and three, whichever store fails part way
 //! and wherever it stands in the stores' order: what the manager answers
 //! after the failure, a retry to the same target, a call back to the old
-//! active, and every store's row read back.
+//! active, and every store's row read back. A store fails by refusing,
+//! by refusing the backup's sync, or by writing its row and then losing its
+//! answer (as a storage client whose reply the network drops), with or
+//! without refusing the read of its row after.
 #![cfg(feature = "sqlite")]
 
 use std::sync::atomic::Ordering;
@@ -35,6 +38,11 @@ enum Fails {
     SetActive,
     /// The backup's sync inside the transition (a backup only).
     Sync,
+    /// Its own `set_active` writes the row, then answers an error.
+    AnswerLost,
+    /// As `AnswerLost`, and the store then refuses to read its row until
+    /// it answers again.
+    AnswerLostUnread,
 }
 
 /// One cell: the number of stores, whether the manager has already
@@ -71,6 +79,14 @@ impl Cell {
 fn arm(d: &Double, fails: Fails, on: bool) {
     match fails {
         Fails::SetActive => d.fail_set_active.store(on, Ordering::SeqCst),
+        Fails::AnswerLost => d.lose_set_active_answer.store(on, Ordering::SeqCst),
+        Fails::AnswerLostUnread => {
+            d.lose_set_active_answer.store(on, Ordering::SeqCst);
+            d.refuse_reads_after_lost_answer.store(on, Ordering::SeqCst);
+            if !on {
+                d.refuse_user_reads.store(false, Ordering::SeqCst);
+            }
+        }
         Fails::Sync => {
             *d.answer.lock().unwrap() = on.then(|| ProcessSyncChunkResult {
                 done: true,
@@ -185,7 +201,12 @@ fn cells() -> Vec<Cell> {
     for n in [2, 3] {
         for switched in [true, false] {
             for role in [Role::Active, Role::Target, Role::Third] {
-                for fails in [Fails::SetActive, Fails::Sync] {
+                for fails in [
+                    Fails::SetActive,
+                    Fails::Sync,
+                    Fails::AnswerLost,
+                    Fails::AnswerLostUnread,
+                ] {
                     // The active is no backup: no sync writes to it.
                     let reachable = (n == 3 || role != Role::Third)
                         && !(role == Role::Active && fails == Fails::Sync);
@@ -205,7 +226,7 @@ fn cells() -> Vec<Cell> {
 }
 
 /// Every cell: after the failure the manager answers its active as enabled
-/// only when every store's row names it; a retry to the same target, once
+/// only when every store's row names it (never after a lost answer); a retry to the same target, once
 /// the store answers, makes every row name the target; a call back to the
 /// old active makes every row name it; after either the manager is enabled
 /// on that store.
@@ -241,10 +262,17 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
                 name(KEYS[cell.failing()])
             ),
             Fails::Sync => "Sync error: the backup refused the page".to_string(),
+            Fails::AnswerLost | Fails::AnswerLostUnread => {
+                format!("Storage error: {} answer lost", name(KEYS[cell.failing()]))
+            }
         };
+        // A store that wrote its row and lost its answer moved its row: the
+        // rows no longer name the manager's active.
+        let lost = matches!(cell.fails, Fails::AnswerLost | Fails::AnswerLostUnread);
         let every = |r: &[String], k: &str| r.len() == cell.n && r.iter().all(|x| x == k);
         let ok = a.failed == expected_failure
             && *enabled == agree
+            && !(lost && *enabled)
             && *active == from
             && a.retry == "ok"
             && every(&a.after_retry.0, &to)
@@ -387,4 +415,79 @@ async fn a_new_manager_over_stores_that_disagree_has_a_way_through() {
             assert_eq!(own.2, denied);
         }
     }
+}
+
+/// The cell the stores' rows alone tell: A active, `set_active(B)`, A
+/// (ahead in the order) writes its row and loses its answer. The rows read
+/// B, A; the manager answers A as not enabled; a retry and, apart, a call
+/// back each make every row name one active.
+#[tokio::test]
+async fn a_store_that_wrote_its_row_and_lost_its_answer_is_read_again() {
+    let cell = Cell {
+        n: 2,
+        switched: false,
+        role: Role::Active,
+        fails: Fails::AnswerLost,
+    };
+    let a = run(cell).await;
+    println!("WITNESS A to B, A writes its row and loses its answer: {a:?}");
+    assert_eq!(a.failed, "Storage error: A answer lost");
+    assert_eq!(
+        a.after_failure,
+        (vec!["B".into(), "A".into()], ("A".into(), false))
+    );
+    assert_eq!(a.retry, "ok");
+    assert_eq!(
+        a.after_retry,
+        (vec!["B".into(), "B".into()], ("B".into(), true))
+    );
+    assert_eq!(a.call_back, "ok");
+    assert_eq!(
+        a.after_call_back,
+        (vec!["A".into(), "A".into()], ("A".into(), true))
+    );
+}
+
+/// The same store also refuses the read of its row after the lost answer:
+/// the manager answers A as not enabled; while the store still refuses, a
+/// retry answers its refusal and the manager stays not enabled; once it
+/// answers, the retry completes.
+#[tokio::test]
+async fn a_store_that_lost_its_answer_and_cannot_be_read_is_held_unknown() {
+    let cell = Cell {
+        n: 2,
+        switched: false,
+        role: Role::Active,
+        fails: Fails::AnswerLostUnread,
+    };
+    let (doubles, mgr) = setup(cell).await;
+    arm(&doubles[0], cell.fails, true);
+    let failed = refusal(&mgr.set_active(DST).await);
+    let after_failure = (rows(&doubles).await, state(&mgr).await);
+    doubles[0]
+        .lose_set_active_answer
+        .store(false, Ordering::SeqCst);
+    let unread_retry = refusal(&mgr.set_active(DST).await);
+    let after_unread_retry = (rows(&doubles).await, state(&mgr).await);
+    arm(&doubles[0], cell.fails, false);
+    let retry = refusal(&mgr.set_active(DST).await);
+    let after_retry = (rows(&doubles).await, state(&mgr).await);
+    println!(
+        "WITNESS A loses its answer and refuses the read: {failed}; {after_failure:?}; retry while unread {unread_retry}: {after_unread_retry:?}; retry {retry}: {after_retry:?}"
+    );
+    assert_eq!(failed, "Storage error: A answer lost");
+    assert_eq!(
+        after_failure,
+        (vec!["B".into(), "A".into()], ("A".into(), false))
+    );
+    assert_eq!(unread_retry, "Storage error: A refused the user read");
+    assert_eq!(
+        after_unread_retry,
+        (vec!["B".into(), "A".into()], ("A".into(), false))
+    );
+    assert_eq!(retry, "ok");
+    assert_eq!(
+        after_retry,
+        (vec!["B".into(), "B".into()], ("B".into(), true))
+    );
 }
