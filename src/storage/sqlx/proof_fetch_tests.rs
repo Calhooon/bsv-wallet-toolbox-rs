@@ -9,10 +9,10 @@
 
 use std::sync::Arc;
 
-use bsv_rs::transaction::{Beef, MockChainTracker};
+use bsv_rs::transaction::MockChainTracker;
 use chrono::Utc;
 
-use super::create_action::beef_bfs_walk;
+use super::proof_root_tests::walk;
 use super::reorg_tests::{
     child_spending, insert_req, open_gate, proven_row, req_state, seed_user, single_leaf_bump,
     storage, txid_of, COINBASE_HEX, COINBASE_TXID,
@@ -91,23 +91,25 @@ async fn aborted_with_a_fetchable_proof() -> (StorageSqlx, String, i64, i64) {
         .await
         .unwrap();
     insert_req(&s, &a, &raw, "unmined", 0, None, now).await;
+    let header = BlockHeader {
+        height: HEIGHT,
+        hash: "a".repeat(64),
+        merkle_root: a.clone(),
+        previous_hash: "p".repeat(64),
+        version: 0x2000_0000,
+        time: 1_700_000_000,
+        bits: 0,
+        nonce: 0,
+    };
+    let found = GetMerklePathResult {
+        merkle_path: Some(hex::encode(single_leaf_bump(HEIGHT, &a))),
+        header: Some(header),
+        name: Some("mock".to_string()),
+        notes: vec![],
+        error: None,
+    };
     let services = MockWalletServices::builder()
-        .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
-            name: Some("mock".to_string()),
-            merkle_path: Some(hex::encode(single_leaf_bump(HEIGHT, &a))),
-            header: Some(BlockHeader {
-                version: 0x20000000,
-                previous_hash: "p".repeat(64),
-                merkle_root: a.clone(),
-                time: 1_700_000_000,
-                bits: 0,
-                nonce: 0,
-                hash: "a".repeat(64),
-                height: HEIGHT,
-            }),
-            error: None,
-            notes: vec![],
-        }))
+        .get_merkle_path_response(MockResponse::Success(found))
         .build();
     s.set_services(Arc::new(services) as Arc<dyn WalletServices>);
     let mut tracker = MockChainTracker::new(1000);
@@ -115,25 +117,6 @@ async fn aborted_with_a_fetchable_proof() -> (StorageSqlx, String, i64, i64) {
     s.set_chain_tracker(Arc::new(tracker)).await;
     open_gate(&s, 200).await;
     (s, a, coin, own)
-}
-
-async fn walk(s: &StorageSqlx, root: &str) -> Beef {
-    let mut conn = s.pool().acquire().await.unwrap();
-    let mut beef = Beef::new();
-    let mut pending = vec![(root.to_string(), 0usize)];
-    let mut processed = std::collections::HashSet::new();
-    beef_bfs_walk(
-        &mut conn,
-        Some(s.writer()),
-        &mut beef,
-        &mut pending,
-        &mut processed,
-        Some(s),
-        None,
-    )
-    .await
-    .unwrap();
-    beef
 }
 
 async fn reading(
@@ -172,7 +155,7 @@ async fn a_fetched_checked_proof_completes_a_failed_row() {
     .fetch_one(s.pool())
     .await
     .unwrap();
-    let beef = walk(&s, &a).await;
+    let beef = walk(&s, &a, None).await;
     let got = reading(&s, &a, coin, own).await;
     let history: String = sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
         .bind(&a)
@@ -199,7 +182,7 @@ async fn a_completion_that_fails_rolls_the_fetched_proof_back() {
     .execute(s.writer())
     .await
     .unwrap();
-    let beef = walk(&s, &a).await;
+    let beef = walk(&s, &a, None).await;
     let got = reading(&s, &a, coin, own).await;
     println!("rolled back: {got:?}");
     assert!(beef.find_txid(&a).and_then(|t| t.bump_index()).is_none());

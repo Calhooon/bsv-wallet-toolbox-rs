@@ -57,7 +57,7 @@ async fn ingest_checked(s: &StorageSqlx, txid: &str, raw: &[u8], height: u32) {
     s.clear_chain_tracker().await;
 }
 
-async fn walk(s: &StorageSqlx, root: &str, tracker: Option<&MockChainTracker>) -> Beef {
+pub(super) async fn walk(s: &StorageSqlx, root: &str, tracker: Option<&MockChainTracker>) -> Beef {
     let mut conn = s.pool().acquire().await.unwrap();
     let mut beef = Beef::new();
     let mut pending = vec![(root.to_string(), 0usize)];

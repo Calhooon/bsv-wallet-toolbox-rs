@@ -5,6 +5,9 @@ use super::{
     WalletStorageReader,
 };
 
+#[path = "review_proofs.rs"]
+mod review_proofs;
+
 impl StorageSqlx {
     pub(super) async fn review_status_for_user(
         &self,

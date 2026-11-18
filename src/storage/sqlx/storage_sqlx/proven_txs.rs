@@ -438,8 +438,7 @@ impl StorageSqlx {
                 "ingest_merkle_proof: the stored proof row's path is not the one checked; nothing completed"
             );
             return Ok(ProofIngestOutcome::InvalidProof(format!(
-                "the stored proof of {} is not the one checked",
-                txid
+                "the stored proof of {txid} is not the one checked"
             )));
         };
         super::super::proof_completion::complete_on_proof(&mut tx, &proof, now).await?;

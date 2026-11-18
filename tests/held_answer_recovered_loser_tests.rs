@@ -120,7 +120,7 @@ async fn a_recovered_row_is_queued_as_the_competitor_of_the_action_holding_its_i
             name: Some("mock".to_string()),
             merkle_path: Some(hex::encode(path.to_binary().unwrap())),
             header: Some(BlockHeader {
-                version: 0x20000000,
+                version: 0x2000_0000,
                 previous_hash: "p".repeat(64),
                 merkle_root: path.compute_root(Some(&f.txid)).unwrap(),
                 time: 1_700_000_000,

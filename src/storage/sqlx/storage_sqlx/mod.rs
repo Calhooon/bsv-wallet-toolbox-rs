@@ -35,7 +35,6 @@ mod proven_tx_reqs;
 mod proven_txs;
 mod reader;
 mod retirement;
-mod review_proofs;
 #[cfg(test)]
 mod rng_tests;
 mod send_waiting;

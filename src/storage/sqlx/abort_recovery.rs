@@ -381,6 +381,34 @@ async fn release_given_up_spends_on(
     Ok(released)
 }
 
+/// After a recovery of `txid`'s row, on the take's write: an input another
+/// live action holds stays with it, and the recovered txid is queued as
+/// that action's competitor, so the competitor proof ask settles the two by
+/// a proof; the abort's mark, where it named the row, is marked recovered.
+/// Returns the holding actions' txids.
+async fn queue_holders_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    was_marked: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<String>> {
+    let holders = super::proof_completion::losers_of(conn, txid).await?;
+    for holder in &holders {
+        super::proof_completion::queue_competitor_on(conn, holder, txid).await?;
+    }
+    if was_marked {
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET history = json_set(history, '$.abort.recovered', ?) \
+             WHERE txid = ?",
+        )
+        .bind(now.to_rfc3339())
+        .bind(txid)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(holders)
+}
+
 /// THE TAKE AFTER A RELEASE MADE ON NO EVIDENCE, on the take's write (see
 /// the module): every `failed` outgoing row of `txid` in
 /// [`FailedState::Released`] is recovered. Returns the rows recovered.
@@ -414,23 +442,7 @@ pub(crate) async fn recover_released_on(
         let closed = open_own_outputs(conn, transaction_id, marked, now).await?;
         let given_up = release_given_up_spends_on(conn, transaction_id, now).await?;
         remark_inputs_spent_on(conn, txid, &skip, now).await?;
-        // An input another live action holds stays with it; the recovered
-        // txid is queued as that action's competitor, so the competitor
-        // proof ask settles the two by a proof.
-        let holders = super::proof_completion::losers_of(conn, txid).await?;
-        for holder in &holders {
-            super::proof_completion::queue_competitor_on(conn, holder, txid).await?;
-        }
-        if was_marked {
-            sqlx::query(
-                "UPDATE proven_tx_reqs SET history = json_set(history, '$.abort.recovered', ?) \
-                 WHERE txid = ?",
-            )
-            .bind(now.to_rfc3339())
-            .bind(txid)
-            .execute(&mut *conn)
-            .await?;
-        }
+        let holders = queue_holders_on(conn, txid, was_marked, now).await?;
         let what = if was_marked {
             "takenAfterAbort"
         } else {
