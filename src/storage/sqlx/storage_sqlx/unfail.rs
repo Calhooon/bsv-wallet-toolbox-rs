@@ -145,9 +145,12 @@ impl StorageSqlx {
 
         // Restore outputs of this transaction, but validate each against
         // chain to avoid creating ghost UTXOs (outputs already spent
-        // on-chain).
+        // on-chain). A row the take left `failed` (evidence on record
+        // against it, `abort_recovery`) keeps its outputs closed.
         let output_rows = sqlx::query(
-            "SELECT output_id, vout, locking_script FROM outputs WHERE txid = ? AND spendable = 0",
+            "SELECT o.output_id, o.vout, o.locking_script FROM outputs o \
+             JOIN transactions t ON t.transaction_id = o.transaction_id \
+             WHERE o.txid = ? AND o.spendable = 0 AND t.status <> 'failed'",
         )
         .bind(txid)
         .fetch_all(self.pool())

@@ -1,33 +1,46 @@
-//! A TAKE HEARD AFTER THE WALLET'S OWN ABORT, and the one recovery of a
-//! `failed` transaction's inputs.
+//! A TAKE HEARD AFTER A RELEASE MADE ON NO EVIDENCE, and the one recovery
+//! of a `failed` transaction's inputs.
 //!
-//! The abort of an action whose bytes an instance may already hold (the
-//! post in flight when `abortAction` landed) is undone by the take, in the
-//! write that applies it (`competitor_proof::apply_take_on`): the
-//! transaction back to `unproven`, each input still free marked spent by it
-//! again, the outputs the abort closed opened again where nothing spent
-//! them, and the cause on the request's history (`takenAfterAbort`, with
-//! the instances). The request reads `unmined` in the same write. A
-//! request `unmined` beside a `failed` row with its inputs released is the
-//! state this makes impossible: a coin offered while the network holds a
-//! spend of it (broadcaster charter B4 (d), the keeper's reading 18).
+//! THE RULE IS BY STATE (the keeper's readings 18 and 20 of section 30,
+//! the broadcaster charter's B4 (d)): a `failed` outgoing row whose inputs
+//! are released, with no competitor's checked proof on record against it,
+//! was released on no evidence, whichever act released it (the host's
+//! abort, an end by count, a fail on a broadcaster's word). In the one
+//! write that applies a take (`competitor_proof::apply_take_on`), behind
+//! the competitor guard, each `failed` outgoing row of the txid reads one
+//! of three states ([`failed_outgoing_rows`]):
 //!
-//! HOW THE ROWS TELL THE ABORT'S `failed`: the abort writes its mark in its
-//! own write, the request's history key `abort` naming the transaction row
-//! it failed and the outputs it closed. No other writer of `failed` writes
-//! it: the retire path's verdicts (a competitor's checked proof: request
-//! `doubleSpend`; a refusal the wallet's own check made: request
-//! `invalid`) keep the inputs locked and write no mark, and a received
-//! transaction is never aborted. A take recovers a `failed` row only under
-//! that mark, and once (`abort.recovered`). The competitor guard stands in
-//! front of it: while a competitor's checked proof stands nothing moves.
+//! - RELEASED (no output row marked spent by it, no evidence): recovered
+//!   ([`recover_released_on`]): the transaction `unproven`, each input still
+//!   free marked spent by it again, its own outputs that nothing spent
+//!   spendable again, the request `unmined`, the cause on the request's
+//!   history naming the instances (`takenAfterAbort` where the abort's mark
+//!   names the outputs it closed, `takenAfterRelease` where no mark is
+//!   there and the outputs are read from the row).
+//! - LOCKED (an input still marked spent by it: the retire path's
+//!   `failed`): nothing is recovered; the take is recorded as a hint
+//!   (`takeHeldAsHint`) and the request keeps its word, raised only for a
+//!   live row of another user of the store.
+//! - EVIDENCE (a `locked_input_checks` row `spent-proven` at one of its
+//!   input outpoints, on the wallet's row of the coin spent by it or by
+//!   nothing): nothing is recovered and the request keeps its word.
+//!
+//! A refusal of the wallet's own run leaves no record on an outgoing row:
+//! the signing check refuses before anything is written. So a request
+//! `unmined` beside a `failed` row whose inputs are released never stands
+//! after a take: a coin offered while the network holds a spend of it.
+//!
+//! THE ABORT'S MARK: the abort writes, in its own write, the request's
+//! history key `abort` naming the transaction row it failed and the
+//! outputs it closed; the recovery reads it for those outputs and marks it
+//! recovered (once).
 //!
 //! An input another action of the wallet spent meanwhile stays with that
 //! action: the two are competitors, and the proof path decides between
 //! them. The recovered transaction reads `unproven` meanwhile.
 //!
-//! THE ONE RECOVERY OF INPUTS ([`remark_inputs_spent_on`]) has two callers:
-//! the take after an abort, and the unfail task's recovery of a
+//! THE ONE RECOVERY OF INPUTS ([`remark_inputs_spent_on`]) has two
+//! callers: the take after a release, and the unfail task's recovery of a
 //! transaction failed on a false word (`TakeRows::LiftFailed`), both inside
 //! the take's write.
 
@@ -90,15 +103,92 @@ pub(crate) async fn write_abort_mark(
     Ok(())
 }
 
-/// A row the host's abort failed and no take has recovered yet.
-struct Aborted {
-    req_id: i64,
-    history: serde_json::Value,
-    transaction_id: i64,
-    closed: Vec<i64>,
+/// What a `failed` outgoing row of the txid reads by its state, at the take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailedState {
+    /// Its inputs released and no evidence on record: a release made on no
+    /// evidence (an abort, an end by count, a fail on a broadcaster's
+    /// word), recovered by the take.
+    Released,
+    /// An input still marked spent by it (the retire path's `failed`): no
+    /// coin is offered, nothing is recovered.
+    Locked,
+    /// A competitor's checked proof on record against it (a
+    /// `locked_input_checks` row `spent-proven` at one of its input
+    /// outpoints, the row spent by it or by nothing): nothing is
+    /// recovered.
+    Evidence,
 }
 
-async fn aborted_row(conn: &mut SqliteConnection, txid: &str) -> Result<Option<Aborted>> {
+/// A `failed` outgoing row of the txid and its state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FailedRow {
+    pub(crate) transaction_id: i64,
+    pub(crate) state: FailedState,
+}
+
+/// Every `failed` outgoing row of `txid` with its state, read on the
+/// take's write. `outpoints` are the outpoints the txid's bytes spend.
+pub(crate) async fn failed_outgoing_rows(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    outpoints: &[(String, u32)],
+) -> Result<Vec<FailedRow>> {
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT transaction_id FROM transactions \
+         WHERE txid = ? AND status = 'failed' AND is_outgoing = 1 ORDER BY transaction_id",
+    )
+    .bind(txid)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut rows = Vec::with_capacity(ids.len());
+    for transaction_id in ids {
+        let mut evidence = false;
+        for (source, vout) in outpoints {
+            let proven: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM outputs o \
+                 JOIN locked_input_checks c ON c.output_id = o.output_id \
+                 WHERE lower(o.txid) = lower(?) AND o.vout = ? AND c.last_verdict = ? \
+                   AND (o.spent_by IS NULL OR o.spent_by = ?)",
+            )
+            .bind(source)
+            .bind(i64::from(*vout))
+            .bind(super::LOCKED_VERDICT_SPENT_PROVEN)
+            .bind(transaction_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            if proven > 0 {
+                evidence = true;
+                break;
+            }
+        }
+        let locked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM outputs WHERE spent_by = ?")
+            .bind(transaction_id)
+            .fetch_one(&mut *conn)
+            .await?;
+        let state = if evidence {
+            FailedState::Evidence
+        } else if locked > 0 {
+            FailedState::Locked
+        } else {
+            FailedState::Released
+        };
+        rows.push(FailedRow {
+            transaction_id,
+            state,
+        });
+    }
+    Ok(rows)
+}
+
+/// The abort's mark on `txid`'s request when it names `transaction_id`
+/// and no take has recovered it: the request id, its history, the
+/// outputs the abort closed.
+async fn abort_mark_for(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    transaction_id: i64,
+) -> Result<Option<(i64, serde_json::Value, Option<Vec<i64>>)>> {
     let row: Option<(i64, String)> =
         sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
             .bind(txid)
@@ -107,111 +197,131 @@ async fn aborted_row(conn: &mut SqliteConnection, txid: &str) -> Result<Option<A
     let Some((req_id, history)) = row else {
         return Ok(None);
     };
-    let Ok(history) = serde_json::from_str::<serde_json::Value>(&history) else {
-        return Ok(None);
-    };
-    let Some(mark) = history.get(ABORT_KEY) else {
-        return Ok(None);
-    };
-    if mark.get("recovered").is_some() {
-        return Ok(None);
-    }
-    let Some(transaction_id) = mark
-        .get("transactionId")
-        .and_then(serde_json::Value::as_i64)
-    else {
-        return Ok(None);
-    };
-    let failed: Option<i64> = sqlx::query_scalar(
-        "SELECT transaction_id FROM transactions \
-         WHERE transaction_id = ? AND txid = ? AND status = 'failed' AND is_outgoing = 1",
-    )
-    .bind(transaction_id)
-    .bind(txid)
-    .fetch_optional(&mut *conn)
-    .await?;
-    if failed.is_none() {
-        return Ok(None);
-    }
-    let closed = mark
-        .get("closed")
-        .and_then(|v| v.as_array())
-        .map(|ids| ids.iter().filter_map(serde_json::Value::as_i64).collect())
-        .unwrap_or_default();
-    Ok(Some(Aborted {
-        req_id,
-        history,
-        transaction_id,
-        closed,
-    }))
+    let history = serde_json::from_str::<serde_json::Value>(&history)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let closed = history.get(ABORT_KEY).and_then(|mark| {
+        let names = mark
+            .get("transactionId")
+            .and_then(serde_json::Value::as_i64)
+            == Some(transaction_id);
+        (names && mark.get("recovered").is_none()).then(|| {
+            mark.get("closed")
+                .and_then(|v| v.as_array())
+                .map(|ids| ids.iter().filter_map(serde_json::Value::as_i64).collect())
+                .unwrap_or_default()
+        })
+    });
+    Ok(Some((req_id, history, closed)))
 }
 
-/// THE TAKE AFTER AN ABORT, on the take's write (see the module): returns
-/// whether a row the host's abort failed was recovered.
-pub(crate) async fn recover_aborted_on(
+/// THE TAKE AFTER A RELEASE MADE ON NO EVIDENCE, on the take's write (see
+/// the module): every `failed` outgoing row of `txid` in
+/// [`FailedState::Released`] is recovered. Returns the rows recovered.
+pub(crate) async fn recover_released_on(
     conn: &mut SqliteConnection,
     txid: &str,
+    rows: &[FailedRow],
     takers: &[(&str, &str)],
     now: chrono::DateTime<chrono::Utc>,
-) -> Result<bool> {
-    let Some(mut aborted) = aborted_row(conn, txid).await? else {
-        return Ok(false);
-    };
-    sqlx::query(
-        "UPDATE transactions SET status = 'unproven', updated_at = ? WHERE transaction_id = ?",
-    )
-    .bind(now)
-    .bind(aborted.transaction_id)
-    .execute(&mut *conn)
-    .await?;
-    for output_id in &aborted.closed {
+) -> Result<usize> {
+    let mut recovered = 0;
+    let skip: Vec<i64> = rows
+        .iter()
+        .filter(|r| r.state == FailedState::Evidence)
+        .map(|r| r.transaction_id)
+        .collect();
+    for row in rows.iter().filter(|r| r.state == FailedState::Released) {
+        let transaction_id = row.transaction_id;
+        let mark = abort_mark_for(conn, txid, transaction_id).await?;
+        let marked = mark.as_ref().and_then(|(_, _, closed)| closed.clone());
+        // The outputs the release closed: the abort's mark names them;
+        // without it they are read from the row (its own outputs closed
+        // with nothing spending them; every signed output is spendable).
+        let closed: Vec<i64> = match &marked {
+            Some(closed) => closed.clone(),
+            None => {
+                sqlx::query_scalar(
+                    "SELECT output_id FROM outputs \
+                     WHERE transaction_id = ? AND spendable = 0 AND spent_by IS NULL \
+                     ORDER BY output_id",
+                )
+                .bind(transaction_id)
+                .fetch_all(&mut *conn)
+                .await?
+            }
+        };
         sqlx::query(
-            "UPDATE outputs SET spendable = 1, updated_at = ? \
-             WHERE output_id = ? AND transaction_id = ? AND spent_by IS NULL",
+            "UPDATE transactions SET status = 'unproven', updated_at = ? WHERE transaction_id = ?",
         )
         .bind(now)
-        .bind(output_id)
-        .bind(aborted.transaction_id)
+        .bind(transaction_id)
         .execute(&mut *conn)
         .await?;
+        for output_id in &closed {
+            sqlx::query(
+                "UPDATE outputs SET spendable = 1, updated_at = ? \
+                 WHERE output_id = ? AND transaction_id = ? AND spent_by IS NULL",
+            )
+            .bind(now)
+            .bind(output_id)
+            .bind(transaction_id)
+            .execute(&mut *conn)
+            .await?;
+        }
+        remark_inputs_spent_on(conn, txid, &skip, now).await?;
+        if let Some((req_id, mut history, _)) = mark {
+            if marked.is_some() {
+                if let Some(mark) = history.get_mut(ABORT_KEY) {
+                    mark["recovered"] = serde_json::Value::from(now.to_rfc3339());
+                }
+            }
+            let what = if marked.is_some() {
+                "takenAfterAbort"
+            } else {
+                "takenAfterRelease"
+            };
+            let history = super::storage_sqlx::append_req_history_note(
+                &history.to_string(),
+                serde_json::json!({
+                    "what": what,
+                    "when": now.to_rfc3339(),
+                    "transactionId": transaction_id,
+                    "outputs": closed,
+                    "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+                }),
+            );
+            sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
+                .bind(history)
+                .bind(req_id)
+                .execute(&mut *conn)
+                .await?;
+        }
+        tracing::warn!(
+            txid = %txid,
+            transaction_id,
+            marked = marked.is_some(),
+            marker = "taken_after_release",
+            "a take heard after a release made on no evidence: the release is undone, the transaction unproven, its free inputs marked again"
+        );
+        recovered += 1;
     }
-    remark_inputs_spent_on(conn, txid, now).await?;
-    if let Some(mark) = aborted.history.get_mut(ABORT_KEY) {
-        mark["recovered"] = serde_json::Value::from(now.to_rfc3339());
-    }
-    let history = super::storage_sqlx::append_req_history_note(
-        &aborted.history.to_string(),
-        serde_json::json!({
-            "what": "takenAfterAbort",
-            "when": now.to_rfc3339(),
-            "transactionId": aborted.transaction_id,
-            "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
-        }),
-    );
-    sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
-        .bind(history)
-        .bind(aborted.req_id)
-        .execute(&mut *conn)
-        .await?;
-    tracing::warn!(
-        txid = %txid,
-        transaction_id = aborted.transaction_id,
-        marker = "taken_after_abort",
-        "a take heard after the host's abort: the abort is undone, the transaction unproven, its free inputs marked again"
-    );
-    Ok(true)
+    Ok(recovered)
 }
 
 /// THE ONE RECOVERY OF A `failed` TRANSACTION'S INPUTS, on the caller's
 /// write: every wallet-tracked output row at each of the transaction's
 /// input outpoints that is still free (or consumed with no spender
 /// recorded) becomes unspendable (the outpoint is consumed), `spent_by` the
-/// row owner's own transaction row for `txid` where one exists. A row
+/// row owner's own transaction row for `txid` where one exists, except a
+/// row named in `skip` (a `failed` row left so, with evidence on record). A row
 /// another transaction spends is never taken from it. The bytes are the request's copy, else a row's; without them the
 /// outpoints are unknowable and nothing is marked.
 pub(crate) async fn remark_inputs_spent_on(
     conn: &mut SqliteConnection,
     txid: &str,
+    skip: &[i64],
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
     let raw: Option<Vec<u8>> = sqlx::query_scalar(
@@ -260,6 +370,11 @@ pub(crate) async fn remark_inputs_spent_on(
             // marks a foreign owner's coin so) is stamped with the owner's
             // own row.
             if spent_by.is_some_and(|existing| own != Some(existing)) {
+                continue;
+            }
+            // A row left `failed` with evidence on record keeps its inputs
+            // as they stand.
+            if own.is_some_and(|row| skip.contains(&row)) {
                 continue;
             }
             if !spendable && (spent_by.is_some() || own.is_none()) {

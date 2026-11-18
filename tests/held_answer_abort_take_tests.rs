@@ -10,18 +10,19 @@
 //! history) goes back to `unproven` with each input still free marked
 //! spent by it again and the outputs it closed opened again, the cause on
 //! the request's history (`takenAfterAbort`); an input another action
-//! spent meanwhile stays with that action. A `failed` on evidence (a
-//! competitor's checked proof, the wallet's own refusal, a received
-//! transaction) is not recovered by a take.
+//! spent meanwhile stays with that action. A `failed` that is not a
+//! release on no evidence (a competitor's checked proof, the retire path's
+//! `failed` with its inputs locked, a received transaction) is not
+//! recovered by a take.
 //!
 //! The matrix: the take's writer (the door for another user's
 //! presentation, send-waiting with the abort landing during its post, the
 //! retire path's status source, the unfail task, the wallet's own post) by
 //! the row's cause and its inputs (the abort with every input free, with
 //! one spent meanwhile by another action, with one spent by an action
-//! that is itself proven; a `failed` on a competitor's checked proof; on
-//! the wallet's own refusal; a received transaction of another user).
-//! The fixture is `common/abort_take.rs`.
+//! that is itself proven; a `failed` on a competitor's checked proof; the
+//! retire path's `failed`, its inputs locked; a received transaction of
+//! another user). The fixture is `common/abort_take.rs`.
 
 #![cfg(feature = "sqlite")]
 
@@ -75,13 +76,15 @@ fn judge(act: Act, cause: Cause, got: &Reading) -> Option<String> {
                 && got.inputs == want_inputs("own")
                 && !got.taken_after_abort
         }
-        // No mark: a take does not lift the row (its inputs stay locked);
-        // the unfail task's recovery on chain evidence does, as it did.
+        // Its inputs still locked (the retire path's `failed`): a take does
+        // not lift the row and the request keeps its word, raised only for
+        // a live row of another user (the door's presenter); the unfail
+        // task's recovery on chain evidence lifts it, as it did.
         Cause::Refusal => {
             let lifted = act == Act::Unfail;
             let request = match act {
-                Act::SendWaiting => "invalid",
-                _ => "unmined",
+                Act::Door | Act::Unfail => "unmined",
+                _ => "invalid",
             };
             got.row.as_deref() == Some(if lifted { "unproven" } else { "failed" })
                 && got.request.as_deref() == Some(request)
@@ -99,6 +102,8 @@ fn judge(act: Act, cause: Cause, got: &Reading) -> Option<String> {
                 && got.inputs.iter().all(|(s, w)| !*s && w == "none")
                 && !got.taken_after_abort
         }
+        // The rule by state: `held_answer_release_take_tests.rs`.
+        Cause::Unmarked | Cause::Evidence => false,
     };
     (!ok).then(|| format!("{act:?} {cause:?}: {got:?}"))
 }

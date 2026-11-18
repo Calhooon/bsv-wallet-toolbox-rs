@@ -209,10 +209,13 @@ async fn cell(request: Option<&str>, other_row: &str, outcome: Outcome) -> Readi
     }
 }
 
-/// What a take moves of a row the other user's act wrote.
+/// What a take moves of a row the other user's act wrote. The other
+/// user's `failed` row is outgoing, no input of it locked and no evidence
+/// on record against it: a release made on no evidence, recovered by the
+/// take (`abort_recovery`).
 fn moved_by_a_take(row: &str) -> String {
     match row {
-        "failed" | "completed" => row.to_string(),
+        "completed" => row.to_string(),
         _ => "unproven".to_string(),
     }
 }

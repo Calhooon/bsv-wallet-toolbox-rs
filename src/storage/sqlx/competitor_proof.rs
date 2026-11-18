@@ -207,9 +207,11 @@ impl StorageSqlx {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TakeRows {
     /// Every row neither `failed` nor `completed` (every writer but
-    /// unfail), and a row the host's own abort failed (`abort_recovery`).
+    /// unfail), and a `failed` outgoing row released on no evidence
+    /// (`abort_recovery`).
     Held,
-    /// Every row but `completed`: the unfail task's recovery of a
+    /// Every row but `completed` and but a `failed` outgoing row with
+    /// evidence on record against it: the unfail task's recovery of a
     /// transaction failed on a false word, its free inputs marked spent
     /// again in the same write (`abort_recovery::remark_inputs_spent_on`).
     LiftFailed,
@@ -257,17 +259,12 @@ pub(crate) async fn apply_take_on(
         );
         return Ok(TakeApplied::Refused { competitor });
     }
-    sqlx::query(
-        "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status <> 'completed'",
-    )
-    .bind(now)
-    .bind(txid)
-    .execute(&mut *conn)
-    .await?;
-    // A row the host's own abort failed is recovered in this write
-    // (`abort_recovery`): never a request `unmined` beside it with its
-    // inputs released.
-    super::abort_recovery::recover_aborted_on(conn, txid, takers, now).await?;
+    // THE RULE BY STATE (`abort_recovery`): each `failed` outgoing row of
+    // the txid is read in this write. Released on no evidence, it is
+    // recovered here; its inputs still locked, or evidence on record
+    // against it, nothing of it moves.
+    let failed = super::abort_recovery::failed_outgoing_rows(conn, txid, &check.outpoints).await?;
+    super::abort_recovery::recover_released_on(conn, txid, &failed, takers, now).await?;
     let rows_sql = match rows {
         TakeRows::Held => {
             "UPDATE transactions SET status = 'unproven', updated_at = ? \
@@ -275,22 +272,89 @@ pub(crate) async fn apply_take_on(
         }
         TakeRows::LiftFailed => {
             "UPDATE transactions SET status = 'unproven', updated_at = ? \
-             WHERE txid = ? AND status <> 'completed'"
+             WHERE txid = ? AND status <> 'completed' \
+               AND NOT (status = 'failed' AND is_outgoing = 1 AND transaction_id IN \
+                 (SELECT value FROM json_each(?)))"
         }
     };
-    sqlx::query(rows_sql)
+    let evidence: Vec<i64> = failed
+        .iter()
+        .filter(|r| r.state == super::abort_recovery::FailedState::Evidence)
+        .map(|r| r.transaction_id)
+        .collect();
+    let mut lift = sqlx::query(rows_sql).bind(now).bind(txid);
+    if rows == TakeRows::LiftFailed {
+        lift = lift.bind(serde_json::Value::from(evidence.clone()).to_string());
+    }
+    lift.execute(&mut *conn).await?;
+    if rows == TakeRows::LiftFailed {
+        // The one recovery of a failed transaction's inputs, in this write.
+        super::abort_recovery::remark_inputs_spent_on(conn, txid, &evidence, now).await?;
+    }
+    // The request is raised unless a `failed` outgoing row of the txid
+    // stands unrecovered: then it keeps its word, raised only for a live
+    // row of another user (`Locked`), never beside a row with evidence on
+    // record, and the take is a hint on its history.
+    let (stands, live): (i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT COUNT(*) FROM transactions WHERE txid = ?1 AND status = 'failed' AND is_outgoing = 1), \
+           (SELECT COUNT(*) FROM transactions WHERE txid = ?1 AND status NOT IN ('failed', 'completed'))",
+    )
+    .bind(txid)
+    .fetch_one(&mut *conn)
+    .await?;
+    let still_evidence = !evidence.is_empty() && stands > 0;
+    let raise = stands == 0 || (live > 0 && !still_evidence);
+    if raise {
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET status = 'unmined', updated_at = ? WHERE txid = ? AND status <> 'completed'",
+        )
         .bind(now)
         .bind(txid)
         .execute(&mut *conn)
         .await?;
-    if rows == TakeRows::LiftFailed {
-        // The one recovery of a failed transaction's inputs, in this write.
-        super::abort_recovery::remark_inputs_spent_on(conn, txid, now).await?;
+    } else {
+        note_take_held(conn, txid, still_evidence, takers, now).await?;
     }
     for (provider, word) in takers {
         super::held_receipts::record_take_on(conn, txid, provider, word).await?;
     }
     Ok(TakeApplied::Applied)
+}
+
+/// The note of a take heard beside a `failed` outgoing row it does not
+/// recover (its inputs still locked, or evidence on record against it):
+/// the request keeps its word, the take is a hint.
+async fn note_take_held(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    evidence: bool,
+    takers: &[(&str, &str)],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let row: Option<(i64, String)> =
+        sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((id, history)) = row else {
+        return Ok(());
+    };
+    let history = super::storage_sqlx::append_req_history_note(
+        &history,
+        serde_json::json!({
+            "what": "takeHeldAsHint",
+            "when": now.to_rfc3339(),
+            "why": if evidence { "evidenceOnRecord" } else { "inputsLocked" },
+            "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+        }),
+    );
+    sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
+        .bind(history)
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }
 
 /// The note of a take that raised nothing, on the request's history.
