@@ -253,6 +253,13 @@ async fn an_unread_row_named_as_a_spender_is_not_counted() {
     let unsigned = insert_tx(&s, user_id, &"ef".repeat(32), "unsigned", None, None).await;
     insert_output(&s, user_id, owner, &source, 1, Some(unsigned)).await;
     insert_output(&s, user_id, owner, &source, 0, None).await;
+    // Its inputs' BEEF carries another transaction, not `source`.
+    set_input_beef(
+        &s,
+        unsigned,
+        &beef_of(&tx_of(&[(&"77".repeat(32), 0)], P2PKH).0),
+    )
+    .await;
 
     let a = spenders(&s, &source, 0).await;
     assert!(a.none_held(), "{a:?}");
@@ -283,6 +290,76 @@ async fn an_unread_row_whose_input_beef_carries_the_outpoints_transaction_is_cou
     let a = spenders(&s, &source, 0).await;
     assert!(a.spenders.is_empty());
     assert_eq!(a.unreadable, 1);
+}
+
+/// A BEEF-looking blob carrying `raw` whole.
+fn beef_of(raw: &[u8]) -> Vec<u8> {
+    let mut beef = vec![0x02, 0x00, 0xbe, 0xef];
+    beef.extend_from_slice(raw);
+    beef
+}
+
+async fn set_input_beef(s: &StorageSqlx, transaction_id: i64, beef: &[u8]) {
+    sqlx::query("UPDATE transactions SET input_beef = ? WHERE transaction_id = ?")
+        .bind(beef)
+        .bind(transaction_id)
+        .execute(s.writer())
+        .await
+        .unwrap();
+}
+
+/// An unsigned action named as the spender of no output, whose every input
+/// comes from outside the store: its `input_beef` carries other
+/// transactions, so it cannot spend `source`.0 and is not counted.
+#[tokio::test]
+async fn an_unread_row_whose_input_beef_carries_other_transactions_is_not_counted() {
+    let s = storage().await;
+    let (user_id, _) = seed_user(&s).await;
+    let (raw, source) = tx_of(&[(&"cd".repeat(32), 0)], P2PKH);
+    let owner = insert_tx(&s, user_id, &source, "unproven", Some(&raw), None).await;
+    insert_output(&s, user_id, owner, &source, 0, None).await;
+    let foreign = insert_tx(&s, user_id, &"ef".repeat(32), "unsigned", None, None).await;
+    set_input_beef(
+        &s,
+        foreign,
+        &beef_of(&tx_of(&[(&"77".repeat(32), 0)], P2PKH).0),
+    )
+    .await;
+
+    let a = spenders(&s, &source, 0).await;
+    assert!(a.none_held(), "{a:?}");
+}
+
+/// Two users of one store. X holds `source`.0. Y's unsigned action is
+/// named as the spender of a coin of Y's, so it names itself on what it
+/// takes from the store; it may also spend `source`.0 as an input from
+/// outside the store. Its stored `input_beef` carries `source` by txid only
+/// (a `knownTxids` entry), or there is none (`returnTXIDOnly`): counted.
+#[tokio::test]
+async fn another_users_unread_row_naming_the_outpoints_txid_or_with_no_input_beef_is_counted() {
+    for case in ["txid-only", "no-input-beef"] {
+        let s = storage().await;
+        let (x, _) = seed_user(&s).await;
+        let (y, _) = s.find_or_insert_user(&"b".repeat(66)).await.unwrap();
+        let (raw, source) = tx_of(&[(&"cd".repeat(32), 0)], P2PKH);
+        let owner = insert_tx(&s, x, &source, "unproven", Some(&raw), None).await;
+        insert_output(&s, x, owner, &source, 0, None).await;
+        let (y_raw, y_source) = tx_of(&[(&"99".repeat(32), 0)], P2PKH);
+        let y_owner = insert_tx(&s, y.user_id, &y_source, "unproven", Some(&y_raw), None).await;
+        let unsigned = insert_tx(&s, y.user_id, &"ef".repeat(32), "unsigned", None, None).await;
+        insert_output(&s, y.user_id, y_owner, &y_source, 0, Some(unsigned)).await;
+        if case == "txid-only" {
+            let mut beef = beef_of(&y_raw);
+            beef.push(0x02);
+            beef.extend_from_slice(&outpoint_bytes(&source, 0).unwrap()[..32]);
+            set_input_beef(&s, unsigned, &beef).await;
+        }
+
+        let a = spenders(&s, &source, 0).await;
+        assert!(a.spenders.is_empty(), "{case}: {a:?}");
+        assert_eq!(a.unreadable, 1, "{case}");
+        assert!(!a.none_held(), "{case}");
+    }
 }
 
 #[tokio::test]
