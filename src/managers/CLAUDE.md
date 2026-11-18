@@ -560,7 +560,7 @@ These managers match the TypeScript `@bsv/wallet-toolbox` implementations:
 
 ### Concurrency Model
 
-All managers use `tokio::sync::RwLock` for async-safe interior mutability. The storage manager's lock queue system prevents deadlocks through ordered acquisition (reader -> writer -> sync). Lock timeout is 30 seconds.
+All managers use `tokio::sync::RwLock` for async-safe interior mutability. The storage manager's lock queue system prevents deadlocks through ordered acquisition (reader -> writer -> sync). Lock timeout is 30 seconds. Its state locks are held only to copy out or to write its own fields, never across a store's call or a call that takes one of its locks again, and a taker of two takes `stores` ahead of `active_index`, `backup_indices`, `conflicting_indices`, `auth_id` and `is_available`, in that order; `set_active_lock` is the outermost and the one lock held across store calls (see Sync rules).
 
 ### Encryption
 
