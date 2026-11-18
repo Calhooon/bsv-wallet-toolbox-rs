@@ -1573,11 +1573,25 @@ async fn broadcast_new_internalized_req(
     let services = match storage.get_services() {
         Ok(s) => s,
         Err(_) => {
-            tracing::debug!(
+            // No instance to ask: held, `serviceError`, and the door's note
+            // says why (0.14.0-beta.9 answered accepted here). The
+            // send-waiting task posts it once a host gives the store
+            // services.
+            tracing::warn!(
                 txid = %txid,
-                "internalize: no services configured — send_waiting will broadcast"
+                "internalize: no services configured: nothing posted, the payment is held"
             );
-            return (DoorAnswer::no_answer(), Ok(()));
+            let written = storage
+                .record_door_post_note(
+                    txid,
+                    user,
+                    own_request,
+                    "serviceError",
+                    &[door_note(NO_INSTANCE, NO_SERVICES)],
+                    &[],
+                )
+                .await;
+            return (DoorAnswer::no_answer(), written);
         }
     };
 
@@ -1692,6 +1706,9 @@ pub(super) fn is_refusal(tr: &crate::services::PostTxResultForTxid) -> bool {
 /// The instance name of the door's note when no instance answered (the
 /// post itself faulted) or none could be asked.
 const NO_INSTANCE: &str = "*";
+
+/// The door's words when the store has no services: no instance to ask.
+const NO_SERVICES: &str = "no services configured: nothing was posted";
 
 /// One instance's note: its name, and its status and the data it sent for
 /// `txid` (each result for `txid`, else its overall status and error).

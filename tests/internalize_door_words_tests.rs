@@ -301,7 +301,7 @@ async fn an_instances_words_are_cleaned_and_bounded_at_both_ends() {
 /// ITEM 3: the message carries this call's words alone. Two users present
 /// one transaction on one store, their instances answering differently:
 /// the second user's message names its own instance's words and none of
-/// the first's, which still stand on the request's history.
+/// the earlier user's, which still stand on the request's history.
 #[tokio::test]
 async fn the_message_carries_this_calls_words_alone() {
     let payer = PrivateKey::random().public_key();
@@ -349,4 +349,73 @@ async fn the_message_carries_this_calls_words_alone() {
         r2.message
     );
     assert_eq!(notes.len(), 3);
+}
+
+/// Headers that carry every root.
+struct AllRoots;
+
+#[async_trait::async_trait]
+impl bsv_rs::transaction::ChainTracker for AllRoots {
+    async fn is_valid_root_for_height(
+        &self,
+        _root: &str,
+        _height: u32,
+    ) -> Result<bool, bsv_rs::transaction::ChainTrackerError> {
+        Ok(true)
+    }
+
+    async fn current_height(&self) -> Result<u32, bsv_rs::transaction::ChainTrackerError> {
+        Ok(1_000_000)
+    }
+}
+
+/// ITEM 2: a store with a chain tracker and no services. The door has no
+/// instance to ask: the receipt is held (`sending`), the result carries
+/// `sending` and `serviceError` (0.14.0-beta.9 answered accepted), and the
+/// door's note says why, which is the refusal's message for that arm.
+#[tokio::test]
+async fn a_store_with_no_services_holds_and_says_why() {
+    use bsv_wallet_toolbox_rs::storage::{AuthId, ReviewActionResultStatus};
+    let root = PrivateKey::random();
+    let (args, txid) = payment(&root);
+    let storage = StorageSqlx::in_memory().await.unwrap();
+    let identity = root.public_key().to_hex();
+    storage.migrate("no-services", &identity).await.unwrap();
+    storage.make_available().await.unwrap();
+    storage
+        .set_chain_tracker(std::sync::Arc::new(AllRoots))
+        .await;
+    let (user, _) = storage.find_or_insert_user(&identity).await.unwrap();
+    let result = storage
+        .internalize_action(&AuthId::with_user_id(&identity, user.user_id), args)
+        .await
+        .unwrap();
+    let row: Option<String> = sqlx::query_scalar("SELECT status FROM transactions WHERE txid = ?")
+        .bind(&txid)
+        .fetch_optional(storage.pool())
+        .await
+        .unwrap();
+    let history: String = sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+        .bind(&txid)
+        .fetch_one(storage.pool())
+        .await
+        .unwrap();
+    let sends: Vec<String> = result
+        .send_with_results
+        .iter()
+        .flatten()
+        .map(|s| s.status.clone())
+        .collect();
+    let reviews: Vec<ReviewActionResultStatus> = result
+        .not_delayed_results
+        .iter()
+        .flatten()
+        .map(|r| r.status)
+        .collect();
+    println!("ITEM2 row {row:?} sends {sends:?} reviews {reviews:?} history {history}");
+    assert_eq!(row.as_deref(), Some("sending"));
+    assert_eq!(sends, vec!["sending".to_string()]);
+    assert_eq!(reviews, vec![ReviewActionResultStatus::ServiceError]);
+    assert!(history.contains("no services configured: nothing was posted"));
+    assert!(history.contains(&format!("\"user\":{}", user.user_id)));
 }
