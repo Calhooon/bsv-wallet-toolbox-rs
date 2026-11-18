@@ -37,14 +37,26 @@
 //!   not an output row names it as a spender.
 //! - a row of the output's own user that an output row names as its
 //!   spender is not counted when the caller names that output
-//!   (`stored_spenders_of_output`): `createAction` takes a coin of the
-//!   store only by allocating change or by a named input it looks up by the
+//!   (`stored_spenders_of_output`) and its order shows it could not have
+//!   taken the output unrecorded. `createAction` takes a coin of the store
+//!   only by allocating change or by a named input it looks up by the
 //!   caller's user and refuses unless spendable (a change coin is never
 //!   named), and either way records itself as the coin's spender; an
-//!   outside input is one with no row of the caller's, so this output,
-//!   already held, is never taken as one. Another user's row, and a row a
-//!   sync brought (the spender does not travel, so no output names it),
-//!   stay counted.
+//!   outside input is one with no row of the caller's. The store keeps
+//!   nothing else of an unsigned action's inputs, so the rule rests on
+//!   order: the row is left out when the output's row has a lower
+//!   `output_id` than every output row of the action's own (the lookup of
+//!   the caller's inputs and the insert of the action's outputs are one
+//!   write, so the output was held when the action was made), or when the
+//!   output's transaction is an outgoing action with a higher
+//!   `transaction_id` and a `created_at` not older than the action's (its
+//!   txid did not exist when the action was made). Its one limit: that
+//!   second arm trusts the stamp, which a sync carries from its reader.
+//!   An action made before the user's row of the output was written (it
+//!   took the output as an input from outside the store), an action with
+//!   no output row of its own, another user's row, and a row a sync
+//!   brought (the spender does not travel, so no output names it) stay
+//!   counted.
 //!
 //! A caller that would free a coin frees none while a counted row is held.
 
