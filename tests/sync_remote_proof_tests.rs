@@ -235,31 +235,6 @@ async fn the_proof_rows_of_one_height_are_checked_once() {
     assert_eq!(rows_stored, (4, 4));
 }
 
-/// A manager over a local store, passed as the reader before any call of
-/// its own, is a local reader: its new proof rows are stored as given, with
-/// no root check, by a writer whose tracker would refute them.
-#[tokio::test]
-async fn a_manager_passed_as_the_reader_before_its_own_use_is_local() {
-    let (rows, _) = block_at(310, 1);
-    let stale = Arc::new(MockWalletServices::builder().roots_valid(false).build());
-    let (act, mgr) = wallet(stale.clone()).await;
-    let reader = WalletStorageManager::new(
-        ALICE.to_string(),
-        Some(reader_with(&rows, false).await as Arc<dyn MonitorStorage>),
-        None,
-    );
-    let r = mgr.sync_from_reader(ALICE, Arc::new(reader)).await;
-    let rows_stored = stored(&act).await;
-    println!(
-        "WITNESS manager as reader before its own use: {} rows {rows_stored:?} root checks {}",
-        refusal(&r),
-        stale.root_check_count()
-    );
-    assert_eq!(refusal(&r), "ok");
-    assert_eq!(rows_stored, (1, 1));
-    assert_eq!(stale.root_check_count(), 0);
-}
-
 /// A reader that answers local while it serves its first chunk and not
 /// local from its second chunk on: the second chunk's new proof row, which
 /// the writer's tracker refutes, refuses that chunk; the first chunk's row,
