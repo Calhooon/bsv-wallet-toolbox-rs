@@ -309,8 +309,7 @@ pub fn answer_word(
     let read = read_answer(answer);
     let sends = read
         .rsplit_once(" [")
-        .map(|(_, sends)| sends.trim_end_matches(']'))
-        .unwrap_or("");
+        .map_or("", |(_, sends)| sends.trim_end_matches(']'));
     match read.as_str() {
         "accepted" => "accepted",
         r if r.starts_with("review ")

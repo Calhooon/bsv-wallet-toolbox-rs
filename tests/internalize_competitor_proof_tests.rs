@@ -199,6 +199,163 @@ fn uuid_like(txid: &str, status: &str) -> String {
     format!("{}-{status}", &txid[..16])
 }
 
+/// The store holds `competitor`'s checked proof: the payer's output 0 of
+/// the parent spent by it (`spent_by`), its row and its `proven_txs` row
+/// (bytes and `path`).
+async fn hold_competitor(
+    store: &StorageSqlx,
+    parts: &common::SpendParts,
+    competitor: &bsv_rs::transaction::Transaction,
+    path: &MerklePath,
+    competitor_root: &str,
+) {
+    let competitor_txid = competitor.id();
+    let payer = PrivateKey::random().public_key().to_hex();
+    let (payer, _) = store.find_or_insert_user(&payer).await.unwrap();
+    let parent_row = insert_tx(store, payer.user_id, &parts.parent_txid, "completed", &[1]).await;
+    let competitor_row = insert_tx(
+        store,
+        payer.user_id,
+        &competitor_txid,
+        "completed",
+        &competitor.to_binary(),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO outputs (user_id, transaction_id, spendable, change, vout, satoshis, \
+         provided_by, purpose, type, txid, spent_by) \
+         VALUES (?, ?, 0, 1, 0, 1000, 'storage', 'change', 'custom', ?, ?)",
+    )
+    .bind(payer.user_id)
+    .bind(parent_row)
+    .bind(&parts.parent_txid)
+    .bind(competitor_row)
+    .execute(store.writer())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx) \
+         VALUES (?, ?, 0, ?, ?, ?, ?)",
+    )
+    .bind(&competitor_txid)
+    .bind(COMPETITOR_HEIGHT)
+    .bind("bb".repeat(32))
+    .bind(competitor_root)
+    .bind(path.to_binary().unwrap())
+    .bind(competitor.to_binary())
+    .execute(store.writer())
+    .await
+    .unwrap();
+}
+
+/// The other user's request `word` and row for the payment, written two
+/// hours ago, its history carrying another user's door note.
+async fn standing_request(store: &StorageSqlx, parts: &common::SpendParts, word: &str) {
+    let txid = &parts.txid;
+    let other = PrivateKey::random().public_key().to_hex();
+    let (other, _) = store.find_or_insert_user(&other).await.unwrap();
+    insert_tx(store, other.user_id, txid, row_for(word), &parts.raw).await;
+    let then = chrono::Utc::now() - chrono::Duration::hours(2);
+    sqlx::query(
+        "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, \
+         raw_tx, input_beef, created_at, updated_at) VALUES (?, ?, 0, ?, 0, '{}', ?, ?, ?, ?)",
+    )
+    .bind(txid)
+    .bind(word)
+    .bind(FOREIGN_NOTE)
+    .bind(&parts.raw)
+    .bind(&parts.beef)
+    .bind(then)
+    .bind(then)
+    .execute(store.writer())
+    .await
+    .unwrap();
+}
+
+/// What the act's call answered: the door's answer and message, and two
+/// send-waiting passes' reading.
+struct Acted {
+    answer: String,
+    message: Option<String>,
+    twice: Option<(i64, bool)>,
+}
+
+/// Run `act` on the cell's store.
+async fn run_act(
+    wallet: &TestWallet,
+    act: Act,
+    parts: &common::SpendParts,
+    sender: &bsv_rs::primitives::PublicKey,
+    taken: bsv_wallet_toolbox_rs::PostBeefResult,
+) -> Acted {
+    let store = wallet.storage();
+    let txid = &parts.txid;
+    let mut answer = "-".to_string();
+    let mut message = None;
+    let mut twice = None;
+    match act {
+        Act::Door => {
+            let got = wallet
+                .internalize_action(
+                    common::args(parts.beef.clone(), common::payment(sender, PREFIX, SUFFIX)),
+                    Some(ORIGIN),
+                )
+                .await;
+            if let Err(bsv_rs::Error::WalletReviewActions(r)) = &got {
+                message = Some(r.message.clone());
+            }
+            answer = read_answer(got);
+        }
+        Act::SendWaiting | Act::SendWaitingTwice => {
+            store
+                .send_waiting_transactions(std::time::Duration::ZERO)
+                .await
+                .unwrap();
+            if act == Act::SendWaitingTwice {
+                store
+                    .send_waiting_transactions(std::time::Duration::ZERO)
+                    .await
+                    .unwrap();
+                let (attempts, history): (i64, String) =
+                    sqlx::query_as("SELECT attempts, history FROM proven_tx_reqs WHERE txid = ?")
+                        .bind(txid)
+                        .fetch_one(store.pool())
+                        .await
+                        .unwrap();
+                twice = Some((
+                    attempts,
+                    history.contains("takeNotCounted") && history.contains("sendWaitingHint"),
+                ));
+            }
+        }
+        Act::Retire => {
+            let services = wallet.services();
+            let _ = store
+                .retire_undeliverable_txid(services, txid, "invalid")
+                .await;
+        }
+        Act::Unfail => {
+            store.un_fail().await.unwrap();
+        }
+        Act::OwnPost => {
+            let _ = store
+                .update_transaction_status_after_post(
+                    txid,
+                    &BroadcastOutcome::Success,
+                    &[taken],
+                    None,
+                )
+                .await;
+        }
+    }
+
+    Acted {
+        answer,
+        message,
+        twice,
+    }
+}
+
 /// One cell.
 async fn cell(word: Option<&str>, proof: Proof, act: Act) -> Reading {
     let root = PrivateKey::random();
@@ -244,125 +401,19 @@ async fn cell(word: Option<&str>, proof: Proof, act: Act) -> Reading {
         }))
         .await;
     if proof != Proof::None {
-        let payer = PrivateKey::random().public_key().to_hex();
-        let (payer, _) = store.find_or_insert_user(&payer).await.unwrap();
-        let parent_row =
-            insert_tx(store, payer.user_id, &parts.parent_txid, "completed", &[1]).await;
-        let competitor_row = insert_tx(
-            store,
-            payer.user_id,
-            &competitor_txid,
-            "completed",
-            &competitor.to_binary(),
-        )
-        .await;
-        sqlx::query(
-            "INSERT INTO outputs (user_id, transaction_id, spendable, change, vout, satoshis, \
-             provided_by, purpose, type, txid, spent_by) \
-             VALUES (?, ?, 0, 1, 0, 1000, 'storage', 'change', 'custom', ?, ?)",
-        )
-        .bind(payer.user_id)
-        .bind(parent_row)
-        .bind(&parts.parent_txid)
-        .bind(competitor_row)
-        .execute(store.writer())
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx) \
-             VALUES (?, ?, 0, ?, ?, ?, ?)",
-        )
-        .bind(&competitor_txid)
-        .bind(COMPETITOR_HEIGHT)
-        .bind("bb".repeat(32))
-        .bind(&competitor_root)
-        .bind(path.to_binary().unwrap())
-        .bind(competitor.to_binary())
-        .execute(store.writer())
-        .await
-        .unwrap();
+        hold_competitor(store, &parts, &competitor, &path, &competitor_root).await;
     }
 
     // The other user's request word and row, written two hours ago.
     if let Some(word) = word {
-        let other = PrivateKey::random().public_key().to_hex();
-        let (other, _) = store.find_or_insert_user(&other).await.unwrap();
-        insert_tx(store, other.user_id, &txid, row_for(word), &parts.raw).await;
-        let then = chrono::Utc::now() - chrono::Duration::hours(2);
-        sqlx::query(
-            "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, \
-             raw_tx, input_beef, created_at, updated_at) VALUES (?, ?, 0, ?, 0, '{}', ?, ?, ?, ?)",
-        )
-        .bind(&txid)
-        .bind(word)
-        .bind(FOREIGN_NOTE)
-        .bind(&parts.raw)
-        .bind(&parts.beef)
-        .bind(then)
-        .bind(then)
-        .execute(store.writer())
-        .await
-        .unwrap();
+        standing_request(store, &parts, word).await;
     }
 
-    let mut answer = "-".to_string();
-    let mut message = None;
-    let mut twice = None;
-    match act {
-        Act::Door => {
-            let got = wallet
-                .internalize_action(
-                    common::args(parts.beef.clone(), common::payment(&sender, PREFIX, SUFFIX)),
-                    Some(ORIGIN),
-                )
-                .await;
-            if let Err(bsv_rs::Error::WalletReviewActions(r)) = &got {
-                message = Some(r.message.clone());
-            }
-            answer = read_answer(got);
-        }
-        Act::SendWaiting | Act::SendWaitingTwice => {
-            store
-                .send_waiting_transactions(std::time::Duration::ZERO)
-                .await
-                .unwrap();
-            if act == Act::SendWaitingTwice {
-                store
-                    .send_waiting_transactions(std::time::Duration::ZERO)
-                    .await
-                    .unwrap();
-                let (attempts, history): (i64, String) =
-                    sqlx::query_as("SELECT attempts, history FROM proven_tx_reqs WHERE txid = ?")
-                        .bind(&txid)
-                        .fetch_one(store.pool())
-                        .await
-                        .unwrap();
-                twice = Some((
-                    attempts,
-                    history.contains("takeNotCounted") && history.contains("sendWaitingHint"),
-                ));
-            }
-        }
-        Act::Retire => {
-            let services = wallet.services();
-            let _ = store
-                .retire_undeliverable_txid(services, &txid, "invalid")
-                .await;
-        }
-        Act::Unfail => {
-            store.un_fail().await.unwrap();
-        }
-        Act::OwnPost => {
-            let _ = store
-                .update_transaction_status_after_post(
-                    &txid,
-                    &BroadcastOutcome::Success,
-                    &[taken],
-                    None,
-                )
-                .await;
-        }
-    }
+    let Acted {
+        answer,
+        message,
+        twice,
+    } = run_act(&wallet, act, &parts, &sender, taken).await;
 
     let me = store
         .find_or_insert_user(&root.public_key().to_hex())
@@ -416,14 +467,13 @@ fn raised(word: Option<&str>, got: &Reading) -> bool {
 /// (the column the rule leaves as it was)?
 fn reaches(act: Act, word: Option<&str>) -> bool {
     match act {
-        Act::Door => true,
-        Act::SendWaiting => matches!(word, Some("unsent") | Some("sending")),
+        // The wallet's own post with no request and no row: the store holds
+        // no bytes of the transaction, the take is recorded and moves
+        // nothing.
+        Act::Door | Act::OwnPost => true,
+        Act::SendWaiting | Act::SendWaitingTwice => matches!(word, Some("unsent" | "sending")),
         Act::Retire => matches!(word, Some(w) if w != "unmined"),
-        Act::Unfail => matches!(word, Some("invalid") | Some("doubleSpend")),
-        // With no request and no row the store holds no bytes of the
-        // transaction: the take is recorded and moves nothing.
-        Act::OwnPost => true,
-        Act::SendWaitingTwice => reaches(Act::SendWaiting, word),
+        Act::Unfail => matches!(word, Some("invalid" | "doubleSpend")),
     }
 }
 

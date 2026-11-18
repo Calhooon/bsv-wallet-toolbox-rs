@@ -114,12 +114,12 @@ fn refusals(txid: &str) -> MockResponse<Vec<PostBeefResult>> {
 #[tokio::test]
 async fn presentations_keep_one_door_note_per_instance_and_leave_the_clock() {
     const USERS: usize = 40;
-    let payer = PrivateKey::random().public_key();
+    let sender_key = PrivateKey::random().public_key();
     let roots: Vec<PrivateKey> = (0..USERS).map(|_| PrivateKey::random()).collect();
     // One transaction paying user 0; the others present it too
     // (their payment checks fail before the door, so each presents a
     // basket insertion of the same output).
-    let key = common::derived_key(&roots[0], &payer, PREFIX, SUFFIX);
+    let key = common::derived_key(&roots[0], &sender_key, PREFIX, SUFFIX);
     let (beef, txid) =
         common::beef_paying(LockingScript::from_binary(&common::p2pkh_bytes(&key)).unwrap());
     let payee = common::wallet_posting("door-notes", &roots[0], refusals(&txid)).await;
@@ -152,7 +152,7 @@ async fn presentations_keep_one_door_note_per_instance_and_leave_the_clock() {
         };
         let wallet = wallet.as_ref().unwrap_or(&payee);
         let args = if i == 0 {
-            common::args(beef.clone(), common::payment(&payer, PREFIX, SUFFIX))
+            common::args(beef.clone(), common::payment(&sender_key, PREFIX, SUFFIX))
         } else {
             common::args(beef.clone(), insertion())
         };
@@ -304,15 +304,15 @@ async fn an_instances_words_are_cleaned_and_bounded_at_both_ends() {
 /// the earlier user's, which still stand on the request's history.
 #[tokio::test]
 async fn the_message_carries_this_calls_words_alone() {
-    let payer = PrivateKey::random().public_key();
+    let sender_key = PrivateKey::random().public_key();
     let payee = PrivateKey::random();
-    let key = common::derived_key(&payee, &payer, PREFIX, SUFFIX);
+    let key = common::derived_key(&payee, &sender_key, PREFIX, SUFFIX);
     let (beef, txid) =
         common::beef_paying(LockingScript::from_binary(&common::p2pkh_bytes(&key)).unwrap());
     let one = common::wallet_posting("door-words", &payee, refusals(&txid)).await;
     let r1 = refusal(
         one.internalize_action(
-            common::args(beef.clone(), common::payment(&payer, PREFIX, SUFFIX)),
+            common::args(beef.clone(), common::payment(&sender_key, PREFIX, SUFFIX)),
             Some(ORIGIN),
         )
         .await,
