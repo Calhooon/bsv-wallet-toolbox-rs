@@ -497,7 +497,9 @@ fn parse_slap_hosts(answer: &LookupAnswer) -> Vec<String> {
 
 /// Extract a host URL from a BEEF-encoded SLAP PushDrop output.
 fn extract_host_from_beef(beef: &[u8], output_index: u32) -> Result<String> {
-    let tx = Transaction::from_beef(beef, None)
+    // One output's locking script is all this reads: the subject is read
+    // unlinked, its inputs' ancestry never built.
+    let tx = Transaction::from_beef_subject(beef, None)
         .map_err(|e| crate::Error::ServiceError(format!("SLAP BEEF parse failed: {}", e)))?;
 
     let output = tx
@@ -548,8 +550,9 @@ fn parse_overlay_answer(answer: &LookupAnswer) -> Result<Vec<OverlayCertificate>
 
 /// Parse a single BEEF output into an `OverlayCertificate`.
 fn parse_single_output(beef: &[u8], output_index: u32) -> Result<OverlayCertificate> {
-    // Parse BEEF to get transaction
-    let tx = Transaction::from_beef(beef, None)
+    // Parse BEEF to get the transaction; one output's locking script is all
+    // this reads, so the subject is read unlinked.
+    let tx = Transaction::from_beef_subject(beef, None)
         .map_err(|e| crate::Error::ServiceError(format!("Failed to parse BEEF: {}", e)))?;
 
     // Get the output's locking script
