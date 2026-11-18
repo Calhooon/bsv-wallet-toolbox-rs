@@ -17,11 +17,11 @@ use proof_fixture::*;
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Held {
     /// W's row linked to its proof row, root recorded as checked.
-    CheckedLink,
+    Checked,
     /// W's row linked to a proof row with no record.
-    UncheckedLink,
+    Unchecked,
     /// W's row with no link.
-    NoLink,
+    Unlinked,
 }
 
 /// W holds `n` `unproven` under `wy` as `held`; the reader's row under the
@@ -34,9 +34,9 @@ async fn cell(n: u8, held: Held) -> (String, String, usize) {
     let w = w_store(Tracker::Confirms, &headers).await;
     let t = held_at(&w, n, "unproven", "wy", NOW).await;
     let link = match held {
-        Held::CheckedLink => Some(checked_proof_row(&w, n).await),
-        Held::UncheckedLink => Some(proof_row(&w, n, OLD).await),
-        Held::NoLink => None,
+        Held::Checked => Some(checked_proof_row(&w, n).await),
+        Held::Unchecked => Some(proof_row(&w, n, OLD).await),
+        Held::Unlinked => None,
     };
     if let Some(p) = link {
         exec(
@@ -65,7 +65,7 @@ async fn cell(n: u8, held: Held) -> (String, String, usize) {
 
 #[tokio::test]
 async fn beside_its_own_checked_proof_the_row_reads_completed_on_that_link() {
-    let (got, description, reads) = cell(61, Held::CheckedLink).await;
+    let (got, description, reads) = cell(61, Held::Checked).await;
     assert_eq!(got, "completed:linked");
     assert_eq!(description, "paid", "the other properties merge");
     assert_eq!(reads, 0);
@@ -73,7 +73,7 @@ async fn beside_its_own_checked_proof_the_row_reads_completed_on_that_link() {
 
 #[tokio::test]
 async fn with_no_link_the_held_status_stays() {
-    let (got, description, reads) = cell(62, Held::NoLink).await;
+    let (got, description, reads) = cell(62, Held::Unlinked).await;
     assert_eq!(got, "unproven:-");
     assert_eq!(description, "paid", "the other properties merge");
     assert_eq!(reads, 0);
@@ -81,7 +81,7 @@ async fn with_no_link_the_held_status_stays() {
 
 #[tokio::test]
 async fn beside_an_unchecked_proof_the_status_and_the_link_stay() {
-    let (got, description, reads) = cell(63, Held::UncheckedLink).await;
+    let (got, description, reads) = cell(63, Held::Unchecked).await;
     assert_eq!(got, "unproven:linked");
     assert_eq!(description, "paid", "the other properties merge");
     assert_eq!(reads, 0, "the merge reads no header");
