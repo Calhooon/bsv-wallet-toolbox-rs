@@ -14,10 +14,11 @@ use std::sync::Arc;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::transaction::Transaction;
 use bsv_rs::wallet::{
-    CreateActionArgs, CreateActionOptions, CreateActionOutput, InternalizeActionArgs,
-    WalletInterface,
+    CreateActionArgs, CreateActionInput, CreateActionOptions, CreateActionOutput,
+    InternalizeActionArgs, Outpoint, WalletInterface,
 };
 use bsv_wallet_toolbox_rs::services::mock::{MockResponse, MockWalletServices};
+use bsv_wallet_toolbox_rs::services::traits::{GetStatusForTxidsResult, TxStatusDetail};
 use bsv_wallet_toolbox_rs::storage::PurgeParams;
 use bsv_wallet_toolbox_rs::{
     AuthId, MonitorStorage, StorageSqlx, Wallet, WalletStorageProvider, WalletStorageWriter,
@@ -383,4 +384,114 @@ async fn kept(wallet: &W) -> Vec<String> {
         .iter()
         .map(|o| o.outpoint.to_string())
         .collect()
+}
+
+/// The late row: an unsigned `returnTXIDOnly` action A takes the outpoint O
+/// of a transaction T as an input from outside the store (the user holds no
+/// row of O) and a coin of the store; the user's row of O is written after A
+/// (T internalized). T failed and recovered by the unfail task, a provider
+/// answering O unspent: A is counted as a row that could hide a spender of
+/// O, so O is withheld (one record) and a later action that needs two
+/// coins does not take it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_own_row_made_before_the_outputs_row_withholds_it_at_the_unfail_reopen() {
+    let root = PrivateKey::random();
+    let (wallet, store) = funded(&root).await;
+    let sender = PrivateKey::random().public_key();
+    let (prefix, suffix) = ("cHJlZml4Wg==", "c3VmZml4Wg==");
+    let (t_beef, t_txid) = paying_derived(&root, &sender, prefix, suffix);
+    let mut a = pay(12_000, true);
+    a.input_beef = Some(t_beef.clone());
+    a.inputs = Some(vec![CreateActionInput {
+        outpoint: Outpoint {
+            txid: hex_txid(&t_txid),
+            vout: 0,
+        },
+        input_description: "an outside input".to_string(),
+        unlocking_script: None,
+        unlocking_script_length: Some(108),
+        sequence_number: None,
+    }]);
+    {
+        let options = a.options.as_mut().unwrap();
+        options.sign_and_process = Some(false);
+        options.return_txid_only = Some(true);
+    }
+    let made = wallet
+        .create_action(a, "test.local")
+        .await
+        .map(|c| c.signable_transaction.is_some())
+        .map_err(|e| e.to_string());
+    assert_eq!(made, Ok(true));
+    let named: i64 = ::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM outputs o JOIN transactions t ON t.transaction_id = o.spent_by \
+         WHERE t.status = 'unsigned'",
+    )
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(named, 1, "A took a coin of the store");
+    wallet
+        .internalize_action(
+            InternalizeActionArgs {
+                tx: t_beef,
+                outputs: vec![payment(0, prefix, suffix, &sender.to_hex())],
+                description: "a payment to the wallet".to_string(),
+                labels: None,
+                seek_permission: None,
+            },
+            "test.local",
+        )
+        .await
+        .expect("T internalized");
+
+    // T failed: its request `invalid` two hours back, O not spendable.
+    for sql in [
+        "UPDATE transactions SET status = 'failed' WHERE txid = ?",
+        "UPDATE outputs SET spendable = 0 WHERE txid = ?",
+        "INSERT OR IGNORE INTO proven_tx_reqs (txid, status, raw_tx) \
+         SELECT txid, 'invalid', COALESCE(raw_tx, X'00') FROM transactions WHERE txid = ?",
+        "UPDATE proven_tx_reqs SET status = 'invalid', attempts = 0, \
+         updated_at = datetime('now', '-2 hours') WHERE txid = ?",
+    ] {
+        ::sqlx::query(sql)
+            .bind(&t_txid)
+            .execute(store.writer())
+            .await
+            .unwrap();
+    }
+    let services = MockWalletServices::builder()
+        .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
+            name: "mock".to_string(),
+            status: "success".to_string(),
+            error: None,
+            results: vec![TxStatusDetail::new(&t_txid, "known", Some(0))],
+        }))
+        .is_utxo_response(MockResponse::Success(true))
+        .post_beef_success()
+        .build();
+    WalletStorageProvider::set_services(&store, Arc::new(services));
+    store.un_fail().await.expect("the unfail task");
+
+    let (status, spendable): (String, i64) = ::sqlx::query_as(
+        "SELECT t.status, o.spendable FROM outputs o \
+         JOIN transactions t ON t.transaction_id = o.transaction_id \
+         WHERE o.txid = ? AND o.vout = 0",
+    )
+    .bind(&t_txid)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    let records = withheld(&store).await;
+    let later = create(&wallet, pay(9_600, true)).await;
+    println!(
+        "STEP late row: T {status}, O spendable={spendable}, records {records:?}, \
+         later action {later:?}"
+    );
+    assert_ne!(status, "failed", "T recovered");
+    assert_eq!(spendable, 0, "O withheld while A could spend it");
+    assert_eq!(records.len(), 1, "{records:?}");
+    if let Ok((_, spends)) = &later {
+        assert!(!spends.contains(&format!("{t_txid}.0")), "{spends:?}");
+    }
 }
