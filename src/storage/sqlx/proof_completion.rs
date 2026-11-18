@@ -142,7 +142,7 @@ pub(crate) async fn complete_on_proof(
 /// Every other transaction the store records as spending one of `txid`'s
 /// input outpoints (read from the store's copy that hashes to `txid`), not
 /// itself ended: the losers of the proven conflict.
-async fn losers_of(conn: &mut SqliteConnection, txid: &str) -> Result<Vec<String>> {
+pub(crate) async fn losers_of(conn: &mut SqliteConnection, txid: &str) -> Result<Vec<String>> {
     let Some(tx) = super::abort_recovery::held_transaction_on(conn, txid).await? else {
         return Ok(Vec::new());
     };
@@ -168,8 +168,13 @@ async fn losers_of(conn: &mut SqliteConnection, txid: &str) -> Result<Vec<String
 }
 
 /// Queue `proven` as a competitor on `loser`'s request (`competitorsQueued`,
-/// which the competitor proof ask reads).
-async fn queue_competitor_on(conn: &mut SqliteConnection, loser: &str, proven: &str) -> Result<()> {
+/// which the competitor proof ask reads; a competitor not yet proven stays
+/// queued and is asked again at each pass).
+pub(crate) async fn queue_competitor_on(
+    conn: &mut SqliteConnection,
+    loser: &str,
+    proven: &str,
+) -> Result<()> {
     sqlx::query(
         "UPDATE proven_tx_reqs SET history = json_set( \
            CASE WHEN json_valid(history) AND json_type(history) = 'object' THEN history ELSE '{}' END, \
