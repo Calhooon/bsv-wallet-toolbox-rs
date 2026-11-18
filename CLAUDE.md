@@ -22,8 +22,8 @@ cargo doc --no-deps --open           # Generate docs
 
 **Feature flags:** `sqlite` (default), `mysql`, `remote`, `full` (all three)
 
-**bsv-rs dependency:** `bsv-rs` from crates.io, `"0.8.12"` (caret: 0.8.12 or a later 0.8 release) with the `full` and `http` features.
-0.8.12 is the floor: every earlier 0.8 release is named by a published bsv-rs security advisory.
+**bsv-rs dependency:** `bsv-rs` from crates.io, `"0.8.13"` (caret: 0.8.13 or a later 0.8 release) with the `full` and `http` features.
+0.8.13 is the floor: every earlier 0.8 release is named by a published bsv-rs security advisory.
 
 ## Architecture
 
@@ -100,7 +100,7 @@ Transaction lifecycle: `nosend` | `unsigned` | `unprocessed` | `sending` | `unpr
 
 ## Known Issues / Gotchas
 
-- `bsv-rs` is required at `"0.8.12"`: do not lower it (every earlier 0.8 release is named by a published bsv-rs advisory)
+- `bsv-rs` is required at `"0.8.13"`: do not lower it (every earlier 0.8 release is named by a published bsv-rs advisory)
 - `StorageSqlx::pool()` is the READER pool (`query_only`): writes go to `writer()` (one connection) or `write_tx()` (`BEGIN IMMEDIATE`); never await a service or tracker while holding either. `clippy.toml` bans every other `begin` (bsv-wallet-cli #44)
 - One store per file per process: give a `Wallet` and a `Monitor` clones of ONE `StorageSqlx` (`impl Clone` shares the pools and every field); never open the same file twice in one process (two writer pools meet on SQLite's busy handler)
 - `ChainTrackerError` must be imported separately: `use bsv_rs::transaction::ChainTrackerError;` (the crate is `bsv-rs`, imported as `bsv_rs`)
@@ -140,7 +140,7 @@ Shared: test vectors, entity field names (camelCase), API method signatures, sta
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `bsv-rs` | 0.8.12 (crates.io, caret) | Primitives, transactions, WalletInterface trait |
+| `bsv-rs` | 0.8.13 (crates.io, caret) | Primitives, transactions, WalletInterface trait |
 | `tokio` | 1 | Async runtime (full features) |
 | `sqlx` | 0.8 | SQLite/MySQL database |
 | `reqwest` | 0.12 | HTTP client |
