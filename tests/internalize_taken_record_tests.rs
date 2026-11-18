@@ -96,9 +96,11 @@ fn insertion(vout: u32) -> InternalizeOutput {
     }
 }
 
+/// Internalize `args`: accepted, or held (the review-actions answer,
+/// `sending`); the rows are what these tests read.
 async fn internalize(wallet: &TestWallet, args: InternalizeActionArgs) {
     let answer = wallet.internalize_action(args, Some(ORIGIN)).await;
-    assert!(answer.expect("accepted").accepted);
+    common::answer_word(answer, "taken record");
 }
 
 async fn user_id(wallet: &TestWallet, root: &PrivateKey) -> i64 {

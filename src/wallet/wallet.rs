@@ -2873,15 +2873,38 @@ where
 
         let result = self.storage.internalize_action(&auth, args).await?;
 
-        // Broadcast happens synchronously inside the storage layer's
-        // internalize_action (TS parity: wallet-toolbox storage/methods/
-        // internalizeAction.ts newInternalize -> shareReqsWithWorld). On
-        // success the req is advanced to 'unmined'; on hard network
-        // rejection the storage call errors after marking the tx failed and
-        // its outputs unspendable; on transient failure the req stays
-        // 'unsent' and the monitor daemon's send_waiting_transactions task
-        // remains the retry backstop.
-        if !result.is_merge && result.send_with_results.is_none() {
+        // The storage door posts a held presentation once to each named
+        // instance (DECISIONS 29.1). Taken by nobody, the transaction stays
+        // held (`sending`) and the result carries a send result that is not
+        // `unproven`: the call answers the review-actions refusal with the
+        // results and the txid, as the reference's
+        // `throwIfUnsuccessfulInternalizeAction` (ts-stack@11faa7d1
+        // `Wallet.ts:1604-1612`), its message the reference's sentence and
+        // each instance's words from the request's history.
+        if result
+            .send_with_results
+            .as_ref()
+            .is_some_and(|sends| sends.iter().any(|r| r.status != "unproven"))
+        {
+            let words = match self
+                .storage
+                .find_proven_tx_reqs(crate::storage::FindProvenTxReqsArgs {
+                    txids: Some(vec![result.txid.clone()]),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(reqs) => reqs
+                    .first()
+                    .map(|req| super::internalize_answer::last_door_words(&req.history))
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            if let Some(refusal) = super::internalize_answer::held_refusal(&result, &words) {
+                return Err(Error::ReviewActions(Box::new(refusal)).into());
+            }
+        }
+        if !result.is_merge {
             tracing::debug!(
                 txid = %result.txid,
                 "Internalized tx saved and shared with the network"

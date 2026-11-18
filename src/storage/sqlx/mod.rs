@@ -41,6 +41,7 @@ mod change_tiebreak_tests;
 mod create_action;
 mod held_receipts;
 mod internalize_action;
+mod internalize_answer;
 use crate::wallet::label;
 mod locked_inputs;
 mod monitor_state;

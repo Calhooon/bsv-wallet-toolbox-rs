@@ -248,10 +248,14 @@ fn left_by_no_take(word: Option<&str>) -> String {
     }
 }
 
-/// The answer the call gives for `outcome` (item 1 of the piece moves it).
+/// The answer the call gives for `outcome`: taken, `accepted`; taken by
+/// nobody, the review-actions refusal with the txid `sending` and the
+/// review status of reading 10.
 fn answer_for(outcome: Outcome) -> &'static str {
     match outcome {
-        Outcome::Taken | Outcome::Refused | Outcome::NoAnswer => "accepted",
+        Outcome::Taken => "accepted",
+        Outcome::Refused => "review [InvalidTx] [Sending]",
+        Outcome::NoAnswer => "review [ServiceError] [Sending]",
     }
 }
 
