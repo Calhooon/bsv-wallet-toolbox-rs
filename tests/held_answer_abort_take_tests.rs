@@ -103,7 +103,7 @@ fn judge(act: Act, cause: Cause, got: &Reading) -> Option<String> {
                 && !got.taken_after_abort
         }
         // The rule by state: `held_answer_release_take_tests.rs`.
-        Cause::Unmarked | Cause::Evidence => false,
+        Cause::Unmarked | Cause::Evidence | Cause::Mixed => false,
     };
     (!ok).then(|| format!("{act:?} {cause:?}: {got:?}"))
 }
