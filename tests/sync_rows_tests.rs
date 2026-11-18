@@ -510,8 +510,10 @@ async fn a_new_requests_status_is_stored_in_the_references_words() {
 }
 
 /// An older transaction row that carries a proof link where the store holds
-/// none merges its proof evidence alone (status and link; the held bytes
-/// stay); an older row without one changes nothing.
+/// none merges its proof evidence alone (the link; the held bytes stay;
+/// its `completed` only where this store has checked the proof's root,
+/// which it has not here, so the held status stays); an older row without
+/// one changes nothing.
 #[tokio::test]
 async fn an_older_transaction_row_merges_only_its_proof_evidence() {
     let s = store(DST).await;
@@ -547,7 +549,7 @@ async fn an_older_transaction_row_merges_only_its_proof_evidence() {
         rows,
         vec![
             (
-                "completed".to_string(),
+                "unproven".to_string(),
                 "held".to_string(),
                 Some(t.clone()),
                 vec![0xaa]
