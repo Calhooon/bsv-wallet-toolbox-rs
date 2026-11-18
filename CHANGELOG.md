@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.13.8] - 2026-11-18
+
+A security patch on the stable line, and nothing else. The bsv-rs requirement moves from "0.8.12" to "0.8.13", which closes GHSA-j4w5-4g84-q3f4: that advisory names every 0.8 release through 0.8.12. A build of 0.13.7 with a fresh resolve already takes 0.8.13; one with a lock that holds 0.8.12 or earlier does not until `cargo update -p bsv-rs` moves it. This release makes the floor binding: a host's next build moves such a lock to 0.8.13, and a build with `--locked` asks for that update instead. No public signature of this crate moves.
+
+### Security
+
+- [GHSA-j4w5-4g84-q3f4](https://github.com/Calhooon/bsv-rs/security/advisories/GHSA-j4w5-4g84-q3f4) (medium): bsv-rs's `GlobalKVStore` selector reads (`query`, `get_by_controller`, `get_by_tags`) returned an overlay lookup host's answer without re-checking the selector, so a host could answer with another controller's or other tags' validly signed token; 0.8.13 drops such an entry. This crate does not call `GlobalKVStore`, so none of its doors was reached.
+
+### Hosts
+
+- A host that does not use bsv-rs's `GlobalKVStore` selector reads in its own code takes the release and changes nothing: every test of 0.13.7 answers the same on bsv-rs 0.8.13, and no answer of this crate changes.
+- A host that calls `GlobalKVStore::query`, `get_by_controller` or `get_by_tags` in its own code, through the bsv-rs this crate brings in, now gets only the entries that match its selector; an honest host's answer is unchanged.
+
 ## [0.13.7] - 2026-11-18
 
 This release makes `internalizeAction` run the unlocking script of every input of every transaction of a received AtomicBEEF that the BEEF does not prove, and refuse the request, with nothing written, when one does not pass; a host that receives ordinary payments sees no answer change, only the check's cost. Before upgrading, a host looks at its tests that hand this door placeholder unlocking scripts or parents proven below Genesis, which are refused (the Hosts section gives the fixture that works), and at the payments it takes, since one spending a coin mined before Genesis is refused. A received payment that passes these checks is answered and counted as in 0.13.6. The bsv-rs requirement is unchanged at "0.8.12".
