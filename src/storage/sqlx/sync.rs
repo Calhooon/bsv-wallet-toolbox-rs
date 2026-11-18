@@ -2089,6 +2089,24 @@ async fn local_proof_id(
     )
 }
 
+/// Has this store checked the root of its proof row `proven_tx_id` against
+/// its own headers (a `proof_root_checks` record for the root its stored
+/// path computes)? A path that does not parse is never checked.
+async fn proof_checked_here(conn: &mut SqliteConnection, proven_tx_id: i64) -> Result<bool> {
+    let row: Option<(String, Vec<u8>)> =
+        sqlx::query_as("SELECT txid, merkle_path FROM proven_txs WHERE proven_tx_id = ?")
+            .bind(proven_tx_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((txid, merkle_path)) = row else {
+        return Ok(false);
+    };
+    let Ok(path) = bsv_rs::transaction::MerklePath::from_binary(&merkle_path) else {
+        return Ok(false);
+    };
+    super::proof_root_checks::stored_proof_checked_on(&mut *conn, &txid, &path).await
+}
+
 async fn upsert_transaction(
     conn: &mut SqliteConnection,
     user_id: i64,
@@ -2121,18 +2139,54 @@ async fn upsert_transaction(
         // that carries a proof link where this store holds none merges its
         // proof evidence alone (status, the link, the bytes where none are
         // held). The reference is never updated.
+        //
+        // `completed` is the chain's word: this store writes it only on a
+        // proof whose root it has checked against its own headers (a
+        // `proof_root_checks` record). Where the incoming row says
+        // `completed` and the proof it links is not checked here, the merge
+        // takes the link (and, for a newer row, its other properties) and
+        // leaves the status this store holds, for the status review's pass
+        // that checks the root.
+        //
+        // A merge that brings no link this store can resolve (no proof
+        // txid, or one that is not the row's own) never clears the link
+        // this store holds for the row's txid (the reference's
+        // mergeOrdinaryTransactionProperties writes the mapped link, absent
+        // included). An incoming `completed` is then judged by the link the
+        // row keeps: beside a proof this store checked it is true of the
+        // txid and is written; with no link, or an unchecked one, the held
+        // status stays.
+        let kept_proof = match (proven_tx_id, local_proof) {
+            (Some(id), _) => Some(id),
+            (None, Some(held)) => {
+                let held_txid: Option<String> =
+                    sqlx::query_scalar("SELECT txid FROM proven_txs WHERE proven_tx_id = ?")
+                        .bind(held)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                (held_txid.is_some() && held_txid.as_deref() == tx.txid.as_deref()).then_some(held)
+            }
+            (None, None) => None,
+        };
         let adds_proof_evidence = proven_tx_id.is_some() && local_proof.is_none();
         let incoming_is_newer = tx.updated_at > local_updated;
+        let keep_status = status_str == "completed"
+            && match kept_proof {
+                Some(id) => !proof_checked_here(&mut *conn, id).await?,
+                None => true,
+            };
         if incoming_is_newer {
             sqlx::query(
                 r#"
                 UPDATE transactions
-                SET txid = ?, status = ?, description = ?, satoshis = ?, version = ?, lock_time = ?,
+                SET txid = ?, status = CASE WHEN ? THEN status ELSE ? END, description = ?,
+                    satoshis = ?, version = ?, lock_time = ?,
                     raw_tx = ?, input_beef = ?, is_outgoing = ?, proven_tx_id = ?, updated_at = ?
                 WHERE transaction_id = ?
                 "#,
             )
             .bind(&tx.txid)
+            .bind(keep_status)
             .bind(status_str)
             .bind(&tx.description)
             .bind(tx.satoshis)
@@ -2141,7 +2195,7 @@ async fn upsert_transaction(
             .bind(&tx.raw_tx)
             .bind(&tx.input_beef)
             .bind(tx.is_outgoing)
-            .bind(proven_tx_id)
+            .bind(kept_proof)
             .bind(tx.updated_at)
             .bind(local_id)
             .execute(&mut *conn)
@@ -2150,11 +2204,12 @@ async fn upsert_transaction(
             sqlx::query(
                 r#"
                 UPDATE transactions
-                SET status = ?, proven_tx_id = ?, raw_tx = COALESCE(raw_tx, ?),
-                    input_beef = COALESCE(input_beef, ?)
+                SET status = CASE WHEN ? THEN status ELSE ? END, proven_tx_id = ?,
+                    raw_tx = COALESCE(raw_tx, ?), input_beef = COALESCE(input_beef, ?)
                 WHERE transaction_id = ?
                 "#,
             )
+            .bind(keep_status)
             .bind(status_str)
             .bind(proven_tx_id)
             .bind(&tx.raw_tx)

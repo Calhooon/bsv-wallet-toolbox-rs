@@ -255,18 +255,38 @@ mod review_status {
     // =========================================================================
 
     /// Helper: insert a proven_txs row (the proof record) and return its proven_tx_id.
+    /// A proof row as the proof funnel stores it: a path that proves `txid`
+    /// alone in its block, and the record that this store's chain tracker
+    /// confirmed its root (`proof_root_checks`).
     async fn insert_proven_tx(storage: &StorageSqlx, txid: &str) -> i64 {
+        use bsv_rs::transaction::{MerklePath, MerklePathLeaf};
         let now = Utc::now();
+        let path = MerklePath::new(
+            850000,
+            vec![vec![MerklePathLeaf::new_txid(0, txid.to_string())]],
+        )
+        .unwrap();
+        let root = path.compute_root(Some(txid)).unwrap();
         let result = sqlx::query(
             r#"
             INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx, created_at, updated_at)
-            VALUES (?, 850000, 0, ?, ?, X'deadbeef', X'01000000', ?, ?)
+            VALUES (?, 850000, 0, ?, ?, ?, X'01000000', ?, ?)
             "#,
         )
         .bind(txid)
         .bind("b".repeat(64))
-        .bind("a".repeat(64))
+        .bind(&root)
+        .bind(path.to_binary())
         .bind(now)
+        .bind(now)
+        .execute(storage.writer())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO proof_root_checks (txid, height, merkle_root, checked_at) VALUES (?, 850000, ?, ?)",
+        )
+        .bind(txid)
+        .bind(&root)
         .bind(now)
         .execute(storage.writer())
         .await
@@ -509,7 +529,8 @@ mod review_status {
         // Insert a transaction with status 'unproven'
         insert_transaction(&storage, user_id, &txid, "unproven").await;
 
-        // Insert a proven_txs record (the actual proof) to satisfy the FK constraint
+        // Insert a proven_txs record (the actual proof), its root recorded as
+        // checked by this store: check 3 completes only beside such a proof
         let proven_tx_id = insert_proven_tx(&storage, &txid).await;
 
         // Insert a proven_tx_req with status 'completed' and proven_tx_id set

@@ -202,6 +202,33 @@ async fn a_new_proof_row_from_a_reader_that_is_not_local_is_validated() {
     assert_eq!(stale_local.root_check_count(), 0);
 }
 
+/// A new proof row a sync from a reader that is not local validated (the
+/// services' tracker and the services' header at its height) is stored
+/// with no root-check record: that record stands for this store's own
+/// chain tracker, which the validation does not ask, so the status
+/// review's pass reads its header again where it needs the proof.
+#[tokio::test]
+async fn a_proof_a_sync_validated_carries_no_root_check_record() {
+    let (rows, header) = block_at(500, 1);
+    let active = Arc::new(MockWalletServices::builder().roots_valid(true).build());
+    active.set_header_for_height(header.clone());
+    let (act, mgr) = wallet(active.clone()).await;
+    let r = mgr
+        .sync_from_reader(ALICE, reader_with(&rows, true).await)
+        .await;
+    let held = stored(&act).await;
+    let records = count(&act, "SELECT COUNT(*) FROM proof_root_checks").await;
+    println!(
+        "WITNESS item 3: not local, validated: {} rows {held:?}, services root checks {}, records {records}",
+        refusal(&r),
+        active.root_check_count()
+    );
+    assert_eq!(refusal(&r), "ok");
+    assert_eq!(held, (1, 1));
+    assert_eq!(active.root_check_count(), 1);
+    assert_eq!(records, 0);
+}
+
 /// From a reader that is not local, the proof rows of one height cost one
 /// root check and one header call of the store's services for the whole
 /// sync, and a row the writer already holds as the same proof costs none.

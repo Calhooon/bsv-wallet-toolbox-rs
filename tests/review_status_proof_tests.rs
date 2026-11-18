@@ -614,35 +614,53 @@ async fn a_transaction_failed_while_a_refuting_tracker_answers_is_left() {
 }
 
 /// A txid with a `failed` row beside an UNCHECKED proof row and an
-/// `invalid` request is not a candidate: the pass reads no header for it
-/// (a tracker that counts its calls, carrying its root), writes nothing of
-/// it, and does not stop at it: a candidate behind it is completed at that
-/// pass.
+/// `invalid` request is not check 1's candidate: where the failed row does
+/// not link the proof, the pass reads no header for it (a tracker that
+/// counts its calls, carrying its root), writes nothing of it, and does not
+/// stop at it: a candidate behind it is completed at that pass. Where the
+/// failed row links the proof (the sync's merge takes the link and leaves
+/// the status), it is a candidate of the same pass under the same bound:
+/// one header read, and on the tracker's confirmation the root is recorded
+/// and the row and its request completed.
 #[tokio::test]
-async fn a_txid_with_a_failed_row_costs_no_header_read() {
+async fn a_failed_row_costs_a_header_read_only_where_it_links_the_unchecked_proof() {
     const BEFORE: u32 = HEIGHT - 1;
-    let (_, _, _, root) = mined(12);
-    let headers = Headers::carrying(HEIGHT, &root);
-    headers.serve(BEFORE, &mined_at(11, BEFORE).3);
-    let s = one_store(Some(headers.clone())).await;
-    let failed = synced_proof_beside_invalid_at(&s, 11, BEFORE).await;
-    exec(
-        &s,
-        &format!("UPDATE transactions SET status = 'failed' WHERE txid = '{failed}'"),
-    )
-    .await;
-    let behind = synced_proof_beside_invalid(&s, 12).await;
-    let start = rows(&s, &failed).await;
-    MonitorStorage::review_status(&*s).await.unwrap();
-    let after = rows(&s, &failed).await;
-    let done = rows(&s, &behind).await;
-    println!(
-        "WITNESS a failed row beside an unchecked proof ({} reads): {after}; the one behind: {done}",
-        headers.reads()
-    );
-    assert_eq!(headers.reads(), 1, "a header was read for the failed txid");
-    assert_eq!(after, start);
-    assert!(done.contains("req completed link true"), "{done}");
+    for linked in [false, true] {
+        let (_, _, _, root) = mined(12);
+        let headers = Headers::carrying(HEIGHT, &root);
+        headers.serve(BEFORE, &mined_at(11, BEFORE).3);
+        let s = one_store(Some(headers.clone())).await;
+        let failed = synced_proof_beside_invalid_at(&s, 11, BEFORE).await;
+        let link = if linked { "proven_tx_id" } else { "NULL" };
+        exec(
+            &s,
+            &format!("UPDATE transactions SET status = 'failed', proven_tx_id = {link} WHERE txid = '{failed}'"),
+        )
+        .await;
+        let behind = synced_proof_beside_invalid(&s, 12).await;
+        let start = rows(&s, &failed).await;
+        MonitorStorage::review_status(&*s).await.unwrap();
+        let after = rows(&s, &failed).await;
+        let done = rows(&s, &behind).await;
+        println!(
+            "WITNESS a failed row (linked {linked}) beside an unchecked proof ({} reads): {after}; the one behind: {done}",
+            headers.reads()
+        );
+        assert!(done.contains("req completed link true"), "{done}");
+        if linked {
+            assert_eq!(
+                headers.reads(),
+                2,
+                "one header read for the linked failed row"
+            );
+            assert!(after.starts_with("tx completed link true"), "{after}");
+            assert!(after.contains("checked 1"), "{after}");
+            assert!(after.contains("req completed link true"), "{after}");
+        } else {
+            assert_eq!(headers.reads(), 1, "a header was read for the failed txid");
+            assert_eq!(after, start);
+        }
+    }
 }
 
 /// No candidate holds a slot for good: 150 candidates the tracker errors on
