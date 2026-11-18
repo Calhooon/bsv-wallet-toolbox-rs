@@ -25,6 +25,15 @@
 //! others do, and a pass reads at most 100 headers. No status, link or
 //! history moves on that stamp.
 //!
+//! A txid with a `failed` transaction row (one user's row of it failed,
+//! another's live) is not a candidate: nothing of it is written here, no
+//! status, link, history or stamp, and no header is read for it. The
+//! unfail task takes its request once that has stood an hour, and recovers
+//! the `failed` row when the network holds the transaction (the request
+//! `unmined`, the row `unproven`, its outputs checked as unspent counted);
+//! the proof task then completes every row of the txid. Check 1 fails no
+//! row of it meanwhile, since a proof row of the txid exists.
+//!
 //! The tracker is asked with neither the writer nor a write transaction
 //! held: the candidates are read on a reader, checked, and each is read
 //! again inside the write before its request moves: the request still
@@ -58,9 +67,10 @@ impl StorageSqlx {
             SELECT DISTINCT r.txid, p.proven_tx_id, p.merkle_path
             FROM proven_tx_reqs r
             JOIN proven_txs p ON p.txid = r.txid
-            JOIN transactions t ON t.txid = r.txid
             WHERE r.status = 'invalid'
-              AND t.status != 'failed'
+              AND EXISTS (SELECT 1 FROM transactions t WHERE t.txid = r.txid)
+              AND NOT EXISTS (SELECT 1 FROM transactions f
+                              WHERE f.txid = r.txid AND f.status = 'failed')
             ORDER BY julianday(r.updated_at), p.proven_tx_id
             LIMIT ?
             "#,
