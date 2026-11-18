@@ -284,3 +284,107 @@ async fn a_call_back_after_a_failure_at_the_active_behind_writes_every_row() {
         (vec!["B".into(), "B".into()], ("B".into(), true))
     );
 }
+
+/// Two stores whose rows disagree (A's names B, B's names A: a switch
+/// from A to B that failed at B), each a fresh manager's.
+async fn disagreeing() -> Vec<Arc<Double>> {
+    let cell = Cell {
+        n: 2,
+        switched: false,
+        role: Role::Target,
+        fails: Fails::SetActive,
+    };
+    let (doubles, mgr) = setup(cell).await;
+    arm(&doubles[1], Fails::SetActive, true);
+    let _ = mgr.set_active(DST).await;
+    arm(&doubles[1], Fails::SetActive, false);
+    doubles
+}
+
+fn manager_over(doubles: &[Arc<Double>]) -> WalletStorageManager {
+    WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(doubles[0].clone() as Arc<dyn MonitorStorage>),
+        Some(
+            doubles[1..]
+                .iter()
+                .map(|d| d.clone() as Arc<dyn MonitorStorage>)
+                .collect(),
+        ),
+    )
+}
+
+/// Each store's own `set_active`, by that store's row of the wallet's user.
+async fn name_on_every_store(doubles: &[Arc<Double>], key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for d in doubles {
+        let (u, _) = d.inner.find_or_insert_user(ALICE).await.unwrap();
+        let auth = AuthId::with_user_id(ALICE, u.user_id);
+        out.push(refusal(
+            &WalletStorageSync::set_active(&d.inner, &auth, key).await,
+        ));
+    }
+    out
+}
+
+/// A manager made over stores whose rows disagree refuses `update_backups`
+/// and `set_active` to either store. Each store's own `set_active` to one
+/// store makes every row name it; a manager made over the stores again is
+/// then enabled on that store and backs up. The refusing manager's own
+/// `set_active` answers unchanged and is then enabled when that store is
+/// its active, and still refuses when it is not.
+#[tokio::test]
+async fn a_new_manager_over_stores_that_disagree_has_a_way_through() {
+    let denied = "Access denied: Operation requires active storage";
+    let doubles = disagreeing().await;
+    let fresh = manager_over(&doubles);
+    fresh.make_available().await.unwrap();
+    let before = (
+        rows(&doubles).await,
+        state(&fresh).await,
+        refusal(&fresh.update_backups().await),
+        refusal(&fresh.set_active(SRC).await),
+        refusal(&fresh.set_active(DST).await),
+    );
+    println!("WITNESS a new manager over rows that disagree: {before:?}");
+    assert_eq!(before.0, vec!["B".to_string(), "A".to_string()]);
+    assert_eq!(before.1, ("A".to_string(), false));
+    assert_eq!((before.2.as_str(), before.3.as_str()), (denied, denied));
+    assert_eq!(before.4, denied);
+
+    for (key, letter) in [(SRC, "A"), (DST, "B")] {
+        let doubles = disagreeing().await;
+        let fresh = manager_over(&doubles);
+        fresh.make_available().await.unwrap();
+        let named = name_on_every_store(&doubles, key).await;
+        let again = manager_over(&doubles);
+        again.make_available().await.unwrap();
+        let made_again = (
+            rows(&doubles).await,
+            state(&again).await,
+            refusal(&again.update_backups().await),
+        );
+        let own = fresh.set_active(key).await;
+        let own = (
+            own.map(|log| log == format!("setActive to {key} unchanged\n")),
+            state(&fresh).await,
+            refusal(&fresh.update_backups().await),
+        );
+        println!(
+            "WITNESS each store's own set_active to {letter}: {named:?}; a manager made again: {made_again:?}; the refusing manager (active A) set_active({letter}): {own:?}"
+        );
+        assert_eq!(named, vec!["ok".to_string(), "ok".to_string()]);
+        assert_eq!(made_again.0, vec![letter.to_string(), letter.to_string()]);
+        assert_eq!(made_again.1, (letter.to_string(), true));
+        assert_eq!(made_again.2, "ok");
+        if key == SRC {
+            assert_eq!(own.0.ok(), Some(true));
+            assert_eq!(own.1, ("A".to_string(), true));
+            assert_eq!(own.2, "ok");
+        } else {
+            assert_eq!(refusal(&own.0), denied);
+            assert_eq!(own.1, ("A".to_string(), false));
+            assert_eq!(own.2, denied);
+        }
+    }
+}
