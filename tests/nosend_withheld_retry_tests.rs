@@ -231,7 +231,15 @@ async fn withheld_change_hint_then_unspent(delayed: bool) {
     let after_hint = change_of(&store, &one).await;
     let records_after_hint = withheld(&store).await;
 
-    // Neither purge reaches the record, whatever its age.
+    // Neither purge reaches the record, whatever its age; another event as
+    // old is deleted, so the purge's delete of events ran.
+    ::sqlx::query(
+        "INSERT INTO monitor_events (event, details, created_at, updated_at) \
+         VALUES ('anOldEvent', '', datetime('now'), datetime('now'))",
+    )
+    .execute(store.writer())
+    .await
+    .unwrap();
     ::sqlx::query("UPDATE monitor_events SET created_at = datetime('now', '-400 days')")
         .execute(store.writer())
         .await
@@ -247,11 +255,17 @@ async fn withheld_change_hint_then_unspent(delayed: bool) {
         PurgeParams {
             max_age_days: 0,
             purge_completed: false,
-            purge_failed: false,
+            purge_failed: true,
         },
     )
     .await
     .expect("the purge");
+    let old_events: i64 =
+        ::sqlx::query_scalar("SELECT COUNT(*) FROM monitor_events WHERE event = 'anOldEvent'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(old_events, 0, "the purge deleted the old events");
     let cleaned = store
         .cleanup_monitor_events(std::time::Duration::ZERO)
         .await
