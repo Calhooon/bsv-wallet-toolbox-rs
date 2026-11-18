@@ -751,6 +751,22 @@ impl Door<'_> {
             .filter(|id| self.offer.is_none_or(|offer| offer.contains(id)))
             .collect();
 
+        // A `sendWith` this step processes: the sent `noSend` transactions'
+        // release searches the store's bytes here, on a reader, before the
+        // write (`stored_spenders::search_sent_change`).
+        let sent_change = match self.then {
+            Some(then) => Some(
+                super::stored_spenders::search_sent_change(
+                    self.storage,
+                    user_id,
+                    &then.process.send_with,
+                    None,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+
         // `BEGIN IMMEDIATE` on the writer (bsv-wallet-cli #44). If the
         // function returns an error (via `?`), `tx` is dropped and sqlx
         // rolls back.
@@ -1092,6 +1108,7 @@ impl Door<'_> {
                     &mut tx,
                     user_id,
                     &process,
+                    sent_change.as_ref(),
                 )
                 .await
                 .map_err(DoorRefusal::Process)?;

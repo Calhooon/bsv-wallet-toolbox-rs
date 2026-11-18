@@ -317,3 +317,38 @@ async fn a_no_send_actions_change_is_a_coin_once_the_host_internalizes_it_sent()
     let (_, spends) = three.expect("the action of 8000");
     assert!(spends.contains(&format!("{one}.1")), "{spends:?}");
 }
+
+/// A `noSend` action its owner aborted (its transaction `failed`, its
+/// request left `nosend`), then named in a later action's `sendWith`: its
+/// change stays not spendable, and an action needing 8000 does not take it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_aborted_no_send_action_named_in_a_later_send_with_keeps_its_change_not_spendable() {
+    let root = PrivateKey::random();
+    let (wallet, store) = funded(&root).await;
+    let (one, _) = create(&wallet, pay_no_send(1_000, None)).await.unwrap();
+    let reference: String =
+        ::sqlx::query_scalar("SELECT reference FROM transactions WHERE txid = ?")
+            .bind(&one)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+    let aborted = wallet
+        .abort_action(AbortActionArgs { reference }, "test.local")
+        .await
+        .map(|r| r.aborted);
+    let after_abort = change_of(&store, &one).await;
+    let mut send = pay(1_000, true);
+    send.options.as_mut().unwrap().send_with = Some(vec![hex_txid(&one)]);
+    let sent = create(&wallet, send).await;
+    let after_send = change_of(&store, &one).await;
+    println!(
+        "STEP abort then sendWith\n  abort: {aborted:?}\n  then: {after_abort}\n  \
+         action naming it in sendWith: {sent:?}\n  then: {after_send}"
+    );
+    assert_eq!(aborted, Ok(true));
+    sent.expect("the sendWith action");
+    assert!(
+        after_send.contains("spendable=0 spent_by=None"),
+        "{after_send}"
+    );
+}

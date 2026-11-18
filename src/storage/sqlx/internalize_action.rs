@@ -244,9 +244,21 @@ pub async fn internalize_action_internal(
     // NOTE: This uses its own connection (known limitation).
     let change_basket = storage.find_or_create_default_basket(user_id).await?;
 
+    // The caller's own `noSend` transaction internalized as sent: its
+    // release searches the store's bytes here, on a reader, before the
+    // write (`stored_spenders::search_sent_change`; nothing for any other).
+    let sent_change = super::stored_spenders::search_sent_change(
+        storage,
+        user_id,
+        std::slice::from_ref(&txid),
+        None,
+    )
+    .await?;
+
     // Begin a SQL transaction to ensure atomicity of all subsequent DB operations.
     // If any step fails or the function returns early, sqlx will auto-rollback on drop.
     let mut tx = storage.write_tx().await?;
+    let sent_change = sent_change.still_read(&mut tx, None).await?;
 
     // Step 3: Check for existing transaction
     let existing_tx = find_existing_transaction(&mut tx, user_id, &txid).await?;
@@ -430,7 +442,15 @@ pub async fn internalize_action_internal(
             // Broadcast, by the caller's word: the change of this store's
             // own `noSend` action becomes a coin, as when it is sent
             // through `sendWith`.
-            super::stored_spenders::release_sent_change(&mut tx, &txid, now).await?;
+            super::stored_spenders::release_sent_change(
+                &mut tx,
+                user_id,
+                &txid,
+                now,
+                sent_change,
+                None,
+            )
+            .await?;
             let stored_proof = match validated_bump {
                 Some(ref vb) => insert_proven_tx_from_bump(&mut tx, &txid, &raw_tx, vb).await?,
                 None => None,
