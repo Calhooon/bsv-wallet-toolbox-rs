@@ -591,7 +591,8 @@ async fn a_transaction_failed_between_the_read_and_the_write_is_left() {
 /// at every read, and one behind them (a higher proof row number) whose
 /// root the headers carry. A pass takes 100 after where the last pass
 /// stopped, so the one behind 150 is looked at within ceil(151 / 100) = 2
-/// passes and completed; no pass reads more than 100 headers, and nothing
+/// passes and completed (the set is fixed for the run: none is put ahead
+/// of it meanwhile, which the bound would count); no pass reads more than 100 headers, and nothing
 /// of the 150 requests it leaves `invalid` is written, their `updated_at`
 /// included.
 #[tokio::test]
