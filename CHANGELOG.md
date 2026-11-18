@@ -96,9 +96,9 @@ alone, so their answers here are 0.14.0-beta.8.1's):
   `internalizeAction` bringing a proof is not yet read (the transaction
   stays `sending`, no proof stored).
 - A store written by 0.14.0-beta.8, 0.14.0-beta.8.1, 0.14.0-beta.9 or
-  0.14.0-beta.10 (the last two carry the pin alone) moves each held receipt from `unproven` to
-  `sending` on open; a receipt an instance took is not touched; opening
-  again changes nothing.
+  0.14.0-beta.10 (the last two carry the pin alone) moves each held
+  receipt from `unproven` to `sending` on open; a receipt an instance took
+  is not touched; opening again changes nothing.
 - A coin already spent by the wallet's own action stays spent, and that
   action keeps its status and its change stays counted: a store from
   0.14.0-beta.8 may hold such a spend of a held receipt made under the
