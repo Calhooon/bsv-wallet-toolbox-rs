@@ -507,28 +507,60 @@ impl WalletStorageManager {
         *self.backup_indices.write().await = Vec::new();
         *self.conflicting_indices.write().await = Vec::new();
 
-        let mut stores = self.stores.write().await;
-        // Read identity key upfront and release the read lock immediately,
-        // because we need a write lock on auth_id later (line ~364).
         let identity_key = self.auth_id.read().await.identity_key.clone();
+        // The stores to initialize, copied out: no state lock is held while
+        // a store answers.
+        let pending: Vec<(usize, Arc<dyn MonitorStorage>)> = {
+            let stores = self.stores.read().await;
+            if stores.is_empty() {
+                return Err(Error::InvalidArgument(
+                    "Must add at least one storage provider".to_string(),
+                ));
+            }
+            stores
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| !s.is_available || s.settings.is_none() || s.user.is_none())
+                .map(|(i, s)| (i, s.storage.clone()))
+                .collect()
+        };
 
-        if stores.is_empty() {
-            return Err(Error::InvalidArgument(
-                "Must add at least one storage provider".to_string(),
-            ));
-        }
-
-        // Initialize all stores and find/create user
-        for store in stores.iter_mut() {
-            if !store.is_available || store.settings.is_none() || store.user.is_none() {
-                let settings = store.storage.make_available().await?;
-                let (user, _) = store.storage.find_or_insert_user(&identity_key).await?;
-                store.settings = Some(settings);
-                store.user = Some(user);
-                store.is_available = true;
+        // Initialize each store and find/create its user; the answers of the
+        // stores that answered are written even when a later store fails.
+        let mut answered = Vec::with_capacity(pending.len());
+        let mut outcome = Ok(());
+        for (i, storage) in pending {
+            let settings = match storage.make_available().await {
+                Ok(settings) => settings,
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            };
+            match storage.find_or_insert_user(&identity_key).await {
+                Ok((user, _)) => answered.push((i, storage, settings, user)),
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
             }
         }
-        drop(stores);
+        {
+            // Stores are only ever appended, so an index names the store it
+            // was copied from while that store is the one at the index.
+            let mut stores = self.stores.write().await;
+            for (i, storage, settings, user) in answered {
+                if let Some(store) = stores
+                    .get_mut(i)
+                    .filter(|s| Arc::ptr_eq(&s.storage, &storage))
+                {
+                    store.settings = Some(settings);
+                    store.user = Some(user);
+                    store.is_available = true;
+                }
+            }
+        }
+        outcome?;
         self.partition().await
     }
 
@@ -545,11 +577,24 @@ impl WalletStorageManager {
     /// and writes every field, `cached_settings` last, with no await between
     /// its writes. A call dropped while it waits on a lock has changed none
     /// of the manager's fields; once it holds them all it has no await left.
-    /// Every taker of two of the manager's state locks takes them in one
-    /// order, `stores` ahead of these five and these in the order above
-    /// (`is_active_enabled`, `get_stores`, `get_active`, `make_available`,
-    /// `checks_received_beef_in_process`), so no cycle of waits can form
-    /// among them, a writer queued on one lock included.
+    ///
+    /// The manager's locks. The transition lock (`set_active_lock`, one
+    /// `set_active` at a time) is the outermost and the one lock held across
+    /// store calls, by design; no state lock is held when it is taken. A
+    /// state lock (`stores`, `active_index`, `backup_indices`,
+    /// `conflicting_indices`, `auth_id`, `is_available`, `services`) is held
+    /// only to copy out what a function needs (the stores it will call,
+    /// cloned; the indices; the auth) or to write the manager's own fields:
+    /// never across a store's call, and never across a call that takes one
+    /// of the manager's locks again. A taker of two state locks takes
+    /// `stores` ahead of the five above and these in the order above
+    /// (`is_active_enabled`, `get_stores`, `get_settings`, `get_active`,
+    /// `get_backup_stores`, `get_conflicting_stores`, `make_available`'s
+    /// answer when available, `checks_received_beef_in_process`, this
+    /// function), and while it holds one awaits nothing but the next in that
+    /// order. So every holder of a state lock releases it without waiting on
+    /// a store or on a holder of an earlier lock in that order, a writer
+    /// queued on a lock included.
     async fn partition(&self) -> Result<TableSettings> {
         let stores = self.stores.read().await;
         // Partition stores into active, backups, and conflicting
@@ -761,9 +806,15 @@ impl WalletStorageManager {
 
     /// Sets the wallet services for all storage providers.
     pub async fn set_services(&self, services: Arc<dyn WalletServices>) {
-        let stores = self.stores.read().await;
-        for store in stores.iter() {
-            store.storage.set_services(services.clone());
+        let storages: Vec<_> = self
+            .stores
+            .read()
+            .await
+            .iter()
+            .map(|s| s.storage.clone())
+            .collect();
+        for storage in storages {
+            storage.set_services(services.clone());
         }
         // Update sync-accessible cache for WalletStorageReader::get_services()
         if let Ok(mut guard) = lock_write(&self.services_sync) {
@@ -788,8 +839,9 @@ impl WalletStorageManager {
     ) -> Result<()> {
         provider.make_available().await?;
 
-        if let Some(services) = self.services.read().await.as_ref() {
-            provider.set_services(services.clone());
+        let services = self.services.read().await.clone();
+        if let Some(services) = services {
+            provider.set_services(services);
         }
 
         self.stores
@@ -969,20 +1021,24 @@ impl WalletStorageManager {
         let mut log = String::new();
 
         let backup_indices = self.backup_indices.read().await.clone();
-        let stores = self.stores.read().await;
+        // The backups, copied out: each sync takes the manager's locks
+        // again (`run_as_sync`, `get_active`), so none is held across it.
+        let backups: Vec<Arc<dyn MonitorStorage>> = {
+            let stores = self.stores.read().await;
+            backup_indices
+                .iter()
+                .filter_map(|&idx| stores.get(idx).map(|s| s.storage.clone()))
+                .collect()
+        };
 
         log.push_str(&format!(
             "BACKUP CURRENT ACTIVE TO {} STORES\n",
             backup_indices.len()
         ));
 
-        for idx in backup_indices {
-            if let Some(backup) = stores.get(idx) {
-                let sync_result = self
-                    .sync_to_writer(&auth.identity_key, backup.storage.clone())
-                    .await?;
-                log.push_str(&sync_result.log);
-            }
+        for backup in backups {
+            let sync_result = self.sync_to_writer(&auth.identity_key, backup).await?;
+            log.push_str(&sync_result.log);
         }
 
         Ok(log)
@@ -1189,36 +1245,37 @@ impl WalletStorageManager {
 
         // Update the user record of every store whose row does not name the
         // new active, each by that store's own row of the wallet's user:
-        // stores number their users independently. The
-        // calls run under the stores read lock, as they did before; the
-        // cached rows of the stores whose call succeeded are written after,
-        // under the write lock, as the reference's setActive sets each
-        // store's cached row (the re-partition below reads them).
+        // stores number their users independently. Each store and its
+        // cached row are copied out under the stores read lock, which is
+        // released before any store answers; the cached rows of the stores
+        // whose call succeeded are written after, under the write lock, as
+        // the reference's setActive sets each store's cached row (the
+        // re-partition below reads them).
         let auth = self.get_auth(false).await?;
-        let stores = self.stores.read().await;
-        let mut done = Vec::with_capacity(stores.len());
+        let calls: Vec<(Arc<dyn MonitorStorage>, Option<TableUser>)> = self
+            .stores
+            .read()
+            .await
+            .iter()
+            .map(|s| (s.storage.clone(), s.user.clone()))
+            .collect();
+        let mut done = Vec::with_capacity(calls.len());
         let mut outcome = Ok(());
-        for (i, store) in stores.iter().enumerate() {
-            let Some(user) = store.user.as_ref() else {
+        for (i, (storage, row)) in calls.into_iter().enumerate() {
+            let Some(user) = row else {
                 outcome = Err(Error::StorageNotAvailable);
                 break;
             };
             if user.active_storage.as_deref() == Some(storage_identity_key) {
                 continue;
             }
-            let user_id = user.user_id;
-            let store_auth = AuthId::with_user_id(&auth.identity_key, user_id);
-            if let Err(e) = store
-                .storage
-                .set_active(&store_auth, storage_identity_key)
-                .await
-            {
+            let store_auth = AuthId::with_user_id(&auth.identity_key, user.user_id);
+            if let Err(e) = storage.set_active(&store_auth, storage_identity_key).await {
                 outcome = Err(e);
                 break;
             }
             done.push(i);
         }
-        drop(stores);
 
         let mut stores = self.stores.write().await;
         for i in done {
@@ -1355,9 +1412,15 @@ impl WalletStorageWriter for WalletStorageManager {
 
     async fn destroy(&self) -> Result<()> {
         // Destroy all stores
-        let stores = self.stores.read().await;
-        for store in stores.iter() {
-            store.storage.destroy().await?;
+        let storages: Vec<_> = self
+            .stores
+            .read()
+            .await
+            .iter()
+            .map(|s| s.storage.clone())
+            .collect();
+        for storage in storages {
+            storage.destroy().await?;
         }
         Ok(())
     }
@@ -1627,9 +1690,14 @@ impl WalletStorageProvider for WalletStorageManager {
     fn set_services(&self, services: Arc<dyn WalletServices>) {
         // Use blocking write since this trait method is sync
         // Note: This may block if the lock is held by an async task
-        let stores_guard = self.stores.blocking_read();
-        for store in stores_guard.iter() {
-            store.storage.set_services(services.clone());
+        let storages: Vec<_> = self
+            .stores
+            .blocking_read()
+            .iter()
+            .map(|s| s.storage.clone())
+            .collect();
+        for storage in storages {
+            storage.set_services(services.clone());
         }
         // Update sync-accessible cache for WalletStorageReader::get_services()
         if let Ok(mut guard) = lock_write(&self.services_sync) {
