@@ -130,6 +130,69 @@ const SLAP_TIMEOUT_SECS: u64 = 10;
 /// Timeout for overlay service queries (seconds).
 const OVERLAY_TIMEOUT_SECS: u64 = 10;
 
+/// The most bytes one SLAP tracker's or overlay host's lookup answer may
+/// carry: 32 MiB, the reference's `MAX_LOOKUP_RESPONSE_BYTES`
+/// (`LookupResolver.ts`, `DEFAULT_LOOKUP_LIMITS.maxResponseBytes`) and the
+/// figure bsv-rs names for its resolver's `max_response_bytes`.
+pub(crate) const MAX_LOOKUP_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+/// A lookup answer's body refused by [`read_lookup_body`]: why, and how many
+/// of its bytes were read before the refusal.
+#[derive(Debug)]
+pub(crate) struct LookupBodyRefused {
+    /// Bytes taken from the connection before the read stopped.
+    pub(crate) read: usize,
+    /// Why the body was refused.
+    pub(crate) reason: String,
+}
+
+impl std::fmt::Display for LookupBodyRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({} bytes read)", self.reason, self.read)
+    }
+}
+
+/// Read a lookup answer's body of at most `max` bytes.
+///
+/// A declared `Content-Length` past `max` is refused before any byte of the
+/// body is read; a body with no length is read chunk by chunk and refused at
+/// the chunk that passes `max`. A body longer than its declared length is
+/// read to that length only (the HTTP framing stops there).
+pub(crate) async fn read_lookup_body(
+    mut response: reqwest::Response,
+    max: usize,
+) -> std::result::Result<Vec<u8>, LookupBodyRefused> {
+    if let Some(declared) = response.content_length() {
+        if declared > max as u64 {
+            return Err(LookupBodyRefused {
+                read: 0,
+                reason: format!("declared length {declared} exceeds {max} bytes"),
+            });
+        }
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if chunk.len() > max - body.len() {
+                    return Err(LookupBodyRefused {
+                        read: body.len() + chunk.len(),
+                        reason: format!("body exceeds {max} bytes"),
+                    });
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => return Ok(body),
+            Err(e) => {
+                return Err(LookupBodyRefused {
+                    read: body.len(),
+                    reason: format!("body read failed: {e}"),
+                })
+            }
+        }
+    }
+}
+
 /// HTTP-based lookup resolver that queries overlay services.
 ///
 /// Uses two-step SLAP resolution matching the TypeScript SDK:
@@ -228,7 +291,19 @@ impl HttpLookupResolver {
                 continue;
             }
 
-            let json: serde_json::Value = match response.json().await {
+            let bytes = match read_lookup_body(response, MAX_LOOKUP_RESPONSE_BYTES).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::debug!(
+                        "SLAP response from {} refused (trying next): {}",
+                        tracker,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            let json: serde_json::Value = match serde_json::from_slice(&bytes) {
                 Ok(j) => j,
                 Err(e) => {
                     tracing::debug!(
@@ -311,7 +386,19 @@ impl HttpLookupResolver {
                 continue;
             }
 
-            let json: serde_json::Value = match response.json().await {
+            let bytes = match read_lookup_body(response, MAX_LOOKUP_RESPONSE_BYTES).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::debug!(
+                        "Overlay response from {} refused (trying next): {}",
+                        host,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            let json: serde_json::Value = match serde_json::from_slice(&bytes) {
                 Ok(json) => json,
                 Err(e) => {
                     tracing::debug!(
@@ -506,3 +593,7 @@ pub fn dedup_certificates(certs: Vec<IdentityCertificate>) -> Vec<IdentityCertif
 #[cfg(test)]
 #[path = "lookup_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lookup_bounds_tests.rs"]
+mod bounds_tests;
