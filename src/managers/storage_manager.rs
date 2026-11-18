@@ -537,6 +537,18 @@ impl WalletStorageManager {
     /// settings: at open (`make_available`), after a completed `set_active`
     /// transition, and after the rows are read again following its error
     /// when every store was read and every row names one store.
+    ///
+    /// All or nothing against a dropped or panicking call: everything it
+    /// writes is computed under the stores read lock, which is released;
+    /// then it takes, in this order, `active_index`, `backup_indices`,
+    /// `conflicting_indices`, `auth_id` and `is_available` (each for write)
+    /// and writes every field, `cached_settings` last, with no await between
+    /// its writes. A call dropped while it waits on a lock has changed none
+    /// of the manager's fields; once it holds them all it has no await left.
+    /// Every other taker of two of these locks takes them in the same order
+    /// (`is_active_enabled`, `get_stores`, `get_active`), and the partition
+    /// holds no stores lock while it waits on one of them, so no cycle of
+    /// waits can include it.
     async fn partition(&self) -> Result<TableSettings> {
         let stores = self.stores.read().await;
         // Partition stores into active, backups, and conflicting
@@ -598,36 +610,39 @@ impl WalletStorageManager {
             }
         }
 
-        // Update state
-        drop(stores);
-        *self.active_index.write().await = active_idx;
-        *self.backup_indices.write().await = backups;
-        *self.conflicting_indices.write().await = conflicting;
-
-        // Update auth_id with user info
-        let stores = self.stores.read().await;
-        if let Some(idx) = active_idx {
+        let active = active_idx.map(|idx| {
             let user = stores[idx].user.as_ref().unwrap();
-            let mut auth = self.auth_id.write().await;
-            auth.user_id = Some(user.user_id);
-            auth.is_active = Some(
-                user.active_storage.as_ref()
-                    == Some(&stores[idx].settings.as_ref().unwrap().storage_identity_key)
-                    && self.conflicting_indices.read().await.is_empty(),
-            );
-        }
+            let settings = stores[idx].settings.clone().unwrap();
+            let is_active = user.active_storage.as_ref() == Some(&settings.storage_identity_key)
+                && conflicting.is_empty();
+            (user.user_id, is_active, settings)
+        });
+        drop(stores);
 
-        *self.is_available.write().await = true;
+        // Every lock, in the order above; then every write, no await.
+        let mut active_index = self.active_index.write().await;
+        let mut backup_indices = self.backup_indices.write().await;
+        let mut conflicting_indices = self.conflicting_indices.write().await;
+        let mut auth = self.auth_id.write().await;
+        let mut is_available = self.is_available.write().await;
+        *active_index = active_idx;
+        *backup_indices = backups;
+        *conflicting_indices = conflicting;
+        if let Some((user_id, is_active, _)) = &active {
+            auth.user_id = Some(*user_id);
+            auth.is_active = Some(*is_active);
+        }
+        *is_available = true;
 
         // Return active settings and update cached_settings for sync access
-        if let Some(idx) = active_idx {
-            let settings = stores[idx].settings.clone().unwrap();
-            if let Ok(mut guard) = lock_write(&self.cached_settings) {
-                *guard = Some(settings.clone());
+        match active {
+            Some((_, _, settings)) => {
+                if let Ok(mut guard) = lock_write(&self.cached_settings) {
+                    *guard = Some(settings.clone());
+                }
+                Ok(settings)
             }
-            Ok(settings)
-        } else {
-            Err(Error::StorageNotAvailable)
+            None => Err(Error::StorageNotAvailable),
         }
     }
 
@@ -1032,6 +1047,9 @@ impl WalletStorageManager {
     /// until a later call completes or reads every store's row again.
     pub async fn set_active(&self, storage_identity_key: &str) -> Result<String> {
         let _transition = self.set_active_lock.lock().await;
+        // A call dropped or panicking once its transition had begun left the
+        // mark set; what it left of the manager's fields is not trusted.
+        let in_doubt_at_entry = self.rows_in_doubt();
         if !*self.is_available.read().await {
             self.make_available().await?;
         }
@@ -1063,8 +1081,10 @@ impl WalletStorageManager {
             && self.every_row_names(storage_identity_key).await
         {
             // Every row names the active: a partition over those rows keeps
-            // it and answers it as enabled.
-            if !self.auth_id.read().await.is_active.unwrap_or(false) {
+            // it and answers it as enabled. With the mark set at entry the
+            // partition runs whatever the manager's fields say, so they are
+            // rebuilt from the rows just read before the mark is cleared.
+            if in_doubt_at_entry || !self.auth_id.read().await.is_active.unwrap_or(false) {
                 self.partition().await?;
             }
             // Every row was read back and names the active: nothing a
@@ -1855,3 +1875,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+#[path = "storage_manager_partition_tests.rs"]
+mod partition_tests;
