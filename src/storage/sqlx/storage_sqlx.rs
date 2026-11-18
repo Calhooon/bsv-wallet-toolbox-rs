@@ -559,7 +559,6 @@ impl StorageSqlx {
     /// `txid`.`vout`, by their bytes, read on a reader connection (never
     /// the writer), and how many such transactions cannot be read
     /// (`super::stored_spenders`).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn stored_spenders(
         &self,
         txid: &str,
@@ -7239,9 +7238,14 @@ impl StorageSqlx {
 
         // Restore outputs of this transaction, but validate each against
         // chain to avoid creating ghost UTXOs (outputs already spent
-        // on-chain).
+        // on-chain). A provider's unspent is a word about the chain it
+        // sees, not about a spend this wallet made that is not mined or not
+        // yet seen there: an output is reopened only when (a) a provider
+        // answers it unspent, (b) its row records no spender and (c) no
+        // transaction this store holds that is not failed spends it by its
+        // bytes, and none is unread (`reopen_output_if_unspent_here`).
         let output_rows = sqlx::query(
-            "SELECT output_id, vout, locking_script FROM outputs WHERE txid = ? AND spendable = 0",
+            "SELECT output_id, vout, locking_script, spent_by FROM outputs WHERE txid = ? AND spendable = 0",
         )
         .bind(txid)
         .fetch_all(self.pool())
@@ -7252,17 +7256,25 @@ impl StorageSqlx {
             let output_id: i64 = row.get("output_id");
             let vout: i32 = row.get("vout");
             let locking_script: Option<Vec<u8>> = row.get("locking_script");
+            let spent_by: Option<i64> = row.get("spent_by");
+            if let Some(spender) = spent_by {
+                tracing::debug!(
+                    "un_fail: output {}:{} records spender {}, left unspendable",
+                    txid,
+                    vout,
+                    spender
+                );
+                continue;
+            }
             let script = locking_script.as_deref().unwrap_or(&[]);
             match services.is_utxo(txid, vout as u32, script).await {
                 UtxoVerdict::UnspentHint => {
-                    sqlx::query(
-                        "UPDATE outputs SET spendable = 1, updated_at = ? WHERE output_id = ?",
-                    )
-                    .bind(now)
-                    .bind(output_id)
-                    .execute(&mut *self.writer_conn().await?)
-                    .await?;
-                    restored += 1;
+                    if self
+                        .reopen_output_if_unspent_here(output_id, txid, vout as u32, now)
+                        .await?
+                    {
+                        restored += 1;
+                    }
                 }
                 UtxoVerdict::Spent | UtxoVerdict::SpentHint => {
                     tracing::debug!(
@@ -7290,6 +7302,65 @@ impl StorageSqlx {
             output_rows.len()
         );
         Ok(())
+    }
+
+    /// Set an output of an unfailed transaction spendable, a provider having
+    /// answered it unspent, only when its row records no spender and no
+    /// transaction this store holds that is not failed spends it by its
+    /// bytes (`stored_spenders`), with none unread. The search runs on a
+    /// reader, outside the writer; inside one `BEGIN IMMEDIATE` the row is
+    /// read again (still not spendable, still no spender) and the store's
+    /// transactions must be as the search read them (the highest id and
+    /// the newest stamp), else the search runs once more and, moved again,
+    /// the output is left unspendable: a coin withheld, never a coin
+    /// offered on a guess. Answers whether the output was reopened.
+    async fn reopen_output_if_unspent_here(
+        &self,
+        output_id: i64,
+        txid: &str,
+        vout: u32,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        const MARK: &str = "SELECT COALESCE(MAX(transaction_id), 0) AS id, \
+             COALESCE(CAST(MAX(updated_at) AS TEXT), '') AS stamp FROM transactions";
+        for _ in 0..2 {
+            let before: (i64, String) = sqlx::query_as(MARK).fetch_one(self.pool()).await?;
+            let held = self.stored_spenders(txid, vout).await?;
+            if !held.none_held() {
+                tracing::info!(
+                    "un_fail: output {}:{} is spent by {:?} this store holds ({} unread), left unspendable",
+                    txid,
+                    vout,
+                    held.spenders,
+                    held.unreadable
+                );
+                return Ok(false);
+            }
+            let mut w = self.write_tx().await?;
+            let after: (i64, String) = sqlx::query_as(MARK).fetch_one(&mut *w).await?;
+            if after != before {
+                drop(w);
+                continue;
+            }
+            let reopened = sqlx::query(
+                "UPDATE outputs SET spendable = 1, updated_at = ? \
+                 WHERE output_id = ? AND spendable = 0 AND spent_by IS NULL",
+            )
+            .bind(now)
+            .bind(output_id)
+            .execute(&mut *w)
+            .await?
+            .rows_affected()
+                == 1;
+            commit(w).await?;
+            return Ok(reopened);
+        }
+        tracing::warn!(
+            "un_fail: output {}:{}: the store's transactions moved under the search twice, left unspendable",
+            txid,
+            vout
+        );
+        Ok(false)
     }
 
     /// Re-mark an unfailed transaction's consumed inputs as spent: every
@@ -9822,6 +9893,20 @@ mod tests {
             let tx_id = insert_tx(&storage, user_id, &txid, "failed").await;
             let own_out = insert_output(&storage, user_id, tx_id, &txid, 0, false).await;
             insert_req_aged(&storage, &txid, "invalid", &raw, 2).await;
+            // Both rows hold bytes, as a store's do once processed (the
+            // parent's a stand-in spending nothing of ours): the task
+            // reopens no output while a transaction not failed is unread.
+            for (id, bytes) in [
+                (tx_id, raw.clone()),
+                (prev_tx_id, spending_tx(&"99".repeat(32), 0).0),
+            ] {
+                sqlx::query("UPDATE transactions SET raw_tx = ? WHERE transaction_id = ?")
+                    .bind(bytes)
+                    .bind(id)
+                    .execute(storage.writer())
+                    .await
+                    .unwrap();
+            }
 
             let mock = MockWalletServicesBuilder::default()
                 .get_status_for_txids_response(status_response(&txid, "mined"))

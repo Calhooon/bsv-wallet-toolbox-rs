@@ -489,6 +489,18 @@ async fn the_canary_watches_a_req_an_earlier_backstop_wrote_off_and_recovers_it(
         .unwrap();
     assert_eq!(attempts_of(&s, &b.txid).await, ("invalid".to_string(), 0));
     assert_eq!(output_state(&s, b.input).await, (true, None));
+    // Every row holds its bytes, as a store's do once processed: the
+    // request's, else a stand-in spending nothing of ours. The unfail
+    // task reopens no output while a transaction not failed is unread.
+    sqlx::query(
+        "UPDATE transactions SET raw_tx = COALESCE( \
+           (SELECT r.raw_tx FROM proven_tx_reqs r WHERE r.txid = transactions.txid), ?) \
+         WHERE raw_tx IS NULL",
+    )
+    .bind(child_spending(&"99".repeat(32)))
+    .execute(s.writer())
+    .await
+    .unwrap();
 
     // Inside the hour: not asked yet.
     MonitorStorage::un_fail(&s).await.unwrap();
