@@ -99,6 +99,84 @@ async fn a_success_for_another_txid_is_no_take() {
     assert_eq!((got, row.as_deref(), take), ("held", Some("sending"), None));
 }
 
+/// The send-waiting task reads a take per txid too: an instance whose
+/// answer says success for ANOTHER txid took nothing of this one; the
+/// request is not raised, no take is recorded under its name.
+#[tokio::test]
+async fn a_success_for_another_txid_is_no_take_at_send_waiting() {
+    use bsv_wallet_toolbox_rs::MonitorStorage;
+    let root = PrivateKey::random();
+    let other = "ee".repeat(32);
+    let wallet = common::wallet_posting(
+        "send-words",
+        &root,
+        MockResponse::Success(vec![answer("arcade", "success", &other, "success", "")]),
+    )
+    .await;
+    let store = wallet.storage();
+    let parts = common::beef_paying_parts(common::other_lock());
+    let txid = parts.txid.clone();
+    let (user, _) = store
+        .find_or_insert_user(&PrivateKey::random().public_key().to_hex())
+        .await
+        .unwrap();
+    let then = chrono::Utc::now() - chrono::Duration::hours(1);
+    sqlx::query(
+        "INSERT INTO transactions (user_id, txid, status, reference, description, satoshis, \
+         version, lock_time, raw_tx, is_outgoing, created_at, updated_at) \
+         VALUES (?, ?, 'sending', 'send-words-ref', 'the wallet''s own action', 0, 1, 0, ?, 1, ?, ?)",
+    )
+    .bind(user.user_id)
+    .bind(&txid)
+    .bind(&parts.raw)
+    .bind(then)
+    .bind(then)
+    .execute(store.writer())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, \
+         input_beef, created_at, updated_at) VALUES (?, 'unsent', 0, '{}', 0, '{}', ?, ?, ?, ?)",
+    )
+    .bind(&txid)
+    .bind(&parts.raw)
+    .bind(&parts.beef)
+    .bind(then)
+    .bind(then)
+    .execute(store.writer())
+    .await
+    .unwrap();
+    store
+        .send_waiting_transactions(std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    let posts = wallet.services().call_count("post_beef");
+    let request = scalar(
+        &wallet,
+        "SELECT status FROM proven_tx_reqs WHERE txid = ?",
+        &txid,
+    )
+    .await;
+    let row = scalar(
+        &wallet,
+        "SELECT status FROM transactions WHERE txid = ?",
+        &txid,
+    )
+    .await;
+    let take = scalar(
+        &wallet,
+        "SELECT status FROM broadcast_seen WHERE txid = ? AND status = 'accepted'",
+        &txid,
+    )
+    .await;
+    println!("ITEM2 posts {posts} request {request:?} row {row:?} take {take:?}");
+    assert_eq!(posts, 1);
+    assert_eq!(
+        (request.as_deref(), row.as_deref(), take),
+        (Some("unsent"), Some("sending"), None)
+    );
+}
+
 /// Every instance refuses `txid`.
 fn refusals(txid: &str) -> MockResponse<Vec<PostBeefResult>> {
     MockResponse::Success(vec![
