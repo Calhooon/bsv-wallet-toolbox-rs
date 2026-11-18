@@ -386,24 +386,55 @@ impl WalletStorageManager {
     /// 1. An active storage is selected
     /// 2. Its storageIdentityKey matches the user's activeStorage selection
     /// 3. There are no conflicting actives
+    /// 4. Every store's row of the wallet's user, as the manager holds it,
+    ///    names it (a `set_active` that failed part way leaves them apart)
     pub async fn is_active_enabled(&self) -> bool {
         let active_index = self.active_index.read().await;
         let conflicting = self.conflicting_indices.read().await;
         let stores = self.stores.read().await;
 
         if let Some(idx) = *active_index {
-            if let Some(store) = stores.get(idx) {
-                if let (Some(settings), Some(user)) = (&store.settings, &store.user) {
-                    return user
-                        .active_storage
-                        .as_ref()
-                        .map(|a| a == &settings.storage_identity_key)
-                        .unwrap_or(false)
-                        && conflicting.is_empty();
-                }
+            if let Some(settings) = stores.get(idx).and_then(|s| s.settings.as_ref()) {
+                let key = &settings.storage_identity_key;
+                return conflicting.is_empty()
+                    && stores.iter().all(|s| {
+                        s.user.as_ref().and_then(|u| u.active_storage.as_ref()) == Some(key)
+                    });
             }
         }
         false
+    }
+
+    /// Reads each store's row of the wallet's user again into the manager's
+    /// cached rows: a sync may have moved a backup's row since the manager
+    /// read it.
+    async fn refresh_user_rows(&self) -> Result<()> {
+        let identity_key = self.auth_id.read().await.identity_key.clone();
+        let storages: Vec<_> = self
+            .stores
+            .read()
+            .await
+            .iter()
+            .map(|s| s.storage.clone())
+            .collect();
+        let mut users = Vec::with_capacity(storages.len());
+        for storage in &storages {
+            users.push(storage.find_or_insert_user(&identity_key).await?.0);
+        }
+        let mut stores = self.stores.write().await;
+        for (store, user) in stores.iter_mut().zip(users) {
+            store.user = Some(user);
+        }
+        Ok(())
+    }
+
+    /// Whether every store's cached row of the wallet's user names `key`.
+    async fn every_row_names(&self, key: &str) -> bool {
+        self.stores
+            .read()
+            .await
+            .iter()
+            .all(|s| s.user.as_ref().and_then(|u| u.active_storage.as_deref()) == Some(key))
     }
 
     /// Initializes and makes the storage available.
@@ -930,12 +961,16 @@ impl WalletStorageManager {
     /// Sets a new active storage from among the current stores.
     ///
     /// One transition at a time: a second call waits for the one running, on a
-    /// lock no other operation of the manager takes. A transition that fails
-    /// part way leaves the manager available on the active it had: the
-    /// stores whose call succeeded already name the new active, in their
-    /// rows and in the manager's cached rows, so the manager no longer
-    /// answers its active as enabled, and a retry of the call, or a call
-    /// back to the old active, runs the transition again over every store.
+    /// lock no other operation of the manager takes. The call answers
+    /// unchanged only when the store is the manager's active and every
+    /// store's row of the wallet's user, read again from the store, names
+    /// it; otherwise it backs up the active and writes the store's key to
+    /// every store whose row does not name it. A transition that fails part
+    /// way leaves the manager available on the active it had: the stores
+    /// whose call succeeded already name the new active, in their rows and
+    /// in the manager's cached rows, so while the rows disagree the manager
+    /// does not answer its active as enabled, and a retry of the call, or a
+    /// call back to the old active, runs the transition again.
     pub async fn set_active(&self, storage_identity_key: &str) -> Result<String> {
         let _transition = self.set_active_lock.lock().await;
         if !*self.is_available.read().await {
@@ -959,14 +994,23 @@ impl WalletStorageManager {
                 ))
             })?;
 
-        let current_active = self.get_active_store().await?;
+        drop(stores);
 
-        // If already active and enabled, no-op
-        if storage_identity_key == current_active && self.is_active_enabled().await {
+        // The no-op is decided from the stores' rows, read again, and not
+        // from the manager's own view of its active alone.
+        self.refresh_user_rows().await?;
+        let current_active = self.get_active_store().await?;
+        if storage_identity_key == current_active
+            && self.every_row_names(storage_identity_key).await
+        {
+            // Every row names the active: a partition over those rows keeps
+            // it and answers it as enabled.
+            if !self.auth_id.read().await.is_active.unwrap_or(false) {
+                *self.is_available.write().await = false;
+                self.make_available().await?;
+            }
             return Ok(format!("setActive to {} unchanged\n", storage_identity_key));
         }
-
-        drop(stores);
 
         self.set_active_transition(storage_identity_key).await
     }
@@ -977,9 +1021,12 @@ impl WalletStorageManager {
         // Update backups first, then switch active
         log.push_str("BACKUP CURRENT ACTIVE STATE THEN SET NEW ACTIVE\n");
         log.push_str(&self.update_backups().await?);
+        // The backups' rows as the backup left them.
+        self.refresh_user_rows().await?;
 
-        // Update user records in all stores, each by that store's own row of
-        // the wallet's user: stores number their users independently. The
+        // Update the user record of every store whose row does not name the
+        // new active, each by that store's own row of the wallet's user:
+        // stores number their users independently. The
         // calls run under the stores read lock, as they did before; the
         // cached rows of the stores whose call succeeded are written after,
         // under the write lock, as the reference's setActive sets each
@@ -989,10 +1036,14 @@ impl WalletStorageManager {
         let mut done = Vec::with_capacity(stores.len());
         let mut outcome = Ok(());
         for (i, store) in stores.iter().enumerate() {
-            let Some(user_id) = store.user.as_ref().map(|u| u.user_id) else {
+            let Some(user) = store.user.as_ref() else {
                 outcome = Err(Error::StorageNotAvailable);
                 break;
             };
+            if user.active_storage.as_deref() == Some(storage_identity_key) {
+                continue;
+            }
+            let user_id = user.user_id;
             let store_auth = AuthId::with_user_id(&auth.identity_key, user_id);
             if let Err(e) = store
                 .storage

@@ -266,8 +266,9 @@ async fn part_way() -> (StorageSqlx, Arc<Double>, WalletStorageManager) {
 
 /// A `set_active` whose call fails at a store part way leaves the manager
 /// available on the active it had, not enabled; backups and plain writes go
-/// on to the old active; a retry once the store answers completes the
-/// switch.
+/// on to the old active. The backup carries the active's row, which names
+/// the new active, to the failing store, so a retry writes no store's row
+/// and completes the switch while that store still refuses `set_active`.
 #[tokio::test]
 async fn a_set_active_that_fails_part_way_is_finished_by_a_retry() {
     let (a, b, mgr) = part_way().await;
@@ -285,13 +286,14 @@ async fn a_set_active_that_fails_part_way_is_finished_by_a_retry() {
     let still = mgr.set_active(DST).await;
     b.fail_set_active.store(false, Ordering::SeqCst);
     let retry = mgr.set_active(DST).await;
+    let carried = certs(&b.inner).await;
     let after = active_rows(&[&a, &b.inner]).await;
     let now = (
         mgr.get_active_store().await.unwrap(),
         mgr.is_active_enabled().await,
     );
     println!(
-        "WITNESS set_active(B) failing at B: {}; rows (A, B) {rows:?}; available {available}; enabled {enabled}; active A {}; update_backups {}; plain write {} certificates (A, B) {written:?}; set_active(B) while B fails {}; once B answers {}; rows {after:?}; active B {}, enabled {}",
+        "WITNESS set_active(B) failing at B: {}; rows (A, B) {rows:?}; available {available}; enabled {enabled}; active A {}; update_backups {}; plain write {} certificates (A, B) {written:?}; set_active(B) while B fails {}; again once B answers {}; certificates on B {carried}; rows {after:?}; active B {}, enabled {}",
         refusal(&failed),
         active == SRC,
         refusal(&backups),
@@ -309,8 +311,9 @@ async fn a_set_active_that_fails_part_way_is_finished_by_a_retry() {
     assert_eq!(refusal(&backups), "ok");
     assert_eq!(refusal(&write), "ok");
     assert_eq!(written, (1, 0));
-    assert_eq!(refusal(&still), "Storage error: rows refused set_active");
+    assert_eq!(refusal(&still), "ok");
     assert_eq!(refusal(&retry), "ok");
+    assert_eq!(carried, 1);
     assert_eq!(after, vec![Some(DST.to_string()), Some(DST.to_string())]);
     assert_eq!(now, (DST.to_string(), true));
 }
