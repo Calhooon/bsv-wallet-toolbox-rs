@@ -154,37 +154,29 @@ pub(crate) fn named_competitors(results: &[PostBeefResult]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::PostTxResultForTxid;
 
+    /// One instance's word on one txid: `status`, a double-spend word
+    /// naming `competitor` when given, a service error for `serviceError`.
     fn answer(
         name: &str,
         status: &str,
         double_spend: bool,
         competitor: Option<&str>,
     ) -> PostBeefResult {
-        PostBeefResult {
-            name: name.to_string(),
-            status: if status == "success" {
-                "success"
-            } else {
-                "error"
-            }
-            .to_string(),
-            txid_results: vec![PostTxResultForTxid {
-                txid: "aa".repeat(32),
-                status: status.to_string(),
-                double_spend,
-                orphan_mempool: false,
-                competing_txs: competitor.map(|c| vec![c.to_string()]),
-                data: None,
-                service_error: status == "serviceError",
-                block_hash: None,
-                block_height: None,
-                notes: vec![],
-            }],
-            error: None,
-            notes: vec![],
+        let mut r =
+            crate::services::mock::double_spend_post_beef_result(name, &"aa".repeat(32), "cc");
+        r.status = if status == "success" {
+            "success"
+        } else {
+            "error"
         }
+        .to_string();
+        let tr = &mut r.txid_results[0];
+        tr.status = status.to_string();
+        tr.double_spend = double_spend;
+        tr.competing_txs = competitor.map(|c| vec![c.to_string()]);
+        tr.service_error = status == "serviceError";
+        r
     }
 
     #[test]
