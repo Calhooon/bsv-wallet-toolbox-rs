@@ -205,6 +205,105 @@ async fn bytes_carrying_the_outpoint_that_do_not_parse_are_unreadable() {
     assert_eq!(a.unreadable, 1);
 }
 
+/// An output row of `user_id` at `txid`.`vout` of transaction `owner`,
+/// recording `spent_by`.
+async fn insert_output(
+    s: &StorageSqlx,
+    user_id: i64,
+    owner: i64,
+    txid: &str,
+    vout: i64,
+    spent_by: Option<i64>,
+) {
+    let now = chrono::Utc::now();
+    sqlx::query(
+        "INSERT INTO outputs (user_id, transaction_id, vout, satoshis, txid, type, spendable, \
+         change, provided_by, purpose, output_description, spent_by, created_at, updated_at) \
+         VALUES (?, ?, ?, 1000, ?, 'P2PKH', 0, 1, 'storage', 'change', 'a coin', ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(owner)
+    .bind(vout)
+    .bind(txid)
+    .bind(spent_by)
+    .bind(now)
+    .bind(now)
+    .execute(s.writer())
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_completed_row_with_no_bytes_is_not_counted() {
+    let s = storage().await;
+    let (user_id, _) = seed_user(&s).await;
+    // Its spend is mined, where a provider's word reads it.
+    insert_tx(&s, user_id, &"ef".repeat(32), "completed", None, None).await;
+    assert!(spenders(&s, SOURCE, 0).await.none_held());
+}
+
+#[tokio::test]
+async fn an_unread_row_named_as_a_spender_is_not_counted() {
+    let s = storage().await;
+    let (user_id, _) = seed_user(&s).await;
+    let (raw, source) = tx_of(&[(&"cd".repeat(32), 0)], P2PKH);
+    let owner = insert_tx(&s, user_id, &source, "unproven", Some(&raw), None).await;
+    // An action created and not signed that spends the store's coin
+    // `source`.1, recorded on its row.
+    let unsigned = insert_tx(&s, user_id, &"ef".repeat(32), "unsigned", None, None).await;
+    insert_output(&s, user_id, owner, &source, 1, Some(unsigned)).await;
+    insert_output(&s, user_id, owner, &source, 0, None).await;
+
+    let a = spenders(&s, &source, 0).await;
+    assert!(a.none_held(), "{a:?}");
+    // On the coin it spends, it is the spender.
+    assert_eq!(ids(&spenders(&s, &source, 1).await), vec![unsigned]);
+}
+
+#[tokio::test]
+async fn an_unread_row_whose_input_beef_carries_the_outpoints_transaction_is_counted() {
+    let s = storage().await;
+    let (user_id, _) = seed_user(&s).await;
+    let (raw, source) = tx_of(&[(&"cd".repeat(32), 0)], P2PKH);
+    let owner = insert_tx(&s, user_id, &source, "unproven", Some(&raw), None).await;
+    let unsigned = insert_tx(&s, user_id, &"ef".repeat(32), "unsigned", None, None).await;
+    insert_output(&s, user_id, owner, &source, 1, Some(unsigned)).await;
+    insert_output(&s, user_id, owner, &source, 0, None).await;
+    // Its inputs' BEEF carries `source` whole: it may spend `source`.0 as an
+    // input from outside the store.
+    let mut beef = vec![0x01, 0x00, 0xbe, 0xef];
+    beef.extend_from_slice(&raw);
+    sqlx::query("UPDATE transactions SET input_beef = ? WHERE transaction_id = ?")
+        .bind(beef)
+        .bind(unsigned)
+        .execute(s.writer())
+        .await
+        .unwrap();
+
+    let a = spenders(&s, &source, 0).await;
+    assert!(a.spenders.is_empty());
+    assert_eq!(a.unreadable, 1);
+}
+
+#[tokio::test]
+async fn a_spender_recorded_on_another_users_row_of_the_outpoint_is_read() {
+    let s = storage().await;
+    let (user_id, _) = seed_user(&s).await;
+    let (other, _) = s.find_or_insert_user(&"b".repeat(66)).await.unwrap();
+    let (raw, source) = tx_of(&[(&"cd".repeat(32), 0)], P2PKH);
+    let owner = insert_tx(&s, user_id, &source, "unproven", Some(&raw), None).await;
+    // The other user's row of the transaction (its own reference; the
+    // output row carries the outpoint).
+    let theirs = insert_tx(&s, other.user_id, &"dd".repeat(32), "unproven", None, None).await;
+    let spender = insert_tx(&s, other.user_id, &"ef".repeat(32), "unsigned", None, None).await;
+    insert_output(&s, user_id, owner, &source, 0, None).await;
+    insert_output(&s, other.user_id, theirs, &source, 0, Some(spender)).await;
+
+    let a = spenders(&s, &source, 0).await;
+    assert_eq!(ids(&a), vec![spender]);
+    assert!(!a.none_held());
+}
+
 /// The cost of one search at 10,000 and 100,000 stored transactions, on a
 /// file store, on a reader connection and on the writer. Run by hand:
 /// `cargo test --lib stored_spenders_cost -- --ignored --nocapture`.

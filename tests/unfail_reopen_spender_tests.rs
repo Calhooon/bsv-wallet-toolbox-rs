@@ -294,3 +294,154 @@ async fn an_output_nothing_spends_is_reopened() {
     println!("WITNESS nothing spends {change}: after the unfail {after}");
     assert_eq!(after, "spendable=1 spent_by=None");
 }
+
+/// Action one of `root`'s wallet on `s`, funded by a received coin: its
+/// change outpoint, after the fixture holds every output of it not
+/// spendable (as the failure left them).
+async fn change_held_not_spendable(
+    wallet: &Wallet<StorageSqlx, MockWalletServices>,
+    root: &PrivateKey,
+    s: &StorageSqlx,
+) -> (String, String) {
+    receive(wallet, root).await;
+    let one = create(wallet, pay(1_000, &[RULE])).await.unwrap();
+    let received_txid = one[0].split_once('.').unwrap().0.to_string();
+    let one_txid: String = ::sqlx::query_scalar(
+        "SELECT txid FROM transactions WHERE txid IS NOT NULL AND txid != ? ORDER BY transaction_id DESC LIMIT 1",
+    )
+    .bind(&received_txid)
+    .fetch_one(s.pool())
+    .await
+    .unwrap();
+    let change = format!("{one_txid}.1");
+    ::sqlx::query("UPDATE outputs SET spendable = 0 WHERE txid = ?")
+        .bind(&one_txid)
+        .execute(s.writer())
+        .await
+        .unwrap();
+    (one_txid, change)
+}
+
+/// The records of outputs the unfail task withheld for an unread row.
+async fn withheld(s: &StorageSqlx) -> Vec<String> {
+    ::sqlx::query_scalar("SELECT details FROM monitor_events WHERE event = 'outputWithheld'")
+        .fetch_all(s.pool())
+        .await
+        .unwrap()
+}
+
+/// One store, two users: X's action created and not signed (an `unsigned`
+/// row with no bytes, named as the spender of X's coin) is held while Y's
+/// transaction is unfailed. Y's output nothing spends is reopened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_output_is_reopened_while_an_unsigned_action_is_held() {
+    let y_root = PrivateKey::random();
+    let s = store(A, &y_root.public_key().to_hex()).await;
+    let y = wallet_on(&y_root, &s).await;
+    let (one_txid, change) = change_held_not_spendable(&y, &y_root, &s).await;
+
+    let x_root = PrivateKey::random();
+    let x = wallet_on(&x_root, &s).await;
+    receive(&x, &x_root).await;
+    let mut unsigned = pay(1_000, &[RULE]);
+    unsigned.options.as_mut().unwrap().sign_and_process = Some(false);
+    let held = x.create_action(unsigned, "test.local").await.unwrap();
+    assert!(held.signable_transaction.is_some());
+    let unsigned_rows: Vec<(String, Option<Vec<u8>>)> =
+        ::sqlx::query_as("SELECT status, raw_tx FROM transactions WHERE status = 'unsigned'")
+            .fetch_all(s.pool())
+            .await
+            .unwrap();
+    assert_eq!(unsigned_rows.len(), 1);
+    assert_eq!(unsigned_rows[0].1, None);
+
+    fail(&s, &one_txid).await;
+    unfail(&s, &one_txid).await;
+    let after = row(&s, &change).await;
+    println!("WITNESS an unsigned action held: {change} after the unfail {after}");
+    assert_eq!(after, "spendable=1 spent_by=None");
+    assert!(withheld(&s).await.is_empty());
+}
+
+/// A row with no bytes, neither failed nor completed, that no output names
+/// as its spender (as a sync brings one) is held while a transaction is
+/// unfailed: its output is withheld and recorded. A later pass, the row
+/// still unread: still withheld. Once the row has bytes that do not spend
+/// the output, or is failed, the next pass reopens it and drops the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_output_withheld_for_an_unread_row_is_tried_again() {
+    for resolution in ["bytes", "failed"] {
+        let root = PrivateKey::random();
+        let s = store(A, &root.public_key().to_hex()).await;
+        let wallet = wallet_on(&root, &s).await;
+        let (one_txid, change) = change_held_not_spendable(&wallet, &root, &s).await;
+        let user_id: i64 = ::sqlx::query_scalar("SELECT user_id FROM users LIMIT 1")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        let unread_txid = "ab".repeat(32);
+        let now = chrono::Utc::now();
+        ::sqlx::query(
+            "INSERT INTO transactions (user_id, txid, status, reference, description, satoshis, \
+             version, lock_time, is_outgoing, created_at, updated_at) \
+             VALUES (?, ?, 'unproven', 'a-synced-row', 'a synced row', 0, 1, 0, 1, ?, ?)",
+        )
+        .bind(user_id)
+        .bind(&unread_txid)
+        .bind(now)
+        .bind(now)
+        .execute(s.writer())
+        .await
+        .unwrap();
+
+        fail(&s, &one_txid).await;
+        unfail(&s, &one_txid).await;
+        let pass_one = row(&s, &change).await;
+        let recorded = withheld(&s).await;
+        unfail(&s, &one_txid).await;
+        let second = row(&s, &change).await;
+        let still = withheld(&s).await;
+
+        if resolution == "bytes" {
+            let mut other = Transaction::new();
+            let mut input = bsv_rs::transaction::TransactionInput::new("33".repeat(32), 0);
+            input.unlocking_script = Some(bsv_rs::script::UnlockingScript::from_hex("00").unwrap());
+            other.inputs.push(input);
+            other.outputs.push(bsv_rs::transaction::TransactionOutput {
+                satoshis: Some(1),
+                locking_script: other_lock(),
+                change: false,
+            });
+            ::sqlx::query("UPDATE transactions SET raw_tx = ? WHERE txid = ?")
+                .bind(other.to_binary())
+                .bind(&unread_txid)
+                .execute(s.writer())
+                .await
+                .unwrap();
+        } else {
+            ::sqlx::query("UPDATE transactions SET status = 'failed' WHERE txid = ?")
+                .bind(&unread_txid)
+                .execute(s.writer())
+                .await
+                .unwrap();
+        }
+        unfail(&s, &one_txid).await;
+        let third = row(&s, &change).await;
+        let left = withheld(&s).await;
+        println!(
+            "WITNESS unread row, then {resolution}: {change} pass one {pass_one} {recorded:?}; \
+             pass two {second} {still:?}; pass three {third} {left:?}"
+        );
+        assert_eq!(pass_one, "spendable=0 spent_by=None");
+        // Both outputs of action one: the payment and the change.
+        assert_eq!(recorded.len(), 2, "{recorded:?}");
+        assert!(
+            recorded.iter().any(|r| r.ends_with(&format!(" {change}"))),
+            "{recorded:?}"
+        );
+        assert_eq!(second, "spendable=0 spent_by=None");
+        assert_eq!(still, recorded);
+        assert_eq!(third, "spendable=1 spent_by=None");
+        assert!(left.is_empty(), "{left:?}");
+    }
+}
