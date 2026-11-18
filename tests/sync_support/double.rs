@@ -5,8 +5,10 @@
 //! `set_active`, write its row and then lose the answer, write its row and then never answer or panic, refuse to
 //! read its user row or never answer that read, and record its
 //! `set_active` calls and count its user reads, wait inside one sync chunk
-//! until released, or never answer `make_available`. Shared by the sync
-//! manager tests.
+//! until released, or never answer `make_available`; count its
+//! `make_available` calls, wait inside one `make_available` or one user
+//! read until released, and record the reader and writer of each chunk it
+//! takes as a writer. Shared by the sync manager tests.
 #![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -75,8 +77,26 @@ pub struct Double {
     pub sync_release: tokio::sync::Notify,
     /// `make_available` never answers, when set.
     pub hang_make_available: AtomicBool,
-    /// Notified when a `make_available` that never answers has begun.
+    /// Notified when a `make_available` that never answers (or a held one)
+    /// has begun.
     pub make_available_entered: tokio::sync::Notify,
+    /// `make_available` calls.
+    pub make_available_calls: AtomicUsize,
+    /// The next `make_available` waits until `make_available_release` is
+    /// notified, when set (once: the flag is cleared).
+    pub hold_make_available: AtomicBool,
+    /// Releases a held `make_available`.
+    pub make_available_release: tokio::sync::Notify,
+    /// The next `find_or_insert_user` waits until `user_read_release` is
+    /// notified, when set (once: the flag is cleared).
+    pub hold_user_read: AtomicBool,
+    /// Notified when a held user read has begun.
+    pub user_read_entered: tokio::sync::Notify,
+    /// Releases a held user read.
+    pub user_read_release: tokio::sync::Notify,
+    /// `(reader, writer)` storage identity keys of each chunk handed to
+    /// this store as a writer.
+    pub syncs: Mutex<Vec<(String, String)>>,
 }
 
 impl Double {
@@ -107,6 +127,13 @@ impl Double {
             sync_release: tokio::sync::Notify::new(),
             hang_make_available: AtomicBool::new(false),
             make_available_entered: tokio::sync::Notify::new(),
+            make_available_calls: AtomicUsize::new(0),
+            hold_make_available: AtomicBool::new(false),
+            make_available_release: tokio::sync::Notify::new(),
+            hold_user_read: AtomicBool::new(false),
+            user_read_entered: tokio::sync::Notify::new(),
+            user_read_release: tokio::sync::Notify::new(),
+            syncs: Mutex::new(Vec::new()),
         }
     }
 }
@@ -174,6 +201,11 @@ impl WalletStorageReader for Double {
 #[async_trait]
 impl WalletStorageWriter for Double {
     async fn make_available(&self) -> Result<TableSettings> {
+        self.make_available_calls.fetch_add(1, Ordering::SeqCst);
+        if self.hold_make_available.swap(false, Ordering::SeqCst) {
+            self.make_available_entered.notify_one();
+            self.make_available_release.notified().await;
+        }
         if self.hang_make_available.load(Ordering::SeqCst) {
             self.make_available_entered.notify_one();
             std::future::pending::<()>().await;
@@ -188,6 +220,10 @@ impl WalletStorageWriter for Double {
     }
     async fn find_or_insert_user(&self, identity_key: &str) -> Result<(TableUser, bool)> {
         self.user_reads.fetch_add(1, Ordering::SeqCst);
+        if self.hold_user_read.swap(false, Ordering::SeqCst) {
+            self.user_read_entered.notify_one();
+            self.user_read_release.notified().await;
+        }
         if self.hang_user_reads.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
         }
@@ -369,6 +405,10 @@ impl WalletStorageSync for Double {
             self.sync_release.notified().await;
         }
         self.chunks.fetch_add(1, Ordering::SeqCst);
+        self.syncs.lock().unwrap().push((
+            args.from_storage_identity_key.clone(),
+            args.to_storage_identity_key.clone(),
+        ));
         if let Some(user) = chunk.user.as_ref() {
             self.user_rows
                 .lock()
