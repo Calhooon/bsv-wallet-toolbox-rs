@@ -182,39 +182,95 @@ pub(crate) async fn failed_outgoing_rows(
     Ok(rows)
 }
 
-/// The abort's mark on `txid`'s request when it names `transaction_id`
-/// and no take has recovered it: the request id, its history, the
-/// outputs the abort closed.
+/// The outputs the abort's mark on `txid`'s request names as closed, when
+/// the mark names `transaction_id` and no take has recovered it.
 async fn abort_mark_for(
     conn: &mut SqliteConnection,
     txid: &str,
     transaction_id: i64,
-) -> Result<Option<(i64, serde_json::Value, Option<Vec<i64>>)>> {
+) -> Result<Option<Vec<i64>>> {
+    let history: Option<String> =
+        sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let history = history
+        .and_then(|h| serde_json::from_str::<serde_json::Value>(&h).ok())
+        .unwrap_or_default();
+    let Some(mark) = history.get(ABORT_KEY) else {
+        return Ok(None);
+    };
+    let names = mark
+        .get("transactionId")
+        .and_then(serde_json::Value::as_i64)
+        == Some(transaction_id);
+    if !names || mark.get("recovered").is_some() {
+        return Ok(None);
+    }
+    Ok(Some(
+        mark.get("closed")
+            .and_then(|v| v.as_array())
+            .map(|ids| ids.iter().filter_map(serde_json::Value::as_i64).collect())
+            .unwrap_or_default(),
+    ))
+}
+
+/// Append `note` to `txid`'s request's history, on the caller's write (no
+/// request, nothing written).
+pub(crate) async fn note_request_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    note: serde_json::Value,
+) -> Result<()> {
     let row: Option<(i64, String)> =
         sqlx::query_as("SELECT proven_tx_req_id, history FROM proven_tx_reqs WHERE txid = ?")
             .bind(txid)
             .fetch_optional(&mut *conn)
             .await?;
-    let Some((req_id, history)) = row else {
-        return Ok(None);
+    let Some((id, history)) = row else {
+        return Ok(());
     };
-    let history = serde_json::from_str::<serde_json::Value>(&history)
-        .ok()
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
-    let closed = history.get(ABORT_KEY).and_then(|mark| {
-        let names = mark
-            .get("transactionId")
-            .and_then(serde_json::Value::as_i64)
-            == Some(transaction_id);
-        (names && mark.get("recovered").is_none()).then(|| {
-            mark.get("closed")
-                .and_then(|v| v.as_array())
-                .map(|ids| ids.iter().filter_map(serde_json::Value::as_i64).collect())
-                .unwrap_or_default()
-        })
-    });
-    Ok(Some((req_id, history, closed)))
+    let history = super::storage_sqlx::append_req_history_note(&history, note);
+    sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
+        .bind(history)
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Open again `transaction_id`'s own outputs that nothing spent: those in
+/// `closed`, or every one closed when `closed` is `None`. Returns the ids.
+pub(crate) async fn open_own_outputs(
+    conn: &mut SqliteConnection,
+    transaction_id: i64,
+    closed: Option<Vec<i64>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<i64>> {
+    let closed: Vec<i64> = match closed {
+        Some(closed) => closed,
+        None => {
+            sqlx::query_scalar(
+                "SELECT output_id FROM outputs \
+                 WHERE transaction_id = ? AND spendable = 0 AND spent_by IS NULL \
+                 ORDER BY output_id",
+            )
+            .bind(transaction_id)
+            .fetch_all(&mut *conn)
+            .await?
+        }
+    };
+    sqlx::query(
+        "UPDATE outputs SET spendable = 1, updated_at = ? \
+         WHERE transaction_id = ? AND spent_by IS NULL \
+           AND output_id IN (SELECT value FROM json_each(?))",
+    )
+    .bind(now)
+    .bind(transaction_id)
+    .bind(serde_json::Value::from(closed.clone()).to_string())
+    .execute(&mut *conn)
+    .await?;
+    Ok(closed)
 }
 
 /// THE TAKE AFTER A RELEASE MADE ON NO EVIDENCE, on the take's write (see
@@ -227,32 +283,19 @@ pub(crate) async fn recover_released_on(
     takers: &[(&str, &str)],
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<usize> {
-    let mut recovered = 0;
     let skip: Vec<i64> = rows
         .iter()
         .filter(|r| r.state == FailedState::Evidence)
         .map(|r| r.transaction_id)
         .collect();
+    let mut recovered = 0;
     for row in rows.iter().filter(|r| r.state == FailedState::Released) {
         let transaction_id = row.transaction_id;
-        let mark = abort_mark_for(conn, txid, transaction_id).await?;
-        let marked = mark.as_ref().and_then(|(_, _, closed)| closed.clone());
         // The outputs the release closed: the abort's mark names them;
-        // without it they are read from the row (its own outputs closed
-        // with nothing spending them; every signed output is spendable).
-        let closed: Vec<i64> = match &marked {
-            Some(closed) => closed.clone(),
-            None => {
-                sqlx::query_scalar(
-                    "SELECT output_id FROM outputs \
-                     WHERE transaction_id = ? AND spendable = 0 AND spent_by IS NULL \
-                     ORDER BY output_id",
-                )
-                .bind(transaction_id)
-                .fetch_all(&mut *conn)
-                .await?
-            }
-        };
+        // without it they are read from the row (every signed output is
+        // spendable).
+        let marked = abort_mark_for(conn, txid, transaction_id).await?;
+        let was_marked = marked.is_some();
         sqlx::query(
             "UPDATE transactions SET status = 'unproven', updated_at = ? WHERE transaction_id = ?",
         )
@@ -260,49 +303,39 @@ pub(crate) async fn recover_released_on(
         .bind(transaction_id)
         .execute(&mut *conn)
         .await?;
-        for output_id in &closed {
+        let closed = open_own_outputs(conn, transaction_id, marked, now).await?;
+        remark_inputs_spent_on(conn, txid, &skip, now).await?;
+        if was_marked {
             sqlx::query(
-                "UPDATE outputs SET spendable = 1, updated_at = ? \
-                 WHERE output_id = ? AND transaction_id = ? AND spent_by IS NULL",
+                "UPDATE proven_tx_reqs SET history = json_set(history, '$.abort.recovered', ?) \
+                 WHERE txid = ?",
             )
-            .bind(now)
-            .bind(output_id)
-            .bind(transaction_id)
+            .bind(now.to_rfc3339())
+            .bind(txid)
             .execute(&mut *conn)
             .await?;
         }
-        remark_inputs_spent_on(conn, txid, &skip, now).await?;
-        if let Some((req_id, mut history, _)) = mark {
-            if marked.is_some() {
-                if let Some(mark) = history.get_mut(ABORT_KEY) {
-                    mark["recovered"] = serde_json::Value::from(now.to_rfc3339());
-                }
-            }
-            let what = if marked.is_some() {
-                "takenAfterAbort"
-            } else {
-                "takenAfterRelease"
-            };
-            let history = super::storage_sqlx::append_req_history_note(
-                &history.to_string(),
-                serde_json::json!({
-                    "what": what,
-                    "when": now.to_rfc3339(),
-                    "transactionId": transaction_id,
-                    "outputs": closed,
-                    "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
-                }),
-            );
-            sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE proven_tx_req_id = ?")
-                .bind(history)
-                .bind(req_id)
-                .execute(&mut *conn)
-                .await?;
-        }
+        let what = if was_marked {
+            "takenAfterAbort"
+        } else {
+            "takenAfterRelease"
+        };
+        note_request_on(
+            conn,
+            txid,
+            serde_json::json!({
+                "what": what,
+                "when": now.to_rfc3339(),
+                "transactionId": transaction_id,
+                "outputs": closed,
+                "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+            }),
+        )
+        .await?;
         tracing::warn!(
             txid = %txid,
             transaction_id,
-            marked = marked.is_some(),
+            marked = was_marked,
             marker = "taken_after_release",
             "a take heard after a release made on no evidence: the release is undone, the transaction unproven, its free inputs marked again"
         );
@@ -345,52 +378,59 @@ pub(crate) async fn remark_inputs_spent_on(
         }
     };
     for (source_txid, vout) in super::internalize_action::extract_input_outpoints(&tx) {
-        let rows = sqlx::query(
-            "SELECT output_id, user_id, spendable, spent_by FROM outputs WHERE txid = ? AND vout = ?",
+        remark_outpoint(conn, txid, (&source_txid, vout), skip, now).await?;
+    }
+    Ok(())
+}
+
+/// Every wallet row at one input outpoint of `txid`, marked spent by its
+/// owner's own row for `txid` where the rule of [`remark_inputs_spent_on`]
+/// lets it.
+async fn remark_outpoint(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    (source_txid, vout): (&str, u32),
+    skip: &[i64],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let rows = sqlx::query(
+        "SELECT output_id, user_id, spendable, spent_by FROM outputs WHERE txid = ? AND vout = ?",
+    )
+    .bind(source_txid)
+    .bind(i64::from(vout))
+    .fetch_all(&mut *conn)
+    .await?;
+    for row in rows {
+        let spendable: bool = row.get("spendable");
+        let spent_by: Option<i64> = row.get("spent_by");
+        // The owner's own row for the spending txid (none for a user
+        // without one: `spent_by` names the owner's own scope).
+        let own: Option<i64> = sqlx::query_scalar(
+            "SELECT transaction_id FROM transactions WHERE txid = ? AND user_id = ?",
         )
-        .bind(&source_txid)
-        .bind(i64::from(vout))
-        .fetch_all(&mut *conn)
+        .bind(txid)
+        .bind(row.get::<i64, _>("user_id"))
+        .fetch_optional(&mut *conn)
         .await?;
-        for row in rows {
-            let output_id: i64 = row.get("output_id");
-            let owner: i64 = row.get("user_id");
-            let spendable: bool = row.get("spendable");
-            let spent_by: Option<i64> = row.get("spent_by");
-            // The owner's own row for the spending txid (none for a user
-            // without one: `spent_by` names the owner's own scope).
-            let own: Option<i64> = sqlx::query_scalar(
-                "SELECT transaction_id FROM transactions WHERE txid = ? AND user_id = ?",
-            )
-            .bind(txid)
-            .bind(owner)
-            .fetch_optional(&mut *conn)
-            .await?;
-            // A row another transaction spends is never taken from it; a
-            // row already marked consumed with no spender recorded (a door
-            // marks a foreign owner's coin so) is stamped with the owner's
-            // own row.
-            if spent_by.is_some_and(|existing| own != Some(existing)) {
-                continue;
-            }
-            // A row left `failed` with evidence on record keeps its inputs
-            // as they stand.
-            if own.is_some_and(|row| skip.contains(&row)) {
-                continue;
-            }
-            if !spendable && (spent_by.is_some() || own.is_none()) {
-                continue;
-            }
-            sqlx::query(
-                "UPDATE outputs SET spendable = 0, spent_by = COALESCE(?, spent_by), updated_at = ? \
-                 WHERE output_id = ?",
-            )
-            .bind(own)
-            .bind(now)
-            .bind(output_id)
-            .execute(&mut *conn)
-            .await?;
+        // A row another transaction spends is never taken from it; a row
+        // already marked consumed with no spender recorded (a door marks a
+        // foreign owner's coin so) is stamped with the owner's own row; a
+        // row left `failed` with evidence on record keeps its inputs.
+        let taken = spent_by.is_some_and(|existing| own != Some(existing));
+        let skipped = own.is_some_and(|r| skip.contains(&r));
+        let settled = !spendable && (spent_by.is_some() || own.is_none());
+        if taken || skipped || settled {
+            continue;
         }
+        sqlx::query(
+            "UPDATE outputs SET spendable = 0, spent_by = COALESCE(?, spent_by), updated_at = ? \
+             WHERE output_id = ?",
+        )
+        .bind(own)
+        .bind(now)
+        .bind(row.get::<i64, _>("output_id"))
+        .execute(&mut *conn)
+        .await?;
     }
     Ok(())
 }
