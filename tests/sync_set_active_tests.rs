@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bsv_wallet_toolbox_rs::managers::WalletStorageManager;
+use bsv_wallet_toolbox_rs::storage::entities::TableCertificate;
 use bsv_wallet_toolbox_rs::storage::*;
 
 mod sync_support;
@@ -163,6 +164,8 @@ async fn state(mgr: &WalletStorageManager) -> (String, bool) {
 struct Answers {
     failed: String,
     after_failure: (Vec<String>, (String, bool)),
+    /// The stores a plain write through the manager lands on, read back.
+    written: Vec<String>,
     retry: String,
     after_retry: (Vec<String>, (String, bool)),
     call_back: String,
@@ -209,6 +212,43 @@ fn rows_after_failure(cell: Cell) -> Vec<String> {
         .collect()
 }
 
+/// A call's answer: `unchanged` for the no-op's log, else its refusal or `ok`.
+fn word(r: &bsv_wallet_toolbox_rs::Result<String>) -> String {
+    match r {
+        Ok(log) if log.ends_with(" unchanged\n") => "unchanged".to_string(),
+        _ => refusal(r),
+    }
+}
+
+/// A certificate written through the manager by its own auth; the stores
+/// that then hold it, read back from each store.
+async fn plain_write(doubles: &[Arc<Double>], mgr: &WalletStorageManager) -> Vec<String> {
+    let auth = mgr.get_auth(false).await.unwrap();
+    let cert = TableCertificate {
+        certificate_id: 0,
+        user_id: auth.user_id.unwrap(),
+        cert_type: "t".into(),
+        serial_number: "plain".into(),
+        certifier: "c".into(),
+        subject: "s".into(),
+        verifier: None,
+        revocation_outpoint: "o.0".into(),
+        signature: "sig".into(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    WalletStorageWriter::insert_certificate(mgr, &auth, cert)
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    for d in doubles {
+        if count(&d.inner, "SELECT COUNT(*) FROM certificates").await > 0 {
+            out.push(name(&d.inner.storage_identity_key()).to_string());
+        }
+    }
+    out
+}
+
 async fn run(cell: Cell) -> Answers {
     let (from, to) = cell.old_and_new();
     let i = cell.failing();
@@ -217,8 +257,9 @@ async fn run(cell: Cell) -> Answers {
     arm(&doubles[i], cell.fails, true);
     let failed = attempt(&mgr, to, cell.fails).await;
     let after_failure = (rows(&doubles).await, state(&mgr).await);
+    let written = plain_write(&doubles, &mgr).await;
     arm(&doubles[i], cell.fails, false);
-    let retry = refusal(&mgr.set_active(to).await);
+    let retry = word(&bounded("the retry", mgr.set_active(to)).await);
     let after_retry = (rows(&doubles).await, state(&mgr).await);
 
     let (doubles, mgr) = setup(cell).await;
@@ -231,6 +272,7 @@ async fn run(cell: Cell) -> Answers {
     Answers {
         failed,
         after_failure,
+        written,
         retry,
         after_retry,
         call_back,
@@ -269,12 +311,14 @@ fn cells() -> Vec<Cell> {
     out
 }
 
-/// Every cell: after the failure the manager answers its active as enabled
-/// only when every store's row names it (never after a lost answer, nor
-/// after a call that never returned); a retry to the same target, once
-/// the store answers, makes every row name the target; a call back to the
-/// old active makes every row name it; after either the manager is enabled
-/// on that store.
+/// Every cell: after the failure, when every store's row was read again and
+/// names one store, the manager is on that store and enabled; otherwise on
+/// the active it had and not enabled (a store it cannot read, rows that
+/// disagree, a call that never returned); a plain write lands on the
+/// manager's active; a retry to the same target, once the store answers,
+/// answers unchanged when the manager is already on it and enabled, and
+/// makes every row name the target; a call back to the old active makes
+/// every row name it; after either the manager is enabled on that store.
 #[tokio::test]
 async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
     let mut bad = Vec::new();
@@ -283,7 +327,7 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
         let (from, to) = (name(from).to_string(), name(to).to_string());
         let a = run(cell).await;
         println!(
-            "WITNESS {} stores, {}, failing {:?} ({}) at {:?}: {}; rows {:?}, active {:?}; retry {}: rows {:?}, active {:?}; call back {}: rows {:?}, active {:?}",
+            "WITNESS {} stores, {}, failing {:?} ({}) at {:?}: {}; rows {:?}, active {:?}, a write lands on {:?}; retry {}: rows {:?}, active {:?}; call back {}: rows {:?}, active {:?}",
             cell.n,
             if cell.switched { "after A to B, B to A" } else { "A to B" },
             cell.role,
@@ -292,6 +336,7 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
             a.failed,
             a.after_failure.0,
             a.after_failure.1,
+            a.written,
             a.retry,
             a.after_retry.0,
             a.after_retry.1,
@@ -299,8 +344,27 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
             a.after_call_back.0,
             a.after_call_back.1,
         );
-        let (rows, (active, enabled)) = &a.after_failure;
-        let agree = rows.iter().all(|r| r == active);
+        let (rows, state) = &a.after_failure;
+        // After an error the rows are read again: when every store was read
+        // and every row names one store, the manager is on that store and
+        // enabled; otherwise on the active it had, not enabled. A call that
+        // never returned read nothing again.
+        let expected_rows = rows_after_failure(cell);
+        let readable = matches!(
+            cell.fails,
+            Fails::SetActive | Fails::Sync | Fails::AnswerLost
+        );
+        let one = expected_rows.iter().all(|r| *r == expected_rows[0]);
+        let expected_state = if readable && one {
+            (expected_rows[0].clone(), true)
+        } else {
+            (from.clone(), false)
+        };
+        let expected_retry = if expected_state == (to.clone(), true) {
+            "unchanged"
+        } else {
+            "ok"
+        };
         let expected_failure = match cell.fails {
             Fails::SetActive => format!(
                 "Storage error: {} refused set_active",
@@ -313,18 +377,12 @@ async fn set_active_finishes_or_undoes_a_switch_whichever_store_failed() {
             Fails::Dropped => "dropped".to_string(),
             Fails::Panics => "panicked".to_string(),
         };
-        // A store that wrote its row and lost its answer moved its row: the
-        // rows no longer name the manager's active. A call that never
-        // returned leaves the manager not enabled whatever the rows name.
-        let lost = matches!(cell.fails, Fails::AnswerLost | Fails::AnswerLostUnread);
-        let never_returned = matches!(cell.fails, Fails::Dropped | Fails::Panics);
         let every = |r: &[String], k: &str| r.len() == cell.n && r.iter().all(|x| x == k);
         let ok = a.failed == expected_failure
-            && *rows == rows_after_failure(cell)
-            && *enabled == (agree && !never_returned)
-            && !(lost && *enabled)
-            && *active == from
-            && a.retry == "ok"
+            && *rows == expected_rows
+            && *state == expected_state
+            && a.written == vec![state.0.clone()]
+            && a.retry == expected_retry
             && every(&a.after_retry.0, &to)
             && a.after_retry.1 == (to.clone(), true)
             && a.call_back == "ok"
@@ -410,7 +468,9 @@ async fn name_on_every_store(doubles: &[Arc<Double>], key: &str) -> Vec<String> 
 /// store makes every row name it; a manager made over the stores again is
 /// then enabled on that store and backs up. The refusing manager's own
 /// `set_active` answers unchanged and is then enabled when that store is
-/// its active, and still refuses when it is not.
+/// its active; when it is not, the call still refuses, and the rows it
+/// reads after the refusal, every one naming that store, put the manager
+/// on it, enabled.
 #[tokio::test]
 async fn a_new_manager_over_stores_that_disagree_has_a_way_through() {
     let denied = "Access denied: Operation requires active storage";
@@ -460,9 +520,11 @@ async fn a_new_manager_over_stores_that_disagree_has_a_way_through() {
             assert_eq!(own.1, ("A".to_string(), true));
             assert_eq!(own.2, "ok");
         } else {
+            // The call answers the refusal it met; the rows it read again
+            // all name B, so the manager is then on B and enabled.
             assert_eq!(refusal(&own.0), denied);
-            assert_eq!(own.1, ("A".to_string(), false));
-            assert_eq!(own.2, denied);
+            assert_eq!(own.1, ("B".to_string(), true));
+            assert_eq!(own.2, "ok");
         }
     }
 }

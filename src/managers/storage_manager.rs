@@ -515,7 +515,17 @@ impl WalletStorageManager {
                 store.is_available = true;
             }
         }
+        drop(stores);
+        self.partition().await
+    }
 
+    /// Partitions the stores into active, backups and conflicting from the
+    /// rows of the wallet's user the manager holds, and answers the active's
+    /// settings: at open (`make_available`), after a completed `set_active`
+    /// transition, and after the rows are read again following its error
+    /// when every store was read and every row names one store.
+    async fn partition(&self) -> Result<TableSettings> {
+        let stores = self.stores.read().await;
         // Partition stores into active, backups, and conflicting
         let mut active_idx: Option<usize> = None;
         let mut backups_temp: Vec<usize> = Vec::new();
@@ -1042,8 +1052,7 @@ impl WalletStorageManager {
             // Every row names the active: a partition over those rows keeps
             // it and answers it as enabled.
             if !self.auth_id.read().await.is_active.unwrap_or(false) {
-                *self.is_available.write().await = false;
-                self.make_available().await?;
+                self.partition().await?;
             }
             // Every row was read back and names the active: nothing a
             // dropped transition left is in doubt.
@@ -1061,8 +1070,17 @@ impl WalletStorageManager {
         if outcome.is_err() {
             // A store may have written its row and then failed to answer
             // (a storage client whose reply was lost): no cached row is
-            // trusted after an error inside the transition.
-            self.reread_user_rows_after_error().await;
+            // trusted after an error inside the transition. When every
+            // store was read and every row names one store, the manager is
+            // partitioned from those rows as at open: that store is its
+            // active (the target, when the switch in fact completed and one
+            // answer was lost; the old active, when nothing was written).
+            // Otherwise it stays on the active it had, not enabled.
+            if self.reread_user_rows_after_error().await && self.rows_name_one_store().await {
+                // The partition reads no store; it fails only without an
+                // active, which a manager with stores always has.
+                let _ = self.partition().await;
+            }
         }
         self.set_rows_in_doubt(false);
         outcome
@@ -1071,8 +1089,9 @@ impl WalletStorageManager {
     /// Reads each store's row of the wallet's user again into the manager's
     /// cached rows, store by store; the row of a store that cannot be read
     /// is held as naming no active, so the manager does not answer its
-    /// active as enabled until a later call reads it.
-    async fn reread_user_rows_after_error(&self) {
+    /// active as enabled until a later call reads it. Answers whether every
+    /// store was read.
+    async fn reread_user_rows_after_error(&self) -> bool {
         let identity_key = self.auth_id.read().await.identity_key.clone();
         let storages: Vec<_> = self
             .stores
@@ -1085,6 +1104,7 @@ impl WalletStorageManager {
         for storage in &storages {
             users.push(storage.find_or_insert_user(&identity_key).await.ok());
         }
+        let every_read = users.iter().all(Option::is_some);
         let mut stores = self.stores.write().await;
         for (store, user) in stores.iter_mut().zip(users) {
             match user {
@@ -1096,6 +1116,28 @@ impl WalletStorageManager {
                 }
             }
         }
+        every_read
+    }
+
+    /// Whether every store's held row names one store, and that store is one
+    /// of the manager's.
+    async fn rows_name_one_store(&self) -> bool {
+        let stores = self.stores.read().await;
+        let Some(key) = stores
+            .iter()
+            .next()
+            .and_then(|s| s.user.as_ref())
+            .and_then(|u| u.active_storage.clone())
+        else {
+            return false;
+        };
+        let managed = stores.iter().any(|s| {
+            s.settings
+                .as_ref()
+                .is_some_and(|t| t.storage_identity_key == key)
+        });
+        drop(stores);
+        managed && self.every_row_names(&key).await
     }
 
     async fn set_active_transition(&self, storage_identity_key: &str) -> Result<String> {
@@ -1149,9 +1191,9 @@ impl WalletStorageManager {
         drop(stores);
         outcome?;
 
-        // Re-partition
-        *self.is_available.write().await = false;
-        self.make_available().await?;
+        // Re-partition from the rows held: every store's row now names the
+        // new active.
+        self.partition().await?;
 
         Ok(log)
     }
