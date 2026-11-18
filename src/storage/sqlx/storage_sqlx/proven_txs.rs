@@ -420,15 +420,28 @@ impl StorageSqlx {
         .execute(&mut *tx)
         .await?;
 
-        // Update transaction status to completed and link proof
-        sqlx::query(
-            "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?"
-        )
-        .bind(proven_tx_id)
-        .bind(now)
-        .bind(txid)
-        .execute(&mut *tx)
-        .await?;
+        // Every row of the txid completed and linked, a `failed` one
+        // included: its inputs marked spent by it, its outputs counted
+        // (`proof_completion`).
+        // The root was checked above and recorded by the funnel in this
+        // write; a stored row whose own path is not the one checked (an
+        // unchanged anchor over another path) completes nothing.
+        let Some(proof) =
+            super::super::proof_completion::CheckedProof::read_on(&mut tx, txid, proven_tx_id)
+                .await?
+        else {
+            tx.rollback().await?;
+            tracing::warn!(
+                txid = %txid,
+                block_height,
+                marker = "proof_stored_path_unchecked",
+                "ingest_merkle_proof: the stored proof row's path is not the one checked; nothing completed"
+            );
+            return Ok(ProofIngestOutcome::InvalidProof(format!(
+                "the stored proof of {txid} is not the one checked"
+            )));
+        };
+        super::super::proof_completion::complete_on_proof(&mut tx, &proof, now).await?;
         commit(tx).await?;
 
         Ok(ProofIngestOutcome::Ingested(TxSynchronizedStatus {

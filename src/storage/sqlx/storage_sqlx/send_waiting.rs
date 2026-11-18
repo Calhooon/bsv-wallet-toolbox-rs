@@ -8,7 +8,7 @@ use crate::services::broadcast_memory::{
 };
 
 /// How many notes a request's history keeps, the newest.
-const REQ_HISTORY_NOTES_KEPT: usize = 32;
+pub(in crate::storage::sqlx) const REQ_HISTORY_NOTES_KEPT: usize = 32;
 
 /// Is `req` due for a re-ask by `send_waiting_transactions` at `now`?
 /// (`services::cadence::send_waiting_reask_minutes`; bsv-stack-lean #65.)
@@ -45,7 +45,10 @@ fn post_beef_words(results: &[crate::services::PostBeefResult]) -> serde_json::V
 /// `history` (a request's `{"notes": [...]}`) with `note` appended and only
 /// the newest [`REQ_HISTORY_NOTES_KEPT`] notes kept. A history that is not
 /// a JSON object is kept whole under `previous`.
-pub(super) fn append_req_history_note(history: &str, note: serde_json::Value) -> String {
+pub(in crate::storage::sqlx) fn append_req_history_note(
+    history: &str,
+    note: serde_json::Value,
+) -> String {
     let mut object = match serde_json::from_str::<serde_json::Value>(history) {
         Ok(serde_json::Value::Object(map)) => map,
         _ if history.trim().is_empty() => serde_json::Map::new(),
@@ -83,8 +86,15 @@ impl StorageSqlx {
         let next = crate::services::cadence::send_waiting_reask_minutes(
             u32::try_from(attempts).unwrap_or(0),
         );
+        // The history as it stands now, not as this pass read it: a note
+        // written since (a take that counted for nothing) is kept.
+        let current: Option<String> =
+            sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE proven_tx_req_id = ?")
+                .bind(req.proven_tx_req_id)
+                .fetch_optional(self.pool())
+                .await?;
         let history = append_req_history_note(
-            &req.history,
+            current.as_deref().unwrap_or(&req.history),
             serde_json::json!({
                 "when": now.to_rfc3339(),
                 "what": "sendWaitingHint",
@@ -93,7 +103,10 @@ impl StorageSqlx {
                 "nextReaskMinutes": next,
             }),
         );
-        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ?")
+        // A request another write moved during the post (the host's abort:
+        // `invalid`; a take: `unmined`) keeps its word: the hint never
+        // re-queues it.
+        sqlx::query("UPDATE proven_tx_reqs SET status = 'unsent', attempts = ?, history = ?, updated_at = ? WHERE proven_tx_req_id = ? AND status IN ('unsent', 'sending')")
             .bind(i64::from(attempts))
             .bind(history)
             .bind(now)
@@ -119,16 +132,18 @@ impl StorageSqlx {
         words: serde_json::Value,
         competitors: &[String],
     ) -> Result<()> {
-        let row: Option<(i64, i64, String)> = sqlx::query_as(
-            "SELECT proven_tx_req_id, attempts, history FROM proven_tx_reqs \
-             WHERE txid = ? AND status IN ('unsent', 'sending', 'unprocessed')",
+        let row: Option<(i64, i64, String, String)> = sqlx::query_as(
+            "SELECT proven_tx_req_id, attempts, history, status FROM proven_tx_reqs WHERE txid = ?",
         )
         .bind(txid)
         .fetch_optional(self.pool())
         .await?;
-        let Some((proven_tx_req_id, attempts, history)) = row else {
+        let Some((proven_tx_req_id, attempts, history, status)) = row else {
             return Ok(());
         };
+        if !matches!(status.as_str(), "unsent" | "sending" | "unprocessed") {
+            return Ok(());
+        }
         let attempts = attempts.saturating_add(1);
         let now = chrono::Utc::now();
         let next = crate::services::cadence::send_waiting_reask_minutes(
@@ -359,29 +374,47 @@ impl StorageSqlx {
                 .await
             {
                 Ok(results_vec) => {
-                    // Check if any provider returned success
-                    let success = results_vec.iter().any(|r| r.is_success());
-                    if success {
+                    // The instances that took this txid, read per txid as
+                    // the door and the wallet's own post read them (an
+                    // instance whose answer says success for another txid
+                    // took nothing of this one).
+                    let takers = super::super::internalize_answer::accepting_instances(
+                        &results_vec,
+                        &req.txid,
+                    );
+                    let taken = !takers.is_empty();
+                    if taken {
                         // Update to unmined, and record each instance's
                         // take in the same write (a host's own services
                         // record none).
-                        let takers: Vec<&str> = results_vec
-                            .iter()
-                            .filter(|r| r.is_success())
-                            .map(|r| r.name.as_str())
-                            .collect();
-                        self.promote_taken(
-                            req.proven_tx_req_id,
-                            &req.txid,
-                            &takers,
-                            BROADCAST_STATUS_ACCEPTED,
-                            now,
-                        )
-                        .await?;
+                        // Nothing raised while a competitor's checked proof
+                        // stands: the result stays `sending`.
+                        let applied = self
+                            .promote_taken(
+                                req.proven_tx_req_id,
+                                &req.txid,
+                                &takers,
+                                BROADCAST_STATUS_ACCEPTED,
+                                now,
+                            )
+                            .await?;
 
+                        if !applied {
+                            // A take heard while a competitor's checked
+                            // proof stands counts for nothing: the post is an
+                            // attempt on the cadence, as a word short of an
+                            // acceptance is, never a re-post at every pass.
+                            self.record_send_waiting_hint(
+                                req,
+                                req.attempts + 1,
+                                post_beef_words(&results_vec),
+                                now,
+                            )
+                            .await?;
+                        }
                         send_with_results.push(SendWithResult {
                             txid: req.txid.clone(),
-                            status: "unproven".to_string(),
+                            status: if applied { "unproven" } else { "sending" }.to_string(),
                         });
                     } else {
                         // Check for orphan mempool (parent not propagated — NOT double-spend)
@@ -425,21 +458,32 @@ impl StorageSqlx {
                             if reconciled {
                                 // Tx is actually alive on chain: treat as
                                 // success, the status source's word recorded.
-                                self.promote_taken(
-                                    req.proven_tx_req_id,
-                                    &req.txid,
-                                    &[BROADCAST_PROVIDER_CHAIN],
-                                    BROADCAST_STATUS_SEEN,
-                                    now,
-                                )
-                                .await?;
+                                let applied = self
+                                    .promote_taken(
+                                        req.proven_tx_req_id,
+                                        &req.txid,
+                                        &[BROADCAST_PROVIDER_CHAIN],
+                                        BROADCAST_STATUS_SEEN,
+                                        now,
+                                    )
+                                    .await?;
+                                if !applied {
+                                    self.record_send_waiting_hint(
+                                        req,
+                                        attempts,
+                                        post_beef_words(&results_vec),
+                                        now,
+                                    )
+                                    .await?;
+                                }
                                 tracing::info!(
                                     "send_waiting: tx {} reported as orphan mempool but found alive on chain — treating as success",
                                     req.txid
                                 );
                                 send_with_results.push(SendWithResult {
                                     txid: req.txid.clone(),
-                                    status: "unproven".to_string(),
+                                    status: if applied { "unproven" } else { "sending" }
+                                        .to_string(),
                                 });
                                 continue;
                             }

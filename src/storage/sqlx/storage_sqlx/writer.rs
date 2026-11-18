@@ -1,6 +1,3 @@
-#[cfg(test)]
-use super::StoreBusyReason;
-
 // =============================================================================
 // WalletStorageWriter Implementation
 // =============================================================================
@@ -139,11 +136,7 @@ impl WalletStorageWriter for StorageSqlx {
         outcome: &super::BroadcastOutcome,
     ) -> Result<()> {
         #[cfg(test)]
-        if self.take_busy_next_status_write() {
-            return Err(Error::StoreBusy {
-                reason: StoreBusyReason::SqliteBusy { code: 5 },
-            });
-        }
+        self.busy_status_write()?;
 
         super::process_action::update_transaction_status_after_broadcast_internal(
             self, txid, outcome,
@@ -167,8 +160,14 @@ impl WalletStorageWriter for StorageSqlx {
         {
             crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
         }
-        self.update_transaction_status_after_broadcast(txid, outcome)
-            .await
+        #[cfg(test)]
+        self.busy_status_write()?;
+        // The statuses move with the take recorded in the same write, each
+        // accepting instance's name (`update_transaction_status_after_post_words`).
+        super::process_action::update_transaction_status_after_post_words(
+            self, txid, outcome, words,
+        )
+        .await
     }
 
     async fn review_status(

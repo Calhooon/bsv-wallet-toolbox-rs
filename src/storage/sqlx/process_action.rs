@@ -914,7 +914,7 @@ async fn finish_stored_posts(
             },
         );
         if let Err(error) =
-            update_transaction_status_after_broadcast_internal(storage, txid, &outcome).await
+            update_transaction_status_after_post_words(storage, txid, &outcome, &words).await
         {
             crate::storage::broadcast::post_broadcast_status_write_failed(txid, &error);
         }
@@ -1359,13 +1359,34 @@ pub async fn update_transaction_status_after_broadcast_internal(
     txid: &str,
     outcome: &BroadcastOutcome,
 ) -> Result<()> {
+    update_transaction_status_after_post_words(storage, txid, outcome, &[]).await
+}
+
+/// [`update_transaction_status_after_broadcast_internal`] with the post's
+/// per-instance `words`: a success records the take in the same write as
+/// the status moves (`held_receipts::record_take_on`), each accepting
+/// instance's name with `accepted`, or `chain` with `seen` when a status
+/// source holds a refused transaction, as the internalize door and
+/// send-waiting record theirs. So another user's held receipt of the txid,
+/// moved to `unproven` here, and a later receipt of it read the take
+/// whichever services a host built (DECISIONS 29.1, the held word). With
+/// no words and no status source (a host's bare success) nothing is
+/// recorded, as before.
+pub(crate) async fn update_transaction_status_after_post_words(
+    storage: &StorageSqlx,
+    txid: &str,
+    outcome: &BroadcastOutcome,
+    words: &[PostBeefResult],
+) -> Result<()> {
     // Before starting a DB transaction, read the status sources for a
     // refusal or an orphan hold: a transaction they hold is promoted.
+    let mut reconciled = false;
     let effective_outcome = match outcome {
         BroadcastOutcome::DoubleSpend { .. }
         | BroadcastOutcome::InvalidTx { .. }
         | BroadcastOutcome::OrphanMempool { .. } => {
             if reconcile_tx_status(storage, txid).await {
+                reconciled = true;
                 &BroadcastOutcome::Success
             } else {
                 outcome
@@ -1376,33 +1397,38 @@ pub async fn update_transaction_status_after_broadcast_internal(
 
     let (word, details, competitors): (&str, &[String], &[String]) = match effective_outcome {
         BroadcastOutcome::Success => {
+            // The one write that applies a take (`competitor_proof.rs`): the
+            // request `unmined` from every word but `completed`, every row of
+            // the txid neither `failed` nor `completed` `unproven` (an abort
+            // or a retire that landed earlier stands, 0.3.60), the take
+            // recorded in the same write: each accepting instance's name, or
+            // `chain` with `seen` when a status source holds a refused
+            // transaction. Never while a competitor's checked proof stands.
+            let check = storage.competitor_check(txid, None).await?;
+            let chain = [(
+                crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
+                crate::services::broadcast_memory::BROADCAST_STATUS_SEEN,
+            )];
+            let named: Vec<(&str, &str)> =
+                super::internalize_answer::accepting_instances(words, txid)
+                    .into_iter()
+                    .map(|p| {
+                        (
+                            p,
+                            crate::services::broadcast_memory::BROADCAST_STATUS_ACCEPTED,
+                        )
+                    })
+                    .collect();
+            let takers: &[(&str, &str)] = if reconciled { &chain } else { &named };
             let mut tx = storage.write_tx().await?;
-            let now = Utc::now();
-
-            // Broadcast succeeded: unproven / unmined. A broadcaster's
-            // acceptance never lifts a `failed` transaction (an abort or a
-            // retire that landed first stands, 0.3.60) nor a `completed` one,
-            // and never reopens a req already judged `invalid` / `doubleSpend`.
-            sqlx::query(
-                "UPDATE transactions SET status = ?, updated_at = ? \
-                 WHERE txid = ? AND status NOT IN ('failed', 'completed')",
+            super::competitor_proof::apply_take_on(
+                &mut tx,
+                &check,
+                takers,
+                super::competitor_proof::TakeRows::Held,
+                Utc::now(),
             )
-            .bind(TransactionStatus::Unproven.as_str())
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *tx)
             .await?;
-
-            sqlx::query(
-                "UPDATE proven_tx_reqs SET status = ?, updated_at = ? \
-                 WHERE txid = ? AND status NOT IN ('completed', 'invalid', 'doubleSpend')",
-            )
-            .bind(proven_tx_req_status::UNMINED)
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *tx)
-            .await?;
-
             super::storage_sqlx::commit(tx).await?;
             return Ok(());
         }

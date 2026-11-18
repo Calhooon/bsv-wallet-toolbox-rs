@@ -84,6 +84,7 @@ from `bsv-rs =0.9.0-beta.2`'s `src/error.rs`.
 | `internalize_action` basket or label permission (`AccessDenied`) | `Unauthorized` | plain `Error` (ts-stack@4d0ea63c8 `WalletPermissionsManager.ts:1589,1807`), or the user's refusal | `Access denied: Basket "<basket>" is admin-only.`, `Access denied: Label "<label>" is admin-only.`, or the handler's refusal as `create_action`'s basket check answers it |
 | `internalize_action` empty outputs (`ValidationError`), both doors | `InvalidParameter` | `WERR_INVALID_PARAMETER` (sdk `validationHelpers.ts:1061-1066`) | `Validation error: The outputs parameter must be at least one output to internalize from the transaction` |
 | `internalize_action`, one `outputIndex` named more than once, any protocols, new or merge (`ValidationError`, `internalize_args.rs`), both doors | `InvalidParameter` | `WERR_INVALID_PARAMETER` for the mixed pair on a merge (`storage/methods/internalizeAction.ts:345-359`); a store error for every other pair | `Validation error: The outputs parameter must be unique outputIndex values` |
+| `internalize_action`, a received transaction with no checked proof that no named instance took (`ReviewActions`, `internalize_answer.rs`; DECISIONS 29.1, readings 1, 7, 10 and 15 of section 30) | `WalletReviewActions` (wire code 5), not a refusal class: valid, held, still being sent (`sending`), or refuted by a competitor's checked proof (`failed`) | `WERR_REVIEW_ACTIONS` (ts-stack@11faa7d1 `Wallet.ts:1604-1612`), whose send results there are `failed` or `sending`; here `sending`, and `failed` only on a competitor's checked proof, never on a broadcaster's word | `Undelayed createAction or signAction results require review.`, then each instance's line from the door notes on the request that name this wallet's user (`door_words_for`; none when this call made no post, the sentence alone), `name: "words"` with control characters out and each quote and backslash escaped, `; ` between them, each instance's words cut to 256 bytes, the whole to 1024; the txid, one send result `sending`, one review result `doubleSpend` (competitors in `competing_txs`), `invalidTx` (every instance said no) or `serviceError` (no instance answered, no services); a presentation a competitor's checked proof refutes: the send result `failed` and `doubleSpend` naming it, nothing written, nothing posted |
 
 Neither reference supplies dedicated not-found, duplicate, unspendable-coin,
 failed-ancestor or storage-not-available classes. The nearest classes describe
@@ -178,6 +179,24 @@ and spent-output guards retain the nearest `InvalidOperation` judgement.
 The reference's on-chain abort answers `aborted: false`
 (`StorageProvider.ts:878-889`); a dedicated abort-on-chain variant remains
 an owner's public API decision under #185.
+
+An honoured abort of an action whose post was in flight is undone by a
+take heard after it (the keeper's readings 18 and 20 of section 30): a
+release made on no evidence does not stand against a take, whichever act
+released it. The one write that applies the take (any of its five
+writers) reads each `failed` row of the wallet's own by its state:
+released with no competitor's checked proof on record, it puts the action
+back `unproven`, its free inputs spent by it again, its own outputs that
+nothing spent spendable, with a `takenAfterAbort` note naming the
+instances where the abort's mark is on the request (`takenAfterRelease`
+where an earlier release wrote none); an input still locked by it, or a
+`spent-proven` check on record, recovers nothing and the request keeps
+its word (`src/storage/sqlx/abort_recovery.rs`). The call answered
+`aborted: true` and is not answered again: the host reads the undo from
+`listActions` (the action `unproven`) and the balance. A checked proof
+completes the action, a `failed` one included, with its inputs spent by
+it and its change counted (`src/storage/sqlx/proof_completion.rs`). The
+descendants the abort ended stay ended when the root is recovered.
 
 The direct SDK guards below carry classed refusals too, with their
 message bytes unchanged. Hosts matching `WalletError` at these doors must
@@ -381,6 +400,7 @@ today's words).
 | `certificate_issuance_auth.rs` | ~140 | The issuance request over BRC-104 mutual auth: a Peer per call over the wallet's `ProtoWallet`, the answer verified and its sender returned (#315) |
 | `key_route.rs` | ~190 | The key route (#186, #142, #569): a key call or a key-linkage reveal with `privileged: true` to the `PrivilegedKeyManager`, its arguments intact, else the reference's refusal; every other call to the everyday `ProtoWallet`; the route as a `WalletInterface` for bsv-rs's certificate helpers |
 | `direct_acquire.rs` | ~210 | Direct `acquire_certificate` argument validation and normalization, signature verification and keyring decryption proof before storage (#311, #374) |
+| `internalize_answer.rs` | ~235 | The review-actions refusal of an internalize the storage door holds: `needs_review` (a send result not `unproven`), the one storage-to-SDK send-result mapping (`send_result`, also createAction's and signAction's), the message (the reference's sentence, this user's door notes, cleaned, quoted, bounded 256 and 1024 bytes; `clean_words`, which the door writes its notes with) |
 | `label.rs` | ~110 | Label normalization as validateLabel leaves a label, ECMAScript's trim and lowercase, for both doors and list filters (#379, #392), and the BRC-177 module-label matcher both doors call (#363); declared without a feature gate, the sqlx folder imports it as `label` (#420); `normalize_label` and `trim_ecmascript` are public since #505, re-exported as `bsv_wallet_toolbox_rs::wallet::{normalize_label, trim_ecmascript}`, the one definition of the reference's label rule for every host (bsv-wallet-cli#376's spend gate); `is_ecmascript_whitespace` stays private |
 | `discovery_search.rs` | ~320 | The reference's attribute matcher (`identityUtils.ts:140-280`): search normalization, legacy `/gi` literals, the five-class tokenizer and stop words, the NFD and Mn fold (#474) |
 | `lookup.rs` | ~760 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, SLAP host parsing (the token read by `lookup_decode.rs`'s `slap_token`, which keeps refusing a key-only and a no-CHECKSIG token in the beta.6 words where bsv-rs #618's `PushDrop::decode` reads them since beta.7, as the reference's `decodeCanonicalPushDrop` refuses both; the reference site's helper is bsv-rs's `overlay::decode_and_verify_overlay_admin_token`, and the one corner where `slap_token` differs from beta.6's words is a 33- or 65-byte key that fails to parse with no `OP_CHECKSIG` second: `Expected OP_CHECKSIG after pubkey`, where beta.6's decode parsed the key ahead of the CHECKSIG check and gave the key's error; the move onto the helper is #813's, no code here; since the beta.8 pin the advertisement's transaction is read from its BEEF's subject unlinked, `Transaction::from_beef_subject`, as bsv-rs's own resolver reads it, so the default link budget of GHSA-gvmh-f5gf-5vjj never drops a host, and an answer whose `txid` hint is not a string no longer parses, bsv-rs #735: `lookup_beta8_tests.rs`), deduplication |

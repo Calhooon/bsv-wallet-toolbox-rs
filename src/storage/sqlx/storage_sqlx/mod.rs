@@ -18,6 +18,7 @@ mod commissions;
 mod competitors;
 #[cfg(test)]
 mod core_tests;
+mod door_notes;
 mod labels;
 mod list_outputs;
 mod maintenance;
@@ -55,6 +56,7 @@ mod users;
 #[cfg(test)]
 mod validation_tests;
 mod writer;
+pub(crate) use door_notes::InstanceNote;
 pub(crate) use outputs::{output_from_row, sequence_number_from_row};
 pub use proven_tx_reqs::{UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT};
 pub(crate) use proven_txs::{
@@ -62,7 +64,8 @@ pub(crate) use proven_txs::{
 };
 pub(crate) use retirement::RetireBasis;
 pub use retirement::RetireOutcome;
-use send_waiting::append_req_history_note;
+pub(super) use send_waiting::append_req_history_note;
+pub(in crate::storage::sqlx) use send_waiting::REQ_HISTORY_NOTES_KEPT;
 pub(super) use stale_proofs::demote_stale_proof_on;
 pub(super) use transactions::RAW_TX_REQ_STATUSES;
 
@@ -559,6 +562,18 @@ impl StorageSqlx {
     pub(crate) fn take_busy_next_status_write(&self) -> bool {
         self.busy_next_status_write
             .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Tests only: `StoreBusy` (SQLite code 5) when a busy status write is
+    /// armed ([`Self::take_busy_next_status_write`]), else `Ok`.
+    #[cfg(test)]
+    pub(crate) fn busy_status_write(&self) -> Result<()> {
+        if self.take_busy_next_status_write() {
+            return Err(Error::StoreBusy {
+                reason: StoreBusyReason::SqliteBusy { code: 5 },
+            });
+        }
+        Ok(())
     }
 
     /// Tests only: the next `retire_poisoned_descendants` answers busy

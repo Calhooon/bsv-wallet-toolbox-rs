@@ -32,15 +32,18 @@
 //! ```
 
 mod abort_action;
+mod abort_recovery;
 mod beef_verification;
 mod broadcast_seen;
 #[cfg(test)]
 mod broadcaster_hint_tests;
 #[cfg(test)]
 mod change_tiebreak_tests;
+mod competitor_proof;
 mod create_action;
 mod held_receipts;
 mod internalize_action;
+mod internalize_answer;
 use crate::wallet::label;
 mod locked_inputs;
 mod monitor_state;
@@ -48,6 +51,9 @@ mod poisoned_chain;
 mod process_action;
 #[cfg(test)]
 mod proof_attempt_backstop_tests;
+mod proof_completion;
+#[cfg(test)]
+mod proof_fetch_tests;
 mod proof_root_checks;
 #[cfg(test)]
 mod proof_root_tests;

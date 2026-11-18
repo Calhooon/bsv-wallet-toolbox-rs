@@ -176,23 +176,19 @@ pub(super) async fn fetch_and_store_merkle_path(
 
     // A proven transaction is completed by definition. Same two updates
     // ingest_merkle_proof makes, so a later monitor pass finds nothing to do.
-    let _ = sqlx::query(
-        "UPDATE proven_tx_reqs SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
-    )
-    .bind(proven_tx_id)
-    .bind(now)
-    .bind(txid)
-    .execute(&mut *wtx)
-    .await;
-
-    let _ = sqlx::query(
-        "UPDATE transactions SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
-    )
-    .bind(proven_tx_id)
-    .bind(now)
-    .bind(txid)
-    .execute(&mut *wtx)
-    .await;
+    // Each runs in this one write: an error, or a stored row whose own path
+    // is not the one checked, rolls the whole write back (the proof is not
+    // stored) and the walk continues raw, as on any failed write here.
+    if let Err(e) = complete_fetched_proof(&mut wtx, txid, proven_tx_id, now).await {
+        tracing::warn!(
+            txid = %txid,
+            error = %e,
+            marker = "fetched_proof_completion_failed",
+            "beef walk: the fetched proof's completion failed; nothing stored, the raw-tx leg is walked"
+        );
+        drop(wtx);
+        return None;
+    }
 
     if let Err(e) = wtx.commit().await {
         tracing::debug!(txid = %txid, error = %e, "could not commit the proven tx");
@@ -206,6 +202,31 @@ pub(super) async fn fetch_and_store_merkle_path(
     );
 
     Some(bytes)
+}
+
+/// The request and every row of `txid` completed on the proof just stored
+/// and checked, on the walk's write (`proof_completion`).
+async fn complete_fetched_proof(
+    wtx: &mut sqlx::SqliteConnection,
+    txid: &str,
+    proven_tx_id: i64,
+    now: chrono::DateTime<Utc>,
+) -> crate::Result<()> {
+    sqlx::query(
+        "UPDATE proven_tx_reqs SET status = 'completed', proven_tx_id = ?, updated_at = ? WHERE txid = ?",
+    )
+    .bind(proven_tx_id)
+    .bind(now)
+    .bind(txid)
+    .execute(&mut *wtx)
+    .await?;
+    let proof = super::super::proof_completion::CheckedProof::read_on(wtx, txid, proven_tx_id)
+        .await?
+        .ok_or_else(|| {
+            crate::Error::StorageError(format!("the stored proof of {txid} is not the one checked"))
+        })?;
+    super::super::proof_completion::complete_on_proof(wtx, &proof, now).await?;
+    Ok(())
 }
 
 /// Rebuild BEEF from current DB state for the given input txids.

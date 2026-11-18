@@ -78,9 +78,12 @@ fn insertion() -> InternalizeOutput {
     }
 }
 
-async fn internalize(wallet: &TestWallet, args: InternalizeActionArgs) {
+/// Internalize `args` and assert the call's answer is `want`: `accepted`
+/// (a checked proof or a take), or `held` (the review-actions answer, the
+/// txid `sending`).
+async fn internalize(wallet: &TestWallet, args: InternalizeActionArgs, want: &str) {
     let answer = wallet.internalize_action(args, Some(ORIGIN)).await;
-    assert!(answer.expect("accepted").accepted);
+    assert_eq!(common::answer_word(answer, "held word"), want);
 }
 
 async fn tx_status(wallet: &TestWallet, txid: &str) -> String {
@@ -219,7 +222,7 @@ async fn receipt_beside_a_foreign_request(word: &str) {
     let (beef, _, output, txid) = paying(&root, "Zm9yZWlnbg==");
     let wallet = common::wallet_posting("held-word", &root, no_answer()).await;
     foreign_request(&wallet, &txid, word).await;
-    internalize(&wallet, args(beef, output)).await;
+    internalize(&wallet, args(beef, output), "held").await;
     let balance = wallet.balance().await.unwrap().total;
     let label = offered_under_label(&wallet).await;
     println!(
@@ -262,7 +265,7 @@ async fn receipt_beside_an_unmined_request_is_held_a_recorded_take_is_unproven()
     let (beef, _, output, txid) = paying(&root, "dGFrZW4=");
     let wallet = common::wallet_posting("held-word", &root, no_answer()).await;
     foreign_request(&wallet, &txid, "unmined").await;
-    internalize(&wallet, args(beef, output)).await;
+    internalize(&wallet, args(beef, output), "held").await;
     assert_eq!(tx_status(&wallet, &txid).await, "sending");
     assert_eq!(wallet.balance().await.unwrap().total, 0);
 
@@ -273,7 +276,7 @@ async fn receipt_beside_an_unmined_request_is_held_a_recorded_take_is_unproven()
         &txid,
     )
     .await;
-    internalize(&wallet, args(beef, output)).await;
+    internalize(&wallet, args(beef, output), "accepted").await;
     assert_eq!(tx_status(&wallet, &txid).await, "unproven");
 }
 
@@ -285,7 +288,7 @@ async fn migration_moves_a_receipt_beside_another_users_nosend_request() {
     let root = PrivateKey::random();
     let (beef, _, output, txid) = paying(&root, "bWlncmF0ZQ==");
     let wallet = common::wallet_posting("held-word", &root, no_answer()).await;
-    internalize(&wallet, args(beef, output)).await;
+    internalize(&wallet, args(beef, output), "held").await;
     sql(
         &wallet,
         "UPDATE proven_tx_reqs SET status = 'nosend' WHERE txid = ?",
@@ -316,7 +319,7 @@ async fn held_basket_insertion_leaves_its_basket_until_an_instance_takes_it() {
         MockResponse::Success(vec![common::accepted(&txid)]),
     ]);
     let wallet = common::wallet_posting("held-word", &root, post).await;
-    internalize(&wallet, args(beef, insertion())).await;
+    internalize(&wallet, args(beef, insertion()), "held").await;
     let held = (
         tx_status(&wallet, &txid).await,
         listed(&wallet, BASKET).await,
@@ -353,7 +356,7 @@ async fn migration_takes_a_held_basket_insertion_out_of_its_basket() {
     let root = PrivateKey::random();
     let (beef, _, _, txid) = paying(&root, "b3Blbg==");
     let wallet = common::wallet_posting("held-word", &root, no_answer()).await;
-    internalize(&wallet, args(beef, insertion())).await;
+    internalize(&wallet, args(beef, insertion()), "held").await;
     sql(
         &wallet,
         "UPDATE transactions SET status = 'unproven' WHERE txid = ?",
@@ -384,7 +387,7 @@ async fn own_sending_action_with_a_merged_payment_is_listed_and_counted() {
         no_answer(),
     ]);
     let wallet = common::wallet_posting("held-word", &root, post).await;
-    internalize(&wallet, args(beef.clone(), output)).await;
+    internalize(&wallet, args(beef.clone(), output), "accepted").await;
     assert_eq!(wallet.balance().await.unwrap().total, PAID);
 
     let sender = PrivateKey::random().public_key();
@@ -417,6 +420,7 @@ async fn own_sending_action_with_a_merged_payment_is_listed_and_counted() {
     internalize(
         &wallet,
         args(atomic.to_binary_atomic(&own).unwrap(), payment),
+        "accepted",
     )
     .await;
     let after = (
@@ -438,7 +442,7 @@ async fn repeat_piece_pin_a_repeat_call_with_a_proof_leaves_the_held_receipt_sen
     let root = PrivateKey::random();
     let (beef, proven, output, txid) = paying(&root, "cmVwZWF0");
     let wallet = common::wallet_posting("held-word", &root, no_answer()).await;
-    internalize(&wallet, args(beef, output.clone())).await;
+    internalize(&wallet, args(beef, output.clone()), "held").await;
     assert_eq!(tx_status(&wallet, &txid).await, "sending");
     let answer = wallet
         .internalize_action(args(proven, output), Some(ORIGIN))

@@ -509,8 +509,27 @@ mod review_status {
         // Insert a transaction with status 'unproven'
         insert_transaction(&storage, user_id, &txid, "unproven").await;
 
-        // Insert a proven_txs record (the actual proof) to satisfy the FK constraint
+        // Insert a proven_txs record (the actual proof) to satisfy the FK
+        // constraint: a path that computes its root, and the record of that
+        // root's check, as the store's funnel writes it.
         let proven_tx_id = insert_proven_tx(&storage, &txid).await;
+        let path = bsv_rs::transaction::MerklePath::from_coinbase_txid(&txid, 850_000);
+        sqlx::query("UPDATE proven_txs SET merkle_path = ? WHERE proven_tx_id = ?")
+            .bind(path.to_binary().unwrap())
+            .bind(proven_tx_id)
+            .execute(storage.writer())
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO proof_root_checks (txid, height, merkle_root, checked_at) \
+             VALUES (?, 850000, ?, ?)",
+        )
+        .bind(&txid)
+        .bind(path.compute_root(Some(&txid)).unwrap())
+        .bind(Utc::now())
+        .execute(storage.writer())
+        .await
+        .unwrap();
 
         // Insert a proven_tx_req with status 'completed' and proven_tx_id set
         // (simulating that a proof was found and stored)

@@ -1844,23 +1844,8 @@ where
                 }),
                 send_with_results: process_result.send_with_results.map(|results| {
                     results
-                        .into_iter()
-                        .map(|r| {
-                            let mut txid = [0u8; 32];
-                            if let Ok(bytes) = hex::decode(&r.txid) {
-                                if bytes.len() == 32 {
-                                    txid.copy_from_slice(&bytes);
-                                }
-                            }
-                            bsv_rs::wallet::SendWithResult {
-                                txid,
-                                status: match r.status.as_str() {
-                                    "unproven" => bsv_rs::wallet::SendWithResultStatus::Unproven,
-                                    "sending" => bsv_rs::wallet::SendWithResultStatus::Sending,
-                                    _ => bsv_rs::wallet::SendWithResultStatus::Failed,
-                                },
-                            }
-                        })
+                        .iter()
+                        .map(super::internalize_answer::send_result)
                         .collect()
                 }),
                 signable_transaction: None,
@@ -2683,23 +2668,8 @@ where
             tx: Some(atomic_tx),
             send_with_results: process_result.send_with_results.map(|results| {
                 results
-                    .into_iter()
-                    .map(|r| {
-                        let mut result_txid = [0u8; 32];
-                        if let Ok(bytes) = hex::decode(&r.txid) {
-                            if bytes.len() == 32 {
-                                result_txid.copy_from_slice(&bytes);
-                            }
-                        }
-                        bsv_rs::wallet::SendWithResult {
-                            txid: result_txid,
-                            status: match r.status.as_str() {
-                                "unproven" => bsv_rs::wallet::SendWithResultStatus::Unproven,
-                                "sending" => bsv_rs::wallet::SendWithResultStatus::Sending,
-                                _ => bsv_rs::wallet::SendWithResultStatus::Failed,
-                            },
-                        }
-                    })
+                    .iter()
+                    .map(super::internalize_answer::send_result)
                     .collect()
             }),
         })
@@ -2873,15 +2843,37 @@ where
 
         let result = self.storage.internalize_action(&auth, args).await?;
 
-        // Broadcast happens synchronously inside the storage layer's
-        // internalize_action (TS parity: wallet-toolbox storage/methods/
-        // internalizeAction.ts newInternalize -> shareReqsWithWorld). On
-        // success the req is advanced to 'unmined'; on hard network
-        // rejection the storage call errors after marking the tx failed and
-        // its outputs unspendable; on transient failure the req stays
-        // 'unsent' and the monitor daemon's send_waiting_transactions task
-        // remains the retry backstop.
-        if !result.is_merge && result.send_with_results.is_none() {
+        // The storage door posts a held presentation once to each named
+        // instance (DECISIONS 29.1). Taken by nobody, the transaction stays
+        // held (`sending`) and the result carries a send result that is not
+        // `unproven`: the call answers the review-actions refusal with the
+        // results and the txid, as the reference's
+        // `throwIfUnsuccessfulInternalizeAction` (ts-stack@11faa7d1
+        // `Wallet.ts:1604-1612`), its message the reference's sentence and
+        // each instance's words from this user's door notes on the
+        // request's history (`door_words_for`).
+        if super::internalize_answer::needs_review(&result) {
+            let words = match self
+                .storage
+                .find_proven_tx_reqs(crate::storage::FindProvenTxReqsArgs {
+                    txids: Some(vec![result.txid.clone()]),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(reqs) => reqs
+                    .first()
+                    .map(|req| {
+                        super::internalize_answer::door_words_for(&req.history, self.user_id)
+                    })
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            if let Some(refusal) = super::internalize_answer::held_refusal(&result, &words) {
+                return Err(Error::ReviewActions(Box::new(refusal)).into());
+            }
+        }
+        if !result.is_merge {
             tracing::debug!(
                 txid = %result.txid,
                 "Internalized tx saved and shared with the network"

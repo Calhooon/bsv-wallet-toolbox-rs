@@ -87,18 +87,6 @@ pub(crate) async fn record_take_on(
     super::broadcast_seen::record_broadcast_status_on(conn, txid, provider, word).await
 }
 
-/// [`record_take_on`] for a status source that holds `txid`: `chain`,
-/// `seen`.
-pub(crate) async fn record_chain_seen_on(conn: &mut SqliteConnection, txid: &str) -> Result<()> {
-    record_take_on(
-        conn,
-        txid,
-        crate::services::broadcast_memory::BROADCAST_PROVIDER_CHAIN,
-        crate::services::broadcast_memory::BROADCAST_STATUS_SEEN,
-    )
-    .await
-}
-
 /// The data statement of migration 006.
 pub(crate) const MIGRATION_006_HELD_RECEIPTS_SQL: &str =
     include_str!("migrations/006_held_receipts.sql");
