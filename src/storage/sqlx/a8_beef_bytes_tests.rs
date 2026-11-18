@@ -249,8 +249,10 @@ async fn internalize_on(read_once: bool, beef: &[u8], parent: &str) -> (String, 
         Err(e) => format!("Err({e:?} | {e})"),
     };
     // The door draws the action's reference at random, outside the seeded
-    // stream: it differs between any two calls on either path.
-    (answer, stored_rows(&storage, &["reference"]).await)
+    // stream: it differs between any two calls on either path. The
+    // request's history carries the door's note of a store with no
+    // services, stamped with the clock (`door_notes.rs`).
+    (answer, stored_rows(&storage, &["reference", "history"]).await)
 }
 
 #[tokio::test]
