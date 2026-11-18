@@ -97,9 +97,11 @@ pub(crate) async fn stored_proof_checked_on(
 pub(crate) enum ReadCheck {
     /// The row already carries a record: nothing asked.
     AlreadyChecked,
-    /// The tracker confirmed the root; the record was written.
+    /// The tracker confirmed the root. With a `writer` the record was
+    /// written; with none the caller writes it.
     Confirmed,
-    /// The tracker refuted the root; the row was demoted.
+    /// The tracker refuted the root. With a `writer` the row was demoted;
+    /// with none the caller demotes it.
     Demoted,
     /// No tracker, a tracker fault, or a root that does not compute: the
     /// row is left as it was, unchecked, for the next read.
@@ -127,9 +129,11 @@ impl ReadCheck {
 /// Reads on the caller's connection (a reader); the tracker is asked with no
 /// lock held, and the record or the demotion is written afterwards through
 /// `writer` (the demotion in one `BEGIN IMMEDIATE` transaction). The caller
-/// must not hold the writer. With no `writer` (the caller holds the write
-/// lock and its tracker answers from what it checked before taking it) the
-/// verdict is returned and nothing is written.
+/// must not hold the writer. With no `writer` the verdict alone is
+/// returned and nothing is written: the caller writes the record or the
+/// demotion itself, inside its own write and after its own re-read of the
+/// row (the status review's pass; a caller that already holds the write
+/// lock, whose tracker answers from what it checked before taking it).
 pub(crate) async fn check_unchecked_stored_proof_on(
     conn: &mut SqliteConnection,
     writer: Option<&Pool<Sqlite>>,
