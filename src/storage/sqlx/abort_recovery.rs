@@ -41,8 +41,11 @@
 //! recovered (once).
 //!
 //! An input another action of the wallet spent meanwhile stays with that
-//! action: the two are competitors, and the proof path decides between
-//! them. The recovered transaction reads `unproven` meanwhile.
+//! action: the two are competitors. The recovery queues the recovered txid
+//! on that action's request as its competitor (`competitorsQueued`), so the
+//! competitor proof ask settles the two by a proof: one ask of the
+//! recovered transaction's bytes and path per pass while that action's
+//! request is live. The recovered transaction reads `unproven` meanwhile.
 //!
 //! THE ONE RECOVERY OF INPUTS ([`remark_inputs_spent_on`]) has four
 //! callers: the take after a release, the take beside a locked row, the
@@ -411,6 +414,13 @@ pub(crate) async fn recover_released_on(
         let closed = open_own_outputs(conn, transaction_id, marked, now).await?;
         let given_up = release_given_up_spends_on(conn, transaction_id, now).await?;
         remark_inputs_spent_on(conn, txid, &skip, now).await?;
+        // An input another live action holds stays with it; the recovered
+        // txid is queued as that action's competitor, so the competitor
+        // proof ask settles the two by a proof.
+        let holders = super::proof_completion::losers_of(conn, txid).await?;
+        for holder in &holders {
+            super::proof_completion::queue_competitor_on(conn, holder, txid).await?;
+        }
         if was_marked {
             sqlx::query(
                 "UPDATE proven_tx_reqs SET history = json_set(history, '$.abort.recovered', ?) \
@@ -435,6 +445,7 @@ pub(crate) async fn recover_released_on(
                 "transactionId": transaction_id,
                 "outputs": closed,
                 "givenUpSpends": given_up,
+                "competitorOf": holders,
                 "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
             }),
         )
