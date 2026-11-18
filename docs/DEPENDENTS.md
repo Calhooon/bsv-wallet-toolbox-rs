@@ -172,6 +172,15 @@ manifests alone. The row turns green when the CLI takes the toolbox's
 0.14.0-beta.9 with `bsv-rs` `=0.9.0-beta.9` and a `bsv-tracker` on the same
 `bsv-rs` (bsv-wallet-cli#386).
 
+The toolbox's beta.10 re-pin (the bsv-rs tag `v0.9.0-beta.10` at `63686630`)
+moves this tree to `bsv-rs =0.9.0-beta.10`. The CLI's beta (5f343c4,
+`0.19.0-beta.9`, read on 2026-11-18) asks `bsv-rs` and `bsv-tracker`
+`=0.9.0-beta.9` and this toolbox `=0.14.0-beta.9`, so it is red by
+construction against this tree; not run on the lane, the red read from the
+manifests alone. The row turns green when the CLI takes the toolbox's
+0.14.0-beta.10 with `bsv-rs` `=0.9.0-beta.10` and a `bsv-tracker` on the same
+`bsv-rs` (bsv-wallet-cli#386).
+
 ### Re-pin plan
 
 The toolbox's #419 pin moves this tree to `bsv-rs =0.9.0-beta.3` in both
