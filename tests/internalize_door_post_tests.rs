@@ -220,7 +220,7 @@ fn moved_by_a_take(row: &str) -> String {
 /// What a post nobody took leaves of the request's word.
 fn left_by_no_take(word: Option<&str>) -> String {
     match word {
-        None | Some("unsent") | Some("sending") => "unsent".to_string(),
+        None | Some("unsent" | "sending") => "unsent".to_string(),
         Some(word) => word.to_string(),
     }
 }
