@@ -33,6 +33,9 @@ struct Headers {
     roots: Mutex<HashMap<u32, String>>,
     silent: AtomicBool,
     reads: AtomicUsize,
+    /// A write another path makes while the review waits on this answer:
+    /// the store and the txid whose transaction it fails, taken once.
+    fail_on_read: Mutex<Option<(Arc<StorageSqlx>, String)>>,
 }
 
 impl Headers {
@@ -57,6 +60,19 @@ impl ChainTracker for Headers {
         height: u32,
     ) -> std::result::Result<bool, ChainTrackerError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        let hook = self.fail_on_read.lock().unwrap().take();
+        if let Some((s, txid)) = hook {
+            exec(
+                &s,
+                &format!("UPDATE transactions SET status = 'failed' WHERE txid = '{txid}'"),
+            )
+            .await;
+            exec(
+                &s,
+                &format!("UPDATE outputs SET spendable = 0 WHERE txid = '{txid}'"),
+            )
+            .await;
+        }
         if self.silent.load(Ordering::SeqCst) {
             return Err(ChainTrackerError::NetworkError("no answer".to_string()));
         }
@@ -532,4 +548,29 @@ async fn the_review_reads_one_header_per_unchecked_candidate_within_its_bound() 
     assert_eq!(answered, vec![100, 1, 0]);
     assert_eq!(failed, 0);
     assert!(last.contains("req completed link true"), "{last}");
+}
+
+/// A transaction another path fails between the pass's read of its
+/// candidates and its write (here while the tracker answers): the write
+/// reads the transaction again and leaves it, so nothing of it is written
+/// at this pass; its request is not completed and check 3 does not write a
+/// failed transaction `completed` beside outputs left unspendable.
+#[tokio::test]
+async fn a_transaction_failed_between_the_read_and_the_write_is_left() {
+    let (_, _, _, root) = mined(6);
+    let headers = Headers::carrying(HEIGHT, &root);
+    let s = one_store(Some(headers.clone())).await;
+    let txid = synced_proof_beside_invalid(&s, 6).await;
+    *headers.fail_on_read.lock().unwrap() = Some((s.clone(), txid.clone()));
+    MonitorStorage::review_status(&*s).await.unwrap();
+    let after = rows(&s, &txid).await;
+    println!(
+        "WITNESS failed between the read and the write ({} reads): {after}",
+        headers.reads()
+    );
+    assert_eq!(headers.reads(), 1);
+    assert!(after.starts_with("tx failed"), "{after}");
+    assert!(after.contains("req invalid"), "{after}");
+    assert!(!after.contains("invalidRequestProofStands"), "{after}");
+    assert!(after.ends_with("spendable [0]"), "{after}");
 }
