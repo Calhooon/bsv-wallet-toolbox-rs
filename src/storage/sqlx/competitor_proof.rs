@@ -66,11 +66,16 @@ pub(crate) struct CompetitorCheck {
 /// A stored competitor: its txid, proof height, merkle path and bytes.
 type StoredCompetitor = (String, i64, Vec<u8>, Vec<u8>);
 
-/// The outpoints `raw_tx` spends (source txid lowercase, vout).
-fn outpoints_of(raw_tx: &[u8]) -> Vec<(String, u32)> {
-    let Ok(tx) = bsv_rs::transaction::Transaction::from_binary(raw_tx) else {
-        return Vec::new();
-    };
+/// The outpoints `raw_tx` spends (source txid lowercase, vout), when the
+/// bytes hash to `txid` (`abort_recovery::transaction_of`); else none.
+fn outpoints_of(txid: &str, raw_tx: &[u8]) -> Vec<(String, u32)> {
+    super::abort_recovery::transaction_of(txid, raw_tx)
+        .map(|tx| inputs_of(&tx))
+        .unwrap_or_default()
+}
+
+/// The outpoints `tx` spends (source txid lowercase, vout).
+fn inputs_of(tx: &bsv_rs::transaction::Transaction) -> Vec<(String, u32)> {
     tx.inputs()
         .iter()
         .filter_map(|i| {
@@ -117,9 +122,10 @@ async fn stored_competitors(
     Ok(found)
 }
 
-/// Does `competitor`'s stored bytes spend `outpoint`?
-fn spends(competitor_raw: &[u8], outpoint: &(String, u32)) -> bool {
-    outpoints_of(competitor_raw).contains(outpoint)
+/// Do `competitor`'s stored bytes, hashing to its txid, spend `outpoint`?
+/// Bytes that do not hash to it are no competitor's.
+fn spends(competitor: &str, competitor_raw: &[u8], outpoint: &(String, u32)) -> bool {
+    outpoints_of(competitor, competitor_raw).contains(outpoint)
 }
 
 impl CompetitorCheck {
@@ -140,21 +146,13 @@ impl StorageSqlx {
         raw_tx: Option<&[u8]>,
     ) -> Result<CompetitorCheck> {
         let mut conn = self.pool().acquire().await?;
-        let stored: Option<Vec<u8>> = match raw_tx {
-            Some(_) => None,
-            None => {
-                sqlx::query_scalar(
-                    "SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?1 AND raw_tx IS NOT NULL \
-                     UNION ALL SELECT raw_tx FROM transactions WHERE txid = ?1 AND raw_tx IS NOT NULL \
-                     LIMIT 1",
-                )
-                .bind(txid)
-                .fetch_optional(&mut *conn)
+        let outpoints = match raw_tx {
+            Some(raw) => outpoints_of(txid, raw),
+            None => super::abort_recovery::held_transaction_on(&mut conn, txid)
                 .await?
-            }
+                .map(|tx| inputs_of(&tx))
+                .unwrap_or_default(),
         };
-        let outpoints = raw_tx.or(stored.as_deref()).map(outpoints_of);
-        let outpoints = outpoints.unwrap_or_default();
         let found = stored_competitors(&mut conn, txid, &outpoints).await?;
         drop(conn);
         let mut check = CompetitorCheck {
@@ -167,7 +165,9 @@ impl StorageSqlx {
             let Ok(height) = u32::try_from(height) else {
                 continue;
             };
-            if spends(&raw, &outpoint) && self.root_stands(&competitor, height, &path).await {
+            if spends(&competitor, &raw, &outpoint)
+                && self.root_stands(&competitor, height, &path).await
+            {
                 check.standing = Some(StandingCompetitor {
                     txid: competitor,
                     height,
@@ -228,6 +228,10 @@ pub(crate) enum TakeApplied {
     /// verdict against a `failed` row of the txid: nothing raised.
     /// `competitor` names it where its bytes are stored.
     Refused { competitor: Option<String> },
+    /// A `failed` outgoing row of the txid is to be read by its inputs and
+    /// no held copy of the transaction hashes to its txid: nothing raised,
+    /// the cause on the request's history.
+    Withheld,
 }
 
 impl TakeApplied {
@@ -287,6 +291,27 @@ pub(crate) async fn apply_take_on(
         );
         return Ok(TakeApplied::Refused { competitor: None });
     }
+    // A row is recovered, or its free inputs marked, only from bytes that
+    // hash to the txid: without them nothing of the take is written.
+    if !failed.is_empty()
+        && super::abort_recovery::held_transaction_on(conn, txid)
+            .await?
+            .is_none()
+    {
+        super::abort_recovery::note_request_on(
+            conn,
+            txid,
+            serde_json::json!({
+                "what": "takeNotRecovered",
+                "when": now.to_rfc3339(),
+                "why": "noHeldBytesHashToTxid",
+                "transactionIds": failed.iter().map(|r| r.transaction_id).collect::<Vec<_>>(),
+                "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+            }),
+        )
+        .await?;
+        return Ok(TakeApplied::Withheld);
+    }
     super::abort_recovery::recover_released_on(conn, txid, &failed, takers, now).await?;
     // A row that stays ended with an input still locked (the retire path's
     // `failed`, some of whose inputs the locked-input re-check gave back):
@@ -314,6 +339,17 @@ async fn lift_rows_on(
     rows: TakeRows,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
+    // Unfail's lift of a `failed` row marks its inputs from bytes that hash
+    // to the txid; without them no `failed` row is lifted.
+    let rows = if rows == TakeRows::LiftFailed
+        && super::abort_recovery::held_transaction_on(conn, txid)
+            .await?
+            .is_none()
+    {
+        TakeRows::Held
+    } else {
+        rows
+    };
     let rows_sql = match rows {
         TakeRows::Held => {
             "UPDATE transactions SET status = 'unproven', updated_at = ? \

@@ -349,43 +349,62 @@ pub(crate) async fn recover_released_on(
     Ok(recovered)
 }
 
+/// `raw` as `txid`'s transaction: parsed, and answered only when it hashes
+/// to `txid` (bytes are a transaction's only when they hash to its txid).
+pub(crate) fn transaction_of(txid: &str, raw: &[u8]) -> Option<bsv_rs::transaction::Transaction> {
+    let tx = bsv_rs::transaction::Transaction::from_binary(raw).ok()?;
+    tx.id().eq_ignore_ascii_case(txid).then_some(tx)
+}
+
+/// The store's own copy of `txid`'s transaction (the request's, a row's or
+/// the proof row's), the first that hashes to `txid` ([`transaction_of`]);
+/// `None` when no copy is held or none hashes to it. One read.
+pub(crate) async fn held_transaction_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+) -> Result<Option<bsv_rs::transaction::Transaction>> {
+    let copies: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0 \
+         UNION ALL SELECT raw_tx FROM transactions WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0 \
+         UNION ALL SELECT raw_tx FROM proven_txs WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0",
+    )
+    .bind(txid)
+    .fetch_all(&mut *conn)
+    .await?;
+    let held = copies.iter().find_map(|raw| transaction_of(txid, raw));
+    if held.is_none() {
+        tracing::warn!(
+            txid = %txid,
+            copies = copies.len(),
+            marker = "held_bytes_do_not_hash",
+            "no held copy of the transaction hashes to its txid: its outpoints are not read"
+        );
+    }
+    Ok(held)
+}
+
 /// THE ONE RECOVERY OF A `failed` TRANSACTION'S INPUTS, on the caller's
 /// write: every wallet-tracked output row at each of the transaction's
 /// input outpoints that is still free (or consumed with no spender
 /// recorded) becomes unspendable (the outpoint is consumed), `spent_by` the
 /// row owner's own transaction row for `txid` where one exists, except a
-/// row named in `skip` (a `failed` row left so, with evidence on record). A row
-/// another transaction spends is never taken from it. The bytes are the request's copy, else a row's; without them the
-/// outpoints are unknowable and nothing is marked.
+/// row named in `skip`. A row another transaction spends is never taken
+/// from it. The outpoints are read from the store's own copy of the
+/// transaction that hashes to `txid` ([`held_transaction_on`]); without
+/// one nothing is marked. Returns whether such a copy was held.
 pub(crate) async fn remark_inputs_spent_on(
     conn: &mut SqliteConnection,
     txid: &str,
     skip: &[i64],
     now: chrono::DateTime<chrono::Utc>,
-) -> Result<()> {
-    let raw: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT raw_tx FROM proven_tx_reqs WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0 \
-         UNION ALL SELECT raw_tx FROM transactions WHERE txid = ?1 AND raw_tx IS NOT NULL AND length(raw_tx) > 0 \
-         LIMIT 1",
-    )
-    .bind(txid)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some(raw) = raw else {
-        tracing::warn!(txid = %txid, "no bytes held: the inputs cannot be marked spent again");
-        return Ok(());
-    };
-    let tx = match bsv_rs::transaction::Transaction::from_binary(&raw) {
-        Ok(tx) => tx,
-        Err(e) => {
-            tracing::warn!(txid = %txid, error = ?e, "the held bytes do not parse: the inputs are not marked again");
-            return Ok(());
-        }
+) -> Result<bool> {
+    let Some(tx) = held_transaction_on(conn, txid).await? else {
+        return Ok(false);
     };
     for (source_txid, vout) in super::internalize_action::extract_input_outpoints(&tx) {
         remark_outpoint(conn, txid, (&source_txid, vout), skip, now).await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Every wallet row at one input outpoint of `txid`, marked spent by its
