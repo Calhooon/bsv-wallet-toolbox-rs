@@ -491,3 +491,42 @@ async fn a_store_that_lost_its_answer_and_cannot_be_read_is_held_unknown() {
         (vec!["B".into(), "B".into()], ("B".into(), true))
     );
 }
+
+/// Two stores and three, the manager enabled on A: a backup's row is moved
+/// behind the manager's back by that store's own `set_active` (to itself);
+/// the manager's `set_active(A)` then writes A to that store and does not
+/// answer unchanged; every row names A and the manager is enabled on A.
+#[tokio::test]
+async fn a_row_moved_behind_the_manager_is_written_by_set_active_to_its_own_active() {
+    for n in [2, 3] {
+        for moved in 1..n {
+            let cell = Cell {
+                n,
+                switched: false,
+                role: Role::Target,
+                fails: Fails::SetActive,
+            };
+            let (doubles, mgr) = setup(cell).await;
+            let d = &doubles[moved];
+            let (u, _) = d.inner.find_or_insert_user(ALICE).await.unwrap();
+            let auth = AuthId::with_user_id(ALICE, u.user_id);
+            WalletStorageSync::set_active(&d.inner, &auth, KEYS[moved])
+                .await
+                .unwrap();
+            let before = rows(&doubles).await;
+            let log = mgr.set_active(SRC).await;
+            let unchanged = log
+                .as_ref()
+                .map(|l| *l == format!("setActive to {SRC} unchanged\n"));
+            let after = (rows(&doubles).await, state(&mgr).await);
+            println!(
+                "WITNESS {n} stores, {} moved to itself: rows {before:?}; set_active(A) {} unchanged {unchanged:?}; {after:?}",
+                name(KEYS[moved]),
+                refusal(&log),
+            );
+            assert_eq!(unchanged.ok(), Some(false));
+            assert_eq!(after.0, vec!["A".to_string(); n]);
+            assert_eq!(after.1, ("A".to_string(), true));
+        }
+    }
+}
