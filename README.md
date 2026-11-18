@@ -6,7 +6,7 @@ The CI badge is the required set on `main`, the gate every pull request and push
 
 Storage, signing, services and monitoring for BSV wallets. The stable line is
 **0.13.x** on crates.io; this tree is **0.13.7**, and it requires
-**bsv-rs "0.8.12"** by caret (0.8.12 or a later 0.8 release), the Rust SDK published by this project. The toolbox
+**bsv-rs "0.8.13"** by caret (0.8.13 or a later 0.8 release), the Rust SDK published by this project. The toolbox
 implements wallet operations over local SQLite storage or a remote
 JSON-RPC storage service.
 
