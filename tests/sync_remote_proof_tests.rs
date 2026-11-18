@@ -235,15 +235,15 @@ async fn the_proof_rows_of_one_height_are_checked_once() {
     assert_eq!(rows_stored, (4, 4));
 }
 
-/// A reader that answers local while it serves its first chunk and not
-/// local from its second chunk on: the second chunk's new proof row, which
-/// the writer's tracker refutes, refuses that chunk; the first chunk's row,
+/// A reader that answers local while it serves chunk one and not
+/// local from chunk two on: chunk two's new proof row, which
+/// the writer's tracker refutes, refuses that chunk; chunk one's row,
 /// read while the reader answered local, is stored as given.
 #[tokio::test]
 async fn a_reader_that_stops_being_local_between_chunks_is_validated_from_then() {
-    let (first, _) = block_at(340, 1);
-    let (second, _) = block_at(341, 1);
-    let txid = second[0].txid.clone();
+    let (one, _) = block_at(340, 1);
+    let (two, _) = block_at(341, 1);
+    let txid = two[0].txid.clone();
     let stale = Arc::new(MockWalletServices::builder().roots_valid(false).build());
     let (act, mgr) = wallet(stale.clone()).await;
     let mut reader = Double::new((*store(SRC).await).clone());
@@ -254,11 +254,11 @@ async fn a_reader_that_stops_being_local_between_chunks_is_validated_from_then()
         c.proven_txs = Some(rows.to_vec());
         c
     };
-    *reader.script.lock().unwrap() = Some([chunk(&first), chunk(&second)].into());
+    *reader.script.lock().unwrap() = Some([chunk(&one), chunk(&two)].into());
     let r = mgr.sync_from_reader(ALICE, Arc::new(reader)).await;
     let proofs = count(&act, "SELECT COUNT(*) FROM proven_txs").await;
     println!(
-        "WITNESS a reader local for its first chunk, not local from its second: {} proof rows {proofs} root checks {}",
+        "WITNESS a reader local for chunk one, not local from chunk two on: {} proof rows {proofs} root checks {}",
         refusal(&r),
         stale.root_check_count()
     );
