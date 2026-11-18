@@ -56,3 +56,42 @@ async fn only_a_verified_slap_advertisement_for_the_service_names_a_host() {
         vec![("SHIP", 0), ("other", 0), ("unsigned", 0), ("true", 1)]
     );
 }
+
+/// A listener on 127.0.0.1 that takes each request and holds its response
+/// open for a minute.
+async fn holding_listener() -> String {
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", socket.local_addr().unwrap());
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = socket.accept().await {
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                drop(stream);
+            });
+        }
+    });
+    url
+}
+
+/// Three trackers that each hold their response open: the call answers no
+/// certificate by its deadline of 10 s (a tolerance of 2 s), where the
+/// three requests one after another would run 30 s.
+#[tokio::test]
+async fn a_lookup_call_answers_by_its_deadline() {
+    let trackers = vec![
+        holding_listener().await,
+        holding_listener().await,
+        holding_listener().await,
+    ];
+    let started = std::time::Instant::now();
+    let answered = HttpLookupResolver::with_endpoints(trackers)
+        .lookup_by_identity_key("02aa")
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(answered.is_empty());
+    assert!(
+        elapsed < std::time::Duration::from_secs(12),
+        "the call ran {elapsed:?}"
+    );
+}

@@ -147,6 +147,12 @@ pub(crate) const MAX_LOOKUP_OUTPUTS: usize = 4096;
 /// answer names earliest are called in order; the rest are not.
 pub(crate) const MAX_HOSTS_PER_TRACKER: usize = 64;
 
+/// The longest one lookup call runs, trackers and hosts together: 10 s, the
+/// reference's default `deadlineMs` ("whole attempt budget including
+/// discovery and queued hosts", `LookupResolver.ts` `LookupQueryOptions`).
+/// A call past it answers as one whose every host failed: no certificate.
+pub(crate) const LOOKUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The output count of an output-list answer past [`MAX_LOOKUP_OUTPUTS`].
 fn outputs_past_bound(answer: &LookupAnswer) -> Option<usize> {
     match answer {
@@ -397,8 +403,26 @@ impl HttpLookupResolver {
         vec![]
     }
 
-    /// Query the overlay endpoint and parse certificate results from the response.
+    /// Query the overlay endpoint and parse certificate results from the
+    /// response, within [`LOOKUP_DEADLINE`].
     async fn query_overlay(&self, query: serde_json::Value) -> Result<Vec<OverlayCertificate>> {
+        match tokio::time::timeout(LOOKUP_DEADLINE, self.query_overlay_unbounded(query)).await {
+            Ok(answer) => answer,
+            Err(_) => {
+                tracing::debug!(
+                    "Lookup passed its deadline of {:?}, returning empty results",
+                    LOOKUP_DEADLINE
+                );
+                Ok(vec![])
+            }
+        }
+    }
+
+    /// [`Self::query_overlay`] with no deadline of its own.
+    async fn query_overlay_unbounded(
+        &self,
+        query: serde_json::Value,
+    ) -> Result<Vec<OverlayCertificate>> {
         // Step 1: Resolve competent hosts for ls_identity via SLAP
         let hosts = self.resolve_competent_hosts("ls_identity").await;
         if hosts.is_empty() {
