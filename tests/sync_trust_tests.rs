@@ -458,7 +458,10 @@ async fn two_set_active_calls_do_not_interleave() {
     let (m1, m2) = (mgr.clone(), mgr.clone());
     let one = tokio::spawn(async move { m1.set_active(DST).await });
     let two = tokio::spawn(async move { m2.set_active(THIRD).await });
-    let (one, two) = (one.await.unwrap(), two.await.unwrap());
+    let (one, two) = (
+        bounded("set_active(B)", one).await.unwrap(),
+        bounded("set_active(C)", two).await.unwrap(),
+    );
     let seen = events.lock().unwrap().clone();
     // Each call's calls name its key; a run of one key never breaks.
     let mut runs = Vec::new();
