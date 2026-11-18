@@ -3782,7 +3782,7 @@ fn post_beef_words(results: &[crate::services::PostBeefResult]) -> serde_json::V
 /// `history` (a request's `{"notes": [...]}`) with `note` appended and only
 /// the newest [`REQ_HISTORY_NOTES_KEPT`] notes kept. A history that is not
 /// a JSON object is kept whole under `previous`.
-fn append_req_history_note(history: &str, note: serde_json::Value) -> String {
+pub(super) fn append_req_history_note(history: &str, note: serde_json::Value) -> String {
     let mut object = match serde_json::from_str::<serde_json::Value>(history) {
         Ok(serde_json::Value::Object(map)) => map,
         _ if history.trim().is_empty() => serde_json::Map::new(),
@@ -5912,10 +5912,22 @@ impl MonitorStorage for StorageSqlx {
         let mut log = String::new();
         let now = chrono::Utc::now();
 
-        // Check 1: Mark transactions as failed if their proven_tx_req is 'invalid'.
-        // TS reference uses: WHERE status != 'failed' (includes 'completed').
-        // If the proven_tx_req is 'invalid', the tx was never confirmed on-chain,
-        // so even 'completed' transactions must be demoted to 'failed'.
+        // Check 1: a transaction that is not failed beside a request that
+        // reads 'invalid'. A proof row for its txid is evidence and the word
+        // is not: the proof is checked before either word moves, against
+        // this store's headers and with no lock held
+        // (`pass_over_proven_beside_invalid`); a checked one stands and its
+        // request is completed, a refuted one is demoted (its proof asked
+        // again), one no tracker answers for is left as it is. Only a
+        // transaction with NO proof row is failed here, its created outputs
+        // voided.
+        let stood = self.pass_over_proven_beside_invalid(now).await?;
+        if stood > 0 {
+            log.push_str(&format!(
+                "Completed {} invalid proven_tx_reqs whose transaction holds a checked proof\n",
+                stood
+            ));
+        }
         let mut tx = self.write_tx().await?;
         let failed_ids: Vec<i64> = sqlx::query_scalar(
             r#"
@@ -5924,6 +5936,9 @@ impl MonitorStorage for StorageSqlx {
               AND txid IN (
                 SELECT ptr.txid FROM proven_tx_reqs ptr
                 WHERE ptr.status = 'invalid'
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM proven_txs p WHERE p.txid = transactions.txid
               )
             RETURNING transaction_id
             "#,
