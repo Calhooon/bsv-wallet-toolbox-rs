@@ -18,17 +18,23 @@
 //!
 //! A row with no bytes in either table is unread. Only some of them can
 //! hide a spender of the outpoint, and only those are counted:
-//! - a `completed` row is not: its spend is mined, where a provider's
-//!   unspent word reads it;
-//! - a row this store created names itself as `spent_by` on each coin of
-//!   the store it spends, which a caller reads on the coin's own row (and
-//!   this module reads on every row of the outpoint): it is not counted
-//!   unless its `input_beef` carries the bytes of the outpoint's own
-//!   transaction, where it may also spend the outpoint as an input from
-//!   outside the store;
-//! - what remains is counted: a row neither `failed` nor `completed`, with
-//!   no bytes, that no output row names as `spent_by` (one a sync brought,
-//!   or an action whose every input is from outside this store).
+//! - a `failed` or `completed` row is not: the one spends nothing, the
+//!   other's spend is mined, where a provider's unspent word reads it;
+//! - a spend of a coin of the store by a row this store created is
+//!   recorded as `spent_by` on the coin's row, which this module reads on
+//!   every row of the outpoint;
+//! - what an unread row can still hide is a spend of the outpoint as an
+//!   input from outside the store, whose source then travels in the row's
+//!   `input_beef` (`createAction` refuses an outside input whose source is
+//!   not in the caller's BEEF). So a row is counted when its `input_beef`
+//!   carries the outpoint's own transaction whole, or its txid's 32 bytes
+//!   (an entry made txid-only by `knownTxids`), or when there is no
+//!   `input_beef` to read (NULL or empty: `returnTXIDOnly`, a row a sync
+//!   brought with none), or when this store does not hold the outpoint's
+//!   transaction's bytes to look for. A row whose `input_beef` carries
+//!   none of those (an unsigned action whose inputs all come from
+//!   elsewhere) cannot spend this outpoint and is not counted, whether or
+//!   not an output row names it as a spender.
 //!
 //! A caller that would free a coin frees none while a counted row is held.
 
@@ -174,18 +180,27 @@ pub(crate) async fn stored_spenders_of(
     .fetch_optional(&mut *conn)
     .await?
     .flatten();
+    // The txid's 32 bytes, both orders: a BEEF entry that carries the
+    // transaction by txid only (`knownTxids`, a txid-only entry) holds them.
+    let internal = needle[..32].to_vec();
+    let mut display = internal.clone();
+    display.reverse();
     let bare: i64 = sqlx::query(
         "SELECT COUNT(*) AS n FROM transactions t \
          LEFT JOIN proven_txs p ON p.proven_tx_id = t.proven_tx_id \
          WHERE t.status NOT IN ('failed', 'completed') \
            AND (t.raw_tx IS NULL OR length(t.raw_tx) = 0) \
            AND (p.raw_tx IS NULL OR length(p.raw_tx) = 0) \
-           AND (NOT EXISTS (SELECT 1 FROM outputs o WHERE o.spent_by = t.transaction_id) \
-                OR ? IS NULL \
+           AND (? IS NULL \
+                OR t.input_beef IS NULL OR length(t.input_beef) = 0 \
+                OR instr(t.input_beef, ?) > 0 \
+                OR instr(t.input_beef, ?) > 0 \
                 OR instr(t.input_beef, ?) > 0)",
     )
     .bind(source.as_deref())
     .bind(source.as_deref())
+    .bind(&internal)
+    .bind(&display)
     .fetch_one(&mut *conn)
     .await?
     .get("n");
