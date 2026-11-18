@@ -99,6 +99,8 @@ enum Act {
     Retire,
     Unfail,
     OwnPost,
+    /// Two send-waiting passes at once (the load witness, not in `ACTS`).
+    SendWaitingTwice,
 }
 
 const WORDS: [Option<&str>; 6] = [
@@ -140,6 +142,9 @@ struct Reading {
     taken: bool,
     /// The refusal's message, when the call answered one.
     message: Option<String>,
+    /// After two send-waiting passes: the request's attempts, and whether
+    /// its history holds the refused take's note and the pass's hint.
+    twice: Option<(i64, bool)>,
 }
 
 async fn scalar(wallet: &TestWallet, sql: &str, txid: &str) -> Option<String> {
@@ -302,6 +307,7 @@ async fn cell(word: Option<&str>, proof: Proof, act: Act) -> Reading {
 
     let mut answer = "-".to_string();
     let mut message = None;
+    let mut twice = None;
     match act {
         Act::Door => {
             let got = wallet
@@ -315,11 +321,27 @@ async fn cell(word: Option<&str>, proof: Proof, act: Act) -> Reading {
             }
             answer = read_answer(got);
         }
-        Act::SendWaiting => {
+        Act::SendWaiting | Act::SendWaitingTwice => {
             store
                 .send_waiting_transactions(std::time::Duration::ZERO)
                 .await
                 .unwrap();
+            if act == Act::SendWaitingTwice {
+                store
+                    .send_waiting_transactions(std::time::Duration::ZERO)
+                    .await
+                    .unwrap();
+                let (attempts, history): (i64, String) =
+                    sqlx::query_as("SELECT attempts, history FROM proven_tx_reqs WHERE txid = ?")
+                        .bind(&txid)
+                        .fetch_one(store.pool())
+                        .await
+                        .unwrap();
+                twice = Some((
+                    attempts,
+                    history.contains("takeNotCounted") && history.contains("sendWaitingHint"),
+                ));
+            }
         }
         Act::Retire => {
             let services = wallet.services();
@@ -377,6 +399,7 @@ async fn cell(word: Option<&str>, proof: Proof, act: Act) -> Reading {
         .await
         .is_some(),
         message,
+        twice,
     }
 }
 
@@ -400,6 +423,7 @@ fn reaches(act: Act, word: Option<&str>) -> bool {
         // With no request and no row the store holds no bytes of the
         // transaction: the take is recorded and moves nothing.
         Act::OwnPost => true,
+        Act::SendWaitingTwice => reaches(Act::SendWaiting, word),
     }
 }
 
@@ -517,6 +541,20 @@ async fn a_call_that_made_no_post_gives_the_sentence_alone() {
         got.posts, got.message
     );
     assert_eq!((got.posts, got.message.as_deref()), (0, Some(SENTENCE)));
+}
+
+/// THE LOAD of a take that counts for nothing: send-waiting's post of a
+/// request a checking competitor's proof refutes is an attempt on the
+/// re-ask cadence, so a second pass at once posts nothing (before, the
+/// request kept zero attempts and was posted again at every pass).
+#[tokio::test]
+async fn a_refused_take_is_an_attempt_on_the_cadence() {
+    let got = cell(Some("unsent"), Proof::Checking, Act::SendWaitingTwice).await;
+    println!(
+        "LOAD refused take: posts after two passes {} attempts and notes {:?}",
+        got.posts, got.twice
+    );
+    assert_eq!((got.posts, got.twice), (1, Some((1, true))));
 }
 
 /// `ACTS` and `PROOFS` name every column the matrix runs.

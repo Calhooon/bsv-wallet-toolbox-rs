@@ -98,7 +98,9 @@
   three proofs by five acts). Its load: one indexed read per input and one
   header read per competitor found, none when none is held, asked before
   any writer is held; no post at all for a refuted presentation
-  (`the_door_posts_nothing_for_a_refuted_presentation`). The store holds a
+  (`the_door_posts_nothing_for_a_refuted_presentation`); a send-waiting
+  post whose take counts for nothing is an attempt on the re-ask cadence,
+  never a re-post at every pass (`a_refused_take_is_an_attempt_on_the_cadence`). The store holds a
   competitor's proof only where the spent outpoint is one of its own
   output rows: the proof path's competitor ask checks a fetched proof and
   keeps its verdict, not the competitor's bytes or path.
