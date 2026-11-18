@@ -247,3 +247,101 @@ async fn a_manager_passed_as_the_reader_before_its_own_use_is_local() {
     assert_eq!(rows_stored, (1, 1));
     assert_eq!(stale.root_check_count(), 0);
 }
+
+/// A store under `services` that holds alice and no proof row.
+async fn door(services: Arc<MockWalletServices>) -> Arc<StorageSqlx> {
+    let s = store(DST).await;
+    s.set_services(services);
+    s.find_or_insert_user(ALICE).await.unwrap();
+    s
+}
+
+/// The tracker refutes every root, or confirms it, with `header` at its height.
+fn services(valid: bool, header: &BlockHeader) -> Arc<MockWalletServices> {
+    let s = Arc::new(MockWalletServices::builder().roots_valid(valid).build());
+    s.set_header_for_height(header.clone());
+    s
+}
+
+/// A chunk handed to a store's sync door, plain or mapped, or to a
+/// manager's, validates a new proof row: one that fails the reference's
+/// rule refuses the chunk and nothing is written; one that passes is stored.
+#[tokio::test]
+async fn a_new_proof_row_at_a_stores_own_door_is_validated() {
+    let (rows, header) = block_at(320, 1);
+    let txid = rows[0].txid.clone();
+    let text = format!(
+        "Sync error: sync chunk proof {txid} is refused: Merkle root is not active at the recorded height"
+    );
+    let chunk = || {
+        let mut c = chunk_for(ALICE);
+        c.proven_txs = Some(rows.clone());
+        c
+    };
+    let proofs =
+        |s: Arc<StorageSqlx>| async move { count(&s, "SELECT COUNT(*) FROM proven_txs").await };
+
+    let mut answers = Vec::new();
+    for valid in [false, true] {
+        let s = door(services(valid, &header)).await;
+        let r = s.process_sync_chunk(args_for(ALICE), chunk()).await;
+        answers.push(("store", valid, refusal(&r), proofs(s).await));
+
+        let s = door(services(valid, &header)).await;
+        let mut map = SyncMap::default();
+        let r = s
+            .process_sync_chunk_mapped(args_for(ALICE), chunk(), &mut map)
+            .await;
+        answers.push(("store mapped", valid, refusal(&r), proofs(s).await));
+
+        let s = door(services(valid, &header)).await;
+        let mgr = WalletStorageManager::new(
+            ALICE.to_string(),
+            Some(s.clone() as Arc<dyn MonitorStorage>),
+            None,
+        );
+        let r = mgr.process_sync_chunk(args_for(ALICE), chunk()).await;
+        answers.push(("manager", valid, refusal(&r), proofs(s).await));
+    }
+    for a in &answers {
+        println!(
+            "WITNESS door {} root active {}: {} proof rows {}",
+            a.0, a.1, a.2, a.3
+        );
+    }
+    for (_, valid, answer, rows) in answers {
+        if valid {
+            assert_eq!(answer, "ok");
+            assert_eq!(rows, 1);
+        } else {
+            assert_eq!(answer, text);
+            assert_eq!(rows, 0);
+        }
+    }
+}
+
+/// A manager's backup from its local active to a local backup with no
+/// services takes the active's new proof rows as given.
+#[tokio::test]
+async fn a_local_backup_with_no_services_takes_the_wallets_own_proof_rows() {
+    let (rows, _) = block_at(330, 2);
+    let reader = reader_with(&rows, false).await;
+    let backup = store(DST).await;
+    for s in [&reader.inner, &*backup] {
+        let (u, _) = s.find_or_insert_user(ALICE).await.unwrap();
+        s.update_user_active_storage(u.user_id, SRC).await.unwrap();
+    }
+    let mgr = WalletStorageManager::new(
+        ALICE.to_string(),
+        Some(reader as Arc<dyn MonitorStorage>),
+        Some(vec![backup.clone() as Arc<dyn MonitorStorage>]),
+    );
+    let r = mgr.update_backups().await;
+    let rows_stored = stored(&backup).await;
+    println!(
+        "WITNESS local backup, no services: {} rows {rows_stored:?}",
+        refusal(&r)
+    );
+    assert_eq!(refusal(&r), "ok");
+    assert_eq!(rows_stored, (2, 2));
+}

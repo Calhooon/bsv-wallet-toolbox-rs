@@ -229,16 +229,14 @@ async fn drain_sync_chunks(
     // The reader is made available before it is asked whether it is local:
     // a manager answers by its active store, which it chooses there.
     let reader_settings = reader.make_available().await?;
-    // A reader that is not a local store (a storage client) is another
-    // party: a local writer validates every proof row of its chunks that it
-    // does not hold as the same proof (crate::storage::remote_sync).
+    // A local reader's rows are the wallet's own: a local writer takes its
+    // new proof rows as given. Any other reader (a storage client) is
+    // another party, and a chunk outside a drain is validated as one: the
+    // writer validates every proof row it does not hold as the same proof
+    // (crate::storage::sync_scope).
     let local = reader.checks_received_beef_in_process().await;
     let drain = drain_chunks(reader, reader_settings, writer, identity_key, user_active);
-    if local {
-        drain.await
-    } else {
-        crate::storage::remote_sync::scope(drain).await
-    }
+    crate::storage::sync_scope::scope(local, drain).await
 }
 
 async fn drain_chunks(

@@ -932,6 +932,12 @@ pub trait WalletStorageProvider: WalletStorageSync {
     /// store. A host's own storage type answers true only when its
     /// `internalize_action` runs that check in the wallet's process before
     /// anything is stored, as a `StorageSqlx` it forwards to does.
+    ///
+    /// The answer also decides a `WalletStorageManager` sync that reads from
+    /// this store: when it is true, a local writer takes the new proof rows
+    /// of this store's chunks as given (the wallet's own rows); when it is
+    /// false, the writer validates every proof row it does not hold as the
+    /// same proof.
     async fn checks_received_beef_in_process(&self) -> bool {
         false
     }

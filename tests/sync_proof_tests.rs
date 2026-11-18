@@ -58,10 +58,7 @@ async fn held_store(services: MockWalletServices) -> Arc<StorageSqlx> {
     let s = store(DST).await;
     s.set_services(Arc::new(services));
     s.find_or_insert_user(ALICE).await.unwrap();
-    let (held, _) = mined_at(100);
-    let mut chunk = chunk_for(ALICE);
-    chunk.proven_txs = Some(vec![held]);
-    s.process_sync_chunk(args_for(ALICE), chunk).await.unwrap();
+    hold(&s, &mined_at(100).0).await;
     s
 }
 
@@ -282,19 +279,27 @@ async fn a_replacement_without_block_hash_stores_the_headers_hash() {
 
 /// A proof row of a txid the store did not hold when the chunk's proofs
 /// were decided, which another writer stores before the chunk's write
-/// transaction with other fields, refuses the chunk; that row stays.
+/// transaction with other fields, refuses the chunk; that row stays. The
+/// test holds the store's one writer connection until the new row's
+/// validation has read its header, so the other row lands before the
+/// chunk's write transaction, with no sleep.
 #[tokio::test]
 async fn a_proof_row_that_appears_meanwhile_refuses_the_chunk() {
+    let (incoming, header) = mined_at(200);
+    let services = Arc::new(MockWalletServices::builder().roots_valid(true).build());
+    services.set_header_for_height(header);
     let s = store(DST).await;
+    s.set_services(services.clone());
     s.find_or_insert_user(ALICE).await.unwrap();
-    let (incoming, _) = mined_at(200);
     let txid = incoming.txid.clone();
     let mut held = s.writer().acquire().await.unwrap();
     let s2 = s.clone();
     let mut chunk = chunk_for(ALICE);
     chunk.proven_txs = Some(vec![incoming]);
     let task = tokio::spawn(async move { s2.process_sync_chunk(args_for(ALICE), chunk).await });
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    while services.call_count("get_header_for_height") == 0 {
+        tokio::task::yield_now().await;
+    }
     ::sqlx::query("INSERT INTO proven_txs (txid,height,idx,block_hash,merkle_root,merkle_path,raw_tx,created_at,updated_at) VALUES (?,7,0,'','',X'00',X'00',datetime('now'),datetime('now'))")
         .bind(&txid)
         .execute(&mut *held)
@@ -329,9 +334,7 @@ async fn a_held_proof_rewritten_after_its_validation_refuses_the_chunk() {
     let s = store(DST).await;
     s.set_services(services.clone());
     s.find_or_insert_user(ALICE).await.unwrap();
-    let mut seed = chunk_for(ALICE);
-    seed.proven_txs = Some(vec![mined_at(100).0]);
-    s.process_sync_chunk(args_for(ALICE), seed).await.unwrap();
+    hold(&s, &mined_at(100).0).await;
 
     let mut held = s.writer().acquire().await.unwrap();
     let s2 = s.clone();
