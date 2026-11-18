@@ -12,7 +12,7 @@ This module provides a production-ready storage backend for BSV wallet state usi
 | `mod.rs` | Module definition and public exports (44 lines) |
 | `storage_sqlx.rs` | Complete `StorageSqlx` implementation (10565 lines) |
 | `create_action.rs` | Transaction creation implementation (3823 lines) |
-| `process_action.rs` | Signed transaction processing (1884 lines) |
+| `process_action.rs` | Signed transaction processing (3266 lines) |
 | `abort_action.rs` | Transaction abort/cancellation; since 0.3.60 a broadcast (`unproven` / `sending`) transaction with NO chain evidence (no `chain|seen`, no `mined` row, no proof) is aborted too: inputs released, own outputs dead, memory `rejected`, unproven descendants retired |
 | `internalize_action.rs` | External transaction internalization (1343 lines) |
 | `sync.rs` | Multi-storage synchronization: the chunk reader and the chunk writer |
@@ -225,6 +225,7 @@ pub async fn abort_action_internal(
 | Output protection | Fails if transaction outputs have been spent |
 | UTXO release | Sets `spendable=true`, `spent_by=NULL` for locked inputs |
 | Status update | Sets transaction status to 'failed' |
+| Request | A `noSend` transaction's request is set `invalid` in the same write (the broadcast abort's word), unless another row of its txid that is not failed stands beside it |
 
 ### Abortable vs Non-Abortable Statuses
 | Abortable | Non-Abortable |
@@ -254,7 +255,7 @@ pub async fn process_action_internal(
 - DB updates: transaction, outputs, proven_tx_req
 - Status determination: nosend/delayed/immediate modes
 - Batch support and re-broadcast (is_new_tx=false)
-- A `nosend` transaction sent through `sendWith` (or re-broadcast), its own row still reading `nosend` and the caller's: its change and each output in a basket that record no spender become spendable in the same write (`stored_spenders::release_sent_change`, the byte search on a reader before the write), unless the store holds a spender or an unread row that could hide one; internalize of an existing `nosend` row does the same. An aborted `noSend` action (its transaction `failed`, its request left `nosend`) named in a later `sendWith` has nothing released
+- A `nosend` transaction sent through `sendWith` (or re-broadcast), its own row still reading `nosend` and the caller's: its change and each output in a basket that record no spender become spendable in the same write (`stored_spenders::release_sent_change`, the byte search on a reader before the write), unless the store holds a spender or an unread row that could hide one; internalize of an existing `nosend` row does the same. A txid named in `sendWith` (or the txid of a re-send) is sent only when the caller's own transaction row of it reads `nosend`; for any other nothing is written (no request, no transaction row, no output) and its `sendWithResults` entry answers from the caller's row (`named_txid_not_sent`: `sending` for `sending`, `unproven` for `unproven` or `completed`, else `failed`, a txid the caller holds no row of included, whatever the store holds of it). An aborted `noSend` action named in a later `sendWith` is answered `failed` and nothing of it is written or released, whether its request reads `invalid` (this line's abort) or still `nosend` (an earlier release's)
 
 ### Status Determination
 | Condition | Transaction Status | ProvenTxReq Status |
