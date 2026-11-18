@@ -82,6 +82,7 @@ async fn a_call_dropped_inside_the_partition_leaves_every_field_as_it_was() {
         A.to_string(),
     );
     assert_eq!(fields(&mgr).await, old);
+    assert!(mgr.is_available().await);
 
     // A reader of the auth holds its lock: the partition, the transition's
     // last step, waits on it, and the host's timeout drops the call there.
@@ -99,6 +100,7 @@ async fn a_call_dropped_inside_the_partition_leaves_every_field_as_it_was() {
     let after = fields(&mgr).await;
     eprintln!("WITNESS dropped inside the partition: {after:?}");
     assert_eq!(after, old, "a dropped partition left mixed fields");
+    assert!(mgr.is_available().await);
     assert!(!mgr.is_active_enabled().await);
 
     // A retry: every field and the answer agree with the rows (all B).
@@ -118,6 +120,7 @@ async fn a_call_dropped_inside_the_partition_leaves_every_field_as_it_was() {
         )
     );
     assert_eq!(rows(&stores).await, both_b);
+    assert!(mgr.is_available().await);
     assert!(mgr.is_active_enabled().await);
     assert_eq!(mgr.get_active_store().await.unwrap(), B);
 }
@@ -136,6 +139,7 @@ async fn a_call_that_finds_the_mark_set_partitions_from_the_rows() {
 
     // What an earlier call dropped with the mark set may have left: the
     // fields apart from the rows (every row still names A).
+    assert!(mgr.is_available().await);
     mgr.set_rows_in_doubt(true);
     *mgr.backup_indices.write().await = Vec::new();
     mgr.auth_id.write().await.user_id = Some(id_a + 100);
@@ -156,6 +160,7 @@ async fn a_call_that_finds_the_mark_set_partitions_from_the_rows() {
         rows(&stores).await,
         vec![Some(A.to_string()), Some(A.to_string())]
     );
+    assert!(mgr.is_available().await);
     assert!(mgr.is_active_enabled().await);
 }
 
