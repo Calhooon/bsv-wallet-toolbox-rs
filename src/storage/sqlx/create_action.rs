@@ -106,6 +106,33 @@ struct GenerateChangeParams {
     change_locking_script_length: u32,
     change_unlocking_script_length: u32,
     target_net_count: Option<i32>,
+    /// `target_net_count` was sized from a count that reached its cap (see
+    /// [`CHANGE_COUNT_SLACK`]): exact while the action allocates fewer than
+    /// `CHANGE_COUNT_SLACK` change inputs, sized again from the full count
+    /// past that.
+    target_net_capped: Option<CappedChangeCount>,
+}
+
+/// What [`generate_change`] needs to size `target_net_count` again from a
+/// full count, when a capped one no longer decides it.
+#[derive(Debug, Clone, Copy)]
+struct CappedChangeCount {
+    number_of_desired_utxos: i32,
+}
+
+/// Change coins past the basket's `number_of_desired_utxos` that the change
+/// count reads before it stops. `target_net_count` (desired - count) is only
+/// compared against the action's net change count (change outputs - change
+/// inputs), so a count capped at desired + slack decides every comparison
+/// the full count would while fewer than `slack` change inputs are
+/// allocated; past that, [`generate_change`] reads the full count.
+const CHANGE_COUNT_SLACK: usize = 64;
+
+/// The change count an action is sized from: exact, or the cap it reached.
+#[derive(Debug, Clone, Copy)]
+struct AvailableChange {
+    count: usize,
+    capped: bool,
 }
 
 /// A fixed input for fee calculation.
@@ -597,10 +624,10 @@ impl Door<'_> {
         let extended_outputs = validate_and_extend_outputs(self.args)?;
         let extended_inputs =
             validate_and_extend_inputs(self.storage, &mut conn, self.user_id, self.args).await?;
-        let available_change_count = count_change_inputs_under_rule(
+        let available_change_count = count_available_change(
             &mut conn,
             self.user_id,
-            self.change_basket.basket_id,
+            self.change_basket,
             self.allow_received,
         )
         .await?;
@@ -780,13 +807,8 @@ impl Door<'_> {
             validate_and_extend_inputs(self.storage, &mut tx, user_id, args).await?;
 
         // Step 5: Count available change outputs for targeting
-        let available_change_count = count_change_inputs_under_rule(
-            &mut tx,
-            user_id,
-            change_basket.basket_id,
-            self.allow_received,
-        )
-        .await?;
+        let available_change_count =
+            count_available_change(&mut tx, user_id, change_basket, self.allow_received).await?;
 
         // Step 6: Create transaction record in DB
         let transaction_id = create_transaction_record(&mut tx, user_id, args).await?;
@@ -1142,7 +1164,7 @@ async fn plan_change(
     args: &bsv_rs::wallet::CreateActionArgs,
     extended_inputs: &[ExtendedInput],
     extended_outputs: &[ExtendedOutput],
-    available_change_count: usize,
+    available_change_count: AvailableChange,
     pick: &mut ChangePick<'_>,
 ) -> Result<(GenerateChangeResult, String)> {
     let fee_rate = DEFAULT_FEE_RATE_SAT_PER_KB;
@@ -1171,8 +1193,11 @@ async fn plan_change(
         change_locking_script_length: P2PKH_LOCKING_SCRIPT_LENGTH,
         change_unlocking_script_length: P2PKH_UNLOCKING_SCRIPT_LENGTH,
         target_net_count: Some(
-            change_basket.number_of_desired_utxos - available_change_count as i32,
+            change_basket.number_of_desired_utxos - available_change_count.count as i32,
         ),
+        target_net_capped: available_change_count.capped.then_some(CappedChangeCount {
+            number_of_desired_utxos: change_basket.number_of_desired_utxos,
+        }),
     };
 
     let derivation_prefix = random_derivation(16);
@@ -1612,17 +1637,32 @@ async fn count_change_inputs_under_rule(
     basket_id: i64,
     allow_received: bool,
 ) -> Result<usize> {
+    count_change_inputs_up_to(conn, user_id, basket_id, allow_received, -1).await
+}
+
+/// [`count_change_inputs_under_rule`], reading at most `limit` coins
+/// (`-1`: all of them), so a store of many free coins is not read whole.
+async fn count_change_inputs_up_to(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    basket_id: i64,
+    allow_received: bool,
+    limit: i64,
+) -> Result<usize> {
     let sql = format!(
         r#"
-        SELECT COUNT(*) as count
-        FROM outputs o
-        JOIN transactions t ON o.transaction_id = t.transaction_id
-        WHERE o.user_id = ?
-          AND o.basket_id = ?
-          AND o.change = 1
-          AND o.spendable = 1
-          AND t.status IN ('completed', 'unproven')
-          {RECEIVED_COIN_CLAUSE}
+        SELECT COUNT(*) as count FROM (
+            SELECT 1
+            FROM outputs o
+            JOIN transactions t ON o.transaction_id = t.transaction_id
+            WHERE o.user_id = ?
+              AND o.basket_id = ?
+              AND o.change = 1
+              AND o.spendable = 1
+              AND t.status IN ('completed', 'unproven')
+              {RECEIVED_COIN_CLAUSE}
+            LIMIT ?
+        )
         "#
     );
 
@@ -1630,11 +1670,35 @@ async fn count_change_inputs_under_rule(
         .bind(user_id)
         .bind(basket_id)
         .bind(allow_received)
+        .bind(limit)
         .fetch_one(&mut *conn)
         .await?;
 
     let count: i64 = row.get("count");
     Ok(count as usize)
+}
+
+/// The change count an action is sized from, read up to the basket's
+/// desired coins plus [`CHANGE_COUNT_SLACK`].
+async fn count_available_change(
+    conn: &mut SqliteConnection,
+    user_id: i64,
+    change_basket: &TableOutputBasket,
+    allow_received: bool,
+) -> Result<AvailableChange> {
+    let cap = change_basket.number_of_desired_utxos.max(0) as usize + CHANGE_COUNT_SLACK;
+    let count = count_change_inputs_up_to(
+        conn,
+        user_id,
+        change_basket.basket_id,
+        allow_received,
+        cap as i64,
+    )
+    .await?;
+    Ok(AvailableChange {
+        count,
+        capped: count >= cap,
+    })
 }
 
 /// Creates a new transaction record.
@@ -2310,8 +2374,9 @@ async fn generate_change(
         (input_sats, output_sats, fee_required, fee_excess)
     };
 
-    let target_net = params.target_net_count.unwrap_or(0);
+    let mut target_net = params.target_net_count.unwrap_or(0);
     let has_target_net_count = params.target_net_count.is_some();
+    let mut target_net_capped = params.target_net_capped;
 
     // Calculate current net change (outputs created - inputs consumed)
     let net_change_count = |outputs: &[ChangeOutput], inputs: &[AllocatedChangeInput]| -> i32 {
@@ -2361,6 +2426,27 @@ async fn generate_change(
 
         // Funding loop: add one change input at a time
         while fee_excess < 0 {
+            // A capped count decides the comparison below only while fewer
+            // than CHANGE_COUNT_SLACK change inputs are allocated: past
+            // that, size the target from the full count, as it stood when
+            // the action was sized (an allocated coin is marked unspendable,
+            // except in a dry run, which marks nothing).
+            if allocated_inputs.len() >= CHANGE_COUNT_SLACK {
+                if let Some(capped) = target_net_capped.take() {
+                    let now = count_change_inputs_under_rule(
+                        conn,
+                        user_id,
+                        basket_id,
+                        pick.allows_received(),
+                    )
+                    .await?;
+                    let marked = match pick {
+                        ChangePick::DryRun { .. } => 0,
+                        _ => allocated_inputs.len(),
+                    };
+                    target_net = capped.number_of_desired_utxos - (now + marked) as i32;
+                }
+            }
             // Check if we should add an output to balance a new input
             let add_output = has_target_net_count
                 && (net_change_count(&change_outputs, &allocated_inputs) - 1) < target_net;
@@ -7101,6 +7187,119 @@ mod tests {
             allocated.is_none(),
             "nosend outputs must not be allocated for spending"
         );
+    }
+
+    /// A store of 100 small coins (300 sat each), funding outputs that take
+    /// about 67 and about 97 of them: the change sized from the count capped
+    /// at desired + slack allocates the same coins and makes the same change
+    /// (or the same refusal) as the change sized from the full count, past
+    /// the slack too, whether the pick marks the coins it takes (the step's
+    /// allocation) or marks nothing (the pre-check's dry run).
+    #[tokio::test]
+    async fn a_capped_change_count_sizes_the_change_as_the_full_count() {
+        async fn store_of_small_coins() -> (StorageSqlx, i64, i64, i64) {
+            let storage = StorageSqlx::in_memory().await.unwrap();
+            storage.migrate("test-wallet", "02test_key").await.unwrap();
+            storage.make_available().await.unwrap();
+            let (user, _) = storage
+                .find_or_insert_user("02user_identity_key")
+                .await
+                .unwrap();
+            let basket = storage
+                .find_or_create_default_basket(user.user_id)
+                .await
+                .unwrap();
+            for i in 0..100 {
+                seed_tagged_change_output(
+                    &storage,
+                    user.user_id,
+                    300,
+                    "completed",
+                    &format!("small{i:03}"),
+                )
+                .await;
+            }
+            let spender = create_spending_tx(&storage, user.user_id, "small").await;
+            (storage, user.user_id, basket.basket_id, spender)
+        }
+        let desired = 6;
+        let params = |output: u64, target_net_count: i32, capped: bool| GenerateChangeParams {
+            fixed_inputs: vec![],
+            fixed_outputs: vec![FixedOutput {
+                satoshis: output,
+                locking_script_length: P2PKH_LOCKING_SCRIPT_LENGTH,
+            }],
+            fee_rate: DEFAULT_FEE_RATE_SAT_PER_KB,
+            change_initial_satoshis: 1_000,
+            change_first_satoshis: 250,
+            change_locking_script_length: P2PKH_LOCKING_SCRIPT_LENGTH,
+            change_unlocking_script_length: P2PKH_UNLOCKING_SCRIPT_LENGTH,
+            target_net_count: Some(target_net_count),
+            target_net_capped: capped.then_some(CappedChangeCount {
+                number_of_desired_utxos: desired,
+            }),
+        };
+
+        type Outcome = std::result::Result<(Vec<i64>, Vec<u64>), String>;
+        let mut past_slack = 0;
+        for dry_run in [false, true] {
+            for output in [19_000u64, 27_500] {
+                let mut results: Vec<Outcome> = Vec::new();
+                for capped in [false, true] {
+                    let (storage, user_id, basket_id, spender) = store_of_small_coins().await;
+                    let mut conn = storage.writer().acquire().await.unwrap();
+                    let limit = if capped {
+                        desired as i64 + CHANGE_COUNT_SLACK as i64
+                    } else {
+                        -1
+                    };
+                    let count =
+                        count_change_inputs_up_to(&mut conn, user_id, basket_id, false, limit)
+                            .await
+                            .unwrap();
+                    assert_eq!(count, if capped { 70 } else { 100 });
+                    let mut reserved = PickReservation::new(Default::default());
+                    let mut pick = if dry_run {
+                        ChangePick::DryRun {
+                            reserved: &mut reserved,
+                            skip: &[],
+                            offer: None,
+                            allow_received: false,
+                        }
+                    } else {
+                        ChangePick::Allocate
+                    };
+                    let outcome = generate_change(
+                        &mut conn,
+                        user_id,
+                        basket_id,
+                        spender,
+                        &params(output, desired - count as i32, capped),
+                        "prefix",
+                        &mut pick,
+                    )
+                    .await
+                    .map(|r| {
+                        (
+                            r.allocated_change_inputs
+                                .iter()
+                                .map(|c| c.output_id)
+                                .collect(),
+                            r.change_outputs.iter().map(|c| c.satoshis).collect(),
+                        )
+                    })
+                    .map_err(|e| e.to_string());
+                    results.push(outcome);
+                }
+                if let Ok((inputs, _)) = &results[0] {
+                    if inputs.len() > CHANGE_COUNT_SLACK {
+                        past_slack += 1;
+                    }
+                }
+                assert_eq!(results[1], results[0], "output {output}, dry run {dry_run}");
+            }
+        }
+        assert_eq!(past_slack, 4, "every case allocates past the slack");
     }
 
     #[tokio::test]
