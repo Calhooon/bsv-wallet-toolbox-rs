@@ -2777,43 +2777,52 @@ async fn allocate_change_input_by(
             ),
         };
 
-        // Try to find an output with at least target_satoshis
-        let sql = format!(
-            r#"
-            SELECT o.output_id, o.satoshis, o.txid, o.vout, o.locking_script,
-                   o.derivation_prefix, o.derivation_suffix, o.sender_identity_key
-            FROM outputs o
-            JOIN transactions t ON o.transaction_id = t.transaction_id
-            WHERE o.user_id = ?
-              AND o.basket_id = ?
-              AND o.change = 1
-              AND o.spendable = 1
-              AND o.spent_by IS NULL
-              AND t.status IN ('completed', 'unproven')
-              {RECEIVED_COIN_CLAUSE}
-              {}
-            ORDER BY
-                CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
-                CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
-                ABS(o.satoshis - ?) ASC,
-                o.output_id ASC
-            LIMIT 1
-            "#,
-            pick_clause
-        );
+        // The pick's order: a coin that covers the target before one that
+        // does not, a completed coin before an unproven one, the nearest
+        // value, then the lower output_id (the reference's
+        // allocateChangeInput ends on outputId). Each tier is one read of
+        // `idx_outputs_change_pick` in value order, upward from the target
+        // for the covering coins and downward from it for the others,
+        // ending at the first coin whose transaction is in the tier's
+        // status: the first tier that answers holds the first coin of the
+        // whole order, and no read sorts every free coin.
+        let mut row = None;
+        for (cmp, status, order) in CHANGE_PICK_TIERS {
+            let sql = format!(
+                r#"
+                SELECT o.output_id, o.satoshis, o.txid, o.vout, o.locking_script,
+                       o.derivation_prefix, o.derivation_suffix, o.sender_identity_key
+                FROM outputs o
+                JOIN transactions t ON o.transaction_id = t.transaction_id
+                WHERE o.user_id = ?
+                  AND o.basket_id = ?
+                  AND o.change = 1
+                  AND o.spendable = 1
+                  AND o.spent_by IS NULL
+                  AND t.status = '{status}'
+                  {RECEIVED_COIN_CLAUSE}
+                  {pick_clause}
+                  AND o.satoshis {cmp} ?
+                ORDER BY o.satoshis {order}, o.output_id ASC
+                LIMIT 1
+                "#
+            );
 
-        let mut query = sqlx::query(&sql)
-            .bind(user_id)
-            .bind(basket_id)
-            .bind(pick.allows_received());
-        for id in &pick_ids {
-            query = query.bind(*id);
+            let mut query = sqlx::query(&sql)
+                .bind(user_id)
+                .bind(basket_id)
+                .bind(pick.allows_received());
+            for id in &pick_ids {
+                query = query.bind(*id);
+            }
+            row = query
+                .bind(target_satoshis as i64)
+                .fetch_optional(&mut *conn)
+                .await?;
+            if row.is_some() {
+                break;
+            }
         }
-        let row = query
-            .bind(target_satoshis as i64)
-            .bind(target_satoshis as i64)
-            .fetch_optional(&mut *conn)
-            .await?;
         match (row, &mut *pick) {
             (Some(row), ChangePick::DryRun { reserved, .. }) => {
                 if reserved.try_take(row.get("output_id")) {
@@ -2863,6 +2872,16 @@ async fn allocate_change_input_by(
         Ok(None)
     }
 }
+
+/// The change pick's tiers, in order: (value bound against the target, the
+/// transaction's status, the value order). Within a covering tier the
+/// nearest value is the smallest; within the others it is the largest.
+const CHANGE_PICK_TIERS: [(&str, &str, &str); 4] = [
+    (">=", "completed", "ASC"),
+    (">=", "unproven", "ASC"),
+    ("<", "completed", "DESC"),
+    ("<", "unproven", "DESC"),
+];
 
 /// `?, ?, ?` for `n` binds.
 fn placeholders(n: usize) -> String {
@@ -7856,6 +7875,164 @@ mod tests {
         .await
         .unwrap();
         result.last_insert_rowid()
+    }
+
+    /// The tiered pick takes, coin after coin, the coin the one-sort order
+    /// takes: covers the target, completed before unproven, nearest value,
+    /// lower output_id. A store of coins with repeated values (so ties reach
+    /// the output_id), every status, received coins, and coins spent or set
+    /// unspendable, drained by targets around those values: by the tests'
+    /// allocation (each coin marked), and by the pre-check's dry run (each
+    /// coin skipped after it is picked) with the received rule off and on.
+    #[tokio::test]
+    async fn tiered_change_pick_takes_the_one_sort_orders_coin() {
+        async fn seeded_store() -> (StorageSqlx, i64, i64, i64) {
+            let storage = StorageSqlx::in_memory().await.unwrap();
+            storage.migrate("test-wallet", "02test_key").await.unwrap();
+            storage.make_available().await.unwrap();
+            let (user, _) = storage
+                .find_or_insert_user("02user_identity_key")
+                .await
+                .unwrap();
+            let basket = storage
+                .find_or_create_default_basket(user.user_id)
+                .await
+                .unwrap();
+            let spender = create_spending_tx(&storage, user.user_id, "tiers").await;
+            // A fixed LCG: the same store on every run.
+            let mut seed: u64 = 0x5eed;
+            let mut next = move |n: u64| {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (seed >> 33) % n
+            };
+            let values = [1_000, 2_500, 2_500, 5_000, 7_500, 10_000, 10_000, 50_000];
+            let statuses = ["completed", "unproven", "sending", "failed"];
+            for i in 0..120 {
+                let sats = values[next(values.len() as u64) as usize];
+                let status = statuses[next(statuses.len() as u64) as usize];
+                let (_, output_id) = seed_tagged_change_output(
+                    &storage,
+                    user.user_id,
+                    sats,
+                    status,
+                    &format!("tier{i:03}"),
+                )
+                .await;
+                let update = match next(8) {
+                    0 | 1 => Some("UPDATE outputs SET purpose = 'receive' WHERE output_id = ?"),
+                    2 => Some("UPDATE outputs SET spendable = 0 WHERE output_id = ?"),
+                    3 => Some("UPDATE outputs SET spent_by = transaction_id WHERE output_id = ?"),
+                    _ => None,
+                };
+                if let Some(update) = update {
+                    sqlx::query(update)
+                        .bind(output_id)
+                        .execute(storage.writer())
+                        .await
+                        .unwrap();
+                }
+            }
+            (storage, user.user_id, basket.basket_id, spender)
+        }
+
+        let mut taken_by_mode = Vec::new();
+        for (dry_run, allow_received) in [(false, false), (true, false), (true, true)] {
+            let (storage, user_id, basket_id, spender) = seeded_store().await;
+            let mut conn = storage.writer().acquire().await.unwrap();
+            let mut next_target = {
+                let mut seed: u64 = 0x7a29;
+                move || {
+                    seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    [1i64, 2_000, 2_500, 6_000, 10_000, 60_000][((seed >> 33) % 6) as usize]
+                }
+            };
+            let mut skip: Vec<i64> = Vec::new();
+            let mut taken = 0;
+            loop {
+                let target = next_target();
+                let skip_clause = if skip.is_empty() {
+                    String::new()
+                } else {
+                    format!("AND o.output_id NOT IN ({})", placeholders(skip.len()))
+                };
+                let one_sort = format!(
+                    r#"
+                    SELECT o.output_id
+                    FROM outputs o
+                    JOIN transactions t ON o.transaction_id = t.transaction_id
+                    WHERE o.user_id = ? AND o.basket_id = ? AND o.change = 1
+                      AND o.spendable = 1 AND o.spent_by IS NULL
+                      AND t.status IN ('completed', 'unproven')
+                      {RECEIVED_COIN_CLAUSE}
+                      {skip_clause}
+                    ORDER BY
+                        CASE WHEN o.satoshis >= ? THEN 0 ELSE 1 END,
+                        CASE WHEN t.status = 'completed' THEN 0 ELSE 1 END,
+                        ABS(o.satoshis - ?) ASC,
+                        o.output_id ASC
+                    LIMIT 1
+                    "#
+                );
+                let mut query = sqlx::query_as(&one_sort)
+                    .bind(user_id)
+                    .bind(basket_id)
+                    .bind(allow_received);
+                for id in &skip {
+                    query = query.bind(*id);
+                }
+                let expected: Option<(i64,)> = query
+                    .bind(target)
+                    .bind(target)
+                    .fetch_optional(&mut *conn)
+                    .await
+                    .unwrap();
+                let picked = if dry_run {
+                    let mut reserved = PickReservation::new(Default::default());
+                    let skipped = skip.clone();
+                    allocate_change_input_by(
+                        &mut conn,
+                        user_id,
+                        basket_id,
+                        0,
+                        target as u64,
+                        &mut ChangePick::DryRun {
+                            reserved: &mut reserved,
+                            skip: &skipped,
+                            offer: None,
+                            allow_received,
+                        },
+                    )
+                    .await
+                    .unwrap()
+                } else {
+                    allocate_change_input(&mut conn, user_id, basket_id, spender, target as u64)
+                        .await
+                        .unwrap()
+                };
+                assert_eq!(
+                    picked.as_ref().map(|c| c.output_id),
+                    expected.map(|(id,)| id),
+                    "dry run {dry_run}, received {allow_received}, target {target}, \
+                     after {taken} coins taken"
+                );
+                let Some(picked) = picked else { break };
+                skip.push(picked.output_id);
+                taken += 1;
+            }
+            taken_by_mode.push(taken);
+        }
+        assert!(
+            taken_by_mode.iter().all(|t| *t > 20),
+            "coins taken per mode: {taken_by_mode:?}"
+        );
+        assert!(
+            taken_by_mode[2] > taken_by_mode[1],
+            "the received rule offers more coins: {taken_by_mode:?}"
+        );
     }
 
     #[tokio::test]

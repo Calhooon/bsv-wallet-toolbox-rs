@@ -508,10 +508,7 @@ mod tests {
                 .migrate("old-wallet", &"1".repeat(64))
                 .await
                 .unwrap();
-            assert_eq!(
-                version,
-                super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
-            );
+            assert_eq!(version, "006_change_pick_index");
             sqlx::query("DROP TABLE broadcast_seen")
                 .execute(storage.writer())
                 .await
@@ -550,10 +547,7 @@ mod tests {
             .migrate("old-wallet", &"1".repeat(64))
             .await
             .unwrap();
-        assert_eq!(
-            version,
-            super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
-        );
+        assert_eq!(version, "006_change_pick_index");
         storage.pool().close().await;
     }
 

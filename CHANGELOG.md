@@ -37,6 +37,7 @@
 ### Changed
 
 - The change pick ranks no coin by `LENGTH(input_beef)` and ends every pick on `output_id`, as the beta line has since #105 (found by bsv-wallet-cli's differential harness, CLI #70): after covering the target, `completed` before `unproven`, then the nearest value, then the lower `output_id`, as the reference's `allocateChangeInput` ends on `outputId`. A received coin's transaction keeps its `input_beef`, so before this the pick among `completed` coins of one value moved with a BEEF's length, which moves by a byte with DER signature lengths between runs.
+- `createAction`'s change pick reads an index of the free change coins (`idx_outputs_change_pick`, migration `006_change_pick_index`, a partial index on `outputs(user_id, basket_id, satoshis)` over unspent spendable change) in four tiers, each ending at its first coin, instead of sorting every spendable output of the store on each pick (twice a `createAction`: the pre-check and the step). The pick is the same coin as the one-sort order above (`tiered_change_pick_takes_the_one_sort_orders_coin` drains a store of every status, received, spent and unspendable coins and tied values, and checks each pick against it). `StorageSqlx::migrate` now answers `006_change_pick_index`.
 
 ### Hosts
 

@@ -208,10 +208,7 @@ mod tests {
                 .migrate("old-wallet", &"1".repeat(64))
                 .await
                 .unwrap();
-            assert_eq!(
-                version,
-                super::super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME
-            );
+            assert_eq!(version, "006_change_pick_index");
             sqlx::query("DROP TABLE monitor_state")
                 .execute(storage.writer())
                 .await
@@ -234,6 +231,43 @@ mod tests {
             .unwrap();
         assert_eq!(storage.max_acceptable_proof_height().await.unwrap(), 965771);
         assert!(storage.load_header_tracker_state().await.unwrap().is_none());
+    }
+
+    /// Migration 006 lands on `migrate()` and, for a database created before
+    /// it, on `make_available()`: an older store opened without `migrate()`
+    /// gets the change pick's index.
+    #[tokio::test]
+    async fn migration_006_applies_on_open_of_an_existing_005_database() {
+        async fn index_exists(pool: &Pool<Sqlite>) -> bool {
+            let row: Option<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_outputs_change_pick'",
+            )
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+            row.is_some()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.db");
+        let path = path.to_str().unwrap().to_string();
+        {
+            let storage = StorageSqlx::open(&path).await.unwrap();
+            storage
+                .migrate("old-wallet", &"1".repeat(64))
+                .await
+                .unwrap();
+            assert!(index_exists(storage.pool()).await);
+            sqlx::query("DROP INDEX idx_outputs_change_pick")
+                .execute(storage.writer())
+                .await
+                .unwrap();
+            assert!(!index_exists(storage.pool()).await);
+            storage.pool().close().await;
+        }
+        let storage = StorageSqlx::open(&path).await.unwrap();
+        assert!(!index_exists(storage.pool()).await);
+        storage.make_available().await.unwrap();
+        assert!(index_exists(storage.pool()).await);
     }
 
     /// F3: ONE persisted gate. Two `StorageSqlx` opened on the same file

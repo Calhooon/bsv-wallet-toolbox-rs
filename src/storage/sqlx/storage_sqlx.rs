@@ -81,7 +81,18 @@ const MIGRATIONS: &[(&str, &str)] = &[
         super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_NAME,
         super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_SQL,
     ),
+    (
+        MIGRATION_006_CHANGE_PICK_INDEX_NAME,
+        MIGRATION_006_CHANGE_PICK_INDEX_SQL,
+    ),
 ];
+
+/// Name of migration 006, as `StorageSqlx::migrate` reports it.
+pub const MIGRATION_006_CHANGE_PICK_INDEX_NAME: &str = "006_change_pick_index";
+
+/// The migration that creates the change pick's index.
+pub const MIGRATION_006_CHANGE_PICK_INDEX_SQL: &str =
+    include_str!("migrations/006_change_pick_index.sql");
 
 /// Connections in the reader pool (sqlx's default pool size).
 const READER_POOL_SIZE: u32 = 10;
@@ -2394,6 +2405,12 @@ impl WalletStorageWriter for StorageSqlx {
             self.ensure_locked_inputs_schema().await?;
             super::monitor_state::ensure_monitor_state_schema(self.writer()).await?;
             super::proof_root_checks::ensure_proof_root_checks_schema(self.writer()).await?;
+            super::broadcast_seen::apply_migration_sql(
+                self.writer(),
+                MIGRATION_006_CHANGE_PICK_INDEX_NAME,
+                MIGRATION_006_CHANGE_PICK_INDEX_SQL,
+            )
+            .await?;
             self.cache_settings(&settings)?;
             Ok(settings)
         } else {
@@ -7979,7 +7996,7 @@ mod tests {
             .migrate("test-storage", "0".repeat(64).as_str())
             .await
             .unwrap();
-        assert_eq!(version, "005_proof_root_checks");
+        assert_eq!(version, "006_change_pick_index");
 
         // Make available
         let settings = storage.make_available().await.unwrap();
