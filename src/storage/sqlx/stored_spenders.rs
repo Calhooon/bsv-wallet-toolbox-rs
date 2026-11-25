@@ -398,22 +398,38 @@ async fn mark_of(conn: &mut SqliteConnection, except: Option<i64>) -> Result<(i6
 /// mark, and for each output it would release, the stored spenders.
 #[derive(Debug, Default)]
 pub(crate) struct SentChangeSearch {
+    /// Whether any txid was searched: a search of none read no mark.
+    searched: bool,
     mark: (i64, String),
     except: Option<i64>,
     found: std::collections::HashMap<i64, StoredSpenders>,
 }
 
 impl SentChangeSearch {
+    /// A search that searched txids and found nothing (its mark unread).
+    #[cfg(test)]
+    pub(crate) fn searched_nothing() -> Self {
+        Self {
+            searched: true,
+            ..Self::default()
+        }
+    }
+
     /// Inside the caller's write, before any of its sends' status writes:
     /// `self` when the store's transactions are as the search read them
     /// (`current`, the action the write signs, left out), else `None`, and
     /// each release searches on the writer.
+    ///
+    /// A search of no txid (an action that sends nothing with it, every
+    /// immediate `createAction`) has no release to stand for and is `None`
+    /// without reading the mark: the mark's `MAX(updated_at)` reads every
+    /// transaction of the store, inside the write lock.
     pub(crate) async fn still_read(
         &self,
         conn: &mut SqliteConnection,
         current: Option<i64>,
     ) -> Result<Option<&Self>> {
-        if self.except.is_some_and(|e| Some(e) != current) {
+        if !self.searched || self.except.is_some_and(|e| Some(e) != current) {
             return Ok(None);
         }
         Ok((mark_of(conn, current).await? == self.mark).then_some(self))
@@ -436,6 +452,7 @@ pub(crate) async fn search_sent_change(
     if txids.is_empty() {
         return Ok(search);
     }
+    search.searched = true;
     let mut conn = storage.pool().acquire().await?;
     if let Some(reference) = current {
         search.except =
