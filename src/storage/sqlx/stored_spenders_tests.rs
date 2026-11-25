@@ -534,7 +534,7 @@ async fn stored_spenders_cost() {
             // The send's release inside the writer when the search ran on a
             // reader before it: the mark alone (`still_read`).
             let t = std::time::Instant::now();
-            let _ = super::stored_spenders::SentChangeSearch::default()
+            let _ = super::stored_spenders::SentChangeSearch::searched_nothing()
                 .still_read(&mut w, None)
                 .await
                 .unwrap();
@@ -556,4 +556,27 @@ async fn stored_spenders_cost() {
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A search of no txid (an action that sends nothing with it) answers `None`
+/// inside the write without reading the store's mark; a search of a txid
+/// reads it. Inside the write the `transactions` table is dropped (and the
+/// drop rolled back), so a read of the mark is an error.
+#[tokio::test]
+async fn a_search_of_no_txid_reads_no_mark_in_the_write() {
+    let s = storage().await;
+    let none = super::stored_spenders::search_sent_change(&s, 1, &[], None)
+        .await
+        .unwrap();
+    let mut w = s.write_tx().await.unwrap();
+    sqlx::query("DROP TABLE transactions")
+        .execute(&mut *w)
+        .await
+        .unwrap();
+    assert!(none.still_read(&mut w, None).await.unwrap().is_none());
+    assert!(super::stored_spenders::SentChangeSearch::searched_nothing()
+        .still_read(&mut w, None)
+        .await
+        .is_err());
+    drop(w);
 }
