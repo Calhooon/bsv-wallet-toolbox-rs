@@ -259,7 +259,7 @@ CheckForProofsTask::new(storage: Arc<S>, services: Arc<V>) -> Self
 ```
 
 **Behavior:**
-0. The adoption (`StorageSqlx::adopt_unproven_transactions`): a transaction that links no proof, reads `completed` or `unproven`, beside no request or a proof-eligible one, whose txid has a proof row, is linked to it; it is written `completed` (and its request with it) only where the store holds a root-check record of that proof, else the link alone, the status and the request left (the review's pass, or step 1's ask through the funnel, checks the root). A proof row the store marked refuted (its record reads `refuted:<root>`) is never linked. No header is read. The link step takes every such row in one write a pass; a row with no request at all and no proof row gets an `unmined` request (at most `ADOPT_UNPROVEN_TX_LIMIT`, 200, a pass).
+0. The adoption (`StorageSqlx::adopt_unproven_transactions`): a transaction that links no proof, reads `completed` or `unproven`, beside no request or a proof-eligible one, whose txid has a proof row, is linked to it; it is written `completed` (and its request with it) only where the store holds a root-check record of that proof, else the link alone, the status and the request left (the review's pass, or step 1's ask through the funnel, checks the root). No header is read. The link step takes every such row in one write a pass; a row with no request at all and no proof row gets an `unmined` request (at most `ADOPT_UNPROVEN_TX_LIMIT`, 200, a pass).
 1. Queries `proven_tx_reqs` with status: `Unmined`, `Unknown`, `Callback`, `Sending`, or `Unconfirmed`
 2. For each transaction, calls `services.get_merkle_path(txid, false)`
 3. On success with proof: logs success, increments processed count
