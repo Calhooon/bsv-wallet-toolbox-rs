@@ -1036,7 +1036,6 @@ pub(super) async fn process_action_writes(
     }
 
     let tx = conn;
-    let mut send_with_results: Vec<SendWithResult> = Vec::new();
     let txids_to_broadcast: Vec<String>;
 
     if args.is_new_tx {
@@ -1189,6 +1188,21 @@ pub(super) async fn process_action_writes(
         });
     }
 
+    queue_sends(storage, tx, user_id, args, &txids_to_broadcast).await
+}
+
+/// The send of each txid of a processed action's set, in call order: its
+/// request and transaction rows moved toward the post and its
+/// `sendWithResults` entry. Called by [`process_action_writes`] on its
+/// connection, in its write.
+async fn queue_sends(
+    storage: &StorageSqlx,
+    tx: &mut SqliteConnection,
+    user_id: i64,
+    args: &StorageProcessActionArgs,
+    txids_to_broadcast: &[String],
+) -> Result<StorageProcessActionResults> {
+    let mut send_with_results: Vec<SendWithResult> = Vec::new();
     let batch = if txids_to_broadcast.len() > 1 {
         Some(storage.rng.base64(16))
     } else {
@@ -1200,7 +1214,7 @@ pub(super) async fn process_action_writes(
     // the caller's own transaction row of it reads `nosend`. For any other
     // nothing is written, and the answer says what that row reads.
     let own = args.txid.as_deref().filter(|_| args.is_new_tx);
-    for txid in &txids_to_broadcast {
+    for txid in txids_to_broadcast {
         if own != Some(txid.as_str()) {
             let word: Option<String> = sqlx::query_scalar(
                 "SELECT status FROM transactions WHERE txid = ? AND user_id = ? \
