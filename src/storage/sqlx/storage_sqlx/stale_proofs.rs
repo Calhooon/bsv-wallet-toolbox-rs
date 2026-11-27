@@ -13,8 +13,9 @@ use super::{
 ///    inserted with the raw bytes taken from the proof row, so the bytes
 ///    survive even after the 30-day purge cleared `transactions.raw_tx`.
 /// 2. `transactions`: every row linked to the proof but a `failed` one
-///    (and a `completed` row for the txid left without a link) goes back
-///    to `unproven`, its
+///    and a held receipt (a received row reading `sending`, which stays
+///    `sending`), and a `completed` row for the txid left without a link,
+///    goes back to `unproven`, its
 ///    `raw_tx` restored from the proof row when the purge had cleared it.
 ///    `unproven` is in every spendable set (coin selection, `list_outputs`,
 ///    `list_actions`, the adoption pass), so the coins stay visible.
@@ -74,7 +75,8 @@ pub(in crate::storage::sqlx) async fn demote_stale_proof_on(
     // 2. the transactions: back to unproven, bytes restored.
     sqlx::query(
         "UPDATE transactions SET status = 'unproven', proven_tx_id = NULL, raw_tx = COALESCE(raw_tx, ?), updated_at = ? \
-         WHERE (proven_tx_id = ? AND status <> 'failed') \
+         WHERE (proven_tx_id = ? AND status <> 'failed' \
+                AND NOT (status = 'sending' AND is_outgoing = 0)) \
             OR (txid = ? AND status = 'completed' AND proven_tx_id IS NULL)",
     )
     .bind(&raw_tx)
@@ -83,11 +85,14 @@ pub(in crate::storage::sqlx) async fn demote_stale_proof_on(
     .bind(txid)
     .execute(&mut *conn)
     .await?;
-    // A `failed` row linked to the proof keeps its word and its coins; only
-    // the link goes with the proof row.
+    // A `failed` row linked to the proof keeps its word and its coins, and
+    // a held receipt (a received row reading `sending`: no instance has
+    // taken it) stays held, not counted on a proof just refuted; only the
+    // link goes with the proof row.
     sqlx::query(
         "UPDATE transactions SET proven_tx_id = NULL, updated_at = ? \
-         WHERE proven_tx_id = ? AND status = 'failed'",
+         WHERE proven_tx_id = ? \
+           AND (status = 'failed' OR (status = 'sending' AND is_outgoing = 0))",
     )
     .bind(now)
     .bind(proven_tx_id)
