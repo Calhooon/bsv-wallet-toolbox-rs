@@ -2,7 +2,7 @@
 //! a proof row this store has not checked: the row is linked and its status
 //! left, no header read; the status review's pass then checks the root
 //! (confirmed: completed; refuted: the link cleared, the status left, the
-//! proof row kept and marked refuted, a request asking for the proof; no
+//! proof row and its record removed, a request asking for the proof; no
 //! tracker: nothing written). A proof this store checked: linked and
 //! completed as before.
 //!

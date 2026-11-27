@@ -151,7 +151,7 @@ async fn rows(s: &StorageSqlx, txid: &str) -> String {
             .unwrap();
     let checked = count(
         s,
-        &format!("SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{txid}' AND merkle_root NOT LIKE 'refuted:%'"),
+        &format!("SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{txid}'"),
     )
     .await;
     let req: Option<(String, Option<i64>, String)> =
