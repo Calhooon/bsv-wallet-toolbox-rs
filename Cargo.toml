@@ -9,6 +9,25 @@ repository = "https://github.com/Calhooon/bsv-wallet-toolbox-rs"
 homepage = "https://github.com/Calhooon/bsv-wallet-toolbox-rs"
 keywords = ["bitcoin", "bsv", "wallet", "blockchain"]
 categories = ["cryptography::cryptocurrencies"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/test_vectors/**",
+    "/examples/**",
+    "/benches/**/*.rs",
+    "/benches/README.md",
+    "/conformance/upstream/261-certificate-field-value/**",
+    "/docs/ARCHITECTURE.md",
+    "/docs/DIVERGENCES.md",
+    "/docs/REORG-DIVERGENCES.md",
+    "/docs/STORAGE-WIRE.md",
+    "/docs/design/ump-token-format.md",
+    "/docs/providers/bananablocks.md",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE-MIT",
+    "!CLAUDE.md",
+]
 
 [features]
 default = ["sqlite"]
