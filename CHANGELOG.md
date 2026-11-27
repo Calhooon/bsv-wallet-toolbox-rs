@@ -164,17 +164,33 @@
   unchanged, and it marks the inputs in the same write as its take. The
   descendants an abort ended stay ended when their root is recovered. A
   root's output an ended descendant spent follows that descendant's own
-  end, in the write that recovers the root: where the store holds no
-  record that the descendant's bytes left for an instance (no request,
-  or none of the post notes `doorPost`, `processActionPost`,
-  `immediateBroadcastHint`, `sendWaitingHint`, `broadcasterRefusalHint`
-  and `lostProofAnnounce` on its request's history, and no recorded word
-  of an instance for its txid), the output is released, spendable as the
-  root's other outputs are (`givenUpSpends` on the recovery's note);
-  where it holds one, or cannot read the history whole, the output stays
-  spent by the descendant, which returns it by its own take, its proof
-  or a competitor's proof against it. Only the root's own outputs are
-  read (`tests/held_answer_descendant_take_tests.rs`). At 0.14.0-beta.10 the
+  end, in the write that recovers the root, and the release needs a
+  positive ground that the descendant was never posted; a missing record
+  is not one. A descendant whose request records no post (its whole
+  history reads, with none of the post notes `doorPost`,
+  `processActionPost`, `immediateBroadcastHint`, `sendWaitingHint`,
+  `broadcasterRefusalHint` and `lostProofAnnounce` on it, and no
+  recorded word of an instance for its txid), or a descendant with no
+  request whose own row was never signed (`transactions.txid` and
+  `transactions.raw_tx` both empty; the signed bytes reach the row in
+  the write that makes the request): the output is released, spendable
+  as the root's other outputs are (`givenUpSpends` on the recovery's
+  note). A record of a post, a signed descendant with no request (the
+  purge task deletes an ended request with its history after its age),
+  a history holding a `previous` key or one that does not parse, or as
+  many notes as a history keeps: the store cannot tell, and the output
+  stays spent by the descendant, which returns it by its own take, its
+  proof or a competitor's proof against it. An output with a
+  `spent-proven` check recorded at its own outpoint is never released.
+  Only the root's own outputs are read. The window the store cannot
+  see: a post is recorded after the bytes leave, so a descendant whose
+  post was cut off between the two (a crash, or the write after the
+  post failing, the row left as it was sent) carries a request with no
+  post on it and reads never posted; a post whose statuses moved is
+  recorded in that same write (each accepting instance's take, or the
+  hint's note), except a bare success that names no instance. A mark
+  written ahead of the post would close it and is not part of this
+  change (`tests/held_answer_descendant_take_tests.rs`). At 0.14.0-beta.10 the
   wallet's own post's take after such an abort left the request `invalid`
   and the transaction `failed` with its inputs released and offered
   (`test_race_broadcast_status_vs_abort`;
@@ -213,22 +229,61 @@
   the record and the completion; refuted, the stored proof is demoted as
   an unchecked proof is everywhere else (the request `unmined` with no
   link, the proof row and its record gone, each other row linked to it
-  `unproven`), a `failed` row keeping its word, its inputs and its
-  outputs; no tracker, a tracker fault, or a row moved meanwhile, nothing
-  written and the same at the next pass. A request and a proof row the
-  store's sync wrote are read the same way
-  (`tests/held_answer_review_proof_tests.rs`). Its load: one reader query
+  `unproven`); no tracker, a tracker fault, or a row moved meanwhile,
+  nothing written and the same at the next pass. The rule is the
+  store's own, whatever wrote the rows: a request reading `completed`
+  beside a proof this store has not checked
+  (`tests/held_answer_review_proof_tests.rs`).
+- A refuted proof beside the wallet's own `failed` transaction recovers
+  toward caution (the keeper's reading 26 of section 30). The demotion
+  leaves the request `unmined`, the store's word for a transaction the
+  network may hold, and a root the headers refute does not unsay a
+  request that read `completed` (a reorg, or headers not held yet,
+  refute a true proof too). So in the demotion's own write, whichever
+  caller makes it (the status review, the read check of an unchecked
+  stored proof, the reorg path and a host's `demote_stale_proof`), the
+  `failed` outgoing row of the txid is read by its state, as a take
+  reads it. Released with no evidence on record: recovered by the one
+  recovery, the transaction `unproven`, each free input marked spent by
+  it again, an input another action spent meanwhile left with that
+  action and the txid queued as that action's competitor, its own
+  outputs that nothing spent opened, the cause
+  `recoveredOnRefutedProof` on the request's history, the request
+  asking for its proof. An input still spent by it (all of them, or
+  some): it stays ended and keeps them, every free input of it is
+  marked spent by it again, and the request reads `invalid`, the ended
+  row's word, unless a live row of the txid needs it asking. A
+  competitor's checked proof on record against it (a `spent-proven`
+  check at one of its inputs): not recovered, that evidence outranks
+  the word; the request reads `invalid` and a `refutedProofNotRecovered`
+  note names the rows; the same with no stored copy of the transaction
+  that hashes to its txid. So no demotion leaves a request asking
+  beside a `failed` transaction with a free input. A transaction
+  recovered this way does not end by a count: on this line the proof
+  task's attempt count writes no word for any request, so it ends by
+  its proof, by a competitor's checked proof, or by the host's own
+  `retire_undeliverable_txid` (`tests/held_answer_refuted_proof_tests.rs`,
+  six states by another user's live row present or not).
+- The demotion of a refuted proof leaves a held receipt held: a received
+  transaction reading `sending` (no instance has taken it) that is
+  linked to the proof keeps `sending`, its link gone with the proof
+  row, where every other linked row but a `failed` one reads `unproven`. Its load: one reader query
   a pass; one header read of the tracker for each txid in that state
   whose proof is not yet checked, and one short write; a checked or
   refuted txid leaves the state in its pass, so a pass over 500 such rows
   asks 500 header reads once, and only those the tracker could not answer
   again at the next pass.
-- The load of the take and the proof over `failed` rows: a take beside a
-  released row and a proof over a `failed` row each read `outputs` once
-  per input of the txid's `failed` rows, by scan (`outputs` has no index
-  on its txid or spender): 11.3 ms and 34.2 ms at 10,000 transactions and
-  20,000 outputs, under the test profile, bounded by the txid's `failed`
-  rows times their inputs; a proof with no `failed` row does one indexed
+- The load of the take and the proof over `failed` rows, by scan
+  (`outputs` has no index on its txid or spender): a recovery of a
+  released row reads `outputs` three times per input of the txid (the
+  state's read for a verdict on record, the re-mark, and the read of
+  the actions holding an input), and once more per `failed` row for its
+  locked inputs and for its outputs a descendant spent; a proof over a
+  `failed` row reads it twice per input (the re-mark and the losers).
+  The figures on record, 11.3 ms and 34.2 ms at 10,000 transactions and
+  20,000 outputs under the test profile, were measured with one read
+  per input, ahead of the holders' read, and were not measured again;
+  the cost is bounded by the txid's `failed` rows times their inputs; a proof with no `failed` row does one indexed
   read. The indexes are their own change. Each read of a transaction's
   stored copy adds one double hash per copy read and no query.
 - A send-waiting hint (a post drawing no take that counts) keeps a
@@ -405,9 +460,18 @@ alone, so their answers here are 0.14.0-beta.8.1's):
   where 0.14.0-beta.10 wrote `immediateBroadcastHint`; a host that reads
   the history for the door's words reads the new name.
 - A host whose action an abort ended as a descendant of the aborted
-  action, and whose bytes never left for an instance, reads the coin it
-  spent back in its balance when the aborted action is taken after all;
-  the descendant itself stays `failed`.
+  action, and whose request records no post (or which was never signed
+  and has no request), reads the coin it spent back in its balance when
+  the aborted action is taken after all; the descendant itself stays
+  `failed`. A post cut off ahead of its record (a crash after the bytes
+  leave) is the window the store cannot see: such a descendant reads
+  never posted. A descendant whose ended request the purge deleted
+  keeps the coin withheld.
+- A host that reads a `failed` action of its own back as `unproven`
+  with a `recoveredOnRefutedProof` note: the store held a request
+  reading `completed` for it beside a proof its headers refuted, and
+  recovered it toward caution; it ends by a proof, a competitor's
+  checked proof or the host's own retire.
 - A store a host opens with a chain tracker and no services: every
   received payment with no checked proof is held and answers
   `serviceError`, with the door's note saying no services were

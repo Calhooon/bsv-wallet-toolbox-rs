@@ -13,7 +13,8 @@
 //!
 //! The state: the sender's action, aborted (`failed`, its inputs released,
 //! its change closed), beside a request `completed` linked to a proof row
-//! with no root-check record, written directly or by the store's own sync.
+//! with no root-check record: a request reading `completed` beside a proof
+//! this store has not checked.
 
 #![cfg(feature = "sqlite")]
 
@@ -280,11 +281,10 @@ async fn the_review_writes_nothing_when_a_row_moved_while_the_tracker_answered()
     assert_eq!(tracker.asks.load(Ordering::SeqCst), 2);
 }
 
-/// The same state reached through the store's own sync: a chunk carrying
-/// the proof row (no root check recorded), then one carrying the request
-/// `completed` with its link (the request's link must name a row already
-/// on the store: a chunk processes its requests ahead of its proof rows).
-/// Refuted: the demotion; confirmed: the completion.
+/// The store's own rule over the same state written through
+/// `process_sync_chunk`: a request reading `completed` beside a proof this
+/// store has not checked. Refuted: the demotion; confirmed: the
+/// completion.
 #[tokio::test]
 async fn a_synced_request_and_proof_row_complete_only_on_a_checked_root() {
     for mode in [REFUTE, CONFIRM] {
