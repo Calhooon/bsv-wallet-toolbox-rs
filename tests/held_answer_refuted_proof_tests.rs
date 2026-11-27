@@ -294,3 +294,28 @@ async fn a_row_recovered_on_a_refuted_proof_is_not_ended_by_the_count() {
     let history = history(&cell.f).await;
     assert_eq!(judge(Cause::AbortFree, false, &got, &history), None);
 }
+
+/// A HELD RECEIPT STAYS HELD: another user's received row of the txid that
+/// reads `sending` (no instance has taken it) and is linked to the refuted
+/// proof keeps `sending` through the demotion, with its link gone; it is
+/// not counted on a proof that was just refuted.
+#[tokio::test]
+async fn the_demotion_leaves_a_held_receipt_held() {
+    for door in [Door::Review, Door::Demote] {
+        let cell = pair(Cause::AbortFree, true, true).await;
+        refute(&cell, door).await;
+        let other = cell.other.unwrap();
+        let (word, link): (String, Option<i64>) = sqlx::query_as(
+            "SELECT status, proven_tx_id FROM transactions WHERE transaction_id = ?",
+        )
+        .bind(other)
+        .fetch_one(cell.f.store.pool())
+        .await
+        .unwrap();
+        println!("{door:?}: the held receipt reads {word} link {link:?}");
+        assert_eq!((word.as_str(), link), ("sending", None), "{door:?}");
+        // The sender's own row is recovered beside it.
+        let got = read(&cell.f, false).await;
+        assert_eq!(got.row.as_deref(), Some("unproven"), "{got:?}");
+    }
+}
