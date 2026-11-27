@@ -407,8 +407,9 @@ async fn post_record_on(
 /// outputs are. An output a descendant spent whose bytes may have left, or
 /// of which the store cannot tell, stays as it is (it returns by that
 /// descendant's own take, its proof, or a competitor's proof against it).
-/// The descendant stays ended either way; only the recovered row's own
-/// outputs are read. Returns the ids.
+/// An output with a `spent-proven` check recorded at its own outpoint is
+/// never released. The descendant stays ended either way; only the
+/// recovered row's own outputs are read. Returns the ids.
 async fn release_given_up_spends_on(
     conn: &mut SqliteConnection,
     transaction_id: i64,
@@ -424,7 +425,19 @@ async fn release_given_up_spends_on(
     .await?;
     let mut released = Vec::new();
     for (output_id, descendant, spender) in spent {
-        if post_record_on(conn, descendant, spender.as_deref()).await? != PostRecord::NeverPosted {
+        // The output's own verdict: a `spent-proven` check recorded at its
+        // outpoint says the chain shows it spent, and it is not released.
+        let spent_proven: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM locked_input_checks WHERE output_id = ? AND last_verdict = ?",
+        )
+        .bind(output_id)
+        .bind(super::LOCKED_VERDICT_SPENT_PROVEN)
+        .fetch_one(&mut *conn)
+        .await?;
+        if spent_proven > 0
+            || post_record_on(conn, descendant, spender.as_deref()).await?
+                != PostRecord::NeverPosted
+        {
             continue;
         }
         sqlx::query(

@@ -79,6 +79,9 @@ enum Posted {
     PostedThenPurged,
     /// A request whose older history is kept whole under `previous`.
     PreviousHistory,
+    /// No post on record, as `Never`, and a `spent-proven` check recorded
+    /// at the outpoint of R's output that D spent.
+    NeverButSpentProven,
     /// A request with no post on record (a `noSend` action's).
     Never,
     /// The wallet's own post's note on its history.
@@ -156,7 +159,7 @@ async fn scene(posted: Posted, grand: bool) -> Scene {
     if !matches!(posted, Posted::NoRequest | Posted::NeverSigned) {
         let (word, attempts, history) = match posted {
             Posted::PreviousHistory => ("nosend", 0, r#"{"previous":"an older history"}"#.to_string()),
-            Posted::Never => ("nosend", 0, "{}".to_string()),
+            Posted::Never | Posted::NeverButSpentProven => ("nosend", 0, "{}".to_string()),
             Posted::OwnPostNote | Posted::PostedThenPurged => (
                 "sending",
                 0,
@@ -244,6 +247,17 @@ async fn scene(posted: Posted, grand: bool) -> Scene {
             .await,
             None
         );
+    }
+
+    if posted == Posted::NeverButSpentProven {
+        sqlx::query(
+            "INSERT INTO locked_input_checks (output_id, attempts, last_verdict) \
+             VALUES (?, 1, 'spent-proven')",
+        )
+        .bind(f.own_output)
+        .execute(store.writer())
+        .await
+        .unwrap();
     }
 
     // An instance takes R.
@@ -353,6 +367,18 @@ async fn a_signed_descendant_with_no_request_is_withheld() {
 #[tokio::test]
 async fn a_descendant_whose_history_is_kept_under_previous_is_withheld() {
     withheld(Posted::PreviousHistory).await;
+}
+
+/// THE OUTPUT'S OWN VERDICT: a `spent-proven` check recorded at the
+/// outpoint of R's output that D spent keeps it withheld, whatever D's
+/// post record reads.
+#[tokio::test]
+async fn an_output_with_a_spent_proven_check_is_not_released() {
+    let s = scene(Posted::NeverButSpentProven, false).await;
+    let given_up = coin(&s.store, s.f.own_output).await;
+    println!("the root's output D spent, a spent-proven check on it: {given_up:?}");
+    assert_ended(&s).await;
+    assert_eq!(given_up, (false, Some(s.d), 1));
 }
 
 async fn withheld(posted: Posted) {
