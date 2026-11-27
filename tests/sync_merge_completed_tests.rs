@@ -288,12 +288,14 @@ async fn a_drain_leaves_the_held_status_and_a_confirming_tracker_completes_both(
 }
 
 #[tokio::test]
-async fn a_refuting_tracker_demotes_and_brings_the_failed_row_back_unproven() {
+async fn a_refuting_tracker_demotes_and_leaves_a_failed_row_with_no_free_input() {
     for shape in SHAPES {
         let v = cell(shape, Tracker::Refutes, false).await;
         assert_drain_leaves_status(shape, &v);
-        // The failed row unproven beside its request asking.
-        assert!(v[2].contains("wx:unproven:-"), "{}", v[2]);
+        // The failed row holds no free input: it stays failed, its link
+        // cleared. The request asks where another row of the txid does
+        // not read failed.
+        assert!(v[2].contains("wx:failed:-"), "{}", v[2]);
         assert!(v[2].contains("req unmined"), "{}", v[2]);
         assert!(v[2].contains("wy:unproven:-"), "{}", v[2]);
         assert!(
@@ -402,7 +404,7 @@ async fn a_linked_row_beside_a_request_no_task_asks_is_a_candidate_of_the_pass()
             }
             Tracker::Refutes => {
                 assert!(
-                    reviewed.contains("w21:unproven:- | req unmined | checked 0"),
+                    reviewed.contains("w21:failed:- | req invalid | checked 0"),
                     "{reviewed}"
                 );
                 assert!(

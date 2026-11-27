@@ -364,12 +364,13 @@ async fn an_unchecked_proof_the_tracker_refutes_completes_no_unproven_row() {
 }
 
 #[tokio::test]
-async fn an_unchecked_proof_the_tracker_refutes_brings_a_failed_row_back_unproven() {
+async fn an_unchecked_proof_the_tracker_refutes_leaves_a_failed_row_with_no_free_input() {
     let (_, after, reads) = cell(4, ("failed", 0, "invalid"), false).await;
     assert_eq!(reads, 1);
-    // The failed row unproven beside its request asking, its own output as
-    // the failure left it.
-    assert!(after.starts_with("alice unproven bob unproven"), "{after}");
+    // The failed row holds no free input of its user's: it stays failed,
+    // its own output as the failure left it. The other user's row reads
+    // unproven, and the request asks for that row's proof.
+    assert!(after.starts_with("alice unproven bob failed"), "{after}");
     assert!(
         after.contains("proof false checked 0 | req unmined link false"),
         "{after}"
