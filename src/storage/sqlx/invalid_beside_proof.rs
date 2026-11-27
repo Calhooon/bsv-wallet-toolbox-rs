@@ -118,7 +118,16 @@ impl StorageSqlx {
         // (`stored_proof_checked_on`), so a checked one costs no header
         // read and is completed, and one whose `merkle_root` column and
         // computed root differ is asked as an unchecked one.
+        //
+        // A row that never leaves the set takes none of the pass's places:
+        // a proof row whose path does not parse or computes no root, and
+        // a linked row whose proof this store holds checked beside a
+        // `failed` row of the txid (the unfail task's). The pass reads on
+        // past such a row, page by page from the cursor and round once, so
+        // a candidate behind any number of them is looked at in the pass
+        // that reaches it; the places bound the header reads, 100 a pass.
         let sql = r#"
+            SELECT txid, proven_tx_id, merkle_path, kind FROM (
             SELECT DISTINCT p.txid, p.proven_tx_id, p.merkle_path,
                    CASE WHEN r.status = 'invalid'
                              AND EXISTS (SELECT 1 FROM transactions t WHERE t.txid = r.txid)
@@ -130,7 +139,7 @@ impl StorageSqlx {
                              AND EXISTS (SELECT 1 FROM transactions t
                                          WHERE t.txid = r.txid AND t.status != 'completed')
                         THEN 'completed'
-                        ELSE 'linked' END
+                        ELSE 'linked' END AS kind
             FROM proven_txs p
             LEFT JOIN proven_tx_reqs r ON r.txid = p.txid
             WHERE (r.status = 'invalid'
@@ -148,57 +157,88 @@ impl StorageSqlx {
                    AND EXISTS (SELECT 1 FROM transactions t
                                WHERE t.txid = p.txid AND t.proven_tx_id = p.proven_tx_id
                                  AND t.status != 'completed'))
-            ORDER BY p.proven_tx_id <= ?, p.proven_tx_id
+            ) WHERE proven_tx_id > ? AND proven_tx_id <= ?
+            ORDER BY proven_tx_id
             LIMIT ?
             "#;
-        let candidates: Vec<(String, i64, Vec<u8>, String)> = sqlx::query_as(sql)
-            .bind(cursor)
-            .bind(INVALID_BESIDE_PROOF_PER_PASS)
-            .fetch_all(self.pool())
-            .await?;
-        if candidates.is_empty() {
-            return Ok(PassCounts::default());
-        }
 
         // The tracker is asked with no lock held and nothing is written
         // here: each verdict is acted on inside the one write below, after
         // the row is read again.
         let tracker = self.get_chain_tracker().await;
         let mut verdicts = Vec::new();
+        let mut places = 0i64;
+        let mut last_looked: Option<i64> = None;
         {
             let mut conn = self.pool().acquire().await?;
-            for (txid, proven_tx_id, merkle_path, kind) in &candidates {
-                let Ok(path) = MerklePath::from_binary(merkle_path) else {
-                    tracing::debug!(
-                        txid = %txid,
-                        "review_status: a proof row beside an invalid or completed request does not parse; left as it is"
-                    );
-                    continue;
-                };
-                let check = check_unchecked_stored_proof_on(
-                    &mut conn,
-                    None,
-                    tracker.as_deref(),
-                    txid,
-                    &path,
-                )
-                .await?;
-                if check == ReadCheck::Undecided {
-                    tracing::debug!(
-                        txid = %txid,
-                        "review_status: a proof row beside an invalid or completed request is not checked here; nothing written"
-                    );
-                    continue;
+            // After the cursor to the end, then from the start to the
+            // cursor: round once.
+            'pass: for (start, end) in [(cursor, i64::MAX), (-1, cursor)] {
+                let mut after = start;
+                loop {
+                    let page: Vec<(String, i64, Vec<u8>, String)> = sqlx::query_as(sql)
+                        .bind(after)
+                        .bind(end)
+                        .bind(INVALID_BESIDE_PROOF_PER_PASS)
+                        .fetch_all(&mut *conn)
+                        .await?;
+                    let last_page = (page.len() as i64) < INVALID_BESIDE_PROOF_PER_PASS;
+                    for (txid, proven_tx_id, merkle_path, kind) in page {
+                        if places == INVALID_BESIDE_PROOF_PER_PASS {
+                            break 'pass;
+                        }
+                        after = proven_tx_id;
+                        last_looked = Some(proven_tx_id);
+                        let Ok(path) = MerklePath::from_binary(&merkle_path) else {
+                            tracing::debug!(
+                                txid = %txid,
+                                "review_status: a proof row beside an invalid or completed request does not parse; left as it is"
+                            );
+                            continue;
+                        };
+                        if path.compute_root(Some(&txid)).is_err() {
+                            continue;
+                        }
+                        if kind == "linked"
+                            && stored_proof_checked_on(&mut conn, &txid, &path).await?
+                        {
+                            let failed: i64 = sqlx::query_scalar(
+                                "SELECT COUNT(*) FROM transactions WHERE txid = ? AND status = 'failed'",
+                            )
+                            .bind(&txid)
+                            .fetch_one(&mut *conn)
+                            .await?;
+                            if failed > 0 {
+                                continue;
+                            }
+                        }
+                        places += 1;
+                        let check = check_unchecked_stored_proof_on(
+                            &mut conn,
+                            None,
+                            tracker.as_deref(),
+                            &txid,
+                            &path,
+                        )
+                        .await?;
+                        if check == ReadCheck::Undecided {
+                            tracing::debug!(
+                                txid = %txid,
+                                "review_status: a proof row beside an invalid or completed request is not checked here; nothing written"
+                            );
+                            continue;
+                        }
+                        verdicts.push((txid, proven_tx_id, merkle_path, kind, check));
+                    }
+                    if last_page {
+                        break;
+                    }
                 }
-                verdicts.push((
-                    txid.clone(),
-                    *proven_tx_id,
-                    merkle_path.clone(),
-                    kind.clone(),
-                    check,
-                ));
             }
         }
+        let Some(last_looked) = last_looked else {
+            return Ok(PassCounts::default());
+        };
         let mut tx = self.write_tx().await?;
         let mut counts = PassCounts::default();
         for (txid, proven_tx_id, read_path, kind, check) in &verdicts {
@@ -320,9 +360,7 @@ impl StorageSqlx {
         }
         // The next pass starts after the last proof row this one looked at
         // (and comes round): no request's own `updated_at` keeps the order.
-        if let Some((_, last, _, _)) = candidates.last() {
-            write_invalid_beside_proof_cursor_on(&mut tx, *last).await?;
-        }
+        write_invalid_beside_proof_cursor_on(&mut tx, last_looked).await?;
         commit(tx).await?;
         Ok(counts)
     }
