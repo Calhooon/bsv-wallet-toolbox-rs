@@ -21,8 +21,10 @@
 //!   demotion of an unchecked stored proof (`demote_stale_proof_on`): the
 //!   request `unmined` with no link and its bytes, the proof row and its
 //!   record gone, each row linked to it (and a `completed` row left without
-//!   a link) `unproven`; a `failed` row stays `failed`, its inputs and
-//!   outputs untouched;
+//!   a link) `unproven`; the wallet's own `failed` row of the txid is read
+//!   by its state in that write (`refuted_recovery`, reading 26): released
+//!   on no evidence it is recovered, else it stays ended with no input of
+//!   it left free beside an asking request;
 //! - UNDECIDED (no tracker, a tracker fault, a path that does not parse or
 //!   compute): nothing written; the same at the next pass.
 //!

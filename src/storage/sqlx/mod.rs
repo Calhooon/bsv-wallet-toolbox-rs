@@ -55,6 +55,7 @@ mod proof_completion;
 #[cfg(test)]
 mod proof_fetch_tests;
 mod proof_root_checks;
+mod refuted_recovery;
 #[cfg(test)]
 mod proof_root_tests;
 #[cfg(test)]

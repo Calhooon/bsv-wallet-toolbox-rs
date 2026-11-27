@@ -22,6 +22,12 @@ use super::{
 ///    ([`super::broadcast_seen::forget_mined_on`], the one sanctioned
 ///    downgrade), so reduced sends carry the transaction again.
 /// 4. the `proven_txs` row is deleted.
+/// 5. the wallet's own `failed` outgoing row of the txid is read by its
+///    state (`refuted_recovery`): released on no evidence, it is recovered
+///    as a take recovers it; an input still locked, it stays ended with
+///    every free input marked again and the request at `invalid` unless a
+///    live row needs it asking; evidence on record, not recovered, the
+///    request `invalid`.
 ///
 /// Returns whether a proof row existed. The BEEF walk calls this only for a
 /// row that was never checked (no `proof_root_checks` record) and that the
@@ -95,6 +101,10 @@ pub(in crate::storage::sqlx) async fn demote_stale_proof_on(
         .execute(&mut *conn)
         .await?;
     super::proof_root_checks::forget_root_check_on(&mut *conn, txid).await?;
+    // 5. the wallet's own `failed` row of the txid, by its state: no
+    // request is left asking beside a `failed` row with a free input.
+    crate::storage::sqlx::refuted_recovery::recover_beside_refuted_proof_on(&mut *conn, txid, now)
+        .await?;
     tracing::warn!(
         txid = %txid,
         proven_tx_id,

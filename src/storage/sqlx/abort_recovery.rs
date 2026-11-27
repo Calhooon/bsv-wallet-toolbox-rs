@@ -467,14 +467,25 @@ async fn queue_holders_on(
     Ok(holders)
 }
 
-/// THE TAKE AFTER A RELEASE MADE ON NO EVIDENCE, on the take's write (see
-/// the module): every `failed` outgoing row of `txid` in
-/// [`FailedState::Released`] is recovered. Returns the rows recovered.
+/// What a recovery of a released row answers to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RecoveryCause<'a> {
+    /// A take heard: each `(provider, word)`.
+    Take(&'a [(&'a str, &'a str)]),
+    /// A request that read `completed` beside a proof the tracker refutes
+    /// (`refuted_recovery`).
+    RefutedProof,
+}
+
+/// THE RECOVERY OF A ROW RELEASED ON NO EVIDENCE, on the caller's write
+/// (see the module): every `failed` outgoing row of `txid` in
+/// [`FailedState::Released`] is recovered. Two callers: the take's write
+/// and the demotion of a refuted proof. Returns the rows recovered.
 pub(crate) async fn recover_released_on(
     conn: &mut SqliteConnection,
     txid: &str,
     rows: &[FailedRow],
-    takers: &[(&str, &str)],
+    cause: RecoveryCause<'_>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<usize> {
     let skip: Vec<i64> = rows
@@ -501,10 +512,16 @@ pub(crate) async fn recover_released_on(
         let given_up = release_given_up_spends_on(conn, transaction_id, now).await?;
         remark_inputs_spent_on(conn, txid, &skip, now).await?;
         let holders = queue_holders_on(conn, txid, was_marked, now).await?;
-        let what = if was_marked {
-            "takenAfterAbort"
-        } else {
-            "takenAfterRelease"
+        let (what, takers): (&str, Vec<&str>) = match cause {
+            RecoveryCause::Take(takers) => (
+                if was_marked {
+                    "takenAfterAbort"
+                } else {
+                    "takenAfterRelease"
+                },
+                takers.iter().map(|(p, _)| *p).collect(),
+            ),
+            RecoveryCause::RefutedProof => ("recoveredOnRefutedProof", Vec::new()),
         };
         note_request_on(
             conn,
@@ -516,7 +533,7 @@ pub(crate) async fn recover_released_on(
                 "outputs": closed,
                 "givenUpSpends": given_up,
                 "competitorOf": holders,
-                "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+                "takers": takers,
             }),
         )
         .await?;
@@ -524,8 +541,9 @@ pub(crate) async fn recover_released_on(
             txid = %txid,
             transaction_id,
             marked = was_marked,
+            cause = what,
             marker = "taken_after_release",
-            "a take heard after a release made on no evidence: the release is undone, the transaction unproven, its free inputs marked again"
+            "a release made on no evidence is undone: the transaction unproven, its free inputs marked again"
         );
         recovered += 1;
     }

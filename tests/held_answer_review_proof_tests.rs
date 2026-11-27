@@ -7,8 +7,9 @@
 //! of the linked proof; otherwise it asks the chain tracker (no lock held)
 //! and then, in one write that reads every row again: confirmed, the record
 //! and the completion; refuted, the demotion of an unchecked stored proof,
-//! the `failed` row staying `failed` with its coins as they were; no
-//! tracker or a tracker fault, nothing written.
+//! the released `failed` row recovered toward caution in that write
+//! (`held_answer_refuted_proof_tests.rs`); no tracker or a tracker fault,
+//! nothing written.
 //!
 //! The state: the sender's action, aborted (`failed`, its inputs released,
 //! its change closed), beside a request `completed` linked to a proof row
@@ -178,17 +179,18 @@ fn own() -> Vec<(bool, String)> {
     vec![(false, "own".to_string()), (false, "own".to_string())]
 }
 
-/// Refuted: the demotion. The `failed` row stays `failed`, its inputs
-/// released and its change closed as the abort left them (balance 2000:
-/// the released coins, no change); the request `unmined` with no link;
-/// the proof row and any record gone.
+/// Refuted: the demotion, and beside it the released `failed` row
+/// recovered toward caution in the same write (the keeper's reading 26):
+/// the row `unproven`, its inputs marked spent by it again, its change
+/// opened (balance 500), the request `unmined` with no link, asking for
+/// its proof; the proof row and any record gone. No completion.
 fn assert_refuted(got: &After) {
     let r = &got.reading;
-    assert_eq!(r.row.as_deref(), Some("failed"), "{got:?}");
+    assert_eq!(r.row.as_deref(), Some("unproven"), "{got:?}");
     assert_eq!(r.request.as_deref(), Some("unmined"), "{got:?}");
-    assert_eq!(r.inputs, released(), "{got:?}");
-    assert_eq!(r.own_output_spendable, Some(false), "{got:?}");
-    assert_eq!(r.balance, 2000, "{got:?}");
+    assert_eq!(r.inputs, own(), "{got:?}");
+    assert_eq!(r.own_output_spendable, Some(true), "{got:?}");
+    assert_eq!(r.balance, 500, "{got:?}");
     assert_eq!((got.proof_rows, got.root_checks, got.linked), (0, 0, None));
     assert!(!got.proven_over_failed);
 }
@@ -205,10 +207,10 @@ fn assert_completed(got: &After) {
     assert!(got.proven_over_failed);
 }
 
-/// The read's cell: a proof row this store never checked, the tracker
-/// refuting its root. The review moves no coin of the `failed` row.
+/// A proof row this store never checked, the tracker refuting its root:
+/// the review completes nothing, and no coin of the row stays offered.
 #[tokio::test]
-async fn the_review_moves_no_coin_on_a_proof_the_tracker_refutes() {
+async fn the_review_completes_nothing_on_a_proof_the_tracker_refutes() {
     let (f, tracker, parts) = aborted(REFUTE).await;
     unchecked_proof(&f, &parts.raw).await;
     let review = MonitorStorage::review_status(&f.store).await.unwrap();
