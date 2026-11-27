@@ -263,7 +263,14 @@ pub(crate) async fn apply_take_on(
     if let Some(refused) = row_refusal_on(conn, txid, &failed, takers, now).await? {
         return Ok(refused);
     }
-    super::abort_recovery::recover_released_on(conn, txid, &failed, takers, now).await?;
+    super::abort_recovery::recover_released_on(
+        conn,
+        txid,
+        &failed,
+        super::abort_recovery::RecoveryCause::Take(takers),
+        now,
+    )
+    .await?;
     // A row that stays ended with an input still locked (the retire path's
     // `failed`, some of whose inputs the locked-input re-check gave back):
     // every free input is marked spent by it again, so no coin it spends
