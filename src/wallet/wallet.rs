@@ -1229,11 +1229,56 @@ where
         let spend_guard = self.spend_lock.lock().await;
 
         let (args, chain) = self.create_action_admit(args, originator).await?;
-        let result = self
-            .create_action_checked(args, offer, must_spend, spend_guard)
-            .await?;
+        // A `sendWith` with no inputs and no outputs is not a new
+        // transaction (validationHelpers.ts 805-807): nothing is built, and
+        // the stored post takes no spend lock.
+        let result = if super::create_args::is_send_with_alone(&args) {
+            drop(spend_guard);
+            self.send_with_alone(args).await?
+        } else {
+            self.create_action_checked(args, offer, must_spend, spend_guard)
+                .await?
+        };
         let module_originator = originator.unwrap_or_default();
         crate::managers::chain_response::<CreateActionArgs>(&chain, result, module_originator).await
+    }
+
+    /// `create_action` with a `sendWith` and no inputs and no outputs: the
+    /// reference's `isNewTx` false (ts-stack 57c5f130 `validationHelpers.ts`
+    /// 805-807). No coin is taken, no transaction row is added and nothing
+    /// is signed (`signer/methods/createAction.ts` 87 skips `createNewTx`);
+    /// the named transactions go through the stored post
+    /// (`processAction`, 132-137 and 304-323: `isNewTx` false, `isSendWith`
+    /// true, `isNoSend` and `isDelayed` from the options), the path
+    /// [`Wallet::process_action`] takes, without the spend lock. The answer
+    /// carries `sendWithResults` alone, one entry a named txid: no `txid`,
+    /// `tx` or `noSendChange`, since no transaction was made (87-129 set
+    /// them inside the new-transaction branch only). Its caller has run
+    /// the permission checks of any `create_action`, which with no output
+    /// ask no spending authorization, on the arguments the modules answered.
+    async fn send_with_alone(&self, args: CreateActionArgs) -> bsv_rs::Result<CreateActionResult> {
+        let options = args.options.unwrap_or_default();
+        let named = options.send_with.unwrap_or_default();
+        let process = StorageProcessActionArgs {
+            is_new_tx: false,
+            is_send_with: true,
+            is_no_send: options.no_send.unwrap_or(false),
+            is_delayed: options.accept_delayed_broadcast.unwrap_or(false),
+            txid: None,
+            raw_tx: None,
+            reference: None,
+            send_with: named.iter().map(hex::encode).collect(),
+        };
+        let processed = self.storage.process_action(&self.auth(), process).await?;
+        let sent = processed.send_with_results.unwrap_or_default();
+        Ok(CreateActionResult {
+            send_with_results: Some(
+                sent.iter()
+                    .map(super::internalize_answer::send_result)
+                    .collect(),
+            ),
+            ..Default::default()
+        })
     }
 
     /// With a manager, `args` without the labels the module chain reads as
