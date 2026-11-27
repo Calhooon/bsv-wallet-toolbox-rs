@@ -37,6 +37,7 @@ mod broadcast_seen;
 #[cfg(test)]
 mod broadcaster_hint_tests;
 mod create_action;
+mod failed_row_recovery;
 mod internalize_action;
 mod invalid_beside_proof;
 mod locked_inputs;
