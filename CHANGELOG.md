@@ -4,6 +4,16 @@
 
 ### Changed
 
+- The published crate carries the source, the tests, the test vectors, the
+  examples, the bench sources and the documents a host reads
+  (`docs/ARCHITECTURE.md`, the two divergence registers, the storage wire
+  audit, the key-file format, the provider notes, the README, this file and
+  the license), by an `include` list in `Cargo.toml`. It no longer carries
+  the repository's own working files: the per-folder `CLAUDE.md` notes, the
+  audit, handoff, lane and census documents, `.github`, `tools`, `scripts`,
+  the lint and release configuration. They stay in the repository; nothing a
+  build, a test in the package or docs.rs reads moves.
+
 - `internalizeAction` holds a received transaction that carries no
   checked proof and that no broadcaster took (the owner's ruling of
   2026-11-17): the door writes its transaction `sending` (it wrote
