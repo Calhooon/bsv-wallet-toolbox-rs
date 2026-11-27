@@ -306,6 +306,36 @@ enum PostRecord {
     MayHaveLeft,
 }
 
+/// What a request's `history` says of a post ([`post_record_on`]).
+fn history_record(history: &str) -> PostRecord {
+    let history = match serde_json::from_str::<serde_json::Value>(history) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ if history.trim().is_empty() => return PostRecord::NeverPosted,
+        _ => return PostRecord::MayHaveLeft,
+    };
+    if history.contains_key("previous") {
+        return PostRecord::MayHaveLeft;
+    }
+    let notes = match history.get("notes") {
+        None => return PostRecord::NeverPosted,
+        Some(serde_json::Value::Array(notes)) => notes,
+        Some(_) => return PostRecord::MayHaveLeft,
+    };
+    if notes.len() >= super::storage_sqlx::REQ_HISTORY_NOTES_KEPT {
+        return PostRecord::MayHaveLeft;
+    }
+    let posted = notes.iter().any(|n| {
+        n.get("what")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|w| POST_NOTES.contains(&w))
+    });
+    if posted {
+        PostRecord::MayHaveLeft
+    } else {
+        PostRecord::NeverPosted
+    }
+}
+
 /// Did the bytes of the descendant `transaction_id` (`txid` where its row
 /// has one) leave for an instance, by the store's own records? "Never
 /// posted" needs a positive ground; a missing record is not one.
@@ -372,32 +402,7 @@ async fn post_record_on(
             PostRecord::MayHaveLeft
         });
     };
-    let history = match serde_json::from_str::<serde_json::Value>(&history) {
-        Ok(serde_json::Value::Object(map)) => map,
-        _ if history.trim().is_empty() => return Ok(PostRecord::NeverPosted),
-        _ => return Ok(PostRecord::MayHaveLeft),
-    };
-    if history.contains_key("previous") {
-        return Ok(PostRecord::MayHaveLeft);
-    }
-    let notes = match history.get("notes") {
-        None => return Ok(PostRecord::NeverPosted),
-        Some(serde_json::Value::Array(notes)) => notes,
-        Some(_) => return Ok(PostRecord::MayHaveLeft),
-    };
-    if notes.len() >= super::storage_sqlx::REQ_HISTORY_NOTES_KEPT {
-        return Ok(PostRecord::MayHaveLeft);
-    }
-    let posted = notes.iter().any(|n| {
-        n.get("what")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|w| POST_NOTES.contains(&w))
-    });
-    Ok(if posted {
-        PostRecord::MayHaveLeft
-    } else {
-        PostRecord::NeverPosted
-    })
+    Ok(history_record(&history))
 }
 
 /// A COIN WHOSE SPENDER WAS GIVEN UP (the keeper's reading 24): in the
@@ -490,6 +495,23 @@ pub(crate) enum RecoveryCause<'a> {
     RefutedProof,
 }
 
+impl<'a> RecoveryCause<'a> {
+    /// The cause's name on the request's history and the takers it names.
+    fn named(self, was_marked: bool) -> (&'static str, Vec<&'a str>) {
+        match self {
+            Self::Take(takers) => (
+                if was_marked {
+                    "takenAfterAbort"
+                } else {
+                    "takenAfterRelease"
+                },
+                takers.iter().map(|(p, _)| *p).collect(),
+            ),
+            Self::RefutedProof => ("recoveredOnRefutedProof", Vec::new()),
+        }
+    }
+}
+
 /// THE RECOVERY OF A ROW RELEASED ON NO EVIDENCE, on the caller's write
 /// (see the module): every `failed` outgoing row of `txid` in
 /// [`FailedState::Released`] is recovered. Two callers: the take's write
@@ -525,17 +547,7 @@ pub(crate) async fn recover_released_on(
         let given_up = release_given_up_spends_on(conn, transaction_id, now).await?;
         remark_inputs_spent_on(conn, txid, &skip, now).await?;
         let holders = queue_holders_on(conn, txid, was_marked, now).await?;
-        let (what, takers): (&str, Vec<&str>) = match cause {
-            RecoveryCause::Take(takers) => (
-                if was_marked {
-                    "takenAfterAbort"
-                } else {
-                    "takenAfterRelease"
-                },
-                takers.iter().map(|(p, _)| *p).collect(),
-            ),
-            RecoveryCause::RefutedProof => ("recoveredOnRefutedProof", Vec::new()),
-        };
+        let (what, takers) = cause.named(was_marked);
         note_request_on(
             conn,
             txid,

@@ -152,9 +152,11 @@ async fn refute(cell: &Cell, door: Door) {
             MonitorStorage::review_status(&cell.f.store).await.unwrap();
         }
         Door::Demote => {
-            assert!(MonitorStorage::demote_stale_proof(&cell.f.store, &cell.f.txid)
-                .await
-                .unwrap());
+            assert!(
+                MonitorStorage::demote_stale_proof(&cell.f.store, &cell.f.txid)
+                    .await
+                    .unwrap()
+            );
         }
     }
 }
@@ -184,7 +186,9 @@ fn pairs(a: (bool, &str), b: (bool, &str)) -> Vec<(bool, String)> {
 fn judge(cause: Cause, other_live: bool, got: &Reading, history: &str) -> Option<String> {
     let name = format!("{cause:?} other_live={other_live}");
     if got.half() {
-        return Some(format!("{name}: a request asking beside a failed row with a free input: {got:?}"));
+        return Some(format!(
+            "{name}: a request asking beside a failed row with a free input: {got:?}"
+        ));
     }
     let recovered = history.contains("recoveredOnRefutedProof");
     let not_recovered = history.contains("refutedProofNotRecovered");
@@ -254,10 +258,14 @@ async fn a_refuted_proof_beside_a_failed_row_recovers_toward_caution() {
             MonitorStorage::review_status(&cell.f.store).await.unwrap();
             let next = read(&cell.f, false).await;
             if (next.row.clone(), next.inputs.clone()) != (got.row.clone(), got.inputs.clone()) {
-                wrong.push(format!("{cause:?} other_live={other_live}: the next pass moved {next:?}"));
+                wrong.push(format!(
+                    "{cause:?} other_live={other_live}: the next pass moved {next:?}"
+                ));
             }
             if next.half() {
-                wrong.push(format!("{cause:?} other_live={other_live}: half after the next pass"));
+                wrong.push(format!(
+                    "{cause:?} other_live={other_live}: half after the next pass"
+                ));
             }
         }
     }

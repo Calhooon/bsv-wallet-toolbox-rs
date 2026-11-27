@@ -44,6 +44,29 @@ use super::abort_recovery::{
 };
 use crate::Result;
 
+/// Not recovered: the cause on the request's history, the request back at
+/// the ended row's word.
+async fn not_recovered_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    why: &str,
+    evidence: &[i64],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    note_request_on(
+        conn,
+        txid,
+        serde_json::json!({
+            "what": "refutedProofNotRecovered",
+            "when": now.to_rfc3339(),
+            "why": why,
+            "evidenceOnRecord": evidence,
+        }),
+    )
+    .await?;
+    end_request_on(conn, txid, now).await
+}
+
 /// The request back at the ended row's word, on the demotion's write.
 async fn end_request_on(
     conn: &mut SqliteConnection,
@@ -78,17 +101,7 @@ pub(crate) async fn recover_beside_refuted_proof_on(
         return Ok(());
     }
     let Some(tx) = held_transaction_on(conn, txid).await? else {
-        note_request_on(
-            conn,
-            txid,
-            serde_json::json!({
-                "what": "refutedProofNotRecovered",
-                "when": now.to_rfc3339(),
-                "why": "noHeldBytesHashToTxid",
-            }),
-        )
-        .await?;
-        return end_request_on(conn, txid, now).await;
+        return not_recovered_on(conn, txid, "noHeldBytesHashToTxid", &[], now).await;
     };
     let outpoints = super::internalize_action::extract_input_outpoints(&tx);
     let failed = failed_outgoing_rows(conn, txid, &outpoints).await?;
@@ -98,18 +111,7 @@ pub(crate) async fn recover_beside_refuted_proof_on(
         .map(|r| r.transaction_id)
         .collect();
     if !evidence.is_empty() {
-        note_request_on(
-            conn,
-            txid,
-            serde_json::json!({
-                "what": "refutedProofNotRecovered",
-                "when": now.to_rfc3339(),
-                "why": "evidenceOnRecord",
-                "evidenceOnRecord": evidence,
-            }),
-        )
-        .await?;
-        return end_request_on(conn, txid, now).await;
+        return not_recovered_on(conn, txid, "evidenceOnRecord", &evidence, now).await;
     }
     recover_released_on(conn, txid, &failed, RecoveryCause::RefutedProof, now).await?;
     if failed.iter().any(|r| r.state == FailedState::Locked) {
