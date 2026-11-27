@@ -163,13 +163,16 @@ mod tests {
 
     #[test]
     fn test_hex_roundtrip() {
+        // Index 5 needs a tree of height 3 (three nodes): a leaf outside its
+        // tree is no BUMP.
         let json = r#"{
             "index": 5,
             "txOrId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "target": "0000000000000000000000000000000000000000000000000000000000000000",
             "nodes": [
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
             ]
         }"#;
 
