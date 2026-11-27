@@ -76,7 +76,7 @@ enum Posted {
     NeverSigned,
     /// The wallet's own post's note, on a request the purge task then
     /// deletes (ended, older than the purge's age) ahead of R's take.
-    PostedThenPurged,
+    PurgedAfterPost,
     /// A request whose older history is kept whole under `previous`.
     PreviousHistory,
     /// No post on record, as `Never`, and a `spent-proven` check recorded
@@ -158,9 +158,13 @@ async fn scene(posted: Posted, grand: bool) -> Scene {
     }
     if !matches!(posted, Posted::NoRequest | Posted::NeverSigned) {
         let (word, attempts, history) = match posted {
-            Posted::PreviousHistory => ("nosend", 0, r#"{"previous":"an older history"}"#.to_string()),
+            Posted::PreviousHistory => (
+                "nosend",
+                0,
+                r#"{"previous":"an older history"}"#.to_string(),
+            ),
             Posted::Never | Posted::NeverButSpentProven => ("nosend", 0, "{}".to_string()),
-            Posted::OwnPostNote | Posted::PostedThenPurged => (
+            Posted::OwnPostNote | Posted::PurgedAfterPost => (
                 "sending",
                 0,
                 r#"{"notes":[{"what":"processActionPost","attempts":0}]}"#.to_string(),
@@ -217,7 +221,7 @@ async fn scene(posted: Posted, grand: bool) -> Scene {
             .await
             .unwrap();
     assert_eq!(d_word.as_deref(), Some("failed"));
-    if posted == Posted::PostedThenPurged {
+    if posted == Posted::PurgedAfterPost {
         // D's ended request ages past the purge's 30 days; the real purge
         // deletes it, and with it the note of D's post.
         let old = chrono::Utc::now() - chrono::Duration::days(40);
@@ -354,7 +358,7 @@ async fn a_given_up_spend_whose_bytes_may_have_left_is_withheld() {
 /// of its post is gone with the request, and a missing record is not a no.
 #[tokio::test]
 async fn a_posted_descendant_whose_request_the_purge_deleted_is_withheld() {
-    withheld(Posted::PostedThenPurged).await;
+    withheld(Posted::PurgedAfterPost).await;
 }
 
 /// A signed descendant with no request: the store cannot tell.
