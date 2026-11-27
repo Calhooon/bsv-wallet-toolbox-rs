@@ -294,16 +294,61 @@ const POST_NOTES: [&str; 6] = [
     "lostProofAnnounce",
 ];
 
-/// May `txid`'s bytes have left for an instance, by the store's own
-/// records? A `broadcast_seen` row for the txid naming an instance (any
-/// word: a release turns an instance's row `rejected` and keeps it), or the
-/// network's row with any word but the release's own `rejected`; a post
-/// note on its request's history ([`POST_NOTES`]); or a history the store
-/// cannot read whole (not a JSON object, or as many notes as it keeps, the
-/// older ones evicted): yes. No request, or a request whose history shows
-/// no post (a `noSend` action's, an unsigned one's): no. `attempts` is not
-/// read: the abort, the release and the proof asks count on it too.
-async fn may_have_left_on(conn: &mut SqliteConnection, txid: &str) -> Result<bool> {
+/// What the store's own records say of a `failed` descendant's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostRecord {
+    /// A positive ground that the bytes never left: a request whose whole
+    /// history reads and shows no post, or no request beside a row that was
+    /// never signed.
+    NeverPosted,
+    /// A record of a post, or records the store cannot read whole: the
+    /// bytes may have left, or the store cannot tell.
+    MayHaveLeft,
+}
+
+/// Did the bytes of the descendant `transaction_id` (`txid` where its row
+/// has one) leave for an instance, by the store's own records? "Never
+/// posted" needs a positive ground; a missing record is not one.
+///
+/// - A `broadcast_seen` row for the txid naming an instance (any word: a
+///   release turns an instance's row `rejected` and keeps it), or the
+///   network's row with any word but the release's own `rejected`: may
+///   have left.
+/// - A request whose whole history reads (a JSON object with no `previous`
+///   key, fewer notes than it keeps): never posted where no note of
+///   [`POST_NOTES`] is on it (a `noSend` action's), else may have left.
+/// - A request whose history the store cannot read whole (not a JSON
+///   object, a `previous` key holding an older history kept unparsed, as
+///   many notes as it keeps, the older ones evicted): cannot tell.
+/// - NO REQUEST (the purge deletes an ended request with its history):
+///   never posted only where the descendant's own row was never signed,
+///   `transactions.txid` and `transactions.raw_tx` both empty (the signed
+///   bytes and their txid reach the row in `process_action`'s write, the
+///   one that makes the request; an action the wallet signed and never
+///   handed to that write reads so, and the row's word before its end is
+///   not kept). A signed row with no request: cannot tell.
+///
+/// `attempts` is not read: the abort, the release and the proof asks count
+/// on it too.
+async fn post_record_on(
+    conn: &mut SqliteConnection,
+    transaction_id: i64,
+    txid: Option<&str>,
+) -> Result<PostRecord> {
+    let signed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM transactions WHERE transaction_id = ? \
+         AND (COALESCE(txid, '') <> '' OR COALESCE(length(raw_tx), 0) > 0)",
+    )
+    .bind(transaction_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    let Some(txid) = txid.filter(|t| !t.is_empty()) else {
+        return Ok(if signed == 0 {
+            PostRecord::NeverPosted
+        } else {
+            PostRecord::MayHaveLeft
+        });
+    };
     let seen: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM broadcast_seen WHERE txid = ? \
          AND (provider <> 'network' OR status <> 'rejected')",
@@ -312,7 +357,7 @@ async fn may_have_left_on(conn: &mut SqliteConnection, txid: &str) -> Result<boo
     .fetch_one(&mut *conn)
     .await?;
     if seen > 0 {
-        return Ok(true);
+        return Ok(PostRecord::MayHaveLeft);
     }
     let history: Option<String> =
         sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
@@ -320,54 +365,67 @@ async fn may_have_left_on(conn: &mut SqliteConnection, txid: &str) -> Result<boo
             .fetch_optional(&mut *conn)
             .await?;
     let Some(history) = history else {
-        return Ok(false);
+        // No request: a missing record is not a no.
+        return Ok(if signed == 0 {
+            PostRecord::NeverPosted
+        } else {
+            PostRecord::MayHaveLeft
+        });
     };
     let history = match serde_json::from_str::<serde_json::Value>(&history) {
         Ok(serde_json::Value::Object(map)) => map,
-        _ if history.trim().is_empty() => return Ok(false),
-        _ => return Ok(true),
+        _ if history.trim().is_empty() => return Ok(PostRecord::NeverPosted),
+        _ => return Ok(PostRecord::MayHaveLeft),
     };
+    if history.contains_key("previous") {
+        return Ok(PostRecord::MayHaveLeft);
+    }
     let notes = match history.get("notes") {
-        None => return Ok(false),
+        None => return Ok(PostRecord::NeverPosted),
         Some(serde_json::Value::Array(notes)) => notes,
-        Some(_) => return Ok(true),
+        Some(_) => return Ok(PostRecord::MayHaveLeft),
     };
     if notes.len() >= super::storage_sqlx::REQ_HISTORY_NOTES_KEPT {
-        return Ok(true);
+        return Ok(PostRecord::MayHaveLeft);
     }
-    Ok(notes.iter().any(|n| {
+    let posted = notes.iter().any(|n| {
         n.get("what")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|w| POST_NOTES.contains(&w))
-    }))
+    });
+    Ok(if posted {
+        PostRecord::MayHaveLeft
+    } else {
+        PostRecord::NeverPosted
+    })
 }
 
 /// A COIN WHOSE SPENDER WAS GIVEN UP (the keeper's reading 24): in the
 /// write that recovers `transaction_id`, each of its outputs spent by a
-/// `failed` descendant whose bytes never left for an instance
-/// ([`may_have_left_on`]) is released: no spender, spendable as its other
-/// outputs are. An output a descendant spent whose bytes may have left
-/// stays as it is (it returns by that descendant's own take, its proof, or
-/// a competitor's proof against it). The descendant stays ended either
-/// way; only the recovered row's own outputs are read. Returns the ids.
+/// `failed` descendant the store's records show was never posted
+/// ([`post_record_on`]) is released: no spender, spendable as its other
+/// outputs are. An output a descendant spent whose bytes may have left, or
+/// of which the store cannot tell, stays as it is (it returns by that
+/// descendant's own take, its proof, or a competitor's proof against it).
+/// The descendant stays ended either way; only the recovered row's own
+/// outputs are read. Returns the ids.
 async fn release_given_up_spends_on(
     conn: &mut SqliteConnection,
     transaction_id: i64,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<i64>> {
-    let spent: Vec<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT o.output_id, d.txid FROM outputs o JOIN transactions d ON d.transaction_id = o.spent_by \
+    let spent: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT o.output_id, d.transaction_id, d.txid FROM outputs o \
+         JOIN transactions d ON d.transaction_id = o.spent_by \
          WHERE o.transaction_id = ? AND d.status = 'failed' ORDER BY o.output_id",
     )
     .bind(transaction_id)
     .fetch_all(&mut *conn)
     .await?;
     let mut released = Vec::new();
-    for (output_id, spender) in spent {
-        if let Some(spender) = spender.as_deref() {
-            if may_have_left_on(conn, spender).await? {
-                continue;
-            }
+    for (output_id, descendant, spender) in spent {
+        if post_record_on(conn, descendant, spender.as_deref()).await? != PostRecord::NeverPosted {
+            continue;
         }
         sqlx::query(
             "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? WHERE output_id = ?",

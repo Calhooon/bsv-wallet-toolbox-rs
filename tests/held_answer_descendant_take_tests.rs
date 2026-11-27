@@ -9,15 +9,19 @@
 //!
 //! R's take recovers R (unproven, its request unmined, its inputs marked
 //! again, `takenAfterAbort`); D stays ended. R's output that D spent
-//! follows D's own end, by whether D's bytes ever left for an instance, as
-//! the store records it (a post note on D's request's history, a history
-//! the store cannot read whole, or an instance's recorded word for D's
-//! txid):
+//! follows D's own end, by what the store still holds of D's post. The
+//! release needs a positive ground; a missing record is not one:
 //!
-//! - never left: released in the write that recovers R (no spender,
-//!   spendable as R's other outputs are), and a later action can take it;
-//! - may have left: it stays spent by D (it returns by D's own take, its
-//!   proof, or a competitor's proof against it).
+//! - never posted (D's request's whole history reads and shows no post; or
+//!   no request beside a row of D that was never signed, no txid and no
+//!   bytes): released in the write that recovers R (no spender, spendable
+//!   as R's other outputs are), and a later action can take it;
+//! - may have left (a post note on D's request's history, an instance's
+//!   recorded word for D's txid), or the store cannot tell (a signed D
+//!   whose request is gone, the purge's delete of an ended request
+//!   included; a history kept whole under `previous`): it stays spent by D
+//!   (it returns by D's own take, its proof, or a competitor's proof
+//!   against it).
 //!
 //! The rule reads R's own outputs alone: an output of D that D's own
 //! descendant spent is left as it is.
@@ -35,7 +39,8 @@ use std::sync::Arc;
 use abort_take::*;
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::script::LockingScript;
-use bsv_wallet_toolbox_rs::{BroadcastOutcome, StorageSqlx, WalletStorageWriter};
+use bsv_wallet_toolbox_rs::storage::PurgeParams;
+use bsv_wallet_toolbox_rs::{BroadcastOutcome, MonitorStorage, StorageSqlx, WalletStorageWriter};
 
 async fn word(store: &StorageSqlx, sql: &str, id: &str) -> Option<String> {
     sqlx::query_scalar(sql)
@@ -65,8 +70,15 @@ async fn coin(store: &StorageSqlx, id: i64) -> (bool, Option<i64>, i64) {
 /// D's request's record of a post, as each writer leaves it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Posted {
-    /// No request: an unsigned descendant, or one never queued.
+    /// No request beside a signed row (its txid and bytes on it).
     NoRequest,
+    /// No request beside a row never signed: no txid, no bytes.
+    NeverSigned,
+    /// The wallet's own post's note, on a request the purge task then
+    /// deletes (ended, older than the purge's age) ahead of R's take.
+    PostedThenPurged,
+    /// A request whose older history is kept whole under `previous`.
+    PreviousHistory,
     /// A request with no post on record (a `noSend` action's).
     Never,
     /// The wallet's own post's note on its history.
@@ -81,7 +93,6 @@ struct Scene {
     store: StorageSqlx,
     f: Fixture,
     d: i64,
-    d_txid: String,
     d_change: i64,
     /// D's own descendant's spend of D's change, when the scene has one.
     grand: Option<i64>,
@@ -132,10 +143,21 @@ async fn scene(posted: Posted, grand: bool) -> Scene {
     } else {
         None
     };
-    if posted != Posted::NoRequest {
+    if posted == Posted::NeverSigned {
+        sqlx::query(
+            "UPDATE transactions SET txid = NULL, raw_tx = NULL, status = 'unsigned' \
+             WHERE transaction_id = ?",
+        )
+        .bind(d)
+        .execute(store.writer())
+        .await
+        .unwrap();
+    }
+    if !matches!(posted, Posted::NoRequest | Posted::NeverSigned) {
         let (word, attempts, history) = match posted {
+            Posted::PreviousHistory => ("nosend", 0, r#"{"previous":"an older history"}"#.to_string()),
             Posted::Never => ("nosend", 0, "{}".to_string()),
-            Posted::OwnPostNote => (
+            Posted::OwnPostNote | Posted::PostedThenPurged => (
                 "sending",
                 0,
                 r#"{"notes":[{"what":"processActionPost","attempts":0}]}"#.to_string(),
@@ -175,16 +197,54 @@ async fn scene(posted: Posted, grand: bool) -> Scene {
 
     // The host aborts R; the abort ends D with it.
     abort_now(&f, Cause::AbortFree).await;
-    assert_eq!(
-        word(
+    if posted == Posted::NeverSigned {
+        // The abort's walk follows txids; the unsigned descendant's end is
+        // its own (the abandoned-action task's `failed`), written here with
+        // its input from R left spent by it.
+        sqlx::query("UPDATE transactions SET status = 'failed' WHERE transaction_id = ?")
+            .bind(d)
+            .execute(store.writer())
+            .await
+            .unwrap();
+    }
+    let d_word: Option<String> =
+        sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(d)
+            .fetch_optional(store.pool())
+            .await
+            .unwrap();
+    assert_eq!(d_word.as_deref(), Some("failed"));
+    if posted == Posted::PostedThenPurged {
+        // D's ended request ages past the purge's 30 days; the real purge
+        // deletes it, and with it the note of D's post.
+        let old = chrono::Utc::now() - chrono::Duration::days(40);
+        sqlx::query("UPDATE proven_tx_reqs SET updated_at = ? WHERE txid = ?")
+            .bind(old)
+            .bind(&d_txid)
+            .execute(store.writer())
+            .await
+            .unwrap();
+        let purged = MonitorStorage::purge_data(
             &store,
-            "SELECT status FROM transactions WHERE txid = ?",
-            &d_txid
+            PurgeParams {
+                max_age_days: 30,
+                purge_completed: true,
+                purge_failed: true,
+            },
         )
         .await
-        .as_deref(),
-        Some("failed")
-    );
+        .unwrap();
+        println!("the purge: {}", purged.log.trim());
+        assert_eq!(
+            word(
+                &store,
+                "SELECT status FROM proven_tx_reqs WHERE txid = ?",
+                &d_txid
+            )
+            .await,
+            None
+        );
+    }
 
     // An instance takes R.
     store
@@ -204,7 +264,6 @@ async fn scene(posted: Posted, grand: bool) -> Scene {
         store,
         f,
         d,
-        d_txid,
         d_change,
         grand,
     }
@@ -212,23 +271,21 @@ async fn scene(posted: Posted, grand: bool) -> Scene {
 
 /// D stays ended whatever its coin reads.
 async fn assert_ended(s: &Scene) {
-    assert_eq!(
-        word(
-            &s.store,
-            "SELECT status FROM transactions WHERE txid = ?",
-            &s.d_txid
-        )
-        .await
-        .as_deref(),
-        Some("failed")
-    );
+    let d_word: Option<String> =
+        sqlx::query_scalar("SELECT status FROM transactions WHERE transaction_id = ?")
+            .bind(s.d)
+            .fetch_optional(s.store.pool())
+            .await
+            .unwrap();
+    assert_eq!(d_word.as_deref(), Some("failed"));
 }
 
-/// Never left: R's output D spent is released in the recovery's write, and
-/// a later action of X's takes it.
+/// Never posted, on a positive ground (a request whose history shows no
+/// post; no request beside a row never signed): R's output D spent is
+/// released in the recovery's write, and a later action of X's takes it.
 #[tokio::test]
 async fn a_given_up_spend_whose_bytes_never_left_is_released() {
-    for posted in [Posted::NoRequest, Posted::Never] {
+    for posted in [Posted::NeverSigned, Posted::Never] {
         let s = scene(posted, false).await;
         let given_up = coin(&s.store, s.f.own_output).await;
         let history = word(
@@ -275,6 +332,31 @@ async fn a_given_up_spend_whose_bytes_never_left_is_released() {
 #[tokio::test]
 async fn a_given_up_spend_whose_bytes_may_have_left_is_withheld() {
     for posted in [Posted::OwnPostNote, Posted::SendWaitingNote, Posted::Seen] {
+        withheld(posted).await;
+    }
+}
+
+/// A posted descendant whose ended request the purge deleted: the record
+/// of its post is gone with the request, and a missing record is not a no.
+#[tokio::test]
+async fn a_posted_descendant_whose_request_the_purge_deleted_is_withheld() {
+    withheld(Posted::PostedThenPurged).await;
+}
+
+/// A signed descendant with no request: the store cannot tell.
+#[tokio::test]
+async fn a_signed_descendant_with_no_request_is_withheld() {
+    withheld(Posted::NoRequest).await;
+}
+
+/// A history kept whole under `previous` is one the store cannot read.
+#[tokio::test]
+async fn a_descendant_whose_history_is_kept_under_previous_is_withheld() {
+    withheld(Posted::PreviousHistory).await;
+}
+
+async fn withheld(posted: Posted) {
+    {
         let s = scene(posted, false).await;
         let given_up = coin(&s.store, s.f.own_output).await;
         println!("{posted:?}: the root's output D spent {given_up:?}");
