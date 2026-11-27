@@ -12,6 +12,13 @@
 //! properties), the reader's row older (the merge of proof evidence, which
 //! writes only where the reader's row links a proof and this store's row
 //! links none).
+//!
+//! The class "the incoming row's txid differs" (the reader's row of the
+//! same reference carries another txid): a row held `completed` on a
+//! checked proof of its own txid stays whole in both arms (its txid, its
+//! bytes, its status, its link); the older row's arm writes nothing in any
+//! cell; the newer row's arm writes the incoming row over any other held
+//! row, its link only the incoming txid's own proof.
 #![cfg(feature = "sqlite")]
 
 use std::sync::Arc;
@@ -224,6 +231,178 @@ async fn the_merge_table_keeps_a_held_completed_on_a_checked_proof() {
     }
     println!("WITNESS merge table: {} cells", table.len());
     assert_eq!(table.len(), 2 * 7 * 6 * 6);
+    assert!(
+        wrong.is_empty(),
+        "cells off the rule:\n{}",
+        wrong.join("\n")
+    );
+}
+
+/// What this store's row links in the class "the incoming row's txid
+/// differs".
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Held {
+    /// A proof row of the held txid with this store's root-check record.
+    Checked,
+    /// A proof row of the held txid with no record.
+    Unchecked,
+    /// No proof row.
+    NoLink,
+}
+
+/// One store and one sync: for every held and incoming status, this
+/// store's row of transaction `n` under one reference and the reader's row
+/// of transaction `n + 100` under the same reference. Each cell reads
+/// `status:txid:bytes:link`, where txid, bytes and link each say whose they
+/// are (`held`, `incoming`, or `-` for no link).
+async fn run_other_txid(
+    held_link: Held,
+    incoming_links: bool,
+    arm: Arm,
+) -> Vec<(String, String, String)> {
+    let headers = Arc::new(Headers::default());
+    let w = w_store(Tracker::None, &headers).await;
+    let r = r_store().await;
+    let (held_stamp, reader_stamp) = match arm {
+        Arm::Newer => (NOW, LATER),
+        Arm::Older => (NOW, OLD),
+    };
+    let mut cells = Vec::new();
+    let mut n: u8 = 1;
+    for held in STATUSES {
+        for incoming in STATUSES {
+            let reference = format!("w{n}");
+            let t = held_at(&w, n, held, &reference, held_stamp).await;
+            let held_proof = match held_link {
+                Held::Checked => Some(checked_proof_row(&w, n).await),
+                Held::Unchecked => Some(proof_row(&w, n, OLD).await),
+                Held::NoLink => None,
+            };
+            if let Some(p) = held_proof {
+                exec(
+                    &w,
+                    &format!(
+                        "UPDATE transactions SET proven_tx_id = {p} WHERE transaction_id = {t}"
+                    ),
+                )
+                .await;
+            }
+            if incoming_links {
+                reader_rows(&r, n + 100, &reference, reader_stamp, incoming, true, false).await;
+            } else {
+                reader_row_unlinked(&r, n + 100, &reference, reader_stamp, incoming).await;
+            }
+            cells.push((held.to_string(), incoming.to_string(), reference, n));
+            n += 1;
+        }
+    }
+    drain(&w, r).await;
+    assert_eq!(headers.reads(), 0, "the merge reads no header");
+    let mut out = Vec::new();
+    for (held, incoming, reference, n) in cells {
+        let (status, txid, raw, proof): (String, String, Vec<u8>, Option<String>) = ::sqlx::query_as(
+            "SELECT t.status, t.txid, t.raw_tx, (SELECT p.txid FROM proven_txs p WHERE p.proven_tx_id = t.proven_tx_id) \
+             FROM transactions t WHERE t.reference = ?",
+        )
+        .bind(&reference)
+        .fetch_one(w.pool())
+        .await
+        .unwrap();
+        let (held_txid, held_raw, _, _) = mined(n);
+        let (in_txid, in_raw, _, _) = mined(n + 100);
+        let whose = |x: &str| {
+            if x == held_txid {
+                "held"
+            } else if x == in_txid {
+                "incoming"
+            } else {
+                "other"
+            }
+        };
+        let bytes = if raw == held_raw {
+            "held"
+        } else if raw == in_raw {
+            "incoming"
+        } else {
+            "other"
+        };
+        let link = proof.as_deref().map(whose).unwrap_or("-");
+        out.push((
+            held,
+            incoming,
+            format!("{status}:{}:{bytes}:{link}", whose(&txid)),
+        ));
+    }
+    out
+}
+
+/// The rule's answer for one cell of the class.
+fn expected_other_txid(
+    held: &str,
+    incoming: &str,
+    held_link: Held,
+    incoming_links: bool,
+    arm: Arm,
+) -> String {
+    let whole = format!(
+        "{held}:held:held:{}",
+        if held_link == Held::NoLink {
+            "-"
+        } else {
+            "held"
+        }
+    );
+    if arm == Arm::Older || (held == "completed" && held_link == Held::Checked) {
+        return whole;
+    }
+    // The incoming row is written; its proof, where it links one, is a row
+    // this store has not checked, so an incoming `completed` leaves the
+    // held status.
+    let status = if incoming == "completed" {
+        held
+    } else {
+        incoming
+    };
+    format!(
+        "{status}:incoming:incoming:{}",
+        if incoming_links { "incoming" } else { "-" }
+    )
+}
+
+#[tokio::test]
+async fn the_merge_table_where_the_incoming_txid_differs() {
+    let mut table = Vec::new();
+    let mut wrong = Vec::new();
+    for arm in [Arm::Newer, Arm::Older] {
+        for held_link in [Held::Checked, Held::Unchecked, Held::NoLink] {
+            for incoming_links in [true, false] {
+                for (held, incoming, got) in run_other_txid(held_link, incoming_links, arm).await {
+                    let want =
+                        expected_other_txid(&held, &incoming, held_link, incoming_links, arm);
+                    let cell = format!(
+                        "{arm:?} held {held_link:?} incoming {} {held} > {incoming}",
+                        if incoming_links { "linked" } else { "unlinked" }
+                    );
+                    table.push(format!("TABLE other txid {cell}: {got}"));
+                    if got != want {
+                        wrong.push(format!("{cell}: got {got}, want {want}"));
+                    }
+                    // No row reads `completed` beside a link that is not
+                    // its own txid's proof, and no row links another
+                    // txid's proof.
+                    let parts: Vec<&str> = got.split(':').collect();
+                    if parts[3] != "-" && parts[3] != parts[1] {
+                        wrong.push(format!("{cell}: {got}, a link of another txid"));
+                    }
+                }
+            }
+        }
+    }
+    for line in &table {
+        println!("{line}");
+    }
+    println!("WITNESS merge table, other txid: {} cells", table.len());
+    assert_eq!(table.len(), 2 * 3 * 2 * 6 * 6);
     assert!(
         wrong.is_empty(),
         "cells off the rule:\n{}",

@@ -2117,7 +2117,7 @@ async fn upsert_transaction(
     // Check if exists by reference (unique per user)
     let existing = sqlx::query(
         r#"
-        SELECT transaction_id, updated_at, proven_tx_id, status FROM transactions
+        SELECT transaction_id, updated_at, proven_tx_id, status, txid FROM transactions
         WHERE user_id = ? AND reference = ?
         "#,
     )
@@ -2133,6 +2133,7 @@ async fn upsert_transaction(
         let local_updated: DateTime<Utc> = row.get("updated_at");
         let local_proof: Option<i64> = row.get("proven_tx_id");
         let local_status: String = row.get("status");
+        let local_txid: Option<String> = row.get("txid");
 
         // The reference's EntityTransaction.mergeExisting (shouldMerge, with
         // no BRC-177 expiry state on either side, which this line does not
@@ -2163,7 +2164,12 @@ async fn upsert_transaction(
         // `completed` whatever the incoming status, with or without an
         // incoming link, and keeps the link it holds: a proof this store
         // checked outranks any store's word. The other ordinary properties
-        // merge as above.
+        // merge as above. "On a proof it has checked" holds only where the
+        // held proof row is of the row's own txid. An incoming row of the
+        // same reference that carries another txid is of another
+        // transaction: nothing of it is written over such a row, which
+        // stays whole (its txid, its bytes, its status, its link and every
+        // other property), in both arms.
         let kept_proof = match (proven_tx_id, local_proof) {
             (Some(id), _) => Some(id),
             (None, Some(held)) => {
@@ -2176,12 +2182,30 @@ async fn upsert_transaction(
             }
             (None, None) => None,
         };
-        let adds_proof_evidence = proven_tx_id.is_some() && local_proof.is_none();
+        // The older row's arm takes a link only for the txid this store's
+        // row holds: the incoming link names the proof of the incoming txid.
+        let adds_proof_evidence =
+            proven_tx_id.is_some() && local_proof.is_none() && tx.txid == local_txid;
         let incoming_is_newer = tx.updated_at > local_updated;
         let held_checked = match local_proof {
-            Some(id) if local_status == "completed" => proof_checked_here(&mut *conn, id).await?,
+            Some(id) if local_status == "completed" => {
+                let held_txid: Option<String> =
+                    sqlx::query_scalar("SELECT txid FROM proven_txs WHERE proven_tx_id = ?")
+                        .bind(id)
+                        .fetch_optional(&mut *conn)
+                        .await?;
+                held_txid.is_some()
+                    && held_txid == local_txid
+                    && proof_checked_here(&mut *conn, id).await?
+            }
             _ => false,
         };
+        if held_checked && tx.txid != local_txid {
+            return Ok(UpsertResult {
+                local_id,
+                is_new: false,
+            });
+        }
         let kept_checked = match kept_proof {
             Some(id) => proof_checked_here(&mut *conn, id).await?,
             None => false,
