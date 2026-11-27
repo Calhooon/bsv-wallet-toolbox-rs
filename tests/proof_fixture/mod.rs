@@ -218,7 +218,7 @@ pub async fn view(s: &StorageSqlx, n: u8) -> String {
         .unwrap_or_else(|| "none".into());
     let checked = count(
         s,
-        &format!("SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{txid}' AND merkle_root NOT LIKE 'refuted:%'"),
+        &format!("SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{txid}'"),
     )
     .await;
     format!("{} | req {req} | checked {checked}", rows.join(" "))
@@ -276,7 +276,7 @@ pub fn chain_holds(n: u8) -> MockWalletServices {
 }
 
 /// The proof row of `n` on `s` and its root-check record, as
-/// `rows:<count> record:<root or refuted:root or none>`.
+/// `proof rows <count> record <checked, none, or the root it holds>`.
 pub async fn proof_state(s: &StorageSqlx, n: u8) -> String {
     let (txid, _, _, root) = mined(n);
     let rows = count(
@@ -293,7 +293,6 @@ pub async fn proof_state(s: &StorageSqlx, n: u8) -> String {
     let record = match record {
         None => "none".to_string(),
         Some(r) if r == root => "checked".to_string(),
-        Some(r) if r == format!("refuted:{root}") => "refuted".to_string(),
         Some(r) => r,
     };
     format!("proof rows {rows} record {record}")

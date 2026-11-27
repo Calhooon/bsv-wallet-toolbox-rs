@@ -1247,7 +1247,7 @@ pub trait MonitorStorage: WalletStorageProvider {
     /// This method:
     /// 0. Adopts proof-less `transactions` rows into the req set (the SQLx
     ///    backend's `adopt_unproven_transactions`): a row whose txid has a
-    ///    proof row this store has not marked refuted is linked to it (and
+    ///    proof row is linked to it (and
     ///    completed only where the store checked that proof's root), and a
     ///    row with NO proven_tx_req and no proof row gets an `unmined` one
     ///    (bounded per pass); otherwise such a row is invisible to every

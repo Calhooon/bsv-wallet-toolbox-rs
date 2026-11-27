@@ -3451,10 +3451,9 @@ impl StorageSqlx {
     ///    walk asks for the proof through the store funnel, and a row with
     ///    no req is a candidate of `MonitorStorage::review_status`'s pass,
     ///    which checks the root (confirmed: completed; refuted: the link
-    ///    cleared, the proof row kept and marked refuted, a request made
+    ///    cleared, the proof row and its record removed, a request made
     ///    asking for the proof where none is held; no tracker: nothing
-    ///    written). A proof row so marked is never linked here. No header
-    ///    is read here.
+    ///    written). No header is read here.
     /// 2. **Adopt.** For up to [`ADOPT_UNPROVEN_TX_LIMIT`] remaining
     ///    proof-less rows (status `'completed'`/`'unproven'`, a txid, raw
     ///    bytes, NO req), create the req as `'unmined'` — "broadcast
@@ -3496,9 +3495,6 @@ impl StorageSqlx {
             WHERE t.proven_tx_id IS NULL
               AND t.txid IS NOT NULL
               AND t.status IN ('completed', 'unproven')
-              AND NOT EXISTS (SELECT 1 FROM proof_root_checks m
-                              WHERE m.txid = p.txid AND m.height = p.height
-                                AND m.merkle_root LIKE 'refuted:%')
               AND NOT EXISTS (SELECT 1 FROM proven_tx_reqs r WHERE r.txid = t.txid
                               AND r.status NOT IN ('unmined', 'unknown', 'callback', 'sending', 'unconfirmed'))
             ORDER BY t.transaction_id ASC
@@ -3509,19 +3505,13 @@ impl StorageSqlx {
         if !candidates.is_empty() {
             let mut wtx = self.write_tx().await?;
             for (transaction_id, txid, proven_tx_id, merkle_path) in candidates {
-                let (checked, refuted) = match MerklePath::from_binary(&merkle_path) {
-                    Ok(path) => (
+                let checked = match MerklePath::from_binary(&merkle_path) {
+                    Ok(path) => {
                         super::proof_root_checks::stored_proof_checked_on(&mut wtx, &txid, &path)
-                            .await?,
-                        super::proof_root_checks::stored_proof_refuted_on(&mut wtx, &txid, &path)
-                            .await?,
-                    ),
-                    Err(_) => (false, false),
+                            .await?
+                    }
+                    Err(_) => false,
                 };
-                // A proof row this store's tracker refuted is never linked.
-                if refuted {
-                    continue;
-                }
                 // Read again inside the write: the same proof row, the row
                 // still unlinked, in an eligible status, beside no request
                 // or a proof-eligible one.
@@ -5189,6 +5179,18 @@ pub(super) async fn demote_stale_proof_on(
     conn: &mut sqlx::SqliteConnection,
     txid: &str,
 ) -> Result<bool> {
+    demote_proof_on(conn, txid, true).await
+}
+
+/// [`demote_stale_proof_on`], with the request's word chosen by the caller:
+/// with `ask` the request is written `unmined` (or made) as above; with
+/// none the request the txid holds keeps its word, only its link to the
+/// proof row cleared, and none is made. Steps 2 to 4 are the same.
+pub(super) async fn demote_proof_on(
+    conn: &mut sqlx::SqliteConnection,
+    txid: &str,
+    ask: bool,
+) -> Result<bool> {
     let now = chrono::Utc::now();
     let existing: Option<(i64, Vec<u8>)> =
         sqlx::query_as("SELECT proven_tx_id, raw_tx FROM proven_txs WHERE txid = ?")
@@ -5199,15 +5201,27 @@ pub(super) async fn demote_stale_proof_on(
         return Ok(false);
     };
     // 1. the request: back to unmined with its bytes.
-    let updated = sqlx::query(
-        "UPDATE proven_tx_reqs SET status = 'unmined', attempts = 0, proven_tx_id = NULL, raw_tx = COALESCE(raw_tx, ?), updated_at = ? WHERE txid = ?",
-    )
-    .bind(&raw_tx)
-    .bind(now)
-    .bind(txid)
-    .execute(&mut *conn)
-    .await?
-    .rows_affected();
+    let updated = if ask {
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET status = 'unmined', attempts = 0, proven_tx_id = NULL, raw_tx = COALESCE(raw_tx, ?), updated_at = ? WHERE txid = ?",
+        )
+        .bind(&raw_tx)
+        .bind(now)
+        .bind(txid)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+    } else {
+        sqlx::query(
+            "UPDATE proven_tx_reqs SET proven_tx_id = NULL, updated_at = ? WHERE txid = ? AND proven_tx_id = ?",
+        )
+        .bind(now)
+        .bind(txid)
+        .bind(proven_tx_id)
+        .execute(&mut *conn)
+        .await?;
+        1
+    };
     if updated == 0 {
         sqlx::query(
             "INSERT INTO proven_tx_reqs (txid, status, attempts, notified, history, notify, raw_tx, input_beef, created_at, updated_at) \
@@ -5243,6 +5257,7 @@ pub(super) async fn demote_stale_proof_on(
         txid = %txid,
         proven_tx_id,
         request_recreated = updated == 0,
+        request_asks = ask,
         mined_rows_forgotten = forgotten,
         marker = "stale_proof_demoted",
         "demote_stale_proof: the stored proof is gone; the transaction is unproven again with its bytes in the request and will be re-proved"
@@ -6100,9 +6115,6 @@ impl MonitorStorage for StorageSqlx {
               )
               AND NOT EXISTS (
                 SELECT 1 FROM proven_txs p WHERE p.txid = transactions.txid
-                  AND NOT EXISTS (SELECT 1 FROM proof_root_checks m
-                                  WHERE m.txid = p.txid AND m.height = p.height
-                                    AND m.merkle_root LIKE 'refuted:%')
               )
             RETURNING transaction_id
             "#,

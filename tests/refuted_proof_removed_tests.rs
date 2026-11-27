@@ -1,17 +1,17 @@
 //! A proof row this store has not checked, linked by a transaction with no
 //! request, whose root this store's tracker refutes: the status review's
-//! pass clears the link, keeps the proof row and marks it refuted, and
-//! makes a request that asks for the proof. The proof task's adoption and
-//! the pass skip a marked row, so two full cycles (review, proof task,
+//! pass demotes it as this line demotes a refuted unchecked proof
+//! everywhere (the proof row and its record removed, the link cleared) and
+//! makes a request that asks for the proof. The proof task's adoption
+//! finds no proof row to link, so two full cycles (review, proof task,
 //! review, proof task) read one header in all and leave the row `unproven`
 //! with no link and a request asking. When the headers arrive, the proof
 //! task brings the proof, the store funnel checks it against the tracker
-//! and writes its record over the mark, and the row completes.
+//! and records it, and the row completes.
 //!
-//! Two roads to the shape: a manager's drain from a local reader (the
-//! reader's rows under another reference, the proof row inserted with no
-//! record, linked by the adoption), and a store an earlier release wrote
-//! (the row linked to its own proof row, no record, no request).
+//! Two shapes: the proof row inserted by a sync with no record and linked
+//! by the adoption, and a row linked to its own proof row with no record
+//! and no request.
 #![cfg(feature = "sqlite")]
 
 use std::sync::Arc;
@@ -26,10 +26,10 @@ use sync_support::exec;
 
 #[derive(Clone, Copy, Debug)]
 enum Road {
-    /// The drain brings the proof row; the proof task's adoption links it.
-    Drain,
-    /// The row links its own proof row with no record (an earlier release).
-    OldStore,
+    /// A sync inserts the proof row; the proof task's adoption links it.
+    Synced,
+    /// The row links its own proof row with no record.
+    Linked,
 }
 
 /// The shape, as each road leaves it: W's `wy` linked to an unchecked
@@ -39,13 +39,13 @@ async fn shape(road: Road, n: u8) -> (Arc<StorageSqlx>, Arc<Headers>) {
     let w = w_store(Tracker::Refutes, &headers).await;
     let t = held_at(&w, n, "unproven", "wy", NOW).await;
     match road {
-        Road::Drain => {
+        Road::Synced => {
             let r = r_store().await;
             reader_rows(&r, n, "ry", OLD, "completed", true, false).await;
             drain(&w, r).await;
             w.synchronize_transaction_statuses().await.unwrap();
         }
-        Road::OldStore => {
+        Road::Linked => {
             let p = proof_row(&w, n, OLD).await;
             exec(
                 &w,
@@ -99,8 +99,8 @@ async fn two_cycles_then_the_headers_arrive(road: Road, n: u8) {
     assert_eq!(req, "unmined", "a request asks for the proof");
     assert_eq!(
         proof_state(&w, n).await,
-        "proof rows 1 record refuted",
-        "the proof row kept and marked"
+        "proof rows 0 record none",
+        "the proof row and its record removed"
     );
 
     // The headers arrive: the tracker carries the root, the services
@@ -120,11 +120,47 @@ async fn two_cycles_then_the_headers_arrive(road: Road, n: u8) {
 }
 
 #[tokio::test]
-async fn a_refuted_proof_beside_a_drained_row_is_marked_and_asked_once() {
-    two_cycles_then_the_headers_arrive(Road::Drain, 71).await;
+async fn a_refuted_proof_a_sync_inserted_is_removed_and_asked_once() {
+    two_cycles_then_the_headers_arrive(Road::Synced, 71).await;
 }
 
 #[tokio::test]
-async fn a_refuted_proof_an_earlier_release_stored_is_marked_and_asked_once() {
-    two_cycles_then_the_headers_arrive(Road::OldStore, 72).await;
+async fn a_refuted_proof_a_row_links_is_removed_and_asked_once() {
+    two_cycles_then_the_headers_arrive(Road::Linked, 72).await;
+}
+
+/// Beside a request whose word no proof, send or unfail task asks, the
+/// refuted proof row and its record are removed, the row keeps its status
+/// with its link cleared, and the request keeps its word. A second review
+/// reads no header.
+#[tokio::test]
+async fn beside_a_request_no_task_asks_the_row_and_the_request_keep_their_words() {
+    let mut n = 73u8;
+    for word in ["nosend", "doubleSpend", "notFound"] {
+        for status in ["unproven", "nosend", "sending"] {
+            n += 1;
+            let headers = Arc::new(Headers::default());
+            let w = w_store(Tracker::Refutes, &headers).await;
+            let t = held_at(&w, n, status, "wy", NOW).await;
+            let p = proof_row(&w, n, OLD).await;
+            exec(
+                &w,
+                &format!("UPDATE transactions SET proven_tx_id = {p} WHERE transaction_id = {t}"),
+            )
+            .await;
+            proof_request(&w, n, word, None).await;
+            MonitorStorage::review_status(&*w).await.unwrap();
+            MonitorStorage::review_status(&*w).await.unwrap();
+            let after = format!("{} | {}", view(&w, n).await, proof_state(&w, n).await);
+            println!(
+                "WITNESS held request {word}, row {status}: {after} ({} reads)",
+                headers.reads()
+            );
+            assert_eq!(headers.reads(), 1);
+            assert_eq!(
+                after,
+                format!("wy:{status}:- | req {word} | checked 0 | proof rows 0 record none")
+            );
+        }
+    }
 }

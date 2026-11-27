@@ -324,7 +324,7 @@ async fn run(
     let recorded = count(
         &w,
         &format!(
-            "SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{}' AND merkle_root NOT LIKE 'refuted:%'",
+            "SELECT COUNT(*) FROM proof_root_checks WHERE txid = '{}'",
             mined(n).0
         ),
     )
