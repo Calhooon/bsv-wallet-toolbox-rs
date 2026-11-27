@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The published crate carries the source, the tests, the test vectors, the
+  examples and the documents a host reads (`docs/REORG-DIVERGENCES.md`, the
+  provider notes, the README, this file and the license), by an `include`
+  list in `Cargo.toml`. It no longer carries the repository's own working
+  files: the per-folder `CLAUDE.md` notes, the audit, dependents, mutants and
+  release documents, `.github`, `tools`, `scripts`, the `Makefile`, the lint
+  and release configuration. They stay in the repository; nothing a build, a
+  test in the package or docs.rs reads moves.
+
 ### Fixed
 
 - A store's `find_or_insert_user` answers every caller at once for an identity it does not hold (two managers over one store, a wallet and a manager, two tasks of one host): in one write transaction the user's row is inserted only if absent and then read, so every caller is answered the same row, exactly one is told it is new, and that one writes the user's default basket. Before, a caller whose insert followed another's was answered `SQLx error: error returned from database: (code: 2067) UNIQUE constraint failed: users.identity_key` (`callers_at_once_for_one_new_identity_are_all_answered_one_row`).
