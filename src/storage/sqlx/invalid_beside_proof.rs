@@ -69,15 +69,21 @@
 //! linking the same proof row, the same path bytes, a transaction of the
 //! txid still not `completed`): confirmed, the root is recorded and every
 //! transaction row of the txid written `completed` and linked, as check 3
-//! writes it; refuted while still unchecked, a `failed` row of the txid
-//! reads `unproven` again (`recover_failed_rows_on`: its link cleared, its
-//! free inputs spent by it again, its own outputs as the failure left
-//! them) and the proof is demoted as above, so no write leaves a request
-//! asking beside a `failed` row; no tracker or no answer writes nothing.
+//! writes it; refuted while still unchecked, the wallet's own released
+//! `failed` row of the txid reads `unproven` again (`failed_row_recovery.rs`,
+//! `recover_failed_rows_on`: an outgoing row, the request not
+//! `doubleSpend`, its bytes hashing to the txid, an input of its user's
+//! free; those free inputs spent by it again, its own outputs as the
+//! failure left them) and the proof is demoted as above; any other `failed`
+//! row stays `failed`, and where every row of the txid then reads `failed`
+//! the request is written `invalid` and does not ask; no tracker or no
+//! answer writes nothing.
 
 use bsv_rs::transaction::MerklePath;
 
-use super::failed_row_recovery::{note_recovery_on, recover_failed_rows_on};
+use super::failed_row_recovery::{
+    end_request_beside_failed_rows_on, live_rows_on, note_recovery_on, recover_failed_rows_on,
+};
 use super::monitor_state::{
     read_invalid_beside_proof_cursor_on, write_invalid_beside_proof_cursor_on,
 };
@@ -350,9 +356,11 @@ impl StorageSqlx {
 /// cleared): beside `nosend` the check of `noSend` transactions asks for
 /// the proof, beside an ended word (`doubleSpend`, `notFound`, `invalid`)
 /// nothing asks and the row keeps its status until a proof comes by
-/// another road. A `failed` row of the txid reads `unproven` again
-/// (`recover_failed_rows_on`) and the request is then written `unmined`,
-/// so no request is left asking beside a `failed` row.
+/// another road. The wallet's own released `failed` row of the txid
+/// reads `unproven` again (`recover_failed_rows_on`) and the request is
+/// then written `unmined`; any other `failed` row stays `failed`, the
+/// request keeps its word, and none is made where every row of the txid
+/// reads `failed`.
 /// Returns how many transaction rows it brought to `completed`.
 async fn complete_linked_to_checked_proof(
     tx: &mut sqlx::SqliteConnection,
@@ -400,14 +408,17 @@ async fn complete_linked_to_checked_proof(
                 .await?;
                 // The demotion, as this line demotes a refuted unchecked
                 // proof everywhere: the proof row and its record removed.
-                // The request asks where the txid holds none or a `failed`
-                // row came back; a request the txid holds keeps its word.
+                // The request asks where a `failed` row came back, or where
+                // the txid holds none and a row of it does not read
+                // `failed`; a request the txid holds keeps its word, and
+                // none is made beside `failed` rows alone.
                 let held: Option<String> =
                     sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
                         .bind(txid)
                         .fetch_optional(&mut *tx)
                         .await?;
-                let asked = recovered > 0 || held.is_none();
+                let asked =
+                    recovered > 0 || (held.is_none() && live_rows_on(&mut *tx, txid).await? > 0);
                 demote_proof_on(&mut *tx, txid, asked).await?;
                 if recovered > 0 {
                     note_recovery_on(&mut *tx, txid, recovered, path.block_height, now).await?;
@@ -511,11 +522,13 @@ pub(super) struct PassCounts {
 /// (the request still `completed` linking the same proof row, the same path
 /// bytes, a transaction of the txid still not `completed`) before anything
 /// is written. Confirmed (or recorded meanwhile): the record, then the
-/// status and the link check 3 writes. Refuted while still unchecked: a
-/// `failed` row of the txid reads `unproven` again
+/// status and the link check 3 writes. Refuted while still unchecked: the
+/// wallet's own released `failed` row of the txid reads `unproven` again
 /// (`recover_failed_rows_on`), then the proof is demoted as every refuted
-/// unchecked proof is (`demote_stale_proof_on`: the request `unmined`). Returns how many transaction rows it brought
-/// to `completed`.
+/// unchecked proof is (`demote_stale_proof_on`: the request `unmined`),
+/// and where every row of the txid then reads `failed` the request is
+/// written `invalid` (`end_request_beside_failed_rows_on`). Returns how
+/// many transaction rows it brought to `completed`.
 async fn complete_beside_checked_proof(
     tx: &mut sqlx::SqliteConnection,
     txid: &str,
@@ -553,11 +566,14 @@ async fn complete_beside_checked_proof(
                 if recovered > 0 {
                     note_recovery_on(&mut *tx, txid, recovered, path.block_height, now).await?;
                 }
+                // Beside `failed` rows alone the request does not ask.
+                let ended = end_request_beside_failed_rows_on(&mut *tx, txid, now).await?;
                 tracing::warn!(
                     txid = %txid,
                     height = path.block_height,
+                    request_ended = ended,
                     marker = "unchecked_proof_demoted",
-                    "review_status: a proof row beside a completed request was never checked and the chain tracker refutes it; demoted, asked again"
+                    "review_status: a proof row beside a completed request was never checked and the chain tracker refutes it; demoted"
                 );
             }
             return Ok(0);
