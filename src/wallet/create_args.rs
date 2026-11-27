@@ -246,10 +246,7 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
         .as_ref()
         .and_then(|o| o.send_with.as_ref())
         .map_or(0, Vec::len);
-    let inputs_len = args.inputs.as_ref().map_or(0, Vec::len);
-    let outputs_len = args.outputs.as_ref().map_or(0, Vec::len);
-    let is_remix_change = send_with_len == 0 && inputs_len == 0 && outputs_len == 0;
-    let is_new_tx = is_remix_change || inputs_len > 0 || outputs_len > 0;
+    let is_new_tx = !is_send_with_alone(args);
     if is_new_tx && send_with_len >= MAXIMUM_SEND_WITH_TRANSACTIONS {
         return Err(Error::ValidationError(format!(
             "The sendWith parameter must be at most {} transaction IDs when the new transaction joins the broadcast set",
@@ -364,4 +361,19 @@ fn parse_brc177_no_send_expiry_labels(labels: &[String]) -> Result<bool> {
         ));
     }
     Ok(true)
+}
+/// The reference's `isSendWith && !isNewTx` (ts-stack 57c5f130
+/// `validationHelpers.ts` 805-807): a `sendWith` naming at least one txid
+/// with no inputs and no outputs. Such a call builds no transaction. The
+/// empty call with no `sendWith` is the reference's remix of change and
+/// stays a new transaction.
+pub(crate) fn is_send_with_alone(args: &bsv_rs::wallet::CreateActionArgs) -> bool {
+    let named = args
+        .options
+        .as_ref()
+        .and_then(|o| o.send_with.as_ref())
+        .map_or(0, Vec::len);
+    let inputs = args.inputs.as_ref().map_or(0, Vec::len);
+    let outputs = args.outputs.as_ref().map_or(0, Vec::len);
+    named > 0 && inputs == 0 && outputs == 0
 }
