@@ -19,7 +19,7 @@
 //! starting after the one the last pass looked at last and coming round,
 //! and records where it stopped in `monitor_state`
 //! (`invalid_beside_proof_cursor`). A candidate that never leaves the set
-//! (a path that does not parse, no tracker, a tracker fault) holds no slot
+//! (no tracker, a tracker fault) holds no slot
 //! for good: with `INVALID_BESIDE_PROOF_PER_PASS` = 100, a candidate behind
 //! N others in that order is looked at within ceil((N + 1) / 100) passes,
 //! whatever the others do, counting those put ahead of it meanwhile (a

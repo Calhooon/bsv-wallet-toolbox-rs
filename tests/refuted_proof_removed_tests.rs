@@ -120,7 +120,7 @@ async fn two_cycles_then_the_headers_arrive(road: Road, n: u8) {
 }
 
 #[tokio::test]
-async fn a_refuted_proof_a_sync_inserted_is_removed_and_asked_once() {
+async fn a_refuted_proof_the_store_had_not_checked_is_removed_and_asked_once() {
     two_cycles_then_the_headers_arrive(Road::Synced, 71).await;
 }
 
