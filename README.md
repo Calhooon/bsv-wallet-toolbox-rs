@@ -100,10 +100,18 @@ request through a wallet on this release line (observed by a run): its
 submitting call (`createAction` with `sendWith` and no inputs or outputs) is
 answered as a new action. With a spare coin, that action builds and posts a
 change-only transaction of the wallet's own, the payment itself is not posted
-and reads `sending`, and the answer does not report the payment as sent; with
-no spare coin, the call is refused (`Insufficient funds: need 2, have 0`),
-nothing is written and the payment reads `nosend`. The 0.14 prerelease line is
-where the answer changes.
+by the call and reads `sending`, and the answer does not report the payment as
+sent; with no spare coin, the call is refused (`Insufficient funds: need 2,
+have 0`), nothing is written and the payment reads `nosend`.
+
+On a host that runs the monitor, the payment left `sending` is posted later
+by the send-waiting task. The reference's client has by then reported the
+outcome as unknown and has not sent its paid request, so the payer is charged
+for a request that was never made. Until this line refuses that call, a host
+whose applications pay through the reference's SDK from its 4.1 should not
+serve them from a wallet on this line. The 0.14 line's tree answers the call
+as the reference does (the named payment is sent by the call and answered
+`unproven`); no published prerelease carries that yet.
 
 ## Records and releases
 
