@@ -25,7 +25,9 @@
 //!   live row of another user of the store.
 //! - EVIDENCE (a `locked_input_checks` row `spent-proven` at one of its
 //!   input outpoints, on the wallet's row of the coin spent by it or by
-//!   nothing): the take is refused as a standing competitor's checked
+//!   nothing, whose recorded spender is another txid: a competitor queued
+//!   on its request with a checked proof whose bytes spend it,
+//!   `word_scope::spent_proven_against_on`): the take is refused as a standing competitor's checked
 //!   proof refuses it (`competitor_proof::apply_take_on`): nothing is
 //!   recovered, no row lifted, no take recorded, the request keeps its
 //!   word and a `takeNotCounted` note names the rows.
@@ -124,8 +126,8 @@ pub(crate) enum FailedState {
     Locked,
     /// A competitor's checked proof on record against it (a
     /// `locked_input_checks` row `spent-proven` at one of its input
-    /// outpoints, the row spent by it or by nothing): nothing is
-    /// recovered.
+    /// outpoints, the row spent by it or by nothing, its recorded spender
+    /// another txid): nothing is recovered.
     Evidence,
 }
 
@@ -153,20 +155,15 @@ pub(crate) async fn failed_outgoing_rows(
     let mut rows = Vec::with_capacity(ids.len());
     for transaction_id in ids {
         let mut evidence = false;
-        for (source, vout) in outpoints {
-            let proven: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM outputs o \
-                 JOIN locked_input_checks c ON c.output_id = o.output_id \
-                 WHERE lower(o.txid) = lower(?) AND o.vout = ? AND c.last_verdict = ? \
-                   AND (o.spent_by IS NULL OR o.spent_by = ?)",
+        for outpoint in outpoints {
+            if super::word_scope::spent_proven_against_on(
+                &mut *conn,
+                txid,
+                outpoint,
+                Some(transaction_id),
             )
-            .bind(source)
-            .bind(i64::from(*vout))
-            .bind(super::LOCKED_VERDICT_SPENT_PROVEN)
-            .bind(transaction_id)
-            .fetch_one(&mut *conn)
-            .await?;
-            if proven > 0 {
+            .await?
+            {
                 evidence = true;
                 break;
             }

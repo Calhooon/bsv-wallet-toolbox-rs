@@ -38,7 +38,7 @@ use crate::AuthId;
 
 /// The request's writer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Writer {
+pub(super) enum Writer {
     /// X's own abort of its `sending` action (the request `invalid`).
     Abort,
     /// A broadcaster's fatal word on X's post (`mark_transaction_rejected`).
@@ -64,14 +64,14 @@ const WRITERS: [Writer; 4] = [
 ];
 const NEXTS: [Next; 2] = [Next::Review, Next::Retire];
 const WORDS: [&str; 2] = ["sending", "unproven"];
-const PAYMENT: i64 = 600;
-const HEIGHT: u32 = 900;
+pub(super) const PAYMENT: i64 = 600;
+pub(super) const HEIGHT: u32 = 900;
 /// P's own proof height (the mock tracker keeps one root a height).
-const P_HEIGHT: u32 = 901;
+pub(super) const P_HEIGHT: u32 = 901;
 
 /// P: spends C (the coinbase's output 0); X's change at vout 0, Y's
 /// payment at vout 1.
-fn p_raw() -> Vec<u8> {
+pub(super) fn p_raw() -> Vec<u8> {
     let mut raw = child_spending(COINBASE_TXID);
     let tail = raw.split_off(raw.len() - 4 - 1 - 8 - 1);
     raw.push(2);
@@ -83,24 +83,24 @@ fn p_raw() -> Vec<u8> {
 }
 
 /// R: another spend of C, the competitor.
-fn r_raw() -> Vec<u8> {
+pub(super) fn r_raw() -> Vec<u8> {
     let mut raw = child_spending(COINBASE_TXID);
     let value_at = 4 + 1 + 36 + 1 + 4 + 1;
     raw[value_at..value_at + 8].copy_from_slice(&777u64.to_le_bytes());
     raw
 }
 
-struct Cell {
-    s: StorageSqlx,
-    x: AuthId,
-    y: AuthId,
-    p: String,
-    x_row: i64,
-    y_row: i64,
-    y_out: i64,
+pub(super) struct Cell {
+    pub(super) s: StorageSqlx,
+    pub(super) x: AuthId,
+    pub(super) y: AuthId,
+    pub(super) p: String,
+    pub(super) x_row: i64,
+    pub(super) y_row: i64,
+    pub(super) y_out: i64,
 }
 
-async fn user(s: &StorageSqlx, key: &str) -> (AuthId, i64) {
+pub(super) async fn user(s: &StorageSqlx, key: &str) -> (AuthId, i64) {
     let (u, _) = s.find_or_insert_user(key).await.unwrap();
     let basket = {
         let mut conn = s.writer().acquire().await.unwrap();
@@ -113,7 +113,7 @@ async fn user(s: &StorageSqlx, key: &str) -> (AuthId, i64) {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn row(
+pub(super) async fn row(
     s: &StorageSqlx,
     user: &AuthId,
     txid: &str,
@@ -139,7 +139,7 @@ async fn row(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn output(
+pub(super) async fn output(
     s: &StorageSqlx,
     user: &AuthId,
     basket: i64,
@@ -189,7 +189,7 @@ fn services(raw: &[u8], proof_of: &str) -> Arc<dyn WalletServices> {
 
 /// X's action P `sending` spending C, its request `unsent`; Y's received
 /// row of P at `word` with its payment output.
-async fn seed(word: &str) -> Cell {
+pub(super) async fn seed(word: &str) -> Cell {
     let store = storage().await;
     let mut tracker = MockChainTracker::new(1000);
     let p_txid = txid_of(&p_raw());
@@ -285,7 +285,7 @@ async fn retire(c: &Cell) -> bool {
 
 /// The word written; `false` where the writer refused it (the abort and
 /// the retire refuse while a row of the txid reads `unproven`, a take).
-async fn write_word(c: &Cell, writer: Writer) -> bool {
+pub(super) async fn write_word(c: &Cell, writer: Writer) -> bool {
     let s = &c.s;
     match writer {
         Writer::Abort => {
@@ -327,14 +327,14 @@ async fn act_next(c: &Cell, next: Next) {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Reading {
-    x_row: String,
-    y_row: String,
-    y_out_spendable: bool,
-    y_balance: i64,
+pub(super) struct Reading {
+    pub(super) x_row: String,
+    pub(super) y_row: String,
+    pub(super) y_out_spendable: bool,
+    pub(super) y_balance: i64,
 }
 
-async fn read(c: &Cell) -> Reading {
+pub(super) async fn read(c: &Cell) -> Reading {
     let s = &c.s;
     let status = |id: i64| async move {
         sqlx::query_scalar::<_, String>("SELECT status FROM transactions WHERE transaction_id = ?")

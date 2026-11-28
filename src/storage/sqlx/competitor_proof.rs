@@ -8,13 +8,17 @@
 //! outpoint whose `spent_by` names it), whose own stored bytes
 //! (`proven_txs.raw_tx`) spend that outpoint, and whose stored merkle path
 //! (`proven_txs.merkle_path`) computes a root that our headers carry at its
-//! height NOW: the chain tracker is asked at each call, never the record
-//! of an earlier check. A tracker that cannot answer finds no root gone, so
-//! the proof stands. The store holds no other competitor proof: the proof
-//! path's competitor ask (`competitors.rs`) checks a fetched proof and
-//! records its verdict (the request `doubleSpend`, the lost inputs
-//! `spent-proven`), never the competitor's bytes or path, and an outpoint
-//! that is no output row of this store has no record of who spent it.
+//! height NOW: the chain tracker is asked at each call. Only a proof this
+//! store checked is read at all: a `proven_txs` row with its root-check
+//! record (`held_receipts::CHECKED_PROOF_JOIN`); a row merely stored (a
+//! sync's merge) is no competitor's proof. A tracker that cannot answer
+//! (none, or an error) leaves the check undecided: the competitor neither
+//! stands nor is gone, and a take beside it waits (`takeNotCounted`, why
+//! `trackerNotAnswered`) until a later take finds the tracker answering.
+//! The proof path's competitor ask (`competitors.rs`) keeps the
+//! competitor's bytes and checked proof in the write that retires ours, so
+//! a `spent-proven` mark it writes has its spender on record
+//! ([`checked_spender_on`]).
 //!
 //! Its cost: one indexed read per input outpoint, and one header read per
 //! competitor found (none when none is held). It is asked before any
@@ -61,6 +65,19 @@ pub(crate) struct CompetitorCheck {
     read: Vec<String>,
     /// The competitor whose checked proof stands, if any.
     pub(crate) standing: Option<StandingCompetitor>,
+    /// A stored checked competitor whose root no tracker answered for.
+    pub(crate) undecided: Option<String>,
+}
+
+/// What the tracker answers of a stored proof's root now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RootAnswer {
+    /// Our headers carry it.
+    Stands,
+    /// The path names nothing our headers carry (or does not parse).
+    Gone,
+    /// No tracker, or the tracker erred.
+    Unanswered,
 }
 
 /// A stored competitor: its txid, proof height, merkle path and bytes.
@@ -89,7 +106,8 @@ pub(crate) fn inputs_of(tx: &bsv_rs::transaction::Transaction) -> Vec<(String, u
 
 /// The stored competitors of `txid`: a transaction the store records as
 /// spending one of `outpoints` (an output row there whose `spent_by` names
-/// it), with a stored proof. Indexed by the transactions' txid.
+/// it), with a stored proof this store checked (its root-check record).
+/// Indexed by the transactions' txid.
 async fn stored_competitors(
     conn: &mut SqliteConnection,
     txid: &str,
@@ -103,6 +121,8 @@ async fn stored_competitors(
              JOIN outputs o ON o.transaction_id = t.transaction_id \
              JOIN transactions s ON s.transaction_id = o.spent_by \
              JOIN proven_txs p ON p.txid = s.txid \
+             JOIN proof_root_checks c \
+               ON c.txid = p.txid AND c.height = p.height AND c.merkle_root = lower(p.merkle_root) \
              WHERE t.txid = ? AND o.vout = ? AND s.txid <> ?",
         )
         .bind(source)
@@ -135,6 +155,44 @@ pub(crate) async fn stored_competitor_on(
         .into_iter()
         .find(|((competitor, _, _, raw), outpoint)| spends(competitor, raw, outpoint))
         .map(|((competitor, ..), _)| competitor))
+}
+
+/// The recorded spender of `outpoint` against `txid`: a competitor queued on
+/// `txid`'s request whose stored proof this store checked
+/// (`held_receipts::CHECKED_PROOF_JOIN`) and whose bytes, hashing to its
+/// txid, spend the outpoint; never `txid` itself. A `spent-proven` check
+/// counts as evidence against `txid` only where one is on record.
+pub(crate) async fn checked_spender_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    outpoint: &(String, u32),
+) -> Result<Option<String>> {
+    let history: Option<String> =
+        sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
+            .bind(txid)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let queued = history
+        .as_deref()
+        .map(super::storage_sqlx::queued_competitors)
+        .unwrap_or_default();
+    let sql = format!(
+        "SELECT p.raw_tx FROM {} WHERE p.txid = ?",
+        super::held_receipts::CHECKED_PROOF_JOIN
+    );
+    for competitor in queued {
+        if competitor.eq_ignore_ascii_case(txid) {
+            continue;
+        }
+        let raw: Option<Vec<u8>> = sqlx::query_scalar(&sql)
+            .bind(&competitor)
+            .fetch_optional(&mut *conn)
+            .await?;
+        if raw.is_some_and(|raw| spends(&competitor, &raw, outpoint)) {
+            return Ok(Some(competitor));
+        }
+    }
+    Ok(None)
 }
 
 /// Do `competitor`'s stored bytes, hashing to its txid, spend `outpoint`?
@@ -175,19 +233,27 @@ impl StorageSqlx {
             outpoints,
             read: found.iter().map(|((t, ..), _)| t.clone()).collect(),
             standing: None,
+            undecided: None,
         };
         for ((competitor, height, path, raw), outpoint) in found {
             let Ok(height) = u32::try_from(height) else {
                 continue;
             };
-            if spends(&competitor, &raw, &outpoint)
-                && self.root_stands(&competitor, height, &path).await
-            {
-                check.standing = Some(StandingCompetitor {
-                    txid: competitor,
-                    height,
-                });
-                break;
+            if !spends(&competitor, &raw, &outpoint) {
+                continue;
+            }
+            match self.root_answer(&competitor, height, &path).await {
+                RootAnswer::Stands => {
+                    check.standing = Some(StandingCompetitor {
+                        txid: competitor,
+                        height,
+                    });
+                    break;
+                }
+                RootAnswer::Unanswered => {
+                    check.undecided.get_or_insert(competitor);
+                }
+                RootAnswer::Gone => {}
             }
         }
         Ok(check)
@@ -195,28 +261,33 @@ impl StorageSqlx {
 
     /// Does `path` prove `competitor` at `height` under our headers now? A
     /// path that does not parse or names another height proves nothing; a
-    /// tracker that cannot answer (none, or an error) finds no root gone.
-    async fn root_stands(&self, competitor: &str, height: u32, path: &[u8]) -> bool {
+    /// tracker that cannot answer (none, or an error) leaves it
+    /// unanswered: a stored proof stands only on the tracker's word.
+    async fn root_answer(&self, competitor: &str, height: u32, path: &[u8]) -> RootAnswer {
         let Ok(bump) = bsv_rs::transaction::MerklePath::from_binary(path) else {
-            return false;
+            return RootAnswer::Gone;
         };
         let Ok(root) = bump.compute_root(Some(competitor)) else {
-            return false;
+            return RootAnswer::Gone;
         };
         if bump.block_height != height {
-            return false;
+            return RootAnswer::Gone;
         }
         let answer = match self.get_chain_tracker().await {
             Some(tracker) => tracker.is_valid_root_for_height(&root, height).await,
             None => match self.get_services() {
                 Ok(services) => match services.get_chain_tracker().await {
                     Ok(tracker) => tracker.is_valid_root_for_height(&root, height).await,
-                    Err(_) => return true,
+                    Err(_) => return RootAnswer::Unanswered,
                 },
-                Err(_) => return true,
+                Err(_) => return RootAnswer::Unanswered,
             },
         };
-        !matches!(answer, Ok(false))
+        match answer {
+            Ok(true) => RootAnswer::Stands,
+            Ok(false) => RootAnswer::Gone,
+            Err(_) => RootAnswer::Unanswered,
+        }
     }
 }
 
@@ -244,8 +315,9 @@ pub(crate) enum TakeApplied {
     /// `competitor` names it where its bytes are stored.
     Refused { competitor: Option<String> },
     /// A `failed` outgoing row of the txid is to be read by its inputs and
-    /// no held copy of the transaction hashes to its txid: nothing raised,
-    /// the cause on the request's history.
+    /// no held copy of the transaction hashes to its txid, or a stored
+    /// competitor's root is unanswered: nothing raised, the cause on the
+    /// request's history, asked again by a later take.
     Withheld,
 }
 
@@ -304,8 +376,11 @@ pub(crate) async fn apply_take_on(
     Ok(TakeApplied::Applied)
 }
 
-/// A competitor's checked proof standing (the lookup's, or one stored
-/// after it, the indexed read run again in this write): the take refused.
+/// A competitor's checked proof standing (the lookup's): the take refused.
+/// One the lookup could not decide (no tracker answered), or one stored
+/// after it (the indexed read run again in this write, whose root no
+/// tracker was asked for): the take waits, written nothing but a note, and
+/// a later take reads its root.
 async fn standing_refusal_on(
     conn: &mut SqliteConnection,
     check: &CompetitorCheck,
@@ -318,8 +393,35 @@ async fn standing_refusal_on(
         .into_iter()
         .map(|((t, ..), _)| t)
         .find(|t| !check.read.contains(t));
-    let Some(competitor) = check.standing.as_ref().map(|s| s.txid.clone()).or(late) else {
-        return Ok(None);
+    let waiting = match (&check.undecided, late) {
+        (Some(undecided), _) => Some((undecided.clone(), "trackerNotAnswered")),
+        (None, Some(late)) => Some((late, "storedAfterLookup")),
+        (None, None) => None,
+    };
+    let Some(competitor) = check.standing.as_ref().map(|s| s.txid.clone()) else {
+        let Some((competitor, why)) = waiting else {
+            return Ok(None);
+        };
+        super::abort_recovery::note_request_on(
+            conn,
+            txid,
+            serde_json::json!({
+                "what": "takeNotCounted",
+                "when": now.to_rfc3339(),
+                "competitor": competitor,
+                "why": why,
+                "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+            }),
+        )
+        .await?;
+        tracing::warn!(
+            txid = %txid,
+            competitor = %competitor,
+            why,
+            marker = "take_waits_competitor_root",
+            "a take beside a stored competitor proof whose root no tracker answered for: nothing raised, asked again"
+        );
+        return Ok(Some(TakeApplied::Withheld));
     };
     note_take_refused(conn, txid, Some(&competitor), &[], takers, now).await?;
     tracing::warn!(

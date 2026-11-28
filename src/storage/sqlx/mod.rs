@@ -40,6 +40,8 @@ mod broadcaster_hint_tests;
 #[cfg(test)]
 mod change_tiebreak_tests;
 #[cfg(test)]
+mod checked_evidence_tests;
+#[cfg(test)]
 mod checked_mark_tests;
 mod competitor_proof;
 mod create_action;

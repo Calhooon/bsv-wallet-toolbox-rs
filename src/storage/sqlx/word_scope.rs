@@ -13,60 +13,92 @@
 //! receipt does.
 //!
 //! Evidence about the transaction is the same for every user and ends every
-//! row of the txid. The store's own records of it, read on the caller's
-//! write ([`evidence_on_record_on`]): a stored competitor (an output row at
-//! one of the txid's input outpoints whose `spent_by` names another
-//! transaction with a `proven_txs` row whose bytes spend that outpoint), or
-//! a `spent-proven` check (`locked_input_checks`) on an output row at one of
-//! its input outpoints, the two records the take guard reads
-//! (`competitor_proof.rs`, `abort_recovery::failed_outgoing_rows`).
+//! row of the txid. It is a proof this store checked, read from the store's
+//! own records on the caller's write ([`evidence_on_record_on`]): a stored
+//! competitor (an output row at one of the txid's input outpoints whose
+//! `spent_by` names another transaction with a `proven_txs` row this store
+//! checked, its root-check record, whose bytes spend that outpoint), or a
+//! `spent-proven` check (`locked_input_checks`) on an output row at one of
+//! its input outpoints whose recorded spender is another txid (a competitor
+//! queued on the txid's request with a checked proof whose bytes spend it,
+//! `competitor_proof::checked_spender_on`); the records the take guard
+//! reads (`competitor_proof.rs`, `abort_recovery::failed_outgoing_rows`).
+//! A proof row merely stored, and a `spent-proven` check with no spender on
+//! record or with the txid itself as its spender, are not evidence.
 
 use sqlx::SqliteConnection;
 
 use crate::Result;
 
 /// Does the store hold evidence against `txid` on record: a stored
-/// competitor, or a `spent-proven` check at one of its input outpoints?
-/// The outpoints are read from a held copy that hashes to the txid; with
-/// none, the `spent-proven` checks on the outputs a row of the txid spends.
+/// competitor this store checked, or a `spent-proven` check at one of its
+/// input outpoints whose recorded spender is another txid? The outpoints
+/// are read from a held copy that hashes to the txid; with none, the
+/// outpoints of the outputs a row of the txid spends.
 pub(crate) async fn evidence_on_record_on(conn: &mut SqliteConnection, txid: &str) -> Result<bool> {
-    let outpoints: Vec<(String, u32)> =
+    let mut outpoints: Vec<(String, u32)> =
         super::abort_recovery::held_transaction_on(&mut *conn, txid)
             .await?
             .map(|tx| super::competitor_proof::inputs_of(&tx))
             .unwrap_or_default();
+    if outpoints.is_empty() {
+        let spent: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT lower(o.txid), o.vout FROM outputs o \
+             JOIN transactions t ON t.transaction_id = o.spent_by \
+             WHERE t.txid = ? AND o.txid IS NOT NULL",
+        )
+        .bind(txid)
+        .fetch_all(&mut *conn)
+        .await?;
+        outpoints = spent
+            .into_iter()
+            .filter_map(|(t, v)| Some((t, u32::try_from(v).ok()?)))
+            .collect();
+    }
     if super::competitor_proof::stored_competitor_on(&mut *conn, txid, &outpoints)
         .await?
         .is_some()
     {
         return Ok(true);
     }
-    for (source, vout) in &outpoints {
-        let proven: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM outputs o \
-             JOIN locked_input_checks c ON c.output_id = o.output_id \
-             WHERE lower(o.txid) = lower(?) AND o.vout = ? AND c.last_verdict = ?",
-        )
-        .bind(source)
-        .bind(i64::from(*vout))
-        .bind(super::LOCKED_VERDICT_SPENT_PROVEN)
-        .fetch_one(&mut *conn)
-        .await?;
-        if proven > 0 {
+    for outpoint in &outpoints {
+        if spent_proven_against_on(&mut *conn, txid, outpoint, None).await? {
             return Ok(true);
         }
     }
-    let spent: i64 = sqlx::query_scalar(
+    Ok(false)
+}
+
+/// Is there a `spent-proven` check at `outpoint` (on an output row there,
+/// `spent_by` narrowed to `spent_by_row` or nothing when given) whose
+/// recorded spender is a txid other than `txid`?
+pub(crate) async fn spent_proven_against_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    outpoint: &(String, u32),
+    spent_by_row: Option<i64>,
+) -> Result<bool> {
+    let (source, vout) = outpoint;
+    let proven: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM outputs o \
          JOIN locked_input_checks c ON c.output_id = o.output_id \
-         JOIN transactions t ON t.transaction_id = o.spent_by \
-         WHERE t.txid = ? AND c.last_verdict = ?",
+         WHERE lower(o.txid) = lower(?1) AND o.vout = ?2 AND c.last_verdict = ?3 \
+           AND (?4 IS NULL OR o.spent_by IS NULL OR o.spent_by = ?4)",
     )
-    .bind(txid)
+    .bind(source)
+    .bind(i64::from(*vout))
     .bind(super::LOCKED_VERDICT_SPENT_PROVEN)
+    .bind(spent_by_row)
     .fetch_one(&mut *conn)
     .await?;
-    Ok(spent > 0)
+    if proven == 0 {
+        return Ok(false);
+    }
+    Ok(
+        super::competitor_proof::checked_spender_on(conn, txid, outpoint)
+            .await?
+            .is_some(),
+    )
 }
 
 /// The rows a request's word ends, of `candidates` (`transaction_id`,
