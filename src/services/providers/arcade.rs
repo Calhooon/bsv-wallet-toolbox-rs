@@ -1258,6 +1258,10 @@ pub struct SseFrameParser {
     cur_id: Option<String>,
     cur_event: Option<String>,
     cur_data: Vec<String>,
+    /// The frame's data so far: each data line counts its value and one
+    /// for the line itself, so a frame of many short or empty data lines
+    /// meets [`SSE_LINE_MAX_BYTES`] as a frame of long ones does.
+    cur_data_bytes: usize,
     /// Set once a line, or a frame's data, passed [`SSE_LINE_MAX_BYTES`]:
     /// the stream's reader ends that connection and the task reconnects.
     overflowed: bool,
@@ -1290,10 +1294,14 @@ impl SseFrameParser {
         self.buf.push_str(&String::from_utf8_lossy(chunk));
 
         let mut events = Vec::new();
-        // Process complete lines only; keep the trailing partial line buffered.
-        while let Some(newline_pos) = self.buf.find('\n') {
-            let line: String = self.buf.drain(..=newline_pos).collect();
-            let line = line.trim_end_matches(['\n', '\r']);
+        // Process complete lines only; keep the trailing partial line
+        // buffered. The lines are read in place and the buffer is drained
+        // once, so a chunk of many lines costs its length.
+        let buf = std::mem::take(&mut self.buf);
+        let mut start = 0;
+        while let Some(offset) = buf[start..].find('\n') {
+            let line = buf[start..start + offset].trim_end_matches('\r');
+            start += offset + 1;
 
             if line.is_empty() {
                 // Blank line = frame boundary.
@@ -1305,11 +1313,11 @@ impl SseFrameParser {
                     });
                     self.cur_data.clear();
                 }
+                self.cur_data_bytes = 0;
                 continue;
             }
-            if let Some(rest) = line.strip_prefix(':') {
+            if line.starts_with(':') {
                 // Comment / keep-alive.
-                let _ = rest;
                 continue;
             }
             let (field, value) = match line.split_once(':') {
@@ -1317,16 +1325,22 @@ impl SseFrameParser {
                 None => (line, ""),
             };
             match field {
+                // Each replaces the last: one line's worth at most.
                 "id" => self.cur_id = Some(value.to_string()),
                 "event" => self.cur_event = Some(value.to_string()),
-                "data" => self.cur_data.push(value.to_string()),
+                "data" => {
+                    self.cur_data_bytes += value.len() + 1;
+                    if self.cur_data_bytes > SSE_LINE_MAX_BYTES {
+                        self.overflow();
+                        return events;
+                    }
+                    self.cur_data.push(value.to_string());
+                }
                 _ => {} // ignore unknown fields (retry:, etc.)
             }
-            if self.cur_data.iter().map(String::len).sum::<usize>() > SSE_LINE_MAX_BYTES {
-                self.overflow();
-                return events;
-            }
         }
+        self.buf = buf;
+        self.buf.drain(..start);
         // What is left is one partial line.
         if self.buf.len() > SSE_LINE_MAX_BYTES {
             self.overflow();
@@ -1338,6 +1352,7 @@ impl SseFrameParser {
         self.overflowed = true;
         self.buf = String::new();
         self.cur_data = Vec::new();
+        self.cur_data_bytes = 0;
         self.cur_id = None;
         self.cur_event = None;
     }

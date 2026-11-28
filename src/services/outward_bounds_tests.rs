@@ -21,6 +21,9 @@ enum Answer {
     Endless,
     /// A 200 with this chunked body (no declared length).
     Body(StdArc<Vec<u8>>),
+    /// A 200 whose chunked body is `line` written `count` times, the lines
+    /// written counted; then the connection is held open, never ended.
+    Lines(&'static [u8], usize),
 }
 
 struct Listener {
@@ -77,6 +80,26 @@ async fn listen(answers: Vec<Answer>) -> Listener {
                         }
                         let _ = socket.write_all(b"0\r\n\r\n").await;
                         let _ = socket.shutdown().await;
+                    }
+                    Answer::Lines(line, count) => {
+                        if socket.write_all(start).await.is_err() {
+                            return;
+                        }
+                        let per = (64 * 1024 / line.len()).max(1);
+                        let mut left = count;
+                        while left > 0 {
+                            let n = per.min(left);
+                            let chunk = line.repeat(n);
+                            let frame =
+                                [format!("{:x}\r\n", chunk.len()).as_bytes(), &chunk, b"\r\n"]
+                                    .concat();
+                            if socket.write_all(&frame).await.is_err() {
+                                return;
+                            }
+                            w.fetch_add(n, Ordering::SeqCst);
+                            left -= n;
+                        }
+                        tokio::time::sleep(Duration::from_secs(3600)).await;
                     }
                 }
             });
@@ -439,5 +462,62 @@ mod stream {
         assert_eq!(r.unwrap(), 1);
         assert_eq!(rx.recv().await.unwrap().txid, TXID);
         assert_eq!(l.connections.load(Ordering::SeqCst), 2);
+    }
+
+    /// A frame of `count` copies of `line` and no blank line: the
+    /// connection ends at the frame cap inside the test's bound (the server
+    /// holds it open after its last line), and the next connection reads a
+    /// normal stream.
+    async fn a_frame_of_data_lines_ends_at_the_cap(line: &'static [u8]) {
+        use crate::services::providers::arcade::ArcadeSseClient;
+        const COUNT: usize = 2_000_000;
+        let frame = format!(
+            "id: 1\nevent: status\ndata: {{\"txid\":\"{TXID}\",\"txStatus\":\"SEEN_ON_NETWORK\",\"timestamp\":\"2026-11-28T00:00:00Z\"}}\n\n"
+        );
+        let l = listen(vec![
+            Answer::Lines(line, COUNT),
+            Answer::Body(StdArc::new(frame.into_bytes())),
+        ])
+        .await;
+        let mut sse = ArcadeSseClient::new(&l.url, "token").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (r, took) = bounded(Duration::from_secs(30), sse.stream_once(tx)).await;
+        let text = format!("{r:?}");
+        assert!(
+            matches!(r, Err(crate::Error::NetworkError(_))) && text.contains("stream's bound"),
+            "{text} after {took:?}"
+        );
+        assert!(rx.recv().await.is_none());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (r, _) = bounded(Duration::from_secs(20), sse.stream_once(tx)).await;
+        assert_eq!(r.unwrap(), 1);
+        assert_eq!(rx.recv().await.unwrap().txid, TXID);
+        assert_eq!(l.connections.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_frame_of_empty_data_lines_ends_at_the_cap() {
+        a_frame_of_data_lines_ends_at_the_cap(b"data:\n").await;
+    }
+
+    #[tokio::test]
+    async fn a_frame_of_one_byte_data_lines_ends_at_the_cap() {
+        a_frame_of_data_lines_ends_at_the_cap(b"data: x\n").await;
+    }
+
+    #[tokio::test]
+    async fn a_frame_of_several_data_lines_is_read_whole_and_joined() {
+        use crate::services::providers::arcade::ArcadeSseClient;
+        let frame = format!(
+            "id: 7\nevent: status\ndata: {{\"txid\":\"{TXID}\",\ndata: \"txStatus\":\"SEEN_ON_NETWORK\",\ndata: \"timestamp\":\"2026-11-28T00:00:00Z\"}}\n\n"
+        );
+        let l = listen(vec![Answer::Body(StdArc::new(frame.into_bytes()))]).await;
+        let mut sse = ArcadeSseClient::new(&l.url, "token").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (r, _) = bounded(Duration::from_secs(20), sse.stream_once(tx)).await;
+        assert_eq!(r.unwrap(), 1);
+        let ev = rx.recv().await.unwrap();
+        assert_eq!(ev.txid, TXID);
+        assert_eq!(ev.event_id.as_deref(), Some("7"));
     }
 }
