@@ -30,8 +30,9 @@ use bsv_rs::wallet::{
     CreateActionResult, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel, SendWithResult,
     SignActionArgs, SignActionOptions, WalletInterface,
 };
+use bsv_wallet_toolbox_rs::monitor::tasks::SendWaitingTask;
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
-use bsv_wallet_toolbox_rs::{MonitorStorage, StorageSqlx, Wallet, WalletStorageWriter};
+use bsv_wallet_toolbox_rs::{MonitorTask, StorageSqlx, Wallet, WalletStorageWriter};
 
 type Payer = Wallet<StorageSqlx, MockWalletServices>;
 
@@ -280,7 +281,11 @@ fn posts(wallet: &Payer) -> Vec<String> {
         .collect()
 }
 
-/// The monitor's send-waiting pass, every request aged past its bound.
+/// The monitor's send-waiting task itself (`SendWaitingTask::run`), every
+/// request aged past its bound. The task posts through the store's
+/// services, the wallet's broadcaster (`Wallet::new` sets them on the
+/// store, and a clone of the store shares them); its own services argument
+/// is unused.
 async fn send_waiting(storage: &StorageSqlx) {
     sqlx::query(
         "UPDATE proven_tx_reqs SET created_at = datetime('now', '-1 hour'), \
@@ -289,10 +294,15 @@ async fn send_waiting(storage: &StorageSqlx) {
     .execute(storage.writer())
     .await
     .unwrap();
-    storage
-        .send_waiting_transactions(std::time::Duration::ZERO)
-        .await
-        .expect("send-waiting");
+    let task = SendWaitingTask::new(
+        std::sync::Arc::new(storage.clone()),
+        std::sync::Arc::new(MockWalletServices::builder().build()),
+    );
+    let ran = task.run().await.expect("the send-waiting task");
+    println!(
+        "STEP send-waiting task: items processed {}, errors {:?}",
+        ran.items_processed, ran.errors
+    );
 }
 
 /// Call 1 through `wallet`: the prepared payment's txid.
@@ -471,8 +481,8 @@ async fn w4_send_with_beside_an_output_is_unchanged() {
     assert_eq!(seen, W4_ON_BASE);
 }
 
-/// W5: after W1's refused submit, the monitor's send-waiting pass posts
-/// nothing: the payment is not queued.
+/// W5: after W1's refused submit (asserted refused here), the monitor's
+/// send-waiting task posts nothing: the payment is not queued.
 #[tokio::test]
 async fn w5_send_waiting_after_the_refused_submit_posts_nothing() {
     let wallet = payer().await;
@@ -481,6 +491,7 @@ async fn w5_send_waiting_after_the_refused_submit_posts_nothing() {
     let answer = wallet
         .create_action(submit(txid, Some(false)), ORIGIN)
         .await;
+    assert_refused_by_name(&answer, &payment);
     send_waiting(wallet.storage()).await;
     let posted = posts(&wallet);
     println!(
