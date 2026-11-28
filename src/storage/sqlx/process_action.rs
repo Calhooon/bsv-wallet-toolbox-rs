@@ -506,18 +506,25 @@ async fn update_proven_tx_req_status(
     Ok(())
 }
 
+/// The caller's own rows of `txid` to `status`: the caller's send moves
+/// the caller's rows, never another user's row of the txid (a word ends
+/// only the rows of the user whose word it is, `word_scope`).
 async fn update_transaction_status_by_txid(
     conn: &mut SqliteConnection,
     txid: &str,
+    user_id: i64,
     status: &str,
 ) -> Result<()> {
     let now = Utc::now();
-    sqlx::query("UPDATE transactions SET status = ?, updated_at = ? WHERE txid = ?")
-        .bind(status)
-        .bind(now)
-        .bind(txid)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "UPDATE transactions SET status = ?, updated_at = ? WHERE txid = ? AND user_id = ?",
+    )
+    .bind(status)
+    .bind(now)
+    .bind(txid)
+    .bind(user_id)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -1255,6 +1262,7 @@ async fn queue_sends(
                 update_transaction_status_by_txid(
                     &mut *tx,
                     txid,
+                    user_id,
                     TransactionStatus::Sending.as_str(),
                 )
                 .await?;
@@ -1283,6 +1291,7 @@ async fn queue_sends(
                 update_transaction_status_by_txid(
                     &mut *tx,
                     txid,
+                    user_id,
                     TransactionStatus::Sending.as_str(),
                 )
                 .await?;
