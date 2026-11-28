@@ -122,6 +122,21 @@ async fn stored_competitors(
     Ok(found)
 }
 
+/// A stored competitor of `txid` on record, read on the caller's write: the
+/// indexed read of [`stored_competitors`], kept only where the competitor's
+/// own stored bytes spend the outpoint (`word_scope`'s evidence read).
+pub(crate) async fn stored_competitor_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    outpoints: &[(String, u32)],
+) -> Result<Option<String>> {
+    Ok(stored_competitors(conn, txid, outpoints)
+        .await?
+        .into_iter()
+        .find(|((competitor, _, _, raw), outpoint)| spends(competitor, raw, outpoint))
+        .map(|((competitor, ..), _)| competitor))
+}
+
 /// Do `competitor`'s stored bytes, hashing to its txid, spend `outpoint`?
 /// Bytes that do not hash to it are no competitor's.
 fn spends(competitor: &str, competitor_raw: &[u8], outpoint: &(String, u32)) -> bool {
