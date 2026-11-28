@@ -1302,41 +1302,8 @@ impl SseFrameParser {
         while let Some(offset) = buf[start..].find('\n') {
             let line = buf[start..start + offset].trim_end_matches('\r');
             start += offset + 1;
-
-            if line.is_empty() {
-                // Blank line = frame boundary.
-                if !self.cur_data.is_empty() || self.cur_id.is_some() || self.cur_event.is_some() {
-                    events.push(SseEvent {
-                        id: self.cur_id.take(),
-                        event: self.cur_event.take(),
-                        data: self.cur_data.join("\n"),
-                    });
-                    self.cur_data.clear();
-                }
-                self.cur_data_bytes = 0;
-                continue;
-            }
-            if line.starts_with(':') {
-                // Comment / keep-alive.
-                continue;
-            }
-            let (field, value) = match line.split_once(':') {
-                Some((f, v)) => (f, v.strip_prefix(' ').unwrap_or(v)),
-                None => (line, ""),
-            };
-            match field {
-                // Each replaces the last: one line's worth at most.
-                "id" => self.cur_id = Some(value.to_string()),
-                "event" => self.cur_event = Some(value.to_string()),
-                "data" => {
-                    self.cur_data_bytes += value.len() + 1;
-                    if self.cur_data_bytes > SSE_LINE_MAX_BYTES {
-                        self.overflow();
-                        return events;
-                    }
-                    self.cur_data.push(value.to_string());
-                }
-                _ => {} // ignore unknown fields (retry:, etc.)
+            if !self.line(line, &mut events) {
+                return events;
             }
         }
         self.buf = buf;
@@ -1346,6 +1313,47 @@ impl SseFrameParser {
             self.overflow();
         }
         events
+    }
+
+    /// One complete line, its ending stripped; false once the frame's data
+    /// passed [`SSE_LINE_MAX_BYTES`] (the parser has dropped it).
+    fn line(&mut self, line: &str, events: &mut Vec<SseEvent>) -> bool {
+        if line.is_empty() {
+            // Blank line = frame boundary.
+            if !self.cur_data.is_empty() || self.cur_id.is_some() || self.cur_event.is_some() {
+                events.push(SseEvent {
+                    id: self.cur_id.take(),
+                    event: self.cur_event.take(),
+                    data: self.cur_data.join("\n"),
+                });
+                self.cur_data.clear();
+            }
+            self.cur_data_bytes = 0;
+            return true;
+        }
+        if line.starts_with(':') {
+            // Comment / keep-alive.
+            return true;
+        }
+        let (field, value) = match line.split_once(':') {
+            Some((f, v)) => (f, v.strip_prefix(' ').unwrap_or(v)),
+            None => (line, ""),
+        };
+        match field {
+            // Each replaces the last: one line's worth at most.
+            "id" => self.cur_id = Some(value.to_string()),
+            "event" => self.cur_event = Some(value.to_string()),
+            "data" => {
+                self.cur_data_bytes += value.len() + 1;
+                if self.cur_data_bytes > SSE_LINE_MAX_BYTES {
+                    self.overflow();
+                    return false;
+                }
+                self.cur_data.push(value.to_string());
+            }
+            _ => {} // ignore unknown fields (retry:, etc.)
+        }
+        true
     }
 
     fn overflow(&mut self) {
