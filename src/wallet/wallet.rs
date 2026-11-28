@@ -3539,20 +3539,48 @@ enum SendWithAloneDoor {
     Sign,
 }
 
-/// The refusal's text, one for both doors.
+/// How many of the named txids the refusal prints before their count.
+const SEND_WITH_ALONE_TXIDS_SHOWN: usize = 3;
+
+/// The refusal's text, one for both doors. It prints at most
+/// [`SEND_WITH_ALONE_TXIDS_SHOWN`] txids and the count of the rest, so a
+/// long `sendWith` gives a short message. The guard reads no store, so it
+/// says only what is true of every named txid (this call sent none) and
+/// what is true of the caller's own unsent `noSend` ones (still reserved).
+/// The ways out are ordered by what they cost on this line.
 fn send_with_alone_refusal(door: SendWithAloneDoor, txids: &[String]) -> Error {
-    let what = match door {
-        SendWithAloneDoor::Create => "sendWith with no inputs and no outputs",
-        SendWithAloneDoor::Sign => {
-            "signAction: sendWith on a deferred action with no inputs and no outputs of the caller's"
-        }
+    let mut named = txids
+        .iter()
+        .take(SEND_WITH_ALONE_TXIDS_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if txids.len() > SEND_WITH_ALONE_TXIDS_SHOWN {
+        named.push_str(&format!(
+            " and {} more",
+            txids.len() - SEND_WITH_ALONE_TXIDS_SHOWN
+        ));
+    }
+    let (what, kept) = match door {
+        SendWithAloneDoor::Create => (
+            "createAction: sendWith with no inputs and no outputs",
+            "",
+        ),
+        SendWithAloneDoor::Sign => (
+            "signAction: sendWith on a deferred action with no inputs and no outputs of the caller's",
+            " The deferred action is as it was: sign it without sendWith or release it with abortAction.",
+        ),
     };
     Error::ValidationError(format!(
-        "{what} is refused unless acceptDelayedBroadcast is true: the named \
-         transactions [{}] were NOT sent; they are still reserved under their \
-         txids; call again with acceptDelayedBroadcast: true to queue them, name \
-         them in sendWith beside a new action, or release them with abortAction",
-        txids.join(", ")
+        "{what} is refused unless acceptDelayedBroadcast is true. The named \
+         transactions [{named}] were NOT sent by this call; those that are your \
+         own unsent noSend transactions are still reserved under their txids.{kept} \
+         Ways out, by cost: (1) name them in sendWith beside a new action, which \
+         sends them with it at that action's own fee; (2) release one with \
+         abortAction, which frees its coins and voids it; (3) call again with \
+         acceptDelayedBroadcast: true, which on this line also builds a \
+         change-only transaction of the wallet's own, with its fee, and queues \
+         the named transactions for the monitor."
     ))
 }
 
