@@ -172,6 +172,12 @@ impl StorageSqlx {
     /// `LOCKED_VERDICT_*` values) so the reconcile passes re-check it: a new row starts
     /// at one attempt and one minute; an existing row backs off. Logged,
     /// never failing (bookkeeping must not fail a retire).
+    ///
+    /// A `spent-proven` verdict is written on a checked proof and is kept:
+    /// a later caller that brings any other verdict (`unknown`, a hint)
+    /// writes nothing over it, neither the verdict nor its schedule, so the
+    /// re-check never asks for the coin again on a write that merely does
+    /// not know.
     pub(crate) async fn schedule_locked_input_check(&self, output_id: i64, verdict: &str) {
         if let Err(e) = self
             .schedule_locked_input_check_inner(output_id, verdict)
@@ -195,14 +201,27 @@ impl StorageSqlx {
              VALUES (?, ?, ?, CURRENT_TIMESTAMP, datetime('now', ?)) \
              ON CONFLICT(output_id) DO UPDATE SET \
              attempts = excluded.attempts, last_verdict = excluded.last_verdict, \
-             last_checked_at = CURRENT_TIMESTAMP, next_check_at = excluded.next_check_at",
+             last_checked_at = CURRENT_TIMESTAMP, next_check_at = excluded.next_check_at \
+             WHERE locked_input_checks.last_verdict IS NOT ?5 OR excluded.last_verdict = ?5",
         )
         .bind(output_id)
         .bind(attempts as i64)
         .bind(verdict)
         .bind(format!("+{} minutes", minutes))
+        .bind(LOCKED_VERDICT_SPENT_PROVEN)
         .execute(&mut *self.writer_conn().await?)
         .await?;
+        if verdict != LOCKED_VERDICT_SPENT_PROVEN
+            && existing.is_some()
+            && self.locked_input_spent_proven(output_id).await?
+        {
+            tracing::info!(
+                output_id,
+                verdict,
+                "locked input: a spent-proven verdict stands, kept over a weaker one"
+            );
+            return Ok(());
+        }
         tracing::info!(
             output_id,
             verdict,
@@ -211,6 +230,18 @@ impl StorageSqlx {
             "locked input: re-check scheduled"
         );
         Ok(())
+    }
+
+    /// Does `output_id` carry a `spent-proven` verdict?
+    pub(crate) async fn locked_input_spent_proven(&self, output_id: i64) -> Result<bool> {
+        let proven: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM locked_input_checks WHERE output_id = ? AND last_verdict = ?",
+        )
+        .bind(output_id)
+        .bind(LOCKED_VERDICT_SPENT_PROVEN)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(proven.is_some())
     }
 
     /// Give every locked input of a failed transaction (`spendable = 0`,

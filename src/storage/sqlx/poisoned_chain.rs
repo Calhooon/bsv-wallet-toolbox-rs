@@ -723,15 +723,30 @@ impl StorageSqlx {
             };
             match verdict {
                 UtxoVerdict::UnspentHint => {
-                    sqlx::query(
+                    // A coin a checked proof showed spent stays locked:
+                    // an explorer's unspent set never releases it.
+                    let released = sqlx::query(
                         "UPDATE outputs SET spendable = 1, spent_by = NULL, updated_at = ? \
-                         WHERE output_id = ? AND spent_by = ?",
+                         WHERE output_id = ? AND spent_by = ? \
+                           AND NOT EXISTS (SELECT 1 FROM locked_input_checks c \
+                                           WHERE c.output_id = outputs.output_id AND c.last_verdict = ?)",
                     )
                     .bind(now)
                     .bind(output_id)
                     .bind(tx.transaction_id)
+                    .bind(super::LOCKED_VERDICT_SPENT_PROVEN)
                     .execute(&mut *self.writer_conn().await?)
                     .await?;
+                    if released.rows_affected() == 0 {
+                        report.kept += 1;
+                        tracing::info!(
+                            txid = %tx.txid,
+                            source = %source_txid,
+                            vout,
+                            "poisoned chain: outside input carries a spent-proven verdict, an unspent hint releases nothing"
+                        );
+                        continue;
+                    }
                     report.restored += 1;
                     report.restored_sats += satoshis.max(0);
                     tracing::warn!(
