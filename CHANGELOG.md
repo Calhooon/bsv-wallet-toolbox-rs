@@ -8,9 +8,19 @@
 
 ### Hosts
 
+- A command that opens a store another process holds no longer answers a migration error: it opens, and its next write answers busy.
 - The bounds: a 10 s connect time on every door; explorers 64 MiB (one transaction of 32 MiB as hex), ARC and Arcade REST 8 MiB, the block header service, Chaintracks and the header fallback 4 MiB, the fiat rates 256 KiB, the unauthenticated storage door 16 MiB (the authenticated door's own application bound) with a 30 s total time per call (`StorageClient::set_timeout`; it had none), the Arcade event stream 1 MiB a line and 1 MiB a frame's data, where each data line counts its value and one for the line itself (a frame of many short or empty data lines meets the cap as a frame of long ones does). The existing total times stand (30 s for the providers by default, 15 s for the header fallback, 10 s for the fiat rates). When an answer meets a bound the host sees `Network error: ... the answer passed this door's bound of <n> bytes; the read stopped there` for that call (an explorer ladder asks its next rung), and on the event stream `SSE stream: a line passed the stream's bound of 1048576 bytes; the connection ends there` in the task's log before it reconnects.
 
 ### Fixed
+
+- Opening a store that needs no migration takes no write: a migration's
+  data statement (006's `UPDATE`) runs only after a read built from its own
+  condition finds a row it would change, so `make_available()` on a store
+  another process holds opens at once. A busy store at open, when a
+  migration must write, answers the store's busy word (`StoreBusy`, the
+  wallet's `wallet busy`), never `MigrationError`; any other failure of a
+  migration stays `MigrationError` with its name
+  (`tests/open_writes_nothing_tests.rs`).
 
 - A mark written on a checked proof is lowered only by evidence about that
   same proof. A `spent-proven` verdict is kept, with its schedule, when a
