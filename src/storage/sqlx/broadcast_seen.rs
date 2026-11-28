@@ -510,7 +510,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 version,
-                super::super::stored_spenders::MIGRATION_006_TRANSACTIONS_UPDATED_AT_NAME
+                super::super::stored_spenders::MIGRATION_007_TRANSACTIONS_UPDATED_AT_NAME
             );
             sqlx::query("DROP TABLE broadcast_seen")
                 .execute(storage.writer())
@@ -552,7 +552,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             version,
-            super::super::stored_spenders::MIGRATION_006_TRANSACTIONS_UPDATED_AT_NAME
+            super::super::stored_spenders::MIGRATION_007_TRANSACTIONS_UPDATED_AT_NAME
         );
         storage.pool().close().await;
     }
