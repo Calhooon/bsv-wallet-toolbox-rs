@@ -2999,12 +2999,12 @@ fn merge_beef_linked(beef: &mut Beef, other: &Beef) {
     link_txids_carried_by_bumps(beef);
 }
 
-/// Why a BEEF failed structural validation, in one line, and the rejected
-/// bytes on disk. "BEEF structure is invalid" alone cost a seat a day of
-/// diagnosis (LOW p25, 2026-09-04): the sorter knows exactly which inputs
-/// are missing and which entries it could not place, so say so, and write
-/// the hex to `beef-rejected-<millis>.hex` under `std::env::temp_dir()`
-/// (`$TMPDIR`) for a repro.
+/// Why a BEEF failed structural validation, in one line. "BEEF structure is
+/// invalid" alone cost a seat a day of diagnosis (LOW p25, 2026-09-04): the
+/// sorter knows exactly which inputs are missing and which entries it could
+/// not place, so say so. Nothing is written to disk (#546; the reference has
+/// no such write, `createAction.ts` at ts-stack@edf6e03): the repro is this
+/// text and the caller's own bytes.
 pub(super) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String {
     let sr = beef.sort_txs();
     let short = |v: &[String]| -> String {
@@ -3017,18 +3017,9 @@ pub(super) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String
                 .join(",")
         }
     };
-    let bytes = beef.to_binary();
-    let dump = std::env::temp_dir().join(format!(
-        "beef-rejected-{}.hex",
-        Utc::now().timestamp_millis()
-    ));
-    let dumped = match std::fs::write(&dump, hex::encode(&bytes)) {
-        Ok(()) => dump.display().to_string(),
-        Err(e) => format!("not written ({e})"),
-    };
     format!(
         "roots [{}]; missing inputs [{}]; transactions with missing inputs [{}]; \
-         not valid [{}]; txid-only [{}]; {} tx(s), {} bump(s), {} bytes; dump {}",
+         not valid [{}]; txid-only [{}]; {} tx(s), {} bump(s), {} bytes",
         short(roots),
         short(&sr.missing_inputs),
         short(&sr.with_missing_inputs),
@@ -3036,8 +3027,7 @@ pub(super) fn describe_invalid_beef(beef: &mut Beef, roots: &[String]) -> String
         short(&sr.txid_only),
         beef.txs.len(),
         beef.bumps.len(),
-        bytes.len(),
-        dumped
+        beef.to_binary().len()
     )
 }
 
@@ -9004,8 +8994,16 @@ mod tests {
         assert!(beef.verify_valid(true).valid);
     }
 
+    /// #546: a refused graph is described, never written to disk. The text
+    /// names what the sorter knows and names no `beef-rejected-*.hex` dump
+    /// (the reference has no such write).
+    ///
+    /// #584: the witness reads no folder. The dump's name carried the
+    /// millisecond it was written, so a scan was the only way to find one;
+    /// the dump, while it existed, named its path in the returned string, so
+    /// the `names no dump` assertion carries the claim a scan would make.
     #[test]
-    fn test_describe_invalid_beef_names_the_missing_parent_and_dumps_the_bytes() {
+    fn test_describe_invalid_beef_names_the_missing_parent() {
         let chain = synth_chain(3); // a <- b <- c
         let mut beef = Beef::new();
         // c spends b, and b is absent: the BEEF cannot be valid.
@@ -9029,21 +9027,8 @@ mod tests {
             text.contains(&format!("roots [{c16}]")),
             "names the root: {text}"
         );
-        assert!(
-            text.contains(&format!(
-                "dump {}",
-                std::env::temp_dir().join("beef-rejected-").display()
-            )),
-            "points at the dump: {text}"
-        );
-        let path = text.rsplit("dump ").next().unwrap().to_string();
-        let dumped = std::fs::read_to_string(&path).expect("the dump exists");
-        assert_eq!(
-            dumped,
-            hex::encode(beef.to_binary()),
-            "the dump is the rejected bytes"
-        );
-        let _ = std::fs::remove_file(&path);
+        assert!(!text.contains("beef-rejected-"), "names no dump: {text}");
+        assert!(text.ends_with(" bytes"), "ends at the byte count: {text}");
     }
 
     #[test]
