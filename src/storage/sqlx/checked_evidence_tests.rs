@@ -62,6 +62,33 @@ fn from_zero(name: &str) -> SyncOffset {
     }
 }
 
+/// With a tracker that refutes every root, a take of P is applied and Y's
+/// row lifted.
+async fn applied_once_refuted(c: &Cell) {
+    c.s.set_chain_tracker(Arc::new(MockChainTracker::new(1000)))
+        .await;
+    assert_eq!(take(c).await, TakeApplied::Applied);
+    assert_eq!(read(c).await.y_row, "unproven");
+}
+
+/// P's own proof, checked, at `P_HEIGHT`.
+async fn p_proven(c: &Cell) {
+    let bump = single_leaf_bump(P_HEIGHT, &c.p);
+    c.s.ingest_merkle_proof(&c.p, &bump, P_HEIGHT, &"0".repeat(64), None)
+        .await
+        .unwrap();
+}
+
+/// Y's row completed and its payment counted.
+async fn y_counted(c: &Cell) {
+    let got = read(c).await;
+    assert_eq!(
+        (got.y_row.as_str(), got.y_balance),
+        ("completed", PAYMENT),
+        "{got:?}"
+    );
+}
+
 /// A take of P through the one write that applies a take.
 pub(super) async fn take(c: &Cell) -> TakeApplied {
     let check = c.s.competitor_check(&c.p, None).await.unwrap();
@@ -160,10 +187,7 @@ async fn a_stored_proof_no_check_saw_is_no_evidence() {
     assert_eq!(take(&c).await, TakeApplied::Withheld);
     assert_eq!(read(&c).await.y_row, "sending");
 
-    c.s.set_chain_tracker(Arc::new(MockChainTracker::new(1000)))
-        .await;
-    assert_eq!(take(&c).await, TakeApplied::Applied);
-    assert_eq!(read(&c).await.y_row, "unproven");
+    applied_once_refuted(&c).await;
 }
 
 /// A proof row of R this store has not checked, beside a take of P: the
@@ -240,10 +264,7 @@ async fn a_take_beside_a_checked_competitor_waits_for_the_tracker() {
     assert!(matches!(take(&c).await, TakeApplied::Refused { .. }));
     assert_eq!(read(&c).await.y_row, "sending");
 
-    c.s.set_chain_tracker(Arc::new(MockChainTracker::new(1000)))
-        .await;
-    assert_eq!(take(&c).await, TakeApplied::Applied);
-    assert_eq!(read(&c).await.y_row, "unproven");
+    applied_once_refuted(&c).await;
 }
 
 /// P retired as undelivered, its coin marked by the locked-input re-check
@@ -272,22 +293,14 @@ pub(super) async fn retired_then_marked(c: &Cell, spender: &[u8]) {
 async fn an_undelivered_transaction_that_mines_is_not_evidence_against_itself() {
     let c = seed("sending").await;
     retired_then_marked(&c, &p_raw()).await;
-    let bump = single_leaf_bump(P_HEIGHT, &c.p);
-    c.s.ingest_merkle_proof(&c.p, &bump, P_HEIGHT, &"0".repeat(64), None)
-        .await
-        .unwrap();
+    p_proven(&c).await;
     assert!(checked(&c, &c.p).await);
 
     MonitorStorage::mark_transaction_rejected(&c.s, &c.p, false)
         .await
         .unwrap();
     MonitorStorage::review_status(&c.s).await.unwrap();
-    let got = read(&c).await;
-    assert_eq!(
-        (got.y_row.as_str(), got.y_balance),
-        ("completed", PAYMENT),
-        "{got:?}"
-    );
+    y_counted(&c).await;
 }
 
 /// A mark with no spender on record, beside a transaction that holds no
@@ -300,15 +313,6 @@ async fn a_mark_with_no_spender_on_record_refuses_a_take() {
     retired_then_marked(&c, &r_raw()).await;
     assert!(matches!(take(&c).await, TakeApplied::Refused { .. }));
     assert_eq!(read(&c).await.y_row, "sending");
-
-    let bump = single_leaf_bump(P_HEIGHT, &c.p);
-    c.s.ingest_merkle_proof(&c.p, &bump, P_HEIGHT, &"0".repeat(64), None)
-        .await
-        .unwrap();
-    let got = read(&c).await;
-    assert_eq!(
-        (got.y_row.as_str(), got.y_balance),
-        ("completed", PAYMENT),
-        "{got:?}"
-    );
+    p_proven(&c).await;
+    y_counted(&c).await;
 }

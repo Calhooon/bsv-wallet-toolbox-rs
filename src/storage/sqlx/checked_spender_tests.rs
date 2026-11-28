@@ -23,10 +23,21 @@ use crate::services::WalletServices;
 use crate::storage::traits::PurgeParams;
 use crate::storage::traits::WalletStorageProvider;
 use crate::storage::MonitorStorage;
+use crate::AuthId;
 
 /// Q: a third spend of C, R's and P's rival.
 fn q_raw() -> Vec<u8> {
     spending(&[(COINBASE_TXID, 0)], &[333])
+}
+
+/// A received output of `owner` at (txid, vout, satoshis), spendable.
+async fn receipt(c: &Cell, who: &AuthId, basket: i64, owner: i64, at: (&str, i64, i64)) {
+    let (txid, vout, satoshis) = at;
+    let free = (true, None);
+    output(
+        &c.s, who, basket, owner, txid, vout, satoshis, "receive", free,
+    )
+    .await;
 }
 
 pub(super) async fn status_of(c: &Cell, transaction_id: i64) -> String {
@@ -83,18 +94,7 @@ async fn a_purged_request_leaves_the_checked_spender_on_record() {
 
     let (w, wb) = user(&c.s, &"d".repeat(66)).await;
     let w_row = row(&c.s, &w, &c.p, "sending", &p_raw(), false).await;
-    output(
-        &c.s,
-        &w,
-        wb,
-        w_row,
-        &c.p,
-        1,
-        PAYMENT,
-        "receive",
-        (true, None),
-    )
-    .await;
+    receipt(&c, &w, wb, w_row, (&c.p, 1, PAYMENT)).await;
     request(&c, &p_raw(), "unsent").await;
 
     assert!(
@@ -112,23 +112,8 @@ async fn a_second_spender_of_a_marked_outpoint_ends_on_the_evidence() {
     write_word(&c, Writer::Competitor).await;
     let q = txid_of(&q_raw());
     let q_row = row(&c.s, &c.y, &q, "unproven", &q_raw(), false).await;
-    let basket: i64 = sqlx::query_scalar("SELECT basket_id FROM outputs WHERE output_id = ?")
-        .bind(c.y_out)
-        .fetch_one(c.s.pool())
-        .await
-        .unwrap();
-    output(
-        &c.s,
-        &c.y,
-        basket,
-        q_row,
-        &q,
-        0,
-        333,
-        "receive",
-        (true, None),
-    )
-    .await;
+    let (_, basket) = user(&c.s, &"b".repeat(66)).await;
+    receipt(&c, &c.y, basket, q_row, (&q, 0, 333)).await;
     request(&c, &q_raw(), "unmined").await;
 
     MonitorStorage::mark_transaction_rejected(&c.s, &q, false)
