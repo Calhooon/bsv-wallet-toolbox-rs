@@ -24,12 +24,18 @@ enum Answer {
     /// A 200 whose chunked body is `line` written `count` times, the lines
     /// written counted; then the connection is held open, never ended.
     Lines(&'static [u8], usize),
+    /// A 200 declaring `Content-Length: length`, its head alone written;
+    /// the body is written only once the client has read for 2 s without
+    /// closing. A client that closes before then is counted in `closed`.
+    Declared(usize),
 }
 
 struct Listener {
     url: String,
     written: StdArc<AtomicUsize>,
     connections: StdArc<AtomicUsize>,
+    /// Connections the client closed with no body byte written to them.
+    closed: StdArc<AtomicUsize>,
 }
 
 /// A raw listener answering every connection with `answers[i]` (the last
@@ -39,7 +45,8 @@ async fn listen(answers: Vec<Answer>) -> Listener {
     let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let written = StdArc::new(AtomicUsize::new(0));
     let connections = StdArc::new(AtomicUsize::new(0));
-    let (w, c) = (written.clone(), connections.clone());
+    let closed = StdArc::new(AtomicUsize::new(0));
+    let (w, c, d) = (written.clone(), connections.clone(), closed.clone());
     tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
@@ -47,7 +54,7 @@ async fn listen(answers: Vec<Answer>) -> Listener {
             };
             let n = c.fetch_add(1, Ordering::SeqCst);
             let answer = answers[n.min(answers.len() - 1)].clone();
-            let w = w.clone();
+            let (w, d) = (w.clone(), d.clone());
             tokio::spawn(async move {
                 let mut head = vec![0u8; 64 * 1024];
                 let _ = socket.read(&mut head).await;
@@ -101,6 +108,33 @@ async fn listen(answers: Vec<Answer>) -> Listener {
                         }
                         tokio::time::sleep(Duration::from_secs(3600)).await;
                     }
+                    Answer::Declared(length) => {
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+                        );
+                        if socket.write_all(head.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        let mut probe = [0u8; 1];
+                        match tokio::time::timeout(Duration::from_secs(2), socket.read(&mut probe))
+                            .await
+                        {
+                            // The client closed (or reset) before any body byte.
+                            Ok(Ok(0)) | Ok(Err(_)) => {
+                                d.fetch_add(1, Ordering::SeqCst);
+                                return;
+                            }
+                            _ => {}
+                        }
+                        let body = vec![b'7'; length];
+                        for chunk in body.chunks(64 * 1024) {
+                            if socket.write_all(chunk).await.is_err() {
+                                return;
+                            }
+                            w.fetch_add(chunk.len(), Ordering::SeqCst);
+                        }
+                        let _ = socket.shutdown().await;
+                    }
                 }
             });
         }
@@ -109,6 +143,7 @@ async fn listen(answers: Vec<Answer>) -> Listener {
         url,
         written,
         connections,
+        closed,
     }
 }
 
@@ -156,6 +191,63 @@ async fn reads_whole_at_and_refuses_past(limit: usize) {
         "past {limit}: {read:?}"
     );
     assert_eq!(l.connections.load(Ordering::SeqCst), 2);
+}
+
+/// A declared length: past the bound the answer is refused on its head,
+/// the client closing before the server writes a body byte; at the bound
+/// it is read whole.
+mod declared {
+    use super::*;
+    use crate::services::providers::http_client::STATUS_ANSWER_MAX_BYTES;
+
+    fn client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(50))
+            .connect_timeout(http_client::CONNECT_TIMEOUT)
+            .answer_limit(STATUS_ANSWER_MAX_BYTES)
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_declared_length_past_the_bound_is_refused_before_its_body() {
+        let l = listen(vec![Answer::Declared(STATUS_ANSWER_MAX_BYTES + 1)]).await;
+        let (read, took) = bounded(Duration::from_secs(20), async {
+            client().get(&l.url).send().await.unwrap().bytes().await
+        })
+        .await;
+        assert!(
+            matches!(read, Err(RequestError::TooLarge { limit }) if limit == STATUS_ANSWER_MAX_BYTES),
+            "{read:?}"
+        );
+        assert!(took < Duration::from_secs(2), "refused only after {took:?}");
+        // The server's side: the client closed before any body byte.
+        let waited = Instant::now();
+        while l.closed.load(Ordering::SeqCst) == 0 && waited.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            l.closed.load(Ordering::SeqCst),
+            1,
+            "the client kept the connection"
+        );
+        assert_eq!(
+            l.written.load(Ordering::SeqCst),
+            0,
+            "a body byte was written"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_length_at_the_bound_is_read_whole() {
+        let l = listen(vec![Answer::Declared(STATUS_ANSWER_MAX_BYTES)]).await;
+        let (read, _) = bounded(Duration::from_secs(30), async {
+            client().get(&l.url).send().await.unwrap().bytes().await
+        })
+        .await;
+        assert_eq!(read.map(|b| b.len()).ok(), Some(STATUS_ANSWER_MAX_BYTES));
+        assert_eq!(l.closed.load(Ordering::SeqCst), 0);
+    }
 }
 
 /// The header services (BHS, Chaintracks) and the explorer header fallback.
