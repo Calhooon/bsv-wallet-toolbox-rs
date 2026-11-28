@@ -1258,7 +1258,16 @@ pub struct SseFrameParser {
     cur_id: Option<String>,
     cur_event: Option<String>,
     cur_data: Vec<String>,
+    /// Set once a line, or a frame's data, passed [`SSE_LINE_MAX_BYTES`]:
+    /// the stream's reader ends that connection and the task reconnects.
+    overflowed: bool,
 }
+
+/// The event stream's bound on one line, and on one frame's data: a
+/// status frame is a txid, a status word, a time and, once mined, a block
+/// hash, a height and a merkle path (a few KiB of hex). The stream has no
+/// total time, so this is what bounds a connection's buffer.
+pub(crate) const SSE_LINE_MAX_BYTES: usize = 1024 * 1024;
 
 impl SseFrameParser {
     /// Create a new parser.
@@ -1266,8 +1275,17 @@ impl SseFrameParser {
         Self::default()
     }
 
+    /// A line or a frame passed [`SSE_LINE_MAX_BYTES`]; the parser keeps
+    /// nothing more once it has.
+    pub(crate) fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
     /// Push a chunk of bytes; returns any frames completed by this chunk.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
+        if self.overflowed {
+            return Vec::new();
+        }
         // SSE is UTF-8; tolerate invalid sequences rather than dropping the stream.
         self.buf.push_str(&String::from_utf8_lossy(chunk));
 
@@ -1304,8 +1322,24 @@ impl SseFrameParser {
                 "data" => self.cur_data.push(value.to_string()),
                 _ => {} // ignore unknown fields (retry:, etc.)
             }
+            if self.cur_data.iter().map(String::len).sum::<usize>() > SSE_LINE_MAX_BYTES {
+                self.overflow();
+                return events;
+            }
+        }
+        // What is left is one partial line.
+        if self.buf.len() > SSE_LINE_MAX_BYTES {
+            self.overflow();
         }
         events
+    }
+
+    fn overflow(&mut self) {
+        self.overflowed = true;
+        self.buf = String::new();
+        self.cur_data = Vec::new();
+        self.cur_id = None;
+        self.cur_event = None;
     }
 }
 
@@ -1438,7 +1472,13 @@ impl ArcadeSseClient {
         while let Some(chunk) = stream.next().await {
             let chunk =
                 chunk.map_err(|e| Error::NetworkError(format!("SSE stream error: {}", e)))?;
-            for frame in parser.push(&chunk) {
+            let frames = parser.push(&chunk);
+            if parser.overflowed() {
+                return Err(Error::NetworkError(format!(
+                    "SSE stream: a line passed the stream's bound of {SSE_LINE_MAX_BYTES} bytes; the connection ends there"
+                )));
+            }
+            for frame in frames {
                 if let Some(ref id) = frame.id {
                     self.last_event_id = Some(id.clone());
                 }
