@@ -1031,6 +1031,7 @@ where
         offer: Option<&[i64]>,
     ) -> bsv_rs::Result<CreateActionResult> {
         validate_originator(originator)?;
+        refuse_send_with_alone(&args)?;
 
         // Serialize spending operations to prevent UTXO contention and
         // change-output chaining failures (SEEN_IN_ORPHAN_MEMPOOL).
@@ -3449,6 +3450,44 @@ fn is_sign_action(
     caller_inputs: &[bsv_rs::wallet::CreateActionInput],
 ) -> bool {
     !sign_and_process || caller_inputs.iter().any(|i| i.unlocking_script.is_none())
+}
+
+/// The stable line's refusal of a `createAction` that names `sendWith`
+/// with no inputs and no outputs and does not accept a delayed post
+/// (`acceptDelayedBroadcast` `false`, or not said: this line's default is
+/// `false`). This line has no stored post of named transactions alone: it
+/// would read the call as a new action, fund it and post a change-only
+/// transaction of its own, and move the named ones to `sending` for the
+/// send-waiting task to post later. The reference's paying client (its
+/// `AuthFetch` from the SDK's 4.1) submits a prepared payment by this call
+/// and then never makes its request, so the payment would be spent for a
+/// request never made. The refusal comes before anything is built or
+/// written; the named transactions stay `nosend` and the wallet never
+/// aborts them (a `noSend` transaction may be in a counterparty's hands).
+/// The same form with `acceptDelayedBroadcast: true`, and `sendWith`
+/// beside an input or an output, are left as they were. It is the class of
+/// the create door's other argument refusals (`Error::ValidationError`).
+fn refuse_send_with_alone(args: &CreateActionArgs) -> bsv_rs::Result<()> {
+    let Some(options) = args.options.as_ref() else {
+        return Ok(());
+    };
+    let send_with = options.send_with.as_deref().unwrap_or(&[]);
+    let alone = !send_with.is_empty()
+        && args.inputs.as_deref().unwrap_or(&[]).is_empty()
+        && args.outputs.as_deref().unwrap_or(&[]).is_empty();
+    if !alone || options.accept_delayed_broadcast == Some(true) {
+        return Ok(());
+    }
+    let txids: Vec<String> = send_with.iter().map(hex::encode).collect();
+    Err(Error::ValidationError(format!(
+        "sendWith with no inputs and no outputs is refused unless \
+         acceptDelayedBroadcast is true: the named transactions [{}] were NOT \
+         sent; they are still reserved under their txids; call again with \
+         acceptDelayedBroadcast: true to queue them, name them in sendWith \
+         beside a new action, or release them with abortAction",
+        txids.join(", ")
+    ))
+    .into())
 }
 
 #[cfg(test)]
