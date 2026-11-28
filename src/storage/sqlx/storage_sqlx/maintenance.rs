@@ -12,7 +12,20 @@ mod review_proofs;
 /// whose request reads `invalid`, kept where the word ends it
 /// (`word_scope::rows_a_word_ends_on`: an outgoing row; a received row only
 /// on evidence against its transaction).
-async fn invalid_word_rows_on(conn: &mut sqlx::SqliteConnection) -> Result<Vec<i64>> {
+async fn invalid_word_rows_on(
+    conn: &mut sqlx::SqliteConnection,
+    ask: &super::super::competitor_proof::WordAsk,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<i64>> {
+    let candidates = invalid_word_candidates_on(conn).await?;
+    super::super::word_scope::rows_a_word_ends_on(conn, &candidates, ask, now).await
+}
+
+/// Check 1's candidates: every row not `failed` of a txid whose request
+/// reads `invalid` (`transaction_id`, `txid`, `is_outgoing`).
+async fn invalid_word_candidates_on(
+    conn: &mut sqlx::SqliteConnection,
+) -> Result<Vec<(i64, String, bool)>> {
     let candidates: Vec<(i64, String, bool)> = sqlx::query_as(
         r#"
         SELECT transaction_id, txid, is_outgoing FROM transactions
@@ -26,16 +39,17 @@ async fn invalid_word_rows_on(conn: &mut sqlx::SqliteConnection) -> Result<Vec<i
     )
     .fetch_all(&mut *conn)
     .await?;
-    super::super::word_scope::rows_a_word_ends_on(conn, &candidates).await
+    Ok(candidates)
 }
 
 /// Check 1's write: [`invalid_word_rows_on`]'s rows `failed`, on its
 /// write. Returns their ids.
 async fn fail_invalid_word_rows_on(
     conn: &mut sqlx::SqliteConnection,
+    ask: &super::super::competitor_proof::WordAsk,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<i64>> {
-    let failed_ids = invalid_word_rows_on(conn).await?;
+    let failed_ids = invalid_word_rows_on(conn, ask, now).await?;
     update_by_ids_on(
         conn,
         "UPDATE transactions SET status = 'failed', updated_at = ?",
@@ -272,8 +286,18 @@ impl StorageSqlx {
         // The request's word ends the rows of the user whose word it is
         // (`word_scope`): the outgoing rows of the txid; a received row
         // only on evidence against the transaction.
+        // The word's ask, before the write: an unrecorded stored competitor
+        // proof beside a received row is asked of the tracker here.
+        let ask = {
+            let candidates = {
+                let mut conn = self.pool().acquire().await?;
+                invalid_word_candidates_on(&mut conn).await?
+            };
+            self.word_ask(&super::super::word_scope::received_txids(&candidates))
+                .await?
+        };
         let mut tx = self.write_tx().await?;
-        let failed_ids = fail_invalid_word_rows_on(&mut tx, now).await?;
+        let failed_ids = fail_invalid_word_rows_on(&mut tx, &ask, now).await?;
 
         // Void only the outputs created by transactions this pass just failed.
         // Keep both writes atomic, without releasing their consumed inputs.

@@ -47,6 +47,8 @@ mod checked_mark_tests;
 mod checked_spender_tests;
 #[cfg(test)]
 mod checked_walk_tests;
+#[cfg(test)]
+mod checked_word_ask_tests;
 mod competitor_proof;
 mod create_action;
 #[cfg(test)]

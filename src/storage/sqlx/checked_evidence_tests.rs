@@ -25,7 +25,7 @@ use crate::storage::traits::{RequestSyncChunkArgs, SyncOffset};
 use crate::storage::MonitorStorage;
 
 /// A tracker that cannot answer.
-struct ErringTracker;
+pub(super) struct ErringTracker;
 
 #[async_trait::async_trait]
 impl ChainTracker for ErringTracker {
@@ -42,7 +42,7 @@ impl ChainTracker for ErringTracker {
     }
 }
 
-async fn checked(c: &Cell, txid: &str) -> bool {
+pub(super) async fn checked(c: &Cell, txid: &str) -> bool {
     let sql = format!(
         "SELECT {}",
         super::held_receipts::checked_proof_condition("?1")
@@ -72,7 +72,7 @@ async fn applied_once_refuted(c: &Cell) {
 }
 
 /// P's own proof, checked, at `P_HEIGHT`.
-async fn p_proven(c: &Cell) {
+pub(super) async fn p_proven(c: &Cell) {
     let bump = single_leaf_bump(P_HEIGHT, &c.p);
     c.s.ingest_merkle_proof(&c.p, &bump, P_HEIGHT, &"0".repeat(64), None)
         .await
@@ -80,7 +80,7 @@ async fn p_proven(c: &Cell) {
 }
 
 /// Y's row completed and its payment counted.
-async fn y_counted(c: &Cell) {
+pub(super) async fn y_counted(c: &Cell) {
     let got = read(c).await;
     assert_eq!(
         (got.y_row.as_str(), got.y_balance),
@@ -122,16 +122,9 @@ async fn the_ask_keeps_the_competitors_checked_proof() {
     assert!(checked(&c, &r).await, "R's checked proof is on record");
 }
 
-/// A proof row this store has not checked (Z's R, its path's root on no
-/// header) beside a word: the received row keeps its word (a word's
-/// evidence read is a recorded proof alone). A take beside it asks the
-/// tracker: with a tracker that cannot answer it waits; with one that refutes the root
-/// it is applied.
-#[tokio::test]
-async fn a_stored_proof_no_check_saw_is_no_evidence() {
-    let c = seed("sending").await;
-    assert!(write_word(&c, Writer::Retire).await);
-
+/// Z's R and its proof row in `c`'s store, at a height whose root our
+/// headers do not carry, with no root-check record.
+async fn synced_r(c: &Cell) {
     let other = storage().await;
     // Z is the third user of either store (the rows' references name it).
     user(&other, &"a".repeat(66)).await;
@@ -173,21 +166,48 @@ async fn a_stored_proof_no_check_saw_is_no_evidence() {
         .await
         .unwrap();
     assert_eq!(placed, 1, "R's proof row is stored");
-    assert!(!checked(&c, &r).await);
+    assert!(!checked(c, &r).await);
+}
 
-    MonitorStorage::review_status(&c.s).await.unwrap();
-    let got = read(&c).await;
-    assert_eq!(
-        (got.y_row.as_str(), got.y_out_spendable),
-        ("sending", true),
-        "the received row keeps its word: {got:?}"
-    );
+/// A proof row this store has not checked (Z's R, its path's root on no
+/// header) beside a word: the word asks the tracker of its root. Refuted,
+/// it is no evidence and the received row keeps its word; with a tracker
+/// that errs it counts, and the row ends, recorded as beside a proof this
+/// store had not checked. A take beside it asks the tracker too: with a
+/// tracker that cannot answer it waits; with one that refutes the root it
+/// is applied.
+#[tokio::test]
+async fn a_stored_proof_no_check_saw_is_no_evidence() {
+    for erring in [false, true] {
+        let c = seed("sending").await;
+        assert!(write_word(&c, Writer::Retire).await);
+        synced_r(&c).await;
+        if erring {
+            c.s.set_chain_tracker(Arc::new(ErringTracker)).await;
+        }
+        MonitorStorage::review_status(&c.s).await.unwrap();
+        let got = read(&c).await;
+        if erring {
+            assert_eq!(
+                (got.y_row.as_str(), got.y_out_spendable),
+                ("failed", false),
+                "no tracker answered: the row ends: {got:?}"
+            );
+            assert!(!checked(&c, &txid_of(&r_raw())).await);
+            continue;
+        }
+        assert_eq!(
+            (got.y_row.as_str(), got.y_out_spendable),
+            ("sending", true),
+            "refuted: the received row keeps its word: {got:?}"
+        );
 
-    c.s.set_chain_tracker(Arc::new(ErringTracker)).await;
-    assert_eq!(take(&c).await, TakeApplied::Withheld);
-    assert_eq!(read(&c).await.y_row, "sending");
+        c.s.set_chain_tracker(Arc::new(ErringTracker)).await;
+        assert_eq!(take(&c).await, TakeApplied::Withheld);
+        assert_eq!(read(&c).await.y_row, "sending");
 
-    applied_once_refuted(&c).await;
+        applied_once_refuted(&c).await;
+    }
 }
 
 /// A proof row of R this store has not checked, beside a take of P: the
