@@ -256,6 +256,17 @@ impl StorageSqlx {
     /// one of its outputs, recursively, in walk order (depth 1 first). The
     /// root itself is not included. Read-only.
     pub async fn poisoned_descendants(&self, root_txid: &str) -> Result<Vec<PoisonedTx>> {
+        self.poisoned_descendants_with(root_txid, &[]).await
+    }
+
+    /// [`StorageSqlx::poisoned_descendants`], walked also from each of
+    /// `also` (rows of the root's txid ended with it): every row a checked
+    /// proof ended has its own descendants walked.
+    async fn poisoned_descendants_with(
+        &self,
+        root_txid: &str,
+        also: &[i64],
+    ) -> Result<Vec<PoisonedTx>> {
         let root: Option<(i64,)> =
             sqlx::query_as("SELECT transaction_id FROM transactions WHERE txid = ?")
                 .bind(root_txid)
@@ -286,6 +297,16 @@ impl StorageSqlx {
                 .fetch_all(self.pool())
                 .await?;
                 frontier.extend(rows.iter().map(|r| (r.get::<i64, _>("spent_by"), 1)));
+            }
+        }
+        for id in also {
+            if visited.insert(*id) {
+                frontier.extend(
+                    self.spenders_of_transaction(*id)
+                        .await?
+                        .into_iter()
+                        .map(|c| (c, 1)),
+                );
             }
         }
 
@@ -638,7 +659,23 @@ impl StorageSqlx {
         root_transaction_id: i64,
         now: DateTime<Utc>,
     ) -> Result<(u32, u32)> {
-        let descendants = self.poisoned_descendants(root_txid).await?;
+        self.retire_poisoned_descendants_of(services, root_txid, root_transaction_id, &[], now)
+            .await
+    }
+
+    /// [`StorageSqlx::retire_poisoned_descendants`] walked also from each
+    /// row of `ended` (every row of the root's txid a competitor's checked
+    /// proof ended, the received ones included), so each one's own
+    /// descendants are retired with it.
+    pub(crate) async fn retire_poisoned_descendants_of(
+        &self,
+        services: Option<&dyn WalletServices>,
+        root_txid: &str,
+        root_transaction_id: i64,
+        ended: &[i64],
+        now: DateTime<Utc>,
+    ) -> Result<(u32, u32)> {
+        let descendants = self.poisoned_descendants_with(root_txid, ended).await?;
         if descendants.is_empty() {
             return Ok((0, 0));
         }
@@ -658,6 +695,7 @@ impl StorageSqlx {
         }
         let mut poisoned_ids: HashSet<i64> = descendants.iter().map(|t| t.transaction_id).collect();
         poisoned_ids.insert(root_transaction_id);
+        poisoned_ids.extend(ended.iter().copied());
         let mut report = PoisonReport::new(root_txid, PoisonOutcome::Retired);
         for tx in &descendants {
             self.retire_one_poisoned(

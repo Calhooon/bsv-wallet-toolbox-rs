@@ -153,7 +153,7 @@ impl StorageSqlx {
             },
             now,
         };
-        let Some((transaction_id, inputs)) = self.retire_rows(&rows).await? else {
+        let Some((ended, inputs)) = self.retire_rows(&rows).await? else {
             return Ok(RetireOutcome::Retired {
                 restored: 0,
                 kept: 0,
@@ -193,8 +193,13 @@ impl StorageSqlx {
         self.mark_broadcast_rejected_quiet(txid).await;
         // No services: the descendants' outside inputs are kept and
         // scheduled, never released on an explorer's word.
+        // On a competitor's checked proof every row of the txid ended, and
+        // each one's own descendants are walked (a received row's own
+        // spends included); on a word, the head's.
+        let transaction_id = ended[0];
+        let walked: &[i64] = if rows.evidence { &ended } else { &[] };
         let (descendants_restored, descendants_kept) = self
-            .retire_poisoned_descendants(None, txid, transaction_id, now)
+            .retire_poisoned_descendants_of(None, txid, transaction_id, walked, now)
             .await?;
 
         Ok(RetireOutcome::Retired {
@@ -208,11 +213,15 @@ impl StorageSqlx {
     /// at its terminal status, the transaction's own outputs unspendable,
     /// the transaction `failed`. An acceptance committed before this lock is
     /// read under it and refuses; one committed after finds the row
-    /// `failed`. Nothing awaits a service in here. Returns the transaction
-    /// id and its inputs (`output_id`, source txid, `vout`), or `None` when
+    /// `failed`. Nothing awaits a service in here. Returns the rows ended
+    /// (the head at the front) and the head's inputs (`output_id`, source
+    /// txid, `vout`), or `None` when
     /// no `sending` / `unproven` transaction holds `txid` (the req is still
     /// written then).
-    async fn retire_rows(&self, rows: &RetireRows<'_>) -> Result<Option<(i64, Vec<RetireInput>)>> {
+    async fn retire_rows(
+        &self,
+        rows: &RetireRows<'_>,
+    ) -> Result<Option<(Vec<i64>, Vec<RetireInput>)>> {
         let mut db_tx = self.write_tx().await?;
         if let Some(operation) = rows.guard {
             super::super::abort_action::refuse_if_accepted(&mut db_tx, rows.txid, operation)
@@ -255,7 +264,7 @@ impl StorageSqlx {
         // Their own outputs never fund anything again.
         fail_rows_on(&mut db_tx, &ended, "AND spent_by IS NULL", rows.now).await?;
         super::commit(db_tx).await?;
-        Ok(Some((transaction_id, inputs)))
+        Ok(Some((ended, inputs)))
     }
 
     /// If a status source holds `txid` (known or mined), promote it: the
