@@ -2264,12 +2264,14 @@ where
 
         let auth = self.auth();
 
-        // An aborted deferred action leaves the sign door's set whatever the
-        // store answers, so a later signAction of it gets the sign path's
-        // own answer, never the sendWith-alone refusal.
-        self.bare_deferred.write().await.remove(&args.reference);
-
+        // An aborted deferred action leaves the sign door's set only once the
+        // store has answered the abort, so a later signAction of it gets the
+        // sign path's own answer. A store that refused (busy, or a remote
+        // call that failed) left the action unsigned and cached: it stays in
+        // the set and the guard still refuses its sendWith alone.
+        let reference = args.reference.clone();
         let result = self.storage.abort_action(&auth, args).await?;
+        self.bare_deferred.write().await.remove(&reference);
 
         Ok(result)
     }
