@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- A mark written on a checked proof is lowered only by evidence about that
+  same proof. A `spent-proven` verdict is kept, with its schedule, when a
+  later write brings `unknown` or a hint, and a coin that carries one is
+  never released on an explorer's unspent set; the descendants' walk keeps
+  a transaction already ended on a checked double spend (its inputs'
+  verdicts and its request's `doubleSpend`). The proof task's competitor
+  ask keeps the competitor's proof row and the store's root-check record
+  for it in the write that retires the action, walks the descendants of
+  every row it ends (a received row's own spends included), and asks and
+  retires once a request however many rows of the txid the store holds.
+  Evidence against a transaction is a proof this store checked: a stored
+  competitor proof counts only with its root-check record, and a
+  `spent-proven` check only where its recorded spender is another txid; a
+  stored proof stands against a take only on the tracker's answer, and a
+  take beside one while no tracker answers waits (nothing raised, a
+  `takeNotCounted` note) until a later take finds the tracker answering
+  (`src/storage/sqlx/checked_mark_tests.rs`, `checked_evidence_tests.rs`,
+  `checked_walk_tests.rs`).
+  Hosts: a coin a checked proof showed spent stays withheld through later
+  retires of the transactions around it; a take refused beside a stored
+  competitor proof now waits for the tracker's answer instead of being
+  refused while no tracker answers.
 - A held receipt ends on evidence about its transaction, not on a
   request's word alone. Where several users of one store hold a row of
   one txid, a request's word (the sender's abort, a host's retire, a
