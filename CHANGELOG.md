@@ -421,6 +421,14 @@
 
 ### Hosts
 
+- No store write is held across a post on any road: `createAction`'s and
+  `signAction`'s posts, `internalizeAction`'s post of a held body, the
+  stored-action door (`Wallet::process_action`), the send-waiting task and
+  the lost-proof announce (the reorg task's and a host's re-proof). A
+  host's services object may therefore write to the store through the
+  store's writer (`write_tx()`) before it passes a post on; it must take
+  the writer through a clone of the same `StorageSqlx` and must not open
+  the file a second time. Witnesses: `tests/post_holds_no_write_tests.rs`.
 - A store shared by several users: a held receipt is ended by evidence
   about its transaction, not by another row's request word.
 
