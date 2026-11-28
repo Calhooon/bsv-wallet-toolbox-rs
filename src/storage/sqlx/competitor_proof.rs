@@ -174,7 +174,7 @@ pub(crate) async fn checked_spender_on(
             .await?;
     let queued = history
         .as_deref()
-        .map(super::storage_sqlx::queued_competitors)
+        .map(super::storage_sqlx::competitors::queued_competitors)
         .unwrap_or_default();
     let sql = format!(
         "SELECT p.raw_tx FROM {} WHERE p.txid = ?",
@@ -402,18 +402,7 @@ async fn standing_refusal_on(
         let Some((competitor, why)) = waiting else {
             return Ok(None);
         };
-        super::abort_recovery::note_request_on(
-            conn,
-            txid,
-            serde_json::json!({
-                "what": "takeNotCounted",
-                "when": now.to_rfc3339(),
-                "competitor": competitor,
-                "why": why,
-                "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
-            }),
-        )
-        .await?;
+        note_take_waits(conn, txid, &competitor, why, takers, now).await?;
         tracing::warn!(
             txid = %txid,
             competitor = %competitor,
@@ -562,6 +551,23 @@ async fn raise_or_hold_on(
         }),
     )
     .await
+}
+
+/// The note of a take that waits on a stored competitor whose root no
+/// tracker answered for (`why`), on the request's history.
+async fn note_take_waits(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    competitor: &str,
+    why: &str,
+    takers: &[(&str, &str)],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let note = serde_json::json!({
+        "what": "takeNotCounted", "why": why, "competitor": competitor, "when": now.to_rfc3339(),
+        "takers": takers.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
+    });
+    super::abort_recovery::note_request_on(conn, txid, note).await
 }
 
 /// The note of a take that raised nothing, on the request's history: the

@@ -15,7 +15,7 @@ mod certificates;
 #[cfg(test)]
 mod commission_tests;
 mod commissions;
-mod competitors;
+pub(super) mod competitors;
 #[cfg(test)]
 mod core_tests;
 mod door_notes;
@@ -56,7 +56,6 @@ mod users;
 #[cfg(test)]
 mod validation_tests;
 mod writer;
-pub(crate) use competitors::queued_competitors;
 pub(crate) use door_notes::InstanceNote;
 pub(crate) use outputs::{output_from_row, sequence_number_from_row};
 pub use proven_tx_reqs::{UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT};

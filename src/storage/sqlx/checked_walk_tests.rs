@@ -19,16 +19,16 @@ use crate::storage::MonitorStorage;
 
 /// Y's own child G, spending Y's payment: its row, output and request.
 async fn y_child(c: &Cell) -> String {
-    let g_raw = super::checked_mark_tests::spending(&[(&c.p, 1)], &[500]);
-    let g = txid_of(&g_raw);
+    let child_bytes = super::checked_mark_tests::spending(&[(&c.p, 1)], &[500]);
+    let g = txid_of(&child_bytes);
     let basket: i64 = sqlx::query_scalar("SELECT basket_id FROM outputs WHERE output_id = ?")
         .bind(c.y_out)
         .fetch_one(c.s.pool())
         .await
         .unwrap();
-    let g_row = row(&c.s, &c.y, &g, "sending", &g_raw, true).await;
+    let child_row = row(&c.s, &c.y, &g, "sending", &child_bytes, true).await;
     sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
-        .bind(g_row)
+        .bind(child_row)
         .bind(c.y_out)
         .execute(c.s.writer())
         .await
@@ -37,7 +37,7 @@ async fn y_child(c: &Cell) -> String {
         &c.s,
         &c.y,
         basket,
-        g_row,
+        child_row,
         &g,
         0,
         500,
@@ -50,7 +50,7 @@ async fn y_child(c: &Cell) -> String {
          VALUES (?, 'unsent', 0, '{}', 0, '{}', ?, ?, ?)",
     )
     .bind(&g)
-    .bind(&g_raw)
+    .bind(&child_bytes)
     .bind(Utc::now())
     .bind(Utc::now())
     .execute(c.s.writer())

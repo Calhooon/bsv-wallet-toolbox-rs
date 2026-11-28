@@ -14,10 +14,9 @@ use chrono::Utc;
 
 use super::competitor_proof::{apply_take_on, TakeApplied, TakeRows};
 use super::held_receipt_scope_tests::{
-    output, p_raw, r_raw, read, row, seed, user, write_word, Cell, Writer, HEIGHT, PAYMENT,
-    P_HEIGHT,
+    p_raw, r_raw, read, seed, user, write_word, z_spends_c, Cell, Writer, HEIGHT, PAYMENT, P_HEIGHT,
 };
-use super::reorg_tests::{single_leaf_bump, storage, txid_of, COINBASE_HEX, COINBASE_TXID};
+use super::reorg_tests::{single_leaf_bump, storage, txid_of};
 use super::sync::{entity_names, get_sync_chunk_internal, process_sync_chunk_internal};
 use super::void_lineage_tests::serving;
 use crate::services::WalletServices;
@@ -54,6 +53,14 @@ async fn checked(c: &Cell, txid: &str) -> bool {
         .unwrap()
 }
 
+/// A sync offset at the start of `name`.
+fn from_zero(name: &str) -> SyncOffset {
+    SyncOffset {
+        name: name.to_string(),
+        offset: 0,
+    }
+}
+
 /// A take of P through the one write that applies a take.
 async fn take(c: &Cell) -> TakeApplied {
     let check = c.s.competitor_check(&c.p, None).await.unwrap();
@@ -69,27 +76,6 @@ async fn take(c: &Cell) -> TakeApplied {
     .unwrap();
     super::storage_sqlx::commit(tx).await.unwrap();
     applied
-}
-
-/// A third user Z's R, spending C beside P: its rows and output.
-async fn z_spends_c(s: &super::StorageSqlx, status: &str) -> i64 {
-    let (z, zb) = user(s, &"c".repeat(66)).await;
-    let coinbase = hex::decode(COINBASE_HEX).unwrap();
-    let z_cb = row(s, &z, COINBASE_TXID, "completed", &coinbase, false).await;
-    let z_r = row(s, &z, &txid_of(&r_raw()), status, &r_raw(), true).await;
-    output(
-        s,
-        &z,
-        zb,
-        z_cb,
-        COINBASE_TXID,
-        0,
-        5000,
-        "change",
-        (false, Some(z_r)),
-    )
-    .await;
-    z_r
 }
 
 /// The proof task's ask keeps the competitor's proof row and this store's
@@ -140,20 +126,15 @@ async fn a_stored_proof_no_check_saw_is_no_evidence() {
         since: None,
         max_rough_size: 1_000_000,
         max_items: 1000,
-        offsets: [
-            entity_names::PROVEN_TX,
-            entity_names::OUTPUT_BASKET,
-            entity_names::TRANSACTION,
-            entity_names::OUTPUT,
-        ]
-        .map(|name| SyncOffset {
-            name: name.into(),
-            offset: 0,
-        })
-        .to_vec(),
+        offsets: vec![
+            from_zero(entity_names::PROVEN_TX),
+            from_zero(entity_names::OUTPUT_BASKET),
+            from_zero(entity_names::TRANSACTION),
+            from_zero(entity_names::OUTPUT),
+        ],
     };
     let chunk = get_sync_chunk_internal(&other, args.clone()).await.unwrap();
-    let mut map = Default::default();
+    let mut map = crate::storage::SyncMap::default();
     process_sync_chunk_internal(&c.s, args, chunk, &mut map)
         .await
         .unwrap();
