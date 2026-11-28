@@ -199,6 +199,17 @@ pub async fn prove(store: &StorageSqlx, user: i64, competitor: &[u8]) -> i64 {
     let id = bsv_rs::transaction::Transaction::from_binary(competitor)
         .unwrap()
         .id();
+    let row = insert_tx(store, user, &id, "completed", competitor, true).await;
+    store_checked_proof(store, competitor).await;
+    row
+}
+
+/// `competitor`'s stored proof and this store's root-check record for it:
+/// a proof this store checked.
+pub async fn store_checked_proof(store: &StorageSqlx, competitor: &[u8]) {
+    let id = bsv_rs::transaction::Transaction::from_binary(competitor)
+        .unwrap()
+        .id();
     let (root, path) = {
         let path = MerklePath::from_coinbase_txid(&id, PROVEN_HEIGHT);
         (
@@ -206,7 +217,6 @@ pub async fn prove(store: &StorageSqlx, user: i64, competitor: &[u8]) -> i64 {
             path.to_binary().unwrap(),
         )
     };
-    let row = insert_tx(store, user, &id, "completed", competitor, true).await;
     sqlx::query(
         "INSERT INTO proven_txs (txid, height, idx, block_hash, merkle_root, merkle_path, raw_tx) \
          VALUES (?, ?, 0, ?, ?, ?, ?)",
@@ -214,13 +224,22 @@ pub async fn prove(store: &StorageSqlx, user: i64, competitor: &[u8]) -> i64 {
     .bind(&id)
     .bind(PROVEN_HEIGHT)
     .bind("bb".repeat(32))
-    .bind(root)
+    .bind(&root)
     .bind(path)
     .bind(competitor)
     .execute(store.writer())
     .await
     .unwrap();
-    row
+    sqlx::query(
+        "INSERT INTO proof_root_checks (txid, height, merkle_root, checked_at) \
+         VALUES (?, ?, lower(?), CURRENT_TIMESTAMP)",
+    )
+    .bind(&id)
+    .bind(PROVEN_HEIGHT)
+    .bind(&root)
+    .execute(store.writer())
+    .await
+    .unwrap();
 }
 
 /// What lands while the post is in flight: the host's abort, then the
@@ -260,6 +279,18 @@ pub async fn abort_now(f: &Fixture, cause: Cause) {
         .execute(f.store.writer())
         .await
         .unwrap();
+        // Its spender on record: the competitor queued on the request, its
+        // proof stored and checked.
+        store_checked_proof(&f.store, &f.competitor).await;
+        let id = bsv_rs::transaction::Transaction::from_binary(&f.competitor)
+            .unwrap()
+            .id();
+        sqlx::query("UPDATE proven_tx_reqs SET history = ? WHERE txid = ?")
+            .bind(serde_json::json!({ "competitorsQueued": [id] }).to_string())
+            .bind(&f.txid)
+            .execute(f.store.writer())
+            .await
+            .unwrap();
     }
     if let Some(spender) = spender {
         sqlx::query("UPDATE outputs SET spendable = 0, spent_by = ? WHERE output_id = ?")
