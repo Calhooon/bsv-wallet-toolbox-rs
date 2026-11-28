@@ -357,7 +357,11 @@ where
         .fetch_one(s.store.pool())
         .await
         .unwrap();
-    assert_eq!(rows as usize, posts, "{road}: the host's rows");
+    assert_eq!(
+        usize::try_from(rows).ok(),
+        Some(posts),
+        "{road}: the host's rows"
+    );
     assert_eq!(held, plain, "{road}: the door's answer and rows");
     eprintln!(
         "{road}: {} post(s), acquire {:?}; {held}",
@@ -404,7 +408,7 @@ async fn sign_action_post_holds_no_write() {
             .wallet
             .sign_action(
                 SignActionArgs {
-                    spends: Default::default(),
+                    spends: std::collections::HashMap::default(),
                     reference: bsv_rs::primitives::to_base64(&reference),
                     options: None,
                 },
