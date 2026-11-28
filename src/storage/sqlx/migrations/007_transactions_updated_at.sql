@@ -1,4 +1,4 @@
--- 006: an index on transactions(updated_at)
+-- 007: an index on transactions(updated_at)
 --
 -- The release search's mark (stored_spenders.rs, mark_of) reads the highest
 -- transaction id and the newest updated_at of the store's transactions, one

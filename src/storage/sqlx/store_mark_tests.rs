@@ -59,7 +59,7 @@ async fn plan(s: &StorageSqlx) -> Vec<String> {
 }
 
 /// The mark is read by seeks: no line of its plan scans `transactions`, and
-/// the stamp half seeks the index of migration 006. The statement it
+/// the stamp half seeks the index of migration 007. The statement it
 /// replaced is shown to scan, on the same store, so the check reads plans.
 #[tokio::test]
 async fn the_mark_seeks_and_never_scans_transactions() {

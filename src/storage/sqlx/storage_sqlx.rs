@@ -63,6 +63,11 @@ fn public_pick_statuses(exclude_sending: bool) -> &'static str {
 
 /// Every schema migration, in order. Each statement is `IF NOT EXISTS`, so
 /// the whole list is idempotent on a database at any earlier schema.
+///
+/// The names are labels of that idempotent list: nothing orders, compares or
+/// counts them, and `migrate()` answers the last. This line carries no 006:
+/// that name is the 0.14 line's held receipts, so one name means one thing
+/// on both lines.
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001_initial", include_str!("migrations/001_initial.sql")),
     (
@@ -82,8 +87,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
         super::proof_root_checks::MIGRATION_005_PROOF_ROOT_CHECKS_SQL,
     ),
     (
-        super::stored_spenders::MIGRATION_006_TRANSACTIONS_UPDATED_AT_NAME,
-        super::stored_spenders::MIGRATION_006_TRANSACTIONS_UPDATED_AT_SQL,
+        super::stored_spenders::MIGRATION_007_TRANSACTIONS_UPDATED_AT_NAME,
+        super::stored_spenders::MIGRATION_007_TRANSACTIONS_UPDATED_AT_SQL,
     ),
 ];
 
@@ -2400,8 +2405,8 @@ impl WalletStorageWriter for StorageSqlx {
             super::proof_root_checks::ensure_proof_root_checks_schema(self.writer()).await?;
             super::broadcast_seen::apply_migration_sql(
                 self.writer(),
-                super::stored_spenders::MIGRATION_006_TRANSACTIONS_UPDATED_AT_NAME,
-                super::stored_spenders::MIGRATION_006_TRANSACTIONS_UPDATED_AT_SQL,
+                super::stored_spenders::MIGRATION_007_TRANSACTIONS_UPDATED_AT_NAME,
+                super::stored_spenders::MIGRATION_007_TRANSACTIONS_UPDATED_AT_SQL,
             )
             .await?;
             self.cache_settings(&settings)?;
@@ -8156,7 +8161,7 @@ mod tests {
             .migrate("test-storage", "0".repeat(64).as_str())
             .await
             .unwrap();
-        assert_eq!(version, "006_transactions_updated_at");
+        assert_eq!(version, "007_transactions_updated_at");
 
         // Make available
         let settings = storage.make_available().await.unwrap();

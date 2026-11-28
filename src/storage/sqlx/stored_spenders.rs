@@ -383,11 +383,11 @@ const SENT_ROWS: &str = "SELECT o.output_id, o.vout FROM outputs o \
 
 /// The migration that indexes `transactions(updated_at)`, so the mark is
 /// read by seeks (`MARK`).
-pub(crate) const MIGRATION_006_TRANSACTIONS_UPDATED_AT_SQL: &str =
-    include_str!("migrations/006_transactions_updated_at.sql");
+pub(crate) const MIGRATION_007_TRANSACTIONS_UPDATED_AT_SQL: &str =
+    include_str!("migrations/007_transactions_updated_at.sql");
 
-/// Name of migration 006, as `StorageSqlx::migrate` reports it.
-pub(crate) const MIGRATION_006_TRANSACTIONS_UPDATED_AT_NAME: &str = "006_transactions_updated_at";
+/// Name of migration 007, as `StorageSqlx::migrate` reports it.
+pub(crate) const MIGRATION_007_TRANSACTIONS_UPDATED_AT_NAME: &str = "007_transactions_updated_at";
 
 /// The mark: `MAX(transaction_id)` and `MAX(updated_at)` over the store's
 /// transactions with one row (the bound id) left out, each read by a seek
@@ -396,7 +396,7 @@ pub(crate) const MIGRATION_006_TRANSACTIONS_UPDATED_AT_NAME: &str = "006_transac
 ///
 /// The id half is a seek on the primary key. The stamp half takes the
 /// newest stamp of the whole table from `idx_transactions_updated_at`
-/// (migration 006); when a row other than the one left out holds it, it is
+/// (migration 007); when a row other than the one left out holds it, it is
 /// the answer, else the answer is the newest stamp below it (only the row
 /// left out held it). Either way the same value `MAX(updated_at) WHERE
 /// transaction_id != ?` gives, empty table and all.
