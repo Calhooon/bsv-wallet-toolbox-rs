@@ -14,18 +14,24 @@
   for it in the write that retires the action, walks the descendants of
   every row it ends (a received row's own spends included), and asks and
   retires once a request however many rows of the txid the store holds.
-  Evidence against a transaction is a proof this store checked: a stored
-  competitor proof counts only with its root-check record, and a
-  `spent-proven` check only where its recorded spender is another txid; a
-  stored proof stands against a take only on the tracker's answer, and a
-  take beside one while no tracker answers waits (nothing raised, a
-  `takeNotCounted` note) until a later take finds the tracker answering
-  (`src/storage/sqlx/checked_mark_tests.rs`, `checked_evidence_tests.rs`,
-  `checked_walk_tests.rs`).
+  Evidence against a transaction beside a word is a proof this store
+  checked: a stored competitor proof counts with its root-check record,
+  and a `spent-proven` check at one of its input outpoints counts unless
+  its recorded spender (a proof row this store checked whose bytes spend
+  the outpoint, found by the outpoint) is the transaction itself, or none
+  is on record and the transaction holds a proof this store checked. The
+  competitor ask reads our inputs from bytes that hash to our txid, and a
+  demoted proof makes a request only for a txid the store holds a
+  transaction row of (`src/storage/sqlx/checked_mark_tests.rs`,
+  `checked_evidence_tests.rs`, `checked_walk_tests.rs`,
+  `checked_spender_tests.rs`).
   Hosts: a coin a checked proof showed spent stays withheld through later
-  retires of the transactions around it; a take refused beside a stored
-  competitor proof now waits for the tracker's answer instead of being
-  refused while no tracker answers.
+  retires of the transactions around it. A take beside a stored competitor
+  proof asks the tracker of its root: confirmed, the take is refused (for
+  a proof row with no root-check record the take's write records it);
+  refuted, the take is applied; with no tracker, or one that errs, the
+  take waits, nothing raised and a `takeNotCounted` note on the request,
+  until a later take finds a tracker answering.
 - A held receipt ends on evidence about its transaction, not on a
   request's word alone. Where several users of one store hold a row of
   one txid, a request's word (the sender's abort, a host's retire, a
