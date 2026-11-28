@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::services::providers::http_client::{self, Client};
+use crate::services::providers::http_client::{self, AnswerRead, Client};
 use crate::services::providers::pace::{shared_key, RateGate};
 use crate::services::{traits::BlockHeader, Chain};
 use crate::{Error, Result};
@@ -93,10 +93,11 @@ pub struct ChaintracksServiceClient {
 impl ChaintracksServiceClient {
     /// Create a new Chaintracks service client.
     pub fn new(config: ChaintracksConfig) -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
+        let client = http_client::door_client(
+            std::time::Duration::from_secs(30),
+            http_client::HEADER_ANSWER_MAX_BYTES,
+        )
+        .unwrap_or_default();
         let key = shared_key("Chaintracks", &config.url, config.api_key.as_deref());
         Self {
             client,
@@ -175,7 +176,7 @@ impl ChaintracksServiceClient {
             ))));
         }
 
-        let frame: ResponseFrame<u32> = response.json().await.map_err(|e| {
+        let frame: ResponseFrame<u32> = response.json().await.or_door(|e| {
             Fault::Unread(Error::ServiceError(format!(
                 "Chaintracks parse error: {}",
                 e
@@ -212,7 +213,7 @@ impl ChaintracksServiceClient {
             ))));
         }
 
-        let frame: ResponseFrame<CtBlockHeader> = response.json().await.map_err(|e| {
+        let frame: ResponseFrame<CtBlockHeader> = response.json().await.or_door(|e| {
             Fault::Unread(Error::ServiceError(format!(
                 "Chaintracks header parse: {}",
                 e
@@ -250,7 +251,7 @@ impl ChaintracksServiceClient {
             ))));
         }
 
-        let frame: ResponseFrame<CtBlockHeader> = response.json().await.map_err(|e| {
+        let frame: ResponseFrame<CtBlockHeader> = response.json().await.or_door(|e| {
             Fault::Unread(Error::ServiceError(format!("Chaintracks tip parse: {}", e)))
         })?;
 
@@ -281,7 +282,7 @@ impl ChaintracksServiceClient {
         let frame: ResponseFrame<CtBlockHeader> = response
             .json()
             .await
-            .map_err(|e| Error::ServiceError(format!("Chaintracks header parse: {}", e)))?;
+            .or_door(|e| Error::ServiceError(format!("Chaintracks header parse: {}", e)))?;
 
         if !frame.is_success() {
             return Err(Error::ServiceError(format!(
@@ -449,9 +450,8 @@ impl From<reqwest::Error> for Fault {
     }
 }
 
-/// The same under the test and bench seam, whose transport error wraps
-/// reqwest's or gives the loopback table's text (#683).
-#[cfg(any(test, feature = "bench-support"))]
+/// The same through the door's client, whose error wraps reqwest's, an
+/// answer past the door's bound, or the loopback table's text (#683).
 impl From<http_client::RequestError> for Fault {
     fn from(e: http_client::RequestError) -> Self {
         Fault::Unread(e.into())
