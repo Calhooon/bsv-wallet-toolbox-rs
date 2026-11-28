@@ -696,6 +696,58 @@ async fn w9_an_unknown_txid_is_not_said_to_be_reserved() {
     assert!(!text.contains(" more]"), "{text}");
 }
 
+/// `signAction` on an aborted deferred action, its reference written `<ref>`.
+async fn sign_aborted(wallet: &Payer, send_with: Option<Vec<[u8; 32]>>) -> String {
+    let reference = deferred_reference(wallet, None).await;
+    let aborted = wallet
+        .abort_action(
+            AbortActionArgs {
+                reference: reference.clone(),
+            },
+            ORIGIN,
+        )
+        .await
+        .map(|r| r.aborted);
+    assert_eq!(aborted.map_err(|e| e.to_string()), Ok(true));
+    let args = SignActionArgs {
+        spends: Default::default(),
+        reference: reference.clone(),
+        options: Some(SignActionOptions {
+            send_with,
+            accept_delayed_broadcast: Some(false),
+            ..Default::default()
+        }),
+    };
+    match wallet.sign_action(args, ORIGIN).await {
+        Err(e) => e.to_string().replace(&reference, "<ref>"),
+        Ok(r) => format!("answered: txid {:?}", r.txid.map(hex::encode)),
+    }
+}
+
+/// W10: a bare deferred action aborted, then signed naming the payment in
+/// `sendWith`: the answer is the one an aborted reference gets with no
+/// `sendWith`, not the guard's refusal, and the payment stays `nosend`.
+#[tokio::test]
+async fn w10_an_aborted_bare_deferred_action_gets_the_sign_paths_answer() {
+    let wallet = payer().await;
+    let txid = prepared(&wallet).await;
+    let payment = hex::encode(txid);
+    let without = sign_aborted(&wallet, None).await;
+    let with = sign_aborted(&wallet, Some(vec![txid])).await;
+    println!("STEP W10\nwithout sendWith: {without}\nwith sendWith: {with}\nEND");
+    assert!(!with.contains("is refused unless"), "{with}");
+    assert_eq!(with, without);
+    assert_eq!(
+        words(wallet.storage(), &payment).await,
+        (vec!["nosend".to_string()], vec!["nosend".to_string()])
+    );
+    assert!(
+        posts(&wallet).is_empty(),
+        "nothing posted: {:?}",
+        posts(&wallet)
+    );
+}
+
 /// W11: a bare deferred action whose create named the payment with a
 /// delayed post, signed with no delayed post: with no `sendWith` it falls
 /// back to the create's list and is refused; with `sendWith: []` it is
