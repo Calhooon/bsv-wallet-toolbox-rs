@@ -227,13 +227,12 @@ pub(crate) async fn rows_a_word_ends_on(
             ended.push(*transaction_id);
             continue;
         }
-        let at = match evidence.iter().position(|(t, ..)| t == txid) {
-            Some(at) => at,
-            None => {
-                let read = word_evidence_on(&mut *conn, txid, ask).await?;
-                evidence.push((txid.clone(), read, Vec::new()));
-                evidence.len() - 1
-            }
+        let at = if let Some(at) = evidence.iter().position(|(t, ..)| t == txid) {
+            at
+        } else {
+            let read = word_evidence_on(&mut *conn, txid, ask).await?;
+            evidence.push((txid.clone(), read, Vec::new()));
+            evidence.len() - 1
         };
         if evidence[at].1.is_some() {
             ended.push(*transaction_id);
