@@ -11,12 +11,14 @@ use std::sync::Arc;
 
 use bsv_rs::transaction::MockChainTracker;
 
-use super::checked_evidence_tests::{checked, p_proven, take, y_counted, ErringTracker};
+use super::checked_evidence_tests::{
+    checked, p_proven, take, y_counted, z_r_proven_unrecorded, ErringTracker,
+};
 use super::competitor_proof::TakeApplied;
 use super::held_receipt_scope_tests::{
-    p_raw, r_raw, read, seed, write_word, z_spends_c, Cell, Writer, HEIGHT, P_HEIGHT,
+    p_raw, read, seed, write_word, Cell, Writer, HEIGHT, P_HEIGHT,
 };
-use super::reorg_tests::{single_leaf_bump, txid_of, COINBASE_TXID};
+use super::reorg_tests::COINBASE_TXID;
 use super::word_scope::ENDED_BESIDE_UNCHECKED_PROOF;
 use crate::storage::MonitorStorage;
 
@@ -38,22 +40,11 @@ enum Asked {
 async fn taken_then_competitor(c: &Cell, asked: Asked) -> String {
     assert_eq!(take(c).await, TakeApplied::Applied);
     assert_eq!(read(c).await.y_row, "unproven");
-    z_spends_c(&c.s, "unproven").await;
-    let r = txid_of(&r_raw());
     let height = match asked {
         Asked::Refutes => 950,
         _ => HEIGHT,
     };
-    super::reorg_tests::insert_proven(
-        &c.s,
-        &r,
-        height,
-        &"0".repeat(64),
-        &r_raw(),
-        &single_leaf_bump(height, &r),
-    )
-    .await;
-    assert!(!checked(c, &r).await, "R's proof row has no record");
+    let r = z_r_proven_unrecorded(c, height).await;
     match asked {
         Asked::Confirms | Asked::Refutes => {}
         Asked::Errs => c.s.set_chain_tracker(Arc::new(ErringTracker)).await,
@@ -91,7 +82,7 @@ async fn spent_proven_marks(c: &Cell) -> i64 {
         .unwrap()
 }
 
-/// X's coin C: (spendable, spent_by).
+/// X's coin C: (`spendable`, `spent_by`).
 async fn x_coin(c: &Cell) -> (bool, Option<i64>) {
     sqlx::query_as(
         "SELECT spendable, spent_by FROM outputs WHERE txid = ? AND vout = 0 \

@@ -228,6 +228,16 @@ impl WalletStorageProvider for StorageSqlx {
     }
 }
 
+impl StorageSqlx {
+    /// Clear the services (a test's store with no header source at all).
+    #[cfg(test)]
+    pub(crate) fn clear_services(&self) {
+        if let Ok(mut guard) = lock_write(&self.services) {
+            *guard = None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{StorageSqlx, WalletStorageReader, WalletStorageWriter};

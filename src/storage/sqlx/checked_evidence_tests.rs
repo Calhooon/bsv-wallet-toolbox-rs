@@ -210,6 +210,24 @@ async fn a_stored_proof_no_check_saw_is_no_evidence() {
     }
 }
 
+/// Z's R spending C beside P, `unproven`, with a proof row of R at
+/// `height` whose path is valid and no root-check record. Returns R's txid.
+pub(super) async fn z_r_proven_unrecorded(c: &Cell, height: u32) -> String {
+    z_spends_c(&c.s, "unproven").await;
+    let r = txid_of(&r_raw());
+    super::reorg_tests::insert_proven(
+        &c.s,
+        &r,
+        height,
+        &"0".repeat(64),
+        &r_raw(),
+        &single_leaf_bump(height, &r),
+    )
+    .await;
+    assert!(!checked(c, &r).await, "R's proof row has no record");
+    r
+}
+
 /// A proof row of R this store has not checked, beside a take of P: the
 /// take asks the tracker. Its root confirmed, the take is refused and the
 /// root-check record is written in the take's write; at a height whose
@@ -219,18 +237,7 @@ async fn a_take_asks_the_tracker_of_a_proof_row_with_no_record() {
     for (height, refused) in [(HEIGHT, true), (950, false)] {
         let c = seed("sending").await;
         assert!(write_word(&c, Writer::Retire).await);
-        z_spends_c(&c.s, "unproven").await;
-        let r = txid_of(&r_raw());
-        super::reorg_tests::insert_proven(
-            &c.s,
-            &r,
-            height,
-            &"0".repeat(64),
-            &r_raw(),
-            &single_leaf_bump(height, &r),
-        )
-        .await;
-        assert!(!checked(&c, &r).await);
+        let r = z_r_proven_unrecorded(&c, height).await;
         let applied = take(&c).await;
         if refused {
             assert!(
