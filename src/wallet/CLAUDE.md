@@ -60,7 +60,7 @@ This module provides the main `Wallet<S, V>` struct that implements the complete
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | ~102 | Module declaration with documentation, exports `Wallet`, `WalletOptions`, `WalletSigner`, `PendingTransaction`, `SignerInput`, `ScriptType`, `UnlockingScriptTemplate`, `WalletBalance`, `UtxoInfo`, `HttpLookupResolver`, `OverlayCertificate`, `OverlayLookupResolver` |
-| `wallet.rs` | ~3547 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `WalletBalance`, `UtxoInfo`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, balance/sweep helpers, permission checks, and helper functions |
+| `wallet.rs` | 4507 | Main `Wallet<S, V>` struct implementing `WalletInterface` with 28 methods, plus `PendingTransaction`, `WalletBalance`, `UtxoInfo`, `PrivilegedKeyManager`, `LookupResolver`, `WalletLogger`, balance/sweep helpers, permission checks, and helper functions |
 | `signer.rs` | ~993 | `WalletSigner` for transaction signing with BIP-143 sighash, `UnlockingScriptTemplate` for deferred signing, transaction parsing, and script generation |
 | `certificate_issuance.rs` | ~1090 | Certificate issuance protocol implementation (BRC-104) for acquiring certificates from certifier services |
 | `lookup.rs` | ~610 | Overlay service discovery: `OverlayLookupResolver` trait, `HttpLookupResolver` implementation, BEEF/PushDrop certificate parsing, deduplication |
@@ -396,7 +396,7 @@ When broadcasting (not no_send, not delayed):
 1. Parse `input_beef` into BEEF structure
 2. Merge signed transaction into BEEF (`merge_raw_tx`)
 3. Downgrade BEEF V2 to V1 for ARC compatibility (if all txs have full data)
-4. Broadcast via `services.post_beef()`
+4. Broadcast via `services.post_beef()` (nothing is written to disk: no BEEF file goes to the temp folder; the bytes a host wants are `proven_tx_reqs.input_beef`)
 5. Check results: at least one provider must return "success"
 6. Call `storage.update_transaction_status_after_broadcast(txid, success)` to update status
 7. On broadcast failure: return error with "Transaction marked as failed and inputs restored"
