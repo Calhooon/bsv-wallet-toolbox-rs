@@ -1,4 +1,5 @@
-//! The sign door's guard and a busy `abortAction` (W12). A bare deferred
+//! The sign door's guard and a busy `abortAction` (W12), and a `noSend`
+//! bare deferred action at the sign door (W13). A bare deferred
 //! action whose `abortAction` the store refused before acting (busy) is
 //! still unsigned and cached, so it stays in the sign door's set: a later
 //! `signAction` naming a prepared `noSend` payment in `sendWith` with no
@@ -338,6 +339,70 @@ async fn w12_a_busy_abort_keeps_the_sign_doors_guard() {
     );
     assert_eq!(
         words(wallet.storage(), &payment).await,
+        (vec!["nosend".to_string()], vec!["nosend".to_string()])
+    );
+}
+
+/// What the guard answers at the sign door, the payment's txid written
+/// `<payment>` (W13 pins it whole).
+const SIGN_DOOR_REFUSAL: &str =
+    "wallet error: Validation error: signAction: sendWith on a deferred \
+     action with no inputs and no outputs of the caller's is refused unless acceptDelayedBroadcast \
+     is true. The named transactions [<payment>] were NOT sent by this call; those that are your \
+     own unsent noSend transactions are still reserved under their txids. The deferred action is \
+     as it was: sign it with an empty sendWith or release it with abortAction. Ways out, by cost: \
+     (1) name them in sendWith beside a new action, which queues them for the monitor's \
+     send-waiting task, with no change-only transaction of the wallet's own; (2) release one with \
+     abortAction, which frees its coins and voids it; (3) call again with acceptDelayedBroadcast: \
+     true, which on this line also builds a change-only transaction of the wallet's own, with its \
+     fee, and queues it and the named transactions for the monitor's send-waiting task. A host \
+     with no monitor running never posts what (1) or (3) queues.";
+
+/// W13: a bare deferred action created `noSend`. Signed naming the payment
+/// in `sendWith` with no delayed post, it is refused with the sign door's
+/// text; signed with `sendWith: []`, it is signed and nothing is posted:
+/// it reads `nosend`, and the payment is as it was.
+#[tokio::test]
+async fn w13_a_no_send_bare_deferred_action_signs_and_posts_nothing() {
+    let wallet = payer().await;
+    let txid = prepared(&wallet).await;
+    let payment = hex::encode(txid);
+    let mut create = deferred(None);
+    create.options.as_mut().unwrap().no_send = Some(true);
+    let made = wallet
+        .create_action(create, ORIGIN)
+        .await
+        .expect("the noSend deferred create");
+    let reference =
+        String::from_utf8(made.signable_transaction.expect("signable").reference).unwrap();
+
+    let refused = sign_words(&wallet, &reference, Some(vec![txid])).await;
+    let refused = refused.replace(&payment, "<payment>");
+    println!("STEP W13 signAction naming the payment\n{refused}\nEND");
+    assert_eq!(refused, SIGN_DOOR_REFUSAL);
+    assert!(posts(&wallet).is_empty(), "nothing posted");
+
+    let signed = sign_words(&wallet, &reference, Some(vec![])).await;
+    println!(
+        "STEP W13 signAction sendWith []: {signed}\nposts {:?}",
+        posts(&wallet)
+    );
+    let own = signed
+        .strip_prefix("answered: txid Some(\"")
+        .and_then(|s| s.strip_suffix("\")"))
+        .unwrap_or_else(|| panic!("signed: {signed}"))
+        .to_string();
+    assert!(
+        posts(&wallet).is_empty(),
+        "nothing posted: {:?}",
+        posts(&wallet)
+    );
+    let own_words = words(wallet.storage(), &own).await;
+    let payment_words = words(wallet.storage(), &payment).await;
+    println!("STEP W13 own {own_words:?} payment {payment_words:?}\nEND");
+    assert_eq!(own_words.0, vec!["nosend".to_string()]);
+    assert_eq!(
+        payment_words,
         (vec!["nosend".to_string()], vec!["nosend".to_string()])
     );
 }
