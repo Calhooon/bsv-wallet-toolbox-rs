@@ -23,8 +23,10 @@
 //! this store checked whose bytes spend that outpoint, found by the
 //! outpoint, `competitor_proof::checked_spenders_on`); the records the take guard
 //! reads (`competitor_proof.rs`, `abort_recovery::failed_outgoing_rows`).
-//! A proof row merely stored, and a `spent-proven` check with no spender on
-//! record or with the txid itself as its spender, are not evidence.
+//! A `spent-proven` check with no spender on record is evidence too, unless
+//! the txid holds a proof this store checked. A proof row this store has
+//! not checked, and a `spent-proven` check whose recorded spender is the
+//! txid itself, are not evidence.
 
 use sqlx::SqliteConnection;
 
@@ -32,7 +34,7 @@ use crate::Result;
 
 /// Does the store hold evidence against `txid` on record: a stored
 /// competitor this store checked, or a `spent-proven` check at one of its
-/// input outpoints whose recorded spender is another txid? The outpoints
+/// input outpoints that is evidence against it ([`spent_proven_against_on`])? The outpoints
 /// are read from a held copy that hashes to the txid; with none, the
 /// outpoints of the outputs a row of the txid spends.
 pub(crate) async fn evidence_on_record_on(conn: &mut SqliteConnection, txid: &str) -> Result<bool> {
@@ -70,8 +72,10 @@ pub(crate) async fn evidence_on_record_on(conn: &mut SqliteConnection, txid: &st
 }
 
 /// Is there a `spent-proven` check at `outpoint` (on an output row there,
-/// `spent_by` narrowed to `spent_by_row` or nothing when given) whose
-/// recorded spender is a txid other than `txid`?
+/// `spent_by` narrowed to `spent_by_row` or nothing when given) that is
+/// evidence against `txid`? It is, unless the recorded spender is `txid`
+/// itself, or no spender is on record and `txid` holds a proof this store
+/// checked (then the mark is its own spend).
 pub(crate) async fn spent_proven_against_on(
     conn: &mut SqliteConnection,
     txid: &str,
@@ -95,7 +99,24 @@ pub(crate) async fn spent_proven_against_on(
         return Ok(false);
     }
     let spenders = super::competitor_proof::checked_spenders_on(conn, outpoint).await?;
-    Ok(spenders.iter().any(|s| !s.eq_ignore_ascii_case(txid)))
+    if spenders.iter().any(|s| !s.eq_ignore_ascii_case(txid)) {
+        return Ok(true);
+    }
+    if !spenders.is_empty() {
+        // The recorded spender is the txid itself: the mark is its own spend.
+        return Ok(false);
+    }
+    // No spender on record (a mark the locked-input re-check wrote): it is
+    // evidence unless the txid holds a proof this store checked.
+    let sql = format!(
+        "SELECT {}",
+        super::held_receipts::checked_proof_condition("?1")
+    );
+    let checked: bool = sqlx::query_scalar(&sql)
+        .bind(txid)
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(!checked)
 }
 
 /// The rows a request's word ends, of `candidates` (`transaction_id`,

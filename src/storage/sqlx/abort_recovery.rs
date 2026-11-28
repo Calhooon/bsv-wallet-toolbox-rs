@@ -25,8 +25,9 @@
 //!   live row of another user of the store.
 //! - EVIDENCE (a `locked_input_checks` row `spent-proven` at one of its
 //!   input outpoints, on the wallet's row of the coin spent by it or by
-//!   nothing, whose recorded spender is another txid: a competitor queued
-//!   on its request with a checked proof whose bytes spend it,
+//!   nothing, evidence against the txid: its recorded spender, a proof row
+//!   this store checked whose bytes spend it, is another txid, or none is
+//!   on record and the txid holds no checked proof,
 //!   `word_scope::spent_proven_against_on`): the take is refused as a standing competitor's checked
 //!   proof refuses it (`competitor_proof::apply_take_on`): nothing is
 //!   recovered, no row lifted, no take recorded, the request keeps its
@@ -126,8 +127,8 @@ pub(crate) enum FailedState {
     Locked,
     /// A competitor's checked proof on record against it (a
     /// `locked_input_checks` row `spent-proven` at one of its input
-    /// outpoints, the row spent by it or by nothing, its recorded spender
-    /// another txid): nothing is recovered.
+    /// outpoints, the row spent by it or by nothing, evidence against the
+    /// txid by `word_scope::spent_proven_against_on`): nothing is recovered.
     Evidence,
 }
 

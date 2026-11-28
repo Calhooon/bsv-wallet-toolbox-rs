@@ -202,33 +202,60 @@ async fn a_take_beside_a_checked_competitor_waits_for_the_tracker() {
     assert_eq!(read(&c).await.y_row, "unproven");
 }
 
-/// P retired as undelivered, then mined: the locked-input re-check reads
-/// X's coin spent (by P itself), and that mark is no evidence against P:
-/// the status review leaves Y's received row as it was, and P's proof
-/// completes it and counts the payment.
-#[tokio::test]
-async fn an_undelivered_transaction_that_mines_is_not_evidence_against_itself() {
-    let c = seed("sending").await;
-    assert!(write_word(&c, Writer::Retire).await);
+/// P retired as undelivered, its coin marked by the locked-input re-check
+/// on a services answer naming `spender` (no spender's proof stored).
+pub(super) async fn retired_then_marked(c: &Cell, spender: &[u8]) {
+    assert!(write_word(c, Writer::Retire).await);
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minutes')")
         .execute(c.s.writer())
         .await
         .unwrap();
     let spent: Arc<dyn WalletServices> =
-        Arc::new(serving(&p_raw(), None).spends_are_proven(true).build());
+        Arc::new(serving(spender, None).spends_are_proven(true).build());
     let report =
         c.s.recheck_locked_inputs(spent.as_ref(), 10, true)
             .await
             .unwrap();
     assert_eq!(report.spent, 1, "{report:?}");
+}
 
+/// P retired as undelivered, then mined: the locked-input re-check reads
+/// X's coin spent (by P itself), and P's proof arrives. With P holding a
+/// proof this store checked the mark is its own spend: a word beside Y's
+/// row does not fail it, and the proof has completed it and counted the
+/// payment.
+#[tokio::test]
+async fn an_undelivered_transaction_that_mines_is_not_evidence_against_itself() {
+    let c = seed("sending").await;
+    retired_then_marked(&c, &p_raw()).await;
+    let bump = single_leaf_bump(P_HEIGHT, &c.p);
+    c.s.ingest_merkle_proof(&c.p, &bump, P_HEIGHT, &"0".repeat(64), None)
+        .await
+        .unwrap();
+    assert!(checked(&c, &c.p).await);
+
+    MonitorStorage::mark_transaction_rejected(&c.s, &c.p, false)
+        .await
+        .unwrap();
     MonitorStorage::review_status(&c.s).await.unwrap();
     let got = read(&c).await;
     assert_eq!(
-        (got.y_row.as_str(), got.y_out_spendable),
-        ("sending", true),
-        "Y's row is not failed on its own transaction's spend: {got:?}"
+        (got.y_row.as_str(), got.y_balance),
+        ("completed", PAYMENT),
+        "{got:?}"
     );
+}
+
+/// A mark with no spender on record, beside a transaction that holds no
+/// checked proof, is evidence against it: a take of P is refused and Y's
+/// held row stays held. Once P's checked proof arrives the proof completes
+/// Y's row.
+#[tokio::test]
+async fn a_mark_with_no_spender_on_record_refuses_a_take() {
+    let c = seed("sending").await;
+    retired_then_marked(&c, &r_raw()).await;
+    assert!(matches!(take(&c).await, TakeApplied::Refused { .. }));
+    assert_eq!(read(&c).await.y_row, "sending");
 
     let bump = single_leaf_bump(P_HEIGHT, &c.p);
     c.s.ingest_merkle_proof(&c.p, &bump, P_HEIGHT, &"0".repeat(64), None)
