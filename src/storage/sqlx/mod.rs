@@ -41,6 +41,8 @@ mod broadcaster_hint_tests;
 mod change_tiebreak_tests;
 mod competitor_proof;
 mod create_action;
+#[cfg(test)]
+mod held_receipt_scope_tests;
 mod held_receipts;
 mod internalize_action;
 mod internalize_answer;
@@ -70,6 +72,7 @@ mod storage_sqlx;
 mod sync;
 #[cfg(test)]
 mod void_lineage_tests;
+mod word_scope;
 
 #[cfg(feature = "bench-support")]
 pub(crate) use create_action::benchmark_allocate_change_input;

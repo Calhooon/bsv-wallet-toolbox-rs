@@ -8,6 +8,27 @@ use super::{
 #[path = "review_proofs.rs"]
 mod review_proofs;
 
+/// Check 1's rows, read on its write: every row not `failed` of a txid
+/// whose request reads `invalid`, kept where the word ends it
+/// (`word_scope::rows_a_word_ends_on`: an outgoing row; a received row only
+/// on evidence against its transaction).
+async fn invalid_word_rows_on(conn: &mut sqlx::SqliteConnection) -> Result<Vec<i64>> {
+    let candidates: Vec<(i64, String, bool)> = sqlx::query_as(
+        r#"
+        SELECT transaction_id, txid, is_outgoing FROM transactions
+        WHERE status != 'failed'
+          AND txid IN (
+            SELECT ptr.txid FROM proven_tx_reqs ptr
+            WHERE ptr.status = 'invalid'
+          )
+        ORDER BY transaction_id
+        "#,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    super::super::word_scope::rows_a_word_ends_on(conn, &candidates).await
+}
+
 impl StorageSqlx {
     pub(super) async fn review_status_for_user(
         &self,
@@ -212,21 +233,23 @@ impl StorageSqlx {
         // TS reference uses: WHERE status != 'failed' (includes 'completed').
         // If the proven_tx_req is 'invalid', the tx was never confirmed on-chain,
         // so even 'completed' transactions must be demoted to 'failed'.
+        // The request's word ends the rows of the user whose word it is
+        // (`word_scope`): the outgoing rows of the txid; a received row
+        // only on evidence against the transaction.
         let mut tx = self.write_tx().await?;
-        let failed_ids: Vec<i64> = sqlx::query_scalar(
-            r#"
-            UPDATE transactions SET status = 'failed', updated_at = ?
-            WHERE status != 'failed'
-              AND txid IN (
-                SELECT ptr.txid FROM proven_tx_reqs ptr
-                WHERE ptr.status = 'invalid'
-              )
-            RETURNING transaction_id
-            "#,
-        )
-        .bind(now)
-        .fetch_all(&mut *tx)
-        .await?;
+        let failed_ids = invalid_word_rows_on(&mut tx).await?;
+        for ids in failed_ids.chunks(400) {
+            let placeholders = vec!["?"; ids.len()].join(",");
+            let sql = format!(
+                "UPDATE transactions SET status = 'failed', updated_at = ? \
+                 WHERE transaction_id IN ({placeholders})"
+            );
+            let mut query = sqlx::query(&sql).bind(now);
+            for id in ids {
+                query = query.bind(id);
+            }
+            query.execute(&mut *tx).await?;
+        }
 
         // Void only the outputs created by transactions this pass just failed.
         // Keep both writes atomic, without releasing their consumed inputs.
