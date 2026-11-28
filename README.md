@@ -113,14 +113,21 @@ request that was never made. A host whose applications pay through the
 reference's SDK from its 4.1 should not serve them from 0.13.9 or earlier.
 
 From this line's next release the call is refused by name before anything is
-built or written (`Validation error: sendWith with no inputs and no outputs is
-refused unless acceptDelayedBroadcast is true: ...`): the payment stays
+built or written (`Validation error: createAction: sendWith with no inputs and
+no outputs is refused unless acceptDelayedBroadcast is true. The named
+transactions [...] were NOT sent by this call; ...`, naming at most three
+txids and the count of the rest): the payment stays
 `nosend`, nothing is posted and no fee is spent, but the payment is not made
 either, and it holds its coins until the application or the host releases it
 with `abortAction` (the wallet never aborts it). The same call with
 `acceptDelayedBroadcast` not said is refused the same way, as this line's
 default is `false`; with `acceptDelayedBroadcast: true` it is answered as on
-0.13.9. The 0.14 line's tree answers the call as the reference does (the named
+0.13.9, which on this line also builds and posts a change-only transaction of
+the wallet's own, with its fee, and queues the payment for the monitor. The
+same build reached through `signAction` (a deferred action with no inputs and
+no outputs of the caller's, signed naming the payment in `sendWith` without a
+delayed post) is refused the same way, and the deferred action stays signable
+and abortable. The 0.14 line's tree answers the call as the reference does (the named
 payment is sent by the call and answered `unproven`); no published prerelease
 carries that yet.
 

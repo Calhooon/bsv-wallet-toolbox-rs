@@ -18,7 +18,9 @@
 //! One in-memory store seeded with three proven change coins of the
 //! wallet's own, the real signer, a mock broadcaster that accepts; nothing
 //! touches the network. W3 and W4 pin what the base (0.13.9's tree, main
-//! 67b98d7a) printed for the same calls, which the guard leaves as it was.
+//! 67b98d7a) printed for the same calls, which the guard leaves as it was;
+//! W7 pins what main 9a53f497 printed for the sign door with an output. W6
+//! is the same build through `signAction`, W8 and W9 the refusal's text.
 
 #![cfg(feature = "sqlite")]
 

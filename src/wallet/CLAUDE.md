@@ -360,15 +360,16 @@ All check helpers return `Ok(())` if no permissions manager is set.
 
 ## Transaction Signing Flow
 
-### The create door's refusals ahead of the storage door
+### The create and sign doors' refusals ahead of the storage door
 
 Before the spend lock, the storage door or any write, `create_action_at` (both `create_action` and `create_action_offering`) refuses these by name; nothing is built, written, taken or posted:
 
 | Call | Answer |
 |------|--------|
 | empty or over-long originator | `validate_originator`'s refusal |
-| `sendWith` non-empty, no inputs, no outputs, `acceptDelayedBroadcast` `false` or not said (this line's default is `false`) | `refuse_send_with_alone`: `Error::ValidationError` (as `bsv_rs::Error::WalletError`, `Validation error: sendWith with no inputs and no outputs is refused unless acceptDelayedBroadcast is true: the named transactions [<txids>] were NOT sent; they are still reserved under their txids; ...`). The named transactions stay `nosend`; the wallet never aborts them. The reference payer's submit (`AuthFetch` from the SDK's 4.1); this line has no stored post of named transactions alone, the 0.14 line answers it as the reference does (`tests/send_with_alone_refused_tests.rs`) |
-| the same with `acceptDelayedBroadcast: true`; `sendWith` beside an input or an output | not refused here: a new action, as before |
+| `sendWith` non-empty, no inputs, no outputs, `acceptDelayedBroadcast` `false` or not said (this line's default is `false`) | `refuse_send_with_alone`: `Error::ValidationError` (as `bsv_rs::Error::WalletError`, `Validation error: createAction: sendWith with no inputs and no outputs is refused unless acceptDelayedBroadcast is true. The named transactions [<txids>] were NOT sent by this call; those that are your own unsent noSend transactions are still reserved under their txids. Ways out, by cost: (1) name them in sendWith beside a new action, which sends them with it at that action's own fee; (2) release one with abortAction, which frees its coins and voids it; (3) call again with acceptDelayedBroadcast: true, which on this line also builds a change-only transaction of the wallet's own, with its fee, and queues the named transactions for the monitor.`, built by `send_with_alone_refusal` for both doors; `<txids>` is at most three, then `and <n> more`). The named transactions stay `nosend`; the wallet never aborts them. The reference payer's submit (`AuthFetch` from the SDK's 4.1); this line has no stored post of named transactions alone, the 0.14 line answers it as the reference does (`tests/send_with_alone_refused_tests.rs`) |
+| the same with `acceptDelayedBroadcast: true`; `sendWith` beside an input or an output | not refused here: a new action, as before (with `acceptDelayedBroadcast: true` this line also builds a change-only transaction of the wallet's own, with its fee, and queues the named ones for the monitor) |
+| `signAction` on a cached deferred action whose create had no inputs and no outputs (`bare_deferred`), naming txids in `sendWith` (its own, or the create's) without a delayed post | `refuse_send_with_alone_at_sign`, ahead of the spend lock, any signature or write: the same text opening `signAction: sendWith on a deferred action with no inputs and no outputs of the caller's` and adding `The deferred action is as it was: sign it without sendWith or release it with abortAction.`; the deferred action stays cached, signable and abortable (`w6_the_sign_door_refuses_send_with_alone`). With an output of the caller's it is signed and sent as before (`w7_...`) |
 
 The storage door's own argument refusals (`validate_create_action_args`: description, labels, outputs, inputs) are the same class, `Error::ValidationError`.
 
