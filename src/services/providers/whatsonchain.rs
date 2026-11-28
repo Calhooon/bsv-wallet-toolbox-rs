@@ -13,7 +13,7 @@
 //! - Mainnet: `https://api.whatsonchain.com/v1/bsv/main`
 //! - Testnet: `https://api.whatsonchain.com/v1/bsv/test`
 
-use crate::services::providers::http_client::{self, Client};
+use crate::services::providers::http_client::{self, AnswerRead, Client};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -93,10 +93,10 @@ impl WhatsOnChain {
         };
 
         let timeout = config.timeout_secs.unwrap_or(30);
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout))
-            .build()
-            .map_err(|e| Error::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
+        let client = http_client::door_client(
+            Duration::from_secs(timeout),
+            http_client::TX_ANSWER_MAX_BYTES,
+        )?;
 
         // One gate per host and key in the process: a key is its own
         // budget, so the key's fingerprint (never the key) is in the name.
@@ -221,7 +221,7 @@ impl WhatsOnChain {
                 let hex_str = response
                     .text()
                     .await
-                    .map_err(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
+                    .or_door(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
 
                 let raw_tx = hex::decode(hex_str.trim())
                     .map_err(|e| Error::ValidationError(format!("Failed to decode hex: {}", e)))?;
@@ -274,7 +274,7 @@ impl WhatsOnChain {
                 let body = response
                     .text()
                     .await
-                    .map_err(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
+                    .or_door(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
 
                 if body.is_empty() {
                     // Unmined transaction
@@ -614,7 +614,7 @@ impl WhatsOnChain {
         let body = response
             .bytes()
             .await
-            .map_err(|e| Error::NetworkError(format!("UTXO response read failed: {}", e)))?;
+            .or_door(|e| Error::NetworkError(format!("UTXO response read failed: {}", e)))?;
         let data: WocUtxoStatusResponse = serde_json::from_slice(&body)
             .map_err(|e| Error::ServiceError(format!("Failed to parse UTXO response: {}", e)))?;
 
@@ -735,7 +735,7 @@ impl WhatsOnChain {
 
         match response.status() {
             StatusCode::OK => {
-                let body: serde_json::Value = response.json().await.map_err(|e| {
+                let body: serde_json::Value = response.json().await.or_door(|e| {
                     Error::ServiceError(format!("Failed to parse spent response: {}", e))
                 })?;
                 match body.get("txid").and_then(|t| t.as_str()) {
@@ -862,7 +862,7 @@ impl WhatsOnChain {
         response
             .json()
             .await
-            .map_err(|e| Error::ServiceError(format!("Failed to parse status response: {}", e)))
+            .or_door(|e| Error::ServiceError(format!("Failed to parse status response: {}", e)))
     }
 
     // =========================================================================
@@ -894,7 +894,7 @@ impl WhatsOnChain {
                 let data: WocScriptHistoryResponse = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
 
                 Ok(data
                     .result
@@ -938,7 +938,7 @@ impl WhatsOnChain {
                 let data: WocScriptHistoryResponse = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
 
                 Ok(data
                     .result
@@ -997,7 +997,7 @@ impl WhatsOnChain {
                 let data: WocBlockHeader = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse header: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse header: {}", e)))?;
 
                 Ok(Some(data.into_block_header()))
             }
@@ -1041,7 +1041,7 @@ impl WhatsOnChain {
         let data: WocExchangeRate = response
             .json()
             .await
-            .map_err(|e| Error::ServiceError(format!("Failed to parse exchange rate: {}", e)))?;
+            .or_door(|e| Error::ServiceError(format!("Failed to parse exchange rate: {}", e)))?;
 
         if data.currency != "USD" {
             return Err(Error::ServiceError(

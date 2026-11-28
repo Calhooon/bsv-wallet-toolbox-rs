@@ -179,3 +179,114 @@ mod headers {
         reads_whole_at_and_refuses_past(HEADER_ANSWER_MAX_BYTES).await;
     }
 }
+
+/// The explorers: `WhatsOnChain`, `Bitails`, `BananaBlocks`.
+mod explorers {
+    use super::*;
+
+    const TXID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    use crate::services::providers::http_client::TX_ANSWER_MAX_BYTES;
+    use crate::services::providers::{
+        BananaBlocks, Bitails, BitailsConfig, WhatsOnChain, WhatsOnChainConfig,
+    };
+    use crate::services::Chain;
+
+    fn woc(url: &str, secs: u64) -> WhatsOnChain {
+        WhatsOnChain::with_base_url_and_config(
+            Chain::Main,
+            url,
+            WhatsOnChainConfig {
+                timeout_secs: Some(secs),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn bitails(url: &str, secs: u64) -> Bitails {
+        Bitails::with_base_url_and_config(
+            Chain::Main,
+            url,
+            BitailsConfig {
+                timeout_secs: Some(secs),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn a_stalled_whatsonchain_returns_within_its_total_time() {
+        let l = listen(vec![Answer::Stall]).await;
+        let (r, took) = bounded(Duration::from_secs(10), woc(&l.url, 2).get_raw_tx(TXID)).await;
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert!(!matches!(&r, Ok(x) if x.raw_tx.is_some()), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_bitails_returns_within_its_total_time() {
+        let l = listen(vec![Answer::Stall]).await;
+        let (r, took) = bounded(Duration::from_secs(10), bitails(&l.url, 2).get_raw_tx(TXID)).await;
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert!(!matches!(&r, Ok(x) if x.raw_tx.is_some()), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_bananablocks_returns_within_its_total_time() {
+        let l = listen(vec![Answer::Stall]).await;
+        let bb = BananaBlocks::with_base_unshared_timeout(&l.url, Some(2));
+        let (r, took) = bounded(Duration::from_secs(10), bb.get_raw_tx(TXID)).await;
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert!(!matches!(&r, Ok(x) if x.raw_tx.is_some()), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn an_endless_whatsonchain_answer_stops_at_its_bound() {
+        let l = listen(vec![Answer::Endless]).await;
+        let (r, _) = bounded(Duration::from_secs(60), woc(&l.url, 50).get_raw_tx(TXID)).await;
+        stopped_at(&l, TX_ANSWER_MAX_BYTES, &format!("{r:?}"));
+    }
+
+    #[tokio::test]
+    async fn an_endless_bitails_answer_stops_at_its_bound() {
+        let l = listen(vec![Answer::Endless]).await;
+        let (r, _) = bounded(
+            Duration::from_secs(60),
+            bitails(&l.url, 50).get_raw_tx(TXID),
+        )
+        .await;
+        stopped_at(&l, TX_ANSWER_MAX_BYTES, &format!("{r:?}"));
+    }
+
+    #[tokio::test]
+    async fn an_endless_bananablocks_answer_stops_at_its_bound() {
+        let l = listen(vec![Answer::Endless]).await;
+        let bb = BananaBlocks::with_base_unshared_timeout(&l.url, Some(50));
+        let (r, _) = bounded(Duration::from_secs(60), bb.get_raw_tx(TXID)).await;
+        stopped_at(&l, TX_ANSWER_MAX_BYTES, &format!("{r:?}"));
+    }
+
+    #[tokio::test]
+    async fn an_explorer_answer_at_its_bound_is_read_whole() {
+        reads_whole_at_and_refuses_past(TX_ANSWER_MAX_BYTES).await;
+    }
+
+    /// The largest honest explorer answer: one transaction of the reference's
+    /// largest size, as hex, through `WhatsOnChain`'s raw-tx read.
+    #[tokio::test]
+    async fn the_largest_transaction_passes_whatsonchain() {
+        // A transaction: version, no input, one output with a script of most
+        // of 32 MiB, lock time.
+        let script_len: usize = 32 * 1024 * 1024 - 64;
+        let mut raw = vec![1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe];
+        raw.extend_from_slice(&u32::try_from(script_len).unwrap().to_le_bytes());
+        raw.extend(std::iter::repeat_n(0x51u8, script_len));
+        raw.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(raw.len() * 2 <= TX_ANSWER_MAX_BYTES);
+        let txid = crate::services::traits::txid_from_raw_tx(&raw);
+        let l = listen(vec![Answer::Body(StdArc::new(
+            hex::encode(&raw).into_bytes(),
+        ))])
+        .await;
+        let (r, _) = bounded(Duration::from_secs(60), woc(&l.url, 50).get_raw_tx(&txid)).await;
+        assert_eq!(r.unwrap().raw_tx.map(|t| t.len()), Some(raw.len()));
+    }
+}
