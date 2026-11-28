@@ -1,12 +1,21 @@
-//! A competitor's checked proof ends every row of its txid: the
-//! descendants of every ended row are walked.
+//! A competitor's checked proof ends every row of its txid, once a
+//! request: the descendants of every ended row are walked, and the proof
+//! task asks for the competitor and retires the request once, however many
+//! users hold a row of the txid.
 //!
 //! The store of `held_receipt_scope_tests`.
 
+use std::sync::Arc;
+
 use chrono::Utc;
 
-use super::held_receipt_scope_tests::{output, read, row, seed, write_word, Cell, Writer};
-use super::reorg_tests::txid_of;
+use super::held_receipt_scope_tests::{
+    output, r_raw, read, row, seed, write_word, Cell, Writer, HEIGHT,
+};
+use super::reorg_tests::{single_leaf_bump, txid_of};
+use super::void_lineage_tests::serving;
+use crate::services::WalletServices;
+use crate::storage::MonitorStorage;
 
 /// Y's own child G, spending Y's payment: its row, output and request.
 async fn y_child(c: &Cell) -> String {
@@ -69,5 +78,47 @@ async fn a_checked_proof_walks_the_descendants_of_every_ended_row() {
         ),
         ("failed".to_string(), "invalid".to_string()),
         "Y's child is retired with the row it spends"
+    );
+}
+
+/// Two rows of one txid (X's action and Y's receipt): the proof task asks
+/// for the competitor once and retires the request once.
+#[tokio::test]
+async fn the_ask_retires_once_a_request() {
+    let c = seed("sending").await;
+    let r = txid_of(&r_raw());
+    super::void_lineage_tests::apply_rejected_naming(&c.s, &c.p, &r).await;
+    let mock = Arc::new(
+        super::checked_mark_tests::status_unknown(serving(
+            &r_raw(),
+            Some(single_leaf_bump(HEIGHT, &r)),
+        ))
+        .build(),
+    );
+    crate::storage::traits::WalletStorageProvider::set_services(
+        &c.s,
+        mock.clone() as Arc<dyn WalletServices>,
+    );
+    let before: i64 = sqlx::query_scalar("SELECT attempts FROM proven_tx_reqs WHERE txid = ?")
+        .bind(&c.p)
+        .fetch_one(c.s.pool())
+        .await
+        .unwrap();
+    let out = c.s.synchronize_transaction_statuses().await.unwrap();
+    let words = out.iter().filter(|t| t.txid == c.p).count();
+    let after: i64 = sqlx::query_scalar("SELECT attempts FROM proven_tx_reqs WHERE txid = ?")
+        .bind(&c.p)
+        .fetch_one(c.s.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        (words, mock.call_count("get_raw_tx"), after - before),
+        (1, 1, 0),
+        "one word, one ask and the attempts as the request held them"
+    );
+    let got = read(&c).await;
+    assert_eq!(
+        (got.x_row.as_str(), got.y_row.as_str()),
+        ("failed", "failed")
     );
 }

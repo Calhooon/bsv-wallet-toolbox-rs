@@ -230,11 +230,16 @@ impl StorageSqlx {
     /// and proof. A competitor proven to spend one of our inputs writes the
     /// double-spend word through the release rule (`retire_undeliverable_tx`
     /// with `doubleSpend`); anything less writes nothing and the competitor
-    /// stays queued for the next pass.
+    /// stays queued for the next pass. One ask and one retire a request,
+    /// however many users hold a row of its txid (the retire ends every
+    /// row of it).
     pub(super) async fn ask_queued_competitor_proofs(&self) -> Result<Vec<TxSynchronizedStatus>> {
         let rows: Vec<QueuedCompetitorRow> = sqlx::query_as(
-            "SELECT r.proven_tx_req_id, r.txid, r.attempts, r.history, COALESCE(r.raw_tx, t.raw_tx) \
-             FROM proven_tx_reqs r LEFT JOIN transactions t ON t.txid = r.txid \
+            "SELECT r.proven_tx_req_id, r.txid, r.attempts, r.history, \
+                    COALESCE(r.raw_tx, (SELECT t.raw_tx FROM transactions t \
+                                        WHERE t.txid = r.txid AND t.raw_tx IS NOT NULL \
+                                        ORDER BY t.transaction_id LIMIT 1)) \
+             FROM proven_tx_reqs r \
              WHERE r.status IN ('unsent', 'sending', 'unmined', 'unknown', 'callback', 'unconfirmed') \
                AND r.history LIKE '%\"competitorsQueued\"%'",
         )
