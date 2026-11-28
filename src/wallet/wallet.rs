@@ -468,7 +468,8 @@ where
     /// when the sign options name none) without a delayed post, is refused
     /// by name, as the create door refuses the same build. The deferred
     /// action stays cached, signable and abortable. A reference that is
-    /// not cached is left to the sign path's own answer.
+    /// not cached, past its time, aborted or failed at signing (each leaves
+    /// `bare_deferred`) is left to the sign path's own answer.
     async fn refuse_send_with_alone_at_sign(&self, args: &SignActionArgs) -> bsv_rs::Result<()> {
         if !self.bare_deferred.read().await.contains(&args.reference) {
             return Ok(());
@@ -482,6 +483,10 @@ where
         else {
             return Ok(());
         };
+        let cutoff = Utc::now() - chrono::Duration::seconds(PENDING_TRANSACTION_TTL_SECS);
+        if pending.created_at < cutoff {
+            return Ok(());
+        }
         let options = args.options.as_ref();
         let delayed = options
             .and_then(|o| o.accept_delayed_broadcast)
@@ -1930,6 +1935,7 @@ where
             // Remove expired transaction from cache
             let mut cache = self.pending_transactions.write().await;
             cache.remove(&reference);
+            self.bare_deferred.write().await.remove(&reference);
             return Err(bsv_rs::Error::WalletError(
                 "Pending transaction has expired".to_string(),
             ));
@@ -1970,6 +1976,7 @@ where
             Ok(tx) => tx,
             Err(e) => {
                 // Signing failed - abort the transaction to release locked UTXOs
+                self.bare_deferred.write().await.remove(&reference);
                 tracing::error!(reference = %reference, error = %e, "Signing failed, aborting transaction to release UTXOs");
                 let auth = self.auth();
                 if let Err(abort_err) = self
@@ -2037,6 +2044,7 @@ where
             Err(e @ Error::StoreBusy { .. }) => return Err(e.into()),
             Err(e) => {
                 // Processing failed - abort the transaction to release locked UTXOs
+                self.bare_deferred.write().await.remove(&reference);
                 tracing::error!(reference = %reference, error = %e, "Process action failed, aborting transaction to release UTXOs");
                 if let Err(abort_err) = self
                     .storage
@@ -2255,6 +2263,11 @@ where
         let _spend_guard = self.spend_lock.lock().await;
 
         let auth = self.auth();
+
+        // An aborted deferred action leaves the sign door's set whatever the
+        // store answers, so a later signAction of it gets the sign path's
+        // own answer, never the sendWith-alone refusal.
+        self.bare_deferred.write().await.remove(&args.reference);
 
         let result = self.storage.abort_action(&auth, args).await?;
 
