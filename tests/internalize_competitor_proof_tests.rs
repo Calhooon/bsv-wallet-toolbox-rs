@@ -19,7 +19,7 @@
 //!
 //! The competitor is held as the store holds one: the payer's output row
 //! whose `spent_by` names the competitor, the competitor's bytes and its
-//! merkle path in `proven_txs`. Real SQLite, a mock broadcaster that takes
+//! merkle path in `proven_txs` with this store's root-check record. Real SQLite, a mock broadcaster that takes
 //! the transaction, a status source that knows it, a tracker that refutes
 //! the competitor's root after the reorg; nothing is sent.
 
@@ -243,6 +243,17 @@ async fn hold_competitor(
     .bind(competitor_root)
     .bind(path.to_binary().unwrap())
     .bind(competitor.to_binary())
+    .execute(store.writer())
+    .await
+    .unwrap();
+    // This store's root-check record for it: a proof this store checked.
+    sqlx::query(
+        "INSERT INTO proof_root_checks (txid, height, merkle_root, checked_at) \
+         VALUES (?, ?, lower(?), CURRENT_TIMESTAMP)",
+    )
+    .bind(&competitor_txid)
+    .bind(COMPETITOR_HEIGHT)
+    .bind(competitor_root)
     .execute(store.writer())
     .await
     .unwrap();
