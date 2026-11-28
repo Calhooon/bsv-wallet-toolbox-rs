@@ -261,7 +261,12 @@ write (neither the writer connection nor a write transaction) is held across
 a `post_beef` call on any road, so a `WalletServices` that takes `write_tx()`
 on a clone of the same `StorageSqlx` before it passes a post on does not wait
 on the door that posts. It must use a clone of the one store, never a second
-open of the file. Witnesses: `tests/post_holds_no_write_tests.rs`.
+open of the file, and take the writer only through `write_tx()` on that
+clone: a `WalletStorageManager`'s own lock is held across the stored post,
+the internalize post, the send-waiting pass and the lost-proof announce, and
+the wallet's spend lock across `signAction`'s and `internalizeAction`'s
+posts, so a host's `post_beef` neither goes through the manager nor calls a
+`Wallet` door. Witnesses: `tests/post_holds_no_write_tests.rs`.
 
 ### StorageClient (feature: `remote`)
 

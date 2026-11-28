@@ -161,12 +161,18 @@ pub struct Services {
 No store write is held across a `post_beef` call on any road (`createAction`,
 `signAction`, `internalizeAction`'s held body, the stored-action door, the
 send-waiting task, the lost-proof announce): every door commits before it
-posts and builds its BEEF on a reader. A host's `WalletServices` may therefore
+posts; the stored post, the send-waiting pass and the lost-proof announce
+rebuild their BEEF on a reader. A host's `WalletServices` may therefore
 write to the store through the store's writer (`write_tx()`) before it passes
 a post on. It must take the writer through a clone of the same `StorageSqlx`
 it gave the `Wallet` and the `Monitor`, and must not open the file a second
-time. Witnesses: `tests/post_holds_no_write_tests.rs` (the acquire under a
-tenth of `STORE_BUSY_CEILING_MS`, one witness a road).
+time. It takes the writer only through `write_tx()` on that clone: not
+through a `WalletStorageManager`, whose own lock (`run_as_writer`) is held
+across the stored post, the internalize post, the send-waiting pass and the
+lost-proof announce; and it never calls a `Wallet` door from inside
+`post_beef`, since the wallet's spend lock is held across `signAction`'s and
+`internalizeAction`'s posts. Witnesses: `tests/post_holds_no_write_tests.rs`
+(the acquire under a tenth of `STORE_BUSY_CEILING_MS`, one witness a road).
 
 ### WalletServices Trait (traits.rs:117)
 
