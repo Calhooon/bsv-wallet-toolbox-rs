@@ -428,7 +428,13 @@
   host's services object may therefore write to the store through the
   store's writer (`write_tx()`) before it passes a post on; it must take
   the writer through a clone of the same `StorageSqlx` and must not open
-  the file a second time. Witnesses: `tests/post_holds_no_write_tests.rs`.
+  the file a second time. It takes the writer only through `write_tx()` on
+  that clone: not through a `WalletStorageManager`, whose own lock is held
+  across the stored post, the internalize post, the send-waiting pass and
+  the lost-proof announce; and it never calls a `Wallet` door from inside
+  `post_beef`, since the wallet's spend lock is held across `signAction`'s
+  and `internalizeAction`'s posts. Witnesses:
+  `tests/post_holds_no_write_tests.rs`.
 - A store shared by several users: a held receipt is ended by evidence
   about its transaction, not by another row's request word.
 
