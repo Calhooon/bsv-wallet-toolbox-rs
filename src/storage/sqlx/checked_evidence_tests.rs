@@ -1,7 +1,8 @@
 //! Evidence is a proof this store checked: its root confirmed by this
-//! store's chain tracker and recorded. A proof row merely stored, a
-//! provider's word, and a `spent-proven` check whose recorded spender is
-//! the transaction itself are not evidence against it.
+//! store's chain tracker and recorded. Beside a word, a proof row this
+//! store has not checked, and a `spent-proven` check whose recorded spender
+//! is the transaction itself, are not evidence against it; a take beside a
+//! stored competitor proof asks the tracker of its root.
 //!
 //! The store of `held_receipt_scope_tests`: X's action P spending X's coin
 //! C (the coinbase's output 0), Y's received row of P held `sending`, R
