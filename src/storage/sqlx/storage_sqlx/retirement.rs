@@ -47,6 +47,11 @@ struct RetireRows<'a> {
     /// The operation the accepting-word guard names, when the caller retires
     /// only a transaction no instance accepted.
     guard: Option<&'a str>,
+    /// The retire stands on evidence about the transaction (a competitor's
+    /// checked proof): every row of the txid ends. Otherwise it is a word
+    /// and ends the outgoing rows alone, a received row only where the
+    /// store holds evidence on record (`word_scope`).
+    evidence: bool,
     now: chrono::DateTime<chrono::Utc>,
 }
 
@@ -134,6 +139,7 @@ impl StorageSqlx {
             attempts,
             req_status,
             guard,
+            evidence: matches!(basis, RetireBasis::CompetitorProven { .. }),
             now,
         };
         let Some((transaction_id, inputs)) = self.retire_rows(&rows).await? else {
@@ -208,33 +214,32 @@ impl StorageSqlx {
             .bind(rows.proven_tx_req_id)
             .execute(&mut *db_tx)
             .await?;
-        let tx_row: Option<(i64,)> = sqlx::query_as(
-            "SELECT transaction_id FROM transactions WHERE txid = ? AND status IN ('sending', 'unproven')",
-        )
-        .bind(rows.txid)
-        .fetch_optional(&mut *db_tx)
-        .await?;
-        let Some((transaction_id,)) = tx_row else {
+        let ended = retired_rows_on(&mut db_tx, rows.txid, rows.evidence).await?;
+        let [transaction_id, ..] = ended[..] else {
             super::commit(db_tx).await?;
             return Ok(None);
         };
 
-        // Its own outputs never fund anything again.
-        sqlx::query(
-            "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
-        )
-        .bind(rows.now)
-        .bind(transaction_id)
-        .execute(&mut *db_tx)
-        .await?;
+        // Their own outputs never fund anything again.
+        for id in &ended {
+            sqlx::query(
+                "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
+            )
+            .bind(rows.now)
+            .bind(id)
+            .execute(&mut *db_tx)
+            .await?;
+        }
         let inputs = retire_inputs(&mut db_tx, transaction_id).await?;
-        sqlx::query(
-            "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-        )
-        .bind(rows.now)
-        .bind(transaction_id)
-        .execute(&mut *db_tx)
-        .await?;
+        for id in &ended {
+            sqlx::query(
+                "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+            )
+            .bind(rows.now)
+            .bind(id)
+            .execute(&mut *db_tx)
+            .await?;
+        }
         super::commit(db_tx).await?;
         Ok(Some((transaction_id, inputs)))
     }
@@ -364,6 +369,31 @@ impl StorageSqlx {
     }
 }
 
+/// The rows of `txid` a retire ends, read on its write transaction: every
+/// `sending` or `unproven` row on evidence (`evidence`, or evidence on
+/// record), else the outgoing ones alone (a word ends the rows of the user
+/// whose word it is, `word_scope`). Ordered outgoing before received: the
+/// head of the list is the row whose inputs and descendants the retire
+/// reads.
+async fn retired_rows_on(
+    conn: &mut sqlx::SqliteConnection,
+    txid: &str,
+    evidence: bool,
+) -> Result<Vec<i64>> {
+    let candidates: Vec<(i64, String, bool)> = sqlx::query_as(
+        "SELECT transaction_id, txid, is_outgoing FROM transactions \
+         WHERE txid = ? AND status IN ('sending', 'unproven') \
+         ORDER BY is_outgoing DESC, transaction_id",
+    )
+    .bind(txid)
+    .fetch_all(&mut *conn)
+    .await?;
+    if evidence {
+        return Ok(candidates.into_iter().map(|(id, ..)| id).collect());
+    }
+    super::super::word_scope::rows_a_word_ends_on(conn, &candidates).await
+}
+
 /// The inputs a retired transaction spends, read on its write transaction.
 async fn retire_inputs(
     conn: &mut sqlx::SqliteConnection,
@@ -418,32 +448,38 @@ impl StorageSqlx {
         .execute(&mut *self.writer_conn().await?)
         .await?;
 
-        let tx_result = sqlx::query(
-            "UPDATE transactions SET status = 'failed', updated_at = ? \
-             WHERE txid = ? AND status IN ('sending', 'unproven')",
-        )
-        .bind(now)
-        .bind(txid)
-        .execute(&mut *self.writer_conn().await?)
-        .await?;
+        // A broadcaster's word ends the rows of the user whose post it
+        // answers (the outgoing rows), a received row only on evidence on
+        // record (`word_scope`).
+        let ended = {
+            let mut tx = self.write_tx().await?;
+            let ended = retired_rows_on(&mut tx, txid, false).await?;
+            for id in &ended {
+                sqlx::query(
+                    "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+                )
+                .bind(now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                // Its outputs never fund anything again: change chained on
+                // a rejected transaction is how a wallet poisons itself
+                // (2026-09-02). The inputs and the descendants are released
+                // / retired by the reconcile sweep, which has the services
+                // for the per-input chain verification.
+                sqlx::query(
+                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ?",
+                )
+                .bind(now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            super::commit(tx).await?;
+            ended.len()
+        };
 
-        if tx_result.rows_affected() > 0 {
-            // Its outputs never fund anything again: change chained on a
-            // rejected transaction is how a wallet poisons itself
-            // (2026-09-02). The inputs and the descendants are released /
-            // retired by the reconcile sweep, which has the services for
-            // the per-input chain verification.
-            sqlx::query(
-                "UPDATE outputs SET spendable = 0, updated_at = ? \
-                 WHERE transaction_id IN (SELECT transaction_id FROM transactions WHERE txid = ?)",
-            )
-            .bind(now)
-            .bind(txid)
-            .execute(&mut *self.writer_conn().await?)
-            .await?;
-        }
-
-        let updated = req_result.rows_affected() > 0 || tx_result.rows_affected() > 0;
+        let updated = req_result.rows_affected() > 0 || ended > 0;
         if updated {
             // No provider skips it again.
             self.mark_broadcast_rejected_quiet(txid).await;

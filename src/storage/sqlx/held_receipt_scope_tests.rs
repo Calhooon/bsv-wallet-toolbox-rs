@@ -38,7 +38,6 @@ use crate::storage::MonitorStorage;
 use crate::AuthId;
 
 /// The request's writer.
-#[allow(dead_code)] // the retire write's cells join with its change
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Writer {
     /// X's own abort of its `sending` action (the request `invalid`).
@@ -52,15 +51,19 @@ enum Writer {
 }
 
 /// The writer that acts next.
-#[allow(dead_code)] // the retire write's cells join with its change
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Next {
     Review,
     Retire,
 }
 
-const WRITERS: [Writer; 3] = [Writer::Abort, Writer::Retire, Writer::Competitor];
-const NEXTS: [Next; 1] = [Next::Review];
+const WRITERS: [Writer; 4] = [
+    Writer::Abort,
+    Writer::Refusal,
+    Writer::Retire,
+    Writer::Competitor,
+];
+const NEXTS: [Next; 2] = [Next::Review, Next::Retire];
 const WORDS: [&str; 2] = ["sending", "unproven"];
 const PAYMENT: i64 = 600;
 const HEIGHT: u32 = 900;
@@ -439,7 +442,7 @@ async fn a_word_ends_only_the_senders_rows_and_evidence_ends_every_row() {
 #[tokio::test]
 async fn a_held_receipt_beside_a_word_ends_on_its_proof_or_a_competitors() {
     let mut wrong = Vec::new();
-    for writer in [Writer::Abort, Writer::Retire] {
+    for writer in [Writer::Abort, Writer::Refusal, Writer::Retire] {
         for word in WORDS {
             // Its proof arrives.
             let c = seed(word).await;
