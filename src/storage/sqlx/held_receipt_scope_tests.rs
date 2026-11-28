@@ -444,23 +444,8 @@ async fn a_held_receipt_beside_a_word_ends_on_its_proof_or_a_competitors() {
                 continue;
             }
             MonitorStorage::review_status(&c.s).await.unwrap();
-            let (z, zb) = user(&c.s, &"c".repeat(66)).await;
-            let coinbase = hex::decode(COINBASE_HEX).unwrap();
-            let z_cb = row(&c.s, &z, COINBASE_TXID, "completed", &coinbase, false).await;
+            z_spends_c(&c.s, "unproven").await;
             let r = txid_of(&r_raw());
-            let z_r = row(&c.s, &z, &r, "unproven", &r_raw(), true).await;
-            output(
-                &c.s,
-                &z,
-                zb,
-                z_cb,
-                COINBASE_TXID,
-                0,
-                5000,
-                "change",
-                (false, Some(z_r)),
-            )
-            .await;
             let bump = single_leaf_bump(HEIGHT, &r);
             c.s.ingest_merkle_proof(&r, &bump, HEIGHT, &"0".repeat(64), None)
                 .await
@@ -475,4 +460,25 @@ async fn a_held_receipt_beside_a_word_ends_on_its_proof_or_a_competitors() {
         }
     }
     assert!(wrong.is_empty(), "ends off the rule:\n{}", wrong.join("\n"));
+}
+
+/// A third user Z's R, spending C beside P: its rows and output.
+pub(super) async fn z_spends_c(s: &StorageSqlx, status: &str) -> i64 {
+    let (z, zb) = user(s, &"c".repeat(66)).await;
+    let coinbase = hex::decode(COINBASE_HEX).unwrap();
+    let z_cb = row(s, &z, COINBASE_TXID, "completed", &coinbase, false).await;
+    let z_r = row(s, &z, &txid_of(&r_raw()), status, &r_raw(), true).await;
+    output(
+        s,
+        &z,
+        zb,
+        z_cb,
+        COINBASE_TXID,
+        0,
+        5000,
+        "change",
+        (false, Some(z_r)),
+    )
+    .await;
+    z_r
 }

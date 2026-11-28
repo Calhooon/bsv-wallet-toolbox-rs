@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use bsv_rs::transaction::{Beef, MockChainTracker};
+use bsv_rs::transaction::MockChainTracker;
 use chrono::{Duration, Utc};
 
 use super::reorg_tests::{
@@ -38,7 +38,7 @@ const NOBODY: &str = "1111111111111111111111111111111111111111111111111111111111
 pub(super) fn spending(inputs: &[(&str, u32)], values: &[u64]) -> Vec<u8> {
     let mut raw = Vec::new();
     raw.extend_from_slice(&1u32.to_le_bytes());
-    raw.push(inputs.len() as u8);
+    raw.push(u8::try_from(inputs.len()).unwrap());
     for (txid, vout) in inputs {
         let mut prev = hex::decode(txid).unwrap();
         prev.reverse();
@@ -47,7 +47,7 @@ pub(super) fn spending(inputs: &[(&str, u32)], values: &[u64]) -> Vec<u8> {
         raw.push(0);
         raw.extend_from_slice(&0xffff_ffffu32.to_le_bytes());
     }
-    raw.push(values.len() as u8);
+    raw.push(u8::try_from(values.len()).unwrap());
     for value in values {
         raw.extend_from_slice(&value.to_le_bytes());
         raw.push(0);
@@ -123,7 +123,7 @@ async fn out_row(
     spent_by: Option<i64>,
 ) -> i64 {
     let old = Utc::now() - Duration::days(2);
-    sqlx::query_scalar(
+    let query = sqlx::query_scalar(
         "INSERT INTO outputs (user_id, transaction_id, spendable, change, vout, satoshis, provided_by, purpose, type, txid, spent_by, locking_script, created_at, updated_at) \
          VALUES (?1, ?2, ?3, 1, ?4, 1000, 'storage', 'change', 'P2PKH', ?5, ?6, x'51', ?7, ?7) RETURNING output_id",
     )
@@ -133,29 +133,13 @@ async fn out_row(
     .bind(vout)
     .bind(txid)
     .bind(spent_by)
-    .bind(old)
-    .fetch_one(s.writer())
-    .await
-    .unwrap()
+    .bind(old);
+    query.fetch_one(s.writer()).await.unwrap()
 }
 
 async fn req_row(s: &StorageSqlx, raw: &[u8]) {
     let old = Utc::now() - Duration::days(2);
-    let mut beef = Beef::new();
-    beef.merge_raw_tx(hex::decode(COINBASE_HEX).unwrap(), None)
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, input_beef, created_at, updated_at) \
-         VALUES (?, 'unsent', 0, '{}', 0, '{}', ?, ?, ?, ?)",
-    )
-    .bind(txid_of(raw))
-    .bind(raw)
-    .bind(beef.to_binary().unwrap())
-    .bind(old)
-    .bind(old)
-    .execute(s.writer())
-    .await
-    .unwrap();
+    super::reorg_tests::insert_req(s, &txid_of(raw), raw, "unsent", 0, None, old).await;
 }
 
 /// The services the proof task asks: `raw`'s bytes and a proof of it at
@@ -192,17 +176,17 @@ async fn seed() -> Store {
     let coinbase = hex::decode(COINBASE_HEX).unwrap();
     let cb = tx_row(&s, user_id, &coinbase, "completed").await;
     let ot = tx_row(&s, user_id, &ot_raw(), "completed").await;
-    let r = tx_row(&s, user_id, &r_raw(), "sending").await;
-    let d = tx_row(&s, user_id, &d_raw(), "sending").await;
-    let e = tx_row(&s, user_id, &e_raw(), "sending").await;
-    let f = tx_row(&s, user_id, &f_raw(), "sending").await;
-    out_row(&s, user_id, cb, COINBASE_TXID, 0, Some(r)).await;
-    let o = out_row(&s, user_id, ot, &txid_of(&ot_raw()), 0, Some(d)).await;
-    out_row(&s, user_id, r, &txid_of(&r_raw()), 0, Some(d)).await;
-    out_row(&s, user_id, r, &txid_of(&r_raw()), 1, Some(e)).await;
-    out_row(&s, user_id, d, &txid_of(&d_raw()), 0, Some(f)).await;
-    out_row(&s, user_id, e, &txid_of(&e_raw()), 0, None).await;
-    out_row(&s, user_id, f, &txid_of(&f_raw()), 0, None).await;
+    let r_row = tx_row(&s, user_id, &r_raw(), "sending").await;
+    let d_row = tx_row(&s, user_id, &d_raw(), "sending").await;
+    let e_row = tx_row(&s, user_id, &e_raw(), "sending").await;
+    let f_row = tx_row(&s, user_id, &f_raw(), "sending").await;
+    out_row(&s, user_id, cb, COINBASE_TXID, 0, Some(r_row)).await;
+    let o = out_row(&s, user_id, ot, &txid_of(&ot_raw()), 0, Some(d_row)).await;
+    out_row(&s, user_id, r_row, &txid_of(&r_raw()), 0, Some(d_row)).await;
+    out_row(&s, user_id, r_row, &txid_of(&r_raw()), 1, Some(e_row)).await;
+    out_row(&s, user_id, d_row, &txid_of(&d_raw()), 0, Some(f_row)).await;
+    out_row(&s, user_id, e_row, &txid_of(&e_raw()), 0, None).await;
+    out_row(&s, user_id, f_row, &txid_of(&f_raw()), 0, None).await;
     for raw in [r_raw(), d_raw(), e_raw(), f_raw()] {
         req_row(&s, &raw).await;
     }
@@ -213,7 +197,7 @@ async fn seed() -> Store {
         e: txid_of(&e_raw()),
         f: txid_of(&f_raw()),
         o,
-        d_row: d,
+        d_row,
     }
 }
 
@@ -261,16 +245,18 @@ async fn retire_r(st: &Store, how: RetireR) {
 }
 
 pub(super) async fn verdict(s: &StorageSqlx, output_id: i64) -> Option<String> {
-    sqlx::query_scalar("SELECT last_verdict FROM locked_input_checks WHERE output_id = ?")
+    let sql = "SELECT last_verdict FROM locked_input_checks WHERE output_id = ?";
+    let row: Option<(Option<String>,)> = sqlx::query_as(sql)
         .bind(output_id)
         .fetch_optional(s.pool())
         .await
-        .unwrap()
-        .flatten()
+        .unwrap();
+    row.and_then(|(v,)| v)
 }
 
 pub(super) async fn coin(s: &StorageSqlx, output_id: i64) -> (bool, Option<i64>) {
-    sqlx::query_as("SELECT spendable, spent_by FROM outputs WHERE output_id = ?")
+    let sql = "SELECT spendable, spent_by FROM outputs WHERE output_id = ?";
+    sqlx::query_as(sql)
         .bind(output_id)
         .fetch_one(s.pool())
         .await
@@ -278,19 +264,21 @@ pub(super) async fn coin(s: &StorageSqlx, output_id: i64) -> (bool, Option<i64>)
 }
 
 pub(super) async fn req_word(s: &StorageSqlx, txid: &str) -> String {
-    sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
-        .bind(txid)
-        .fetch_one(s.pool())
-        .await
-        .unwrap()
+    word_of(s, "proven_tx_reqs", txid).await
 }
 
 pub(super) async fn tx_word(s: &StorageSqlx, txid: &str) -> String {
-    sqlx::query_scalar("SELECT status FROM transactions WHERE txid = ?")
+    word_of(s, "transactions", txid).await
+}
+
+async fn word_of(s: &StorageSqlx, table: &str, txid: &str) -> String {
+    let sql = format!("SELECT status FROM {table} WHERE txid = ?");
+    let (word,): (String,) = sqlx::query_as(&sql)
         .bind(txid)
         .fetch_one(s.pool())
         .await
-        .unwrap()
+        .unwrap();
+    word
 }
 
 /// O's check row and D's request: (verdict, attempts, next check), (word,
