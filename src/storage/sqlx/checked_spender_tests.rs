@@ -6,16 +6,22 @@
 //! C (the coinbase's output 0), Y's received row of P, R another spend of
 //! C, the competitor whose checked proof the proof task's ask keeps.
 
+use std::sync::Arc;
+
+use bsv_rs::transaction::MockChainTracker;
 use chrono::Utc;
 
 use super::checked_evidence_tests::take;
 use super::checked_mark_tests::spending;
 use super::competitor_proof::TakeApplied;
 use super::held_receipt_scope_tests::{
-    output, p_raw, row, seed, user, write_word, Cell, Writer, PAYMENT,
+    output, p_raw, row, seed, user, write_word, Cell, Writer, HEIGHT, PAYMENT,
 };
-use super::reorg_tests::{txid_of, COINBASE_TXID};
+use super::reorg_tests::{single_leaf_bump, txid_of, COINBASE_TXID};
+use super::void_lineage_tests::{apply_rejected_naming, serving};
+use crate::services::WalletServices;
 use crate::storage::traits::PurgeParams;
+use crate::storage::traits::WalletStorageProvider;
 use crate::storage::MonitorStorage;
 
 /// Q: a third spend of C, R's and P's rival.
@@ -134,4 +140,48 @@ async fn a_second_spender_of_a_marked_outpoint_ends_on_the_evidence() {
         "failed",
         "R's checked proof spends Q's input"
     );
+}
+
+/// A coin of nobody's that P does not spend.
+const ELSEWHERE: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+/// P's request carries T's bytes (T spends ELSEWHERE, not C); K, queued as
+/// P's competitor, spends ELSEWHERE and its proof checks. The ask reads P's
+/// inputs from bytes that hash to P: K spends none of them, and no row of P
+/// is ended.
+#[tokio::test]
+async fn the_ask_reads_our_inputs_from_bytes_that_hash_to_our_txid() {
+    let c = seed("sending").await;
+    let t_raw = spending(&[(ELSEWHERE, 0)], &[555]);
+    let k_raw = spending(&[(ELSEWHERE, 0)], &[777]);
+    let k = txid_of(&k_raw);
+    sqlx::query("UPDATE proven_tx_reqs SET raw_tx = ? WHERE txid = ?")
+        .bind(&t_raw)
+        .bind(&c.p)
+        .execute(c.s.writer())
+        .await
+        .unwrap();
+    let mut tracker = MockChainTracker::new(1000);
+    tracker.add_root(HEIGHT, k.clone());
+    c.s.set_chain_tracker(Arc::new(tracker)).await;
+    let services: Arc<dyn WalletServices> =
+        Arc::new(serving(&k_raw, Some(single_leaf_bump(HEIGHT, &k))).build());
+    WalletStorageProvider::set_services(&c.s, services);
+
+    apply_rejected_naming(&c.s, &c.p, &k).await;
+    c.s.synchronize_transaction_statuses().await.unwrap();
+    assert_eq!(
+        (
+            status_of(&c, c.x_row).await.as_str(),
+            status_of(&c, c.y_row).await.as_str()
+        ),
+        ("sending", "sending"),
+        "K spends none of P's inputs"
+    );
+    let word: String = sqlx::query_scalar("SELECT status FROM proven_tx_reqs WHERE txid = ?")
+        .bind(&c.p)
+        .fetch_one(c.s.pool())
+        .await
+        .unwrap();
+    assert_ne!(word, "doubleSpend");
 }

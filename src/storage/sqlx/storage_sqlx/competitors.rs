@@ -10,7 +10,7 @@ const COMPETITORS_QUEUED: &str = "competitorsQueued";
 
 /// A request with competitors queued: its id, txid, attempts, history and
 /// the raw bytes of our transaction.
-type QueuedCompetitorRow = (i64, String, i64, String, Option<Vec<u8>>);
+type QueuedCompetitorRow = (i64, String, i64, String);
 
 /// The competitors queued on a request's history.
 pub(crate) fn queued_competitors(history: &str) -> Vec<String> {
@@ -149,7 +149,8 @@ impl StorageSqlx {
         Ok(queued.len())
     }
 
-    /// Does `competitor` spend one of the inputs of `our_raw_tx`, by its own
+    /// Does `competitor` spend one of `our_inputs` (read from our bytes bound
+    /// to our txid by their hash), by its own
     /// bytes, and is it mined, by its proof checked against our headers?
     /// `Some` with the outpoints of ours it spends (`txid`, `vout`), lost to
     /// it, when it is; `None` otherwise.
@@ -165,12 +166,11 @@ impl StorageSqlx {
     async fn competitor_is_proven(
         &self,
         services: &dyn WalletServices,
-        our_raw_tx: &[u8],
+        our_inputs: &[(String, u32)],
         competitor: &str,
         gate: u32,
     ) -> Option<(Vec<(String, u32)>, CheckedCompetitorProof)> {
         let tracker = self.get_chain_tracker().await?;
-        let ours = bsv_rs::transaction::Transaction::from_binary(our_raw_tx).ok()?;
         let raw = match services.get_raw_tx(competitor, false).await {
             Ok(GetRawTxResult {
                 raw_tx: Some(raw), ..
@@ -185,20 +185,11 @@ impl StorageSqlx {
             );
             return None;
         }
-        let lost: Vec<(String, u32)> = ours
-            .inputs()
+        let theirs_inputs = crate::storage::sqlx::competitor_proof::inputs_of(&theirs);
+        let lost: Vec<(String, u32)> = our_inputs
             .iter()
-            .filter_map(|ours_in| {
-                let source = ours_in.get_source_txid().ok()?;
-                theirs
-                    .inputs()
-                    .iter()
-                    .any(|theirs_in| {
-                        theirs_in.source_output_index == ours_in.source_output_index
-                            && matches!(theirs_in.get_source_txid(), Ok(a) if a.eq_ignore_ascii_case(&source))
-                    })
-                    .then(|| (source.to_ascii_lowercase(), ours_in.source_output_index))
-            })
+            .filter(|ours_in| theirs_inputs.contains(ours_in))
+            .cloned()
             .collect();
         if lost.is_empty() {
             tracing::warn!(
@@ -235,10 +226,7 @@ impl StorageSqlx {
     /// row of it).
     pub(super) async fn ask_queued_competitor_proofs(&self) -> Result<Vec<TxSynchronizedStatus>> {
         let rows: Vec<QueuedCompetitorRow> = sqlx::query_as(
-            "SELECT r.proven_tx_req_id, r.txid, r.attempts, r.history, \
-                    COALESCE(r.raw_tx, (SELECT t.raw_tx FROM transactions t \
-                                        WHERE t.txid = r.txid AND t.raw_tx IS NOT NULL \
-                                        ORDER BY t.transaction_id LIMIT 1)) \
+            "SELECT r.proven_tx_req_id, r.txid, r.attempts, r.history \
              FROM proven_tx_reqs r \
              WHERE r.status IN ('unsent', 'sending', 'unmined', 'unknown', 'callback', 'unconfirmed') \
                AND r.history LIKE '%\"competitorsQueued\"%'",
@@ -256,13 +244,22 @@ impl StorageSqlx {
             return Ok(Vec::new());
         }
         let mut results = Vec::new();
-        for (proven_tx_req_id, txid, attempts, history, raw_tx) in rows {
-            let Some(raw_tx) = raw_tx else {
+        for (proven_tx_req_id, txid, attempts, history) in rows {
+            // Our bytes (the request's or a row's) bound to the txid by
+            // their hash before their inputs are read; a copy that does not
+            // hash to it is skipped (`held_transaction_on` notes it).
+            let ours = {
+                let mut conn = self.pool().acquire().await?;
+                crate::storage::sqlx::abort_recovery::held_transaction_on(&mut conn, &txid)
+                    .await?
+                    .map(|tx| crate::storage::sqlx::competitor_proof::inputs_of(&tx))
+            };
+            let Some(ours) = ours else {
                 continue;
             };
             for competitor in queued_competitors(&history) {
                 let Some((lost, proof)) = self
-                    .competitor_is_proven(services.as_ref(), &raw_tx, &competitor, gate)
+                    .competitor_is_proven(services.as_ref(), &ours, &competitor, gate)
                     .await
                 else {
                     tracing::info!(
