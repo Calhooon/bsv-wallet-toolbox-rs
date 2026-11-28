@@ -413,7 +413,7 @@ They run as unit tests with `remote` and as integration tests with
 ### Unauthenticated Fallback
 
 When `use_auth` is false, `rpc_call_unauthenticated()` sends plain HTTP POST via the shared transport `services::providers::http_client::Client` (reqwest in production; loopback-only under test and `bench-support`, #248)
-without any BRC-104 headers. Used for testing.
+without any BRC-104 headers. Used for testing. Its client has a 10 s connect time and reads at most `STORAGE_ANSWER_MAX_BYTES` (16 MiB, the authenticated door's application bound in bsv-rs's transport); each call has the client's total time (`set_timeout`, 30 s by default), so a server that never answers returns `NetworkError` within it, and an answer past the bound is `Network error: the answer passed this door's bound of 16777216 bytes; the read stopped there`. The authenticated door keeps bsv-rs's own bounds (30 s, 10 s connect, 16 MiB application and 1 MiB handshake answers).
 
 ### Settings Caching
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Every outward request of the crate has a connect time, a total time and a bound on the answer it reads: the chain providers (WhatsOnChain, Bitails, BananaBlocks, ARC, Arcade V2, the block header service, Chaintracks and its explorer header fallback), the fiat rates and the storage client's unauthenticated JSON-RPC. One client in `services/providers/http_client.rs` sets them for every door; an answer past its door's bound stops being read there and is a network fault of that call, as a timeout is, never an invalid answer and never "not found". The Arcade event stream keeps no total time and caps a line, and a frame's data, instead; past it that connection ends and the task reconnects. No honest answer changes, and the redirect policy and proxy reading are unchanged.
+
+### Hosts
+
+- The bounds: a 10 s connect time on every door; explorers 64 MiB (one transaction of 32 MiB as hex), ARC and Arcade REST 8 MiB, the block header service, Chaintracks and the header fallback 4 MiB, the fiat rates 256 KiB, the unauthenticated storage door 16 MiB (the authenticated door's own application bound) with a 30 s total time per call (`StorageClient::set_timeout`; it had none), the Arcade event stream 1 MiB a line. The existing total times stand (30 s for the providers by default, 15 s for the header fallback, 10 s for the fiat rates). When an answer meets a bound the host sees `Network error: ... the answer passed this door's bound of <n> bytes; the read stopped there` for that call (an explorer ladder asks its next rung), and on the event stream `SSE stream: a line passed the stream's bound of 1048576 bytes; the connection ends there` in the task's log before it reconnects.
+
 ### Fixed
 
 - A held receipt ends on evidence about its transaction, not on a
