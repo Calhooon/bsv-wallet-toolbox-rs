@@ -381,17 +381,45 @@ const SENT_ROWS: &str = "SELECT o.output_id, o.vout FROM outputs o \
        AND o.spendable = 0 AND o.spent_by IS NULL \
      ORDER BY o.output_id";
 
+/// The migration that indexes `transactions(updated_at)`, so the mark is
+/// read by seeks (`MARK`).
+pub(crate) const MIGRATION_006_TRANSACTIONS_UPDATED_AT_SQL: &str =
+    include_str!("migrations/006_transactions_updated_at.sql");
+
+/// Name of migration 006, as `StorageSqlx::migrate` reports it.
+pub(crate) const MIGRATION_006_TRANSACTIONS_UPDATED_AT_NAME: &str = "006_transactions_updated_at";
+
+/// The mark: `MAX(transaction_id)` and `MAX(updated_at)` over the store's
+/// transactions with one row (the bound id) left out, each read by a seek
+/// rather than a walk of the rows (whose cost followed the table's bytes:
+/// every row holds a whole transaction and its input BEEF).
+///
+/// The id half is a seek on the primary key. The stamp half takes the
+/// newest stamp of the whole table from `idx_transactions_updated_at`
+/// (migration 006); when a row other than the one left out holds it, it is
+/// the answer, else the answer is the newest stamp below it (only the row
+/// left out held it). Either way the same value `MAX(updated_at) WHERE
+/// transaction_id != ?` gives, empty table and all.
+pub(crate) const MARK: &str = "SELECT \
+     COALESCE((SELECT MAX(transaction_id) FROM transactions WHERE transaction_id != ?), 0), \
+     COALESCE(CAST((SELECT CASE \
+         WHEN EXISTS (SELECT 1 FROM transactions \
+                      WHERE updated_at = m.v AND transaction_id != ?) THEN m.v \
+         ELSE (SELECT MAX(updated_at) FROM transactions WHERE updated_at < m.v) END \
+       FROM (SELECT MAX(updated_at) AS v FROM transactions) AS m) AS TEXT), '')";
+
 /// The store's transactions as a search read them: the highest id and the
-/// newest stamp, the row `except` left out.
-async fn mark_of(conn: &mut SqliteConnection, except: Option<i64>) -> Result<(i64, String)> {
-    Ok(sqlx::query_as(
-        "SELECT COALESCE(MAX(transaction_id), 0), \
-         COALESCE(CAST(MAX(updated_at) AS TEXT), '') FROM transactions \
-         WHERE transaction_id != ?",
-    )
-    .bind(except.unwrap_or(-1))
-    .fetch_one(&mut *conn)
-    .await?)
+/// newest stamp, the row `except` left out (`MARK`).
+pub(crate) async fn mark_of(
+    conn: &mut SqliteConnection,
+    except: Option<i64>,
+) -> Result<(i64, String)> {
+    let except = except.unwrap_or(-1);
+    Ok(sqlx::query_as(MARK)
+        .bind(except)
+        .bind(except)
+        .fetch_one(&mut *conn)
+        .await?)
 }
 
 /// What a send's release found on a reader before the write: the store's
@@ -422,8 +450,7 @@ impl SentChangeSearch {
     ///
     /// A search of no txid (an action that sends nothing with it, every
     /// immediate `createAction`) has no release to stand for and is `None`
-    /// without reading the mark: the mark's `MAX(updated_at)` reads every
-    /// transaction of the store, inside the write lock.
+    /// without reading the mark.
     pub(crate) async fn still_read(
         &self,
         conn: &mut SqliteConnection,

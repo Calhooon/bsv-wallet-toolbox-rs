@@ -56,6 +56,8 @@ mod reorg_tests;
 #[cfg(test)]
 mod sibling_bump_tests;
 mod storage_sqlx;
+#[cfg(test)]
+mod store_mark_tests;
 mod stored_spenders;
 #[cfg(test)]
 mod stored_spenders_tests;
