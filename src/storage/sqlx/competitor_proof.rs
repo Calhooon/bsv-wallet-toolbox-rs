@@ -75,7 +75,7 @@ fn outpoints_of(txid: &str, raw_tx: &[u8]) -> Vec<(String, u32)> {
 }
 
 /// The outpoints `tx` spends (source txid lowercase, vout).
-fn inputs_of(tx: &bsv_rs::transaction::Transaction) -> Vec<(String, u32)> {
+pub(crate) fn inputs_of(tx: &bsv_rs::transaction::Transaction) -> Vec<(String, u32)> {
     tx.inputs()
         .iter()
         .filter_map(|i| {

@@ -16,22 +16,21 @@
 //! or a competitor's checked proof is stored (the next review fails Y's row
 //! and voids its output).
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use bsv_rs::transaction::{Beef, MockChainTracker};
-use bsv_rs::wallet::{AbortActionArgs, ListOutputsArgs};
+use bsv_rs::wallet::AbortActionArgs;
 use chrono::{Duration, Utc};
 
 use super::create_action::find_or_insert_output_basket;
 use super::reorg_tests::{
-    child_spending, open_gate, single_leaf_bump, storage, txid_of, COINBASE_HEX, COINBASE_TXID,
+    child_spending, list_outputs_args, open_gate, single_leaf_bump, storage, txid_of, COINBASE_HEX,
+    COINBASE_TXID,
 };
+use super::void_lineage_tests::{apply_rejected_naming, serving};
 use super::StorageSqlx;
-use crate::monitor::tasks::ArcadeEventsTask;
-use crate::services::mock::{MockResponse, MockWalletServicesBuilder};
-use crate::services::providers::arcade::{statuses, ArcadeStatusEvent};
-use crate::services::traits::{GetMerklePathResult, GetRawTxResult, GetStatusForTxidsResult};
+use crate::services::mock::MockResponse;
+use crate::services::traits::GetStatusForTxidsResult;
 use crate::services::{TxStatusDetail, WalletServices};
 use crate::storage::traits::{WalletStorageProvider, WalletStorageReader, WalletStorageWriter};
 use crate::storage::MonitorStorage;
@@ -125,7 +124,7 @@ async fn row(
     let old = Utc::now() - Duration::days(2);
     sqlx::query_scalar(
         "INSERT INTO transactions (user_id, txid, status, reference, description, satoshis, version, lock_time, raw_tx, is_outgoing, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, 'held receipt scope', 0, 1, 0, ?, ?, ?, ?) RETURNING transaction_id",
+         VALUES (?1, ?2, ?3, ?4, 'held receipt scope', 0, 1, 0, ?5, ?6, ?7, ?7) RETURNING transaction_id",
     )
     .bind(user.user_id.unwrap())
     .bind(txid)
@@ -133,7 +132,6 @@ async fn row(
     .bind(format!("ref-{}-{}", &txid[..8], user.user_id.unwrap()))
     .bind(raw)
     .bind(outgoing)
-    .bind(old)
     .bind(old)
     .fetch_one(s.writer())
     .await
@@ -150,13 +148,12 @@ async fn output(
     vout: i64,
     satoshis: i64,
     purpose: &str,
-    spendable: bool,
-    spent_by: Option<i64>,
+    (spendable, spent_by): (bool, Option<i64>),
 ) -> i64 {
     let old = Utc::now() - Duration::days(2);
     sqlx::query_scalar(
         "INSERT INTO outputs (user_id, transaction_id, basket_id, spendable, change, vout, satoshis, provided_by, purpose, type, derivation_prefix, derivation_suffix, txid, spent_by, locking_script, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, 1, ?, ?, 'storage', ?, 'P2PKH', 'prefix', 'suffix', ?, ?, x'51', ?, ?) RETURNING output_id",
+         VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, 'storage', ?7, 'P2PKH', 'prefix', 'suffix', ?8, ?9, x'51', ?10, ?10) RETURNING output_id",
     )
     .bind(user.user_id.unwrap())
     .bind(owner)
@@ -168,7 +165,6 @@ async fn output(
     .bind(txid)
     .bind(spent_by)
     .bind(old)
-    .bind(old)
     .fetch_one(s.writer())
     .await
     .unwrap()
@@ -176,21 +172,7 @@ async fn output(
 
 fn services(raw: &[u8], proof_of: &str) -> Arc<dyn WalletServices> {
     Arc::new(
-        MockWalletServicesBuilder::default()
-            .get_raw_tx_response(MockResponse::Success(GetRawTxResult {
-                name: "mock".to_string(),
-                txid: txid_of(raw),
-                raw_tx: Some(raw.to_vec()),
-                error: None,
-                could_not_look: false,
-            }))
-            .get_merkle_path_response(MockResponse::Success(GetMerklePathResult {
-                name: Some("mock".to_string()),
-                merkle_path: Some(hex::encode(single_leaf_bump(HEIGHT, proof_of))),
-                header: None,
-                error: None,
-                notes: vec![],
-            }))
+        serving(raw, Some(single_leaf_bump(HEIGHT, proof_of)))
             .get_status_for_txids_response(MockResponse::Success(GetStatusForTxidsResult {
                 name: "status".to_string(),
                 status: "success".to_string(),
@@ -201,7 +183,6 @@ fn services(raw: &[u8], proof_of: &str) -> Arc<dyn WalletServices> {
                     ..Default::default()
                 }],
             }))
-            .is_utxo_response(MockResponse::Success(false))
             .build(),
     )
 }
@@ -209,35 +190,64 @@ fn services(raw: &[u8], proof_of: &str) -> Arc<dyn WalletServices> {
 /// X's action P `sending` spending C, its request `unsent`; Y's received
 /// row of P at `word` with its payment output.
 async fn seed(word: &str) -> Cell {
-    let s = storage().await;
+    let store = storage().await;
     let mut tracker = MockChainTracker::new(1000);
-    let p = txid_of(&p_raw());
-    let r = txid_of(&r_raw());
-    tracker.add_root(HEIGHT, r.clone());
-    tracker.add_root(P_HEIGHT, p.clone());
-    s.set_chain_tracker(Arc::new(tracker)).await;
-    open_gate(&s, 1000).await;
-    let (x, xb) = user(&s, &"a".repeat(66)).await;
-    let (y, yb) = user(&s, &"b".repeat(66)).await;
+    let p_txid = txid_of(&p_raw());
+    let r_txid = txid_of(&r_raw());
+    tracker.add_root(HEIGHT, r_txid.clone());
+    tracker.add_root(P_HEIGHT, p_txid.clone());
+    store.set_chain_tracker(Arc::new(tracker)).await;
+    open_gate(&store, 1000).await;
+    let (sender, sender_basket) = user(&store, &"a".repeat(66)).await;
+    let (receiver, receiver_basket) = user(&store, &"b".repeat(66)).await;
     let coinbase = hex::decode(COINBASE_HEX).unwrap();
-    let cb = row(&s, &x, COINBASE_TXID, "completed", &coinbase, false).await;
-    let x_row = row(&s, &x, &p, "sending", &p_raw(), true).await;
+    let cb = row(
+        &store,
+        &sender,
+        COINBASE_TXID,
+        "completed",
+        &coinbase,
+        false,
+    )
+    .await;
+    let x_row = row(&store, &sender, &p_txid, "sending", &p_raw(), true).await;
     output(
-        &s,
-        &x,
-        xb,
+        &store,
+        &sender,
+        sender_basket,
         cb,
         COINBASE_TXID,
         0,
         5000,
         "change",
-        false,
-        Some(x_row),
+        (false, Some(x_row)),
     )
     .await;
-    output(&s, &x, xb, x_row, &p, 0, 1000, "change", true, None).await;
-    let y_row = row(&s, &y, &p, word, &p_raw(), false).await;
-    let y_out = output(&s, &y, yb, y_row, &p, 1, PAYMENT, "receive", true, None).await;
+    output(
+        &store,
+        &sender,
+        sender_basket,
+        x_row,
+        &p_txid,
+        0,
+        1000,
+        "change",
+        (true, None),
+    )
+    .await;
+    let y_row = row(&store, &receiver, &p_txid, word, &p_raw(), false).await;
+    let y_out = output(
+        &store,
+        &receiver,
+        receiver_basket,
+        y_row,
+        &p_txid,
+        1,
+        PAYMENT,
+        "receive",
+        (true, None),
+    )
+    .await;
     let mut beef = Beef::new();
     beef.merge_raw_tx(coinbase, None).unwrap();
     let old = Utc::now() - Duration::days(2);
@@ -245,24 +255,32 @@ async fn seed(word: &str) -> Cell {
         "INSERT INTO proven_tx_reqs (txid, status, attempts, history, notified, notify, raw_tx, input_beef, created_at, updated_at) \
          VALUES (?, 'unsent', 0, '{}', 0, '{}', ?, ?, ?, ?)",
     )
-    .bind(&p)
+    .bind(&p_txid)
     .bind(p_raw())
     .bind(beef.to_binary().unwrap())
     .bind(old)
     .bind(old)
-    .execute(s.writer())
+    .execute(store.writer())
     .await
     .unwrap();
-    WalletStorageProvider::set_services(&s, services(&r_raw(), &r));
+    WalletStorageProvider::set_services(&store, services(&r_raw(), &r_txid));
     Cell {
-        s,
-        x,
-        y,
-        p,
+        s: store,
+        x: sender,
+        y: receiver,
+        p: p_txid,
         x_row,
         y_row,
         y_out,
     }
+}
+
+/// The host's retire, no status source holding P; `false` where refused.
+async fn retire(c: &Cell) -> bool {
+    let services = c.s.get_services().unwrap();
+    c.s.retire_undeliverable_txid(services.as_ref(), &c.p, "invalid")
+        .await
+        .is_ok()
 }
 
 /// The word written; `false` where the writer refused it (the abort and
@@ -284,31 +302,12 @@ async fn write_word(c: &Cell, writer: Writer) -> bool {
         Writer::Refusal => MonitorStorage::mark_transaction_rejected(s, &c.p, false)
             .await
             .unwrap(),
-        Writer::Retire => {
-            let services = s.get_services().unwrap();
-            s.retire_undeliverable_txid(services.as_ref(), &c.p, "invalid")
-                .await
-                .is_ok()
-        }
+        Writer::Retire => retire(c).await,
         Writer::Competitor => {
             let r = txid_of(&r_raw());
             // Arcade's pushed REJECTED 466 naming R: R queued for the
             // proof ask, no word written.
-            let ev = ArcadeStatusEvent {
-                txid: c.p.clone(),
-                tx_status: statuses::REJECTED.to_string(),
-                timestamp: None,
-                block_hash: None,
-                block_height: None,
-                merkle_path: None,
-                extra_info: None,
-                status_code: Some(466),
-                competing_txs: Some(vec![r]),
-                event_id: None,
-            };
-            ArcadeEventsTask::<StorageSqlx>::apply_event(s, &ev, &AtomicBool::new(false))
-                .await
-                .unwrap();
+            apply_rejected_naming(s, &c.p, &r).await;
             s.synchronize_transaction_statuses().await.unwrap();
             true
         }
@@ -322,10 +321,7 @@ async fn act_next(c: &Cell, next: Next) {
             MonitorStorage::review_status(s).await.unwrap();
         }
         Next::Retire => {
-            let services = s.get_services().unwrap();
-            let _ = s
-                .retire_undeliverable_txid(services.as_ref(), &c.p, "invalid")
-                .await;
+            let _ = retire(c).await;
         }
     }
 }
@@ -353,24 +349,7 @@ async fn read(c: &Cell) -> Reading {
             .fetch_one(s.pool())
             .await
             .unwrap();
-    let listed = s
-        .list_outputs(
-            &c.y,
-            ListOutputsArgs {
-                basket: "default".to_string(),
-                tags: None,
-                tag_query_mode: None,
-                include: None,
-                include_custom_instructions: None,
-                include_tags: None,
-                include_labels: None,
-                limit: Some(100),
-                offset: None,
-                seek_permission: None,
-            },
-        )
-        .await
-        .unwrap();
+    let listed = s.list_outputs(&c.y, list_outputs_args()).await.unwrap();
     Reading {
         x_row: status(c.x_row).await,
         y_row: status(c.y_row).await,
@@ -479,8 +458,7 @@ async fn a_held_receipt_beside_a_word_ends_on_its_proof_or_a_competitors() {
                 0,
                 5000,
                 "change",
-                false,
-                Some(z_r),
+                (false, Some(z_r)),
             )
             .await;
             let bump = single_leaf_bump(HEIGHT, &r);

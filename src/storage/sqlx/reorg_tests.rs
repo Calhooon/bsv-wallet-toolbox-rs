@@ -237,7 +237,7 @@ async fn mined_rows(s: &StorageSqlx, txid: &str) -> i64 {
         .unwrap()
 }
 
-fn list_outputs_args() -> ListOutputsArgs {
+pub(super) fn list_outputs_args() -> ListOutputsArgs {
     ListOutputsArgs {
         basket: "default".to_string(),
         tags: None,
