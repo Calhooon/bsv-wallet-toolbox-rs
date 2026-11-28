@@ -596,8 +596,8 @@ async fn w6_the_sign_door_refuses_send_with_alone() {
     assert!(text.contains("signAction"), "{text}");
     assert!(
         text.contains(
-            "The deferred action is as it was: sign it with an empty sendWith (which posts its \
-             own change-only transaction, with its fee) or release it with abortAction."
+            "The deferred action is as it was: sign it with an empty sendWith or release it \
+             with abortAction."
         ),
         "{text}"
     );

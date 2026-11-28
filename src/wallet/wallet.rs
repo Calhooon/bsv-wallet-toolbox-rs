@@ -3607,8 +3607,8 @@ fn send_with_alone_refusal(door: SendWithAloneDoor, txids: &[String]) -> Error {
         ),
         SendWithAloneDoor::Sign => (
             "signAction: sendWith on a deferred action with no inputs and no outputs of the caller's",
-            " The deferred action is as it was: sign it with an empty sendWith (which posts its own \
-             change-only transaction, with its fee) or release it with abortAction.",
+            " The deferred action is as it was: sign it with an empty sendWith or release it \
+             with abortAction.",
         ),
     };
     Error::ValidationError(format!(
