@@ -380,9 +380,12 @@ fn assert_refused_by_name(answer: &bsv_rs::Result<CreateActionResult>, payment: 
         "those that are your own unsent noSend transactions are still reserved under their txids",
         "(1) name them in sendWith beside a new action",
         "(2) release one with abortAction",
+        "(1) name them in sendWith beside a new action, which queues them for the monitor's \
+         send-waiting task, with no change-only transaction of the wallet's own;",
         "(3) call again with acceptDelayedBroadcast: true, which on this line also builds a \
-         change-only transaction of the wallet's own, with its fee, and queues the named \
-         transactions for the monitor",
+         change-only transaction of the wallet's own, with its fee, and queues it and the \
+         named transactions for the monitor's send-waiting task.",
+        "A host with no monitor running never posts what (1) or (3) queues.",
     ] {
         assert!(text.contains(words), "{words:?} is not in {text:?}");
     }
@@ -589,7 +592,15 @@ async fn w6_the_sign_door_refuses_send_with_alone() {
         described(&wallet, &payment, &answer, before).await
     );
     assert_refused_by_name(&answer, &payment);
-    assert!(answer.unwrap_err().to_string().contains("signAction"));
+    let text = answer.unwrap_err().to_string();
+    assert!(text.contains("signAction"), "{text}");
+    assert!(
+        text.contains(
+            "The deferred action is as it was: sign it with an empty sendWith or release it \
+             with abortAction."
+        ),
+        "{text}"
+    );
     assert_eq!(counts(wallet.storage()).await, before, "nothing written");
     assert_eq!(
         words(wallet.storage(), &payment).await,
@@ -683,4 +694,47 @@ async fn w9_an_unknown_txid_is_not_said_to_be_reserved() {
         "{text}"
     );
     assert!(!text.contains(" more]"), "{text}");
+}
+
+/// W11: a bare deferred action whose create named the payment with a
+/// delayed post, signed with no delayed post: with no `sendWith` it falls
+/// back to the create's list and is refused; with `sendWith: []` it is
+/// signed.
+#[tokio::test]
+async fn w11_an_empty_send_with_signs_what_the_create_named() {
+    let wallet = payer().await;
+    let txid = prepared(&wallet).await;
+    let mut create = deferred(None);
+    let options = create.options.as_mut().unwrap();
+    options.send_with = Some(vec![txid]);
+    options.accept_delayed_broadcast = Some(true);
+    let made = wallet
+        .create_action(create, ORIGIN)
+        .await
+        .expect("the deferred create naming the payment");
+    let reference =
+        String::from_utf8(made.signable_transaction.expect("signable").reference).unwrap();
+    let sign = |send_with: Option<Vec<[u8; 32]>>| SignActionArgs {
+        spends: Default::default(),
+        reference: reference.clone(),
+        options: Some(SignActionOptions {
+            send_with,
+            accept_delayed_broadcast: Some(false),
+            ..Default::default()
+        }),
+    };
+    let fallback = as_create(wallet.sign_action(sign(None), ORIGIN).await);
+    assert_refused_by_name(&fallback, &hex::encode(txid));
+    let empty = wallet.sign_action(sign(Some(vec![])), ORIGIN).await;
+    println!(
+        "STEP W11 no sendWith: {:?}\nsendWith []: {:?}\nEND",
+        fallback
+            .map(|r| r.txid.map(hex::encode))
+            .map_err(|e| e.to_string()),
+        empty
+            .as_ref()
+            .map(|r| r.txid.map(hex::encode))
+            .map_err(|e| e.to_string())
+    );
+    assert!(empty.expect("sendWith [] signs").txid.is_some());
 }
