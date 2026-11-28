@@ -27,7 +27,8 @@ use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{MerklePath, Transaction, TransactionInput, TransactionOutput};
 use bsv_rs::wallet::{
     AbortActionArgs, Counterparty, CreateActionArgs, CreateActionOptions, CreateActionOutput,
-    CreateActionResult, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel, WalletInterface,
+    CreateActionResult, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel, SendWithResult,
+    SignActionArgs, SignActionOptions, WalletInterface,
 };
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
 use bsv_wallet_toolbox_rs::{MonitorStorage, StorageSqlx, Wallet, WalletStorageWriter};
@@ -493,4 +494,127 @@ async fn w5_send_waiting_after_the_refused_submit_posts_nothing() {
         words(wallet.storage(), &payment).await,
         (vec!["nosend".to_string()], vec!["nosend".to_string()])
     );
+}
+
+/// A deferred action (`signAndProcess: false`, no delayed post): no inputs
+/// and no outputs of the caller's, or `outputs` when given; no `sendWith`.
+fn deferred(outputs: Option<Vec<CreateActionOutput>>) -> CreateActionArgs {
+    CreateActionArgs {
+        description: "A deferred action to sign later".to_string(),
+        input_beef: None,
+        inputs: None,
+        outputs,
+        lock_time: None,
+        version: None,
+        labels: None,
+        options: Some(CreateActionOptions {
+            sign_and_process: Some(false),
+            randomize_outputs: Some(false),
+            accept_delayed_broadcast: Some(false),
+            ..Default::default()
+        }),
+    }
+}
+
+/// `signAction` on `reference`, naming `send_with`, no delayed post.
+fn sign_naming(reference: String, send_with: Vec<[u8; 32]>) -> SignActionArgs {
+    SignActionArgs {
+        spends: Default::default(),
+        reference,
+        options: Some(SignActionOptions {
+            send_with: Some(send_with),
+            accept_delayed_broadcast: Some(false),
+            ..Default::default()
+        }),
+    }
+}
+
+/// The deferred action's reference, as the caller reads it.
+async fn deferred_reference(wallet: &Payer, outputs: Option<Vec<CreateActionOutput>>) -> String {
+    let made = wallet
+        .create_action(deferred(outputs), ORIGIN)
+        .await
+        .expect("the deferred create");
+    String::from_utf8(made.signable_transaction.expect("signable").reference).unwrap()
+}
+
+/// A sign answer in the words `described` reads.
+fn as_create(
+    answer: bsv_rs::Result<(Option<[u8; 32]>, Option<Vec<SendWithResult>>)>,
+) -> bsv_rs::Result<CreateActionResult> {
+    answer.map(|(txid, send_with_results)| CreateActionResult {
+        txid,
+        tx: None,
+        no_send_change: None,
+        send_with_results,
+        signable_transaction: None,
+        input_type: None,
+        inputs: None,
+        reference_number: None,
+        beef: None,
+    })
+}
+
+/// W6: the same build through the sign door. A deferred action with
+/// nothing of the caller's in it, asked at signing to send the payment
+/// without a delayed post, is refused by name before any signature, lock
+/// or write; the deferred action stays abortable.
+#[tokio::test]
+async fn w6_the_sign_door_refuses_send_with_alone() {
+    let wallet = payer().await;
+    let txid = prepared(&wallet).await;
+    let payment = hex::encode(txid);
+    let reference = deferred_reference(&wallet, None).await;
+    let before = counts(wallet.storage()).await;
+    let answer = as_create(
+        wallet
+            .sign_action(sign_naming(reference.clone(), vec![txid]), ORIGIN)
+            .await
+            .map(|r| (r.txid, r.send_with_results)),
+    );
+    println!(
+        "STEP W6 signAction\n{}\nEND",
+        described(&wallet, &payment, &answer, before).await
+    );
+    assert_refused_by_name(&answer, &payment);
+    assert!(answer.unwrap_err().to_string().contains("signAction"));
+    assert_eq!(counts(wallet.storage()).await, before, "nothing written");
+    assert_eq!(
+        words(wallet.storage(), &payment).await,
+        (vec!["nosend".to_string()], vec!["nosend".to_string()])
+    );
+    assert!(posts(&wallet).is_empty(), "nothing posted");
+    let aborted = wallet
+        .abort_action(AbortActionArgs { reference }, ORIGIN)
+        .await
+        .map(|r| r.aborted);
+    assert_eq!(aborted.map_err(|e| e.to_string()), Ok(true));
+}
+
+/// What the base printed for W7 (a deferred action with an output, signed
+/// naming the payment, no delayed post).
+const W7_ON_BASE: &str = "answered: txid Some(\"<own>\"); sendWithResults [(\"<payment>\", \"Sending\"), (\"<own>\", \"Unproven\")]\n\
+     transaction rows +0, output rows +0, coins taken +0\n\
+     the payment reads ([\"sending\"], [\"unsent\"])\n\
+     posts [\"post naming the payment: false\"]";
+
+/// W7: the sign door with an output of the caller's and a `sendWith` is as
+/// it was.
+#[tokio::test]
+async fn w7_the_sign_door_with_an_output_is_unchanged() {
+    let wallet = payer().await;
+    let txid = prepared(&wallet).await;
+    let payment = hex::encode(txid);
+    let outputs = beside_an_output(txid).outputs;
+    let reference = deferred_reference(&wallet, outputs).await;
+    let before = counts(wallet.storage()).await;
+    let answer = as_create(
+        wallet
+            .sign_action(sign_naming(reference, vec![txid]), ORIGIN)
+            .await
+            .map(|r| (r.txid, r.send_with_results)),
+    );
+    let seen = described(&wallet, &payment, &answer, before).await;
+    println!("STEP W7\n{seen}\nEND");
+    assert_eq!(seen, W7_ON_BASE);
 }
