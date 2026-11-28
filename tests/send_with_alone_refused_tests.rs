@@ -364,11 +364,13 @@ fn assert_refused_by_name(answer: &bsv_rs::Result<CreateActionResult>, payment: 
     for words in [
         "Validation error: ",
         payment,
-        "were NOT sent",
-        "still reserved under their txids",
-        "acceptDelayedBroadcast: true",
-        "name them in sendWith beside a new action",
-        "abortAction",
+        "were NOT sent by this call",
+        "those that are your own unsent noSend transactions are still reserved under their txids",
+        "(1) name them in sendWith beside a new action",
+        "(2) release one with abortAction",
+        "(3) call again with acceptDelayedBroadcast: true, which on this line also builds a \
+         change-only transaction of the wallet's own, with its fee, and queues the named \
+         transactions for the monitor",
     ] {
         assert!(text.contains(words), "{words:?} is not in {text:?}");
     }
@@ -617,4 +619,59 @@ async fn w7_the_sign_door_with_an_output_is_unchanged() {
     let seen = described(&wallet, &payment, &answer, before).await;
     println!("STEP W7\n{seen}\nEND");
     assert_eq!(seen, W7_ON_BASE);
+}
+
+/// The text of a refused `createAction` naming `send_with` alone, no delay.
+async fn refusal_text(wallet: &Payer, send_with: Vec<[u8; 32]>) -> String {
+    let mut args = submit([0u8; 32], Some(false));
+    args.options.as_mut().unwrap().send_with = Some(send_with);
+    match wallet.create_action(args, ORIGIN).await {
+        Err(e) => e.to_string(),
+        Ok(r) => panic!("answered, not refused: {:?}", r.txid.map(hex::encode)),
+    }
+}
+
+/// W8: a `sendWith` of 1,000 txids: the text prints three and the count of
+/// the rest, so its length is bounded.
+#[tokio::test]
+async fn w8_a_thousand_named_txids_give_a_short_text() {
+    let wallet = payer().await;
+    let txids: Vec<[u8; 32]> = (0..1000u32)
+        .map(|i| {
+            let mut t = [0u8; 32];
+            t[..4].copy_from_slice(&i.to_be_bytes());
+            t
+        })
+        .collect();
+    let before = counts(wallet.storage()).await;
+    let text = refusal_text(&wallet, txids.clone()).await;
+    println!("STEP W8 ({} bytes)\n{text}\nEND", text.len());
+    for shown in &txids[..3] {
+        assert!(text.contains(&hex::encode(shown)), "{text}");
+    }
+    assert!(!text.contains(&hex::encode(txids[3])), "{text}");
+    assert!(text.contains(" and 997 more]"), "{text}");
+    assert!(text.len() < 1_200, "{} bytes: {text}", text.len());
+    assert_eq!(counts(wallet.storage()).await, before, "nothing written");
+}
+
+/// W9: a txid the wallet does not know: the text claims nothing false of it
+/// (it says this call did not send it, and holds the reservation only of
+/// the caller's own unsent noSend transactions).
+#[tokio::test]
+async fn w9_an_unknown_txid_is_not_said_to_be_reserved() {
+    let wallet = payer().await;
+    let unknown = [0x5au8; 32];
+    let text = refusal_text(&wallet, vec![unknown]).await;
+    println!("STEP W9\n{text}\nEND");
+    assert!(text.contains(&format!(
+        "[{}] were NOT sent by this call",
+        hex::encode(unknown)
+    )));
+    assert!(!text.contains("they are still reserved"), "{text}");
+    assert!(
+        text.contains("those that are your own unsent noSend transactions"),
+        "{text}"
+    );
+    assert!(!text.contains(" more]"), "{text}");
 }
