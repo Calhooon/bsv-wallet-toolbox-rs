@@ -317,6 +317,11 @@ where
     /// Cache for pending unsigned transactions awaiting signature
     pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
 
+    /// References of the cached deferred actions that carry no input and no
+    /// output of the caller's: the sign door refuses a `sendWith` on one of
+    /// them without a delayed post, as the create door does.
+    bare_deferred: Arc<RwLock<HashSet<String>>>,
+
     /// The user's ID in the storage system (for AuthId)
     user_id: i64,
 
@@ -448,11 +453,47 @@ where
             options,
             signer,
             pending_transactions: Arc::new(RwLock::new(HashMap::new())),
+            bare_deferred: Arc::new(RwLock::new(HashSet::new())),
             user_id: user.user_id,
             privileged_key_manager: None,
             permissions_manager: None,
             spend_lock: Arc::new(Mutex::new(())),
         })
+    }
+
+    /// The sign door's refusal of a `sendWith` alone, before any
+    /// signature, the spend lock or a write: a cached deferred action that
+    /// carries no input and no output of the caller's, asked at signing to
+    /// send named transactions (from the sign options, or from the create
+    /// when the sign options name none) without a delayed post, is refused
+    /// by name, as the create door refuses the same build. The deferred
+    /// action stays cached, signable and abortable. A reference that is
+    /// not cached is left to the sign path's own answer.
+    async fn refuse_send_with_alone_at_sign(&self, args: &SignActionArgs) -> bsv_rs::Result<()> {
+        if !self.bare_deferred.read().await.contains(&args.reference) {
+            return Ok(());
+        }
+        let Some(pending) = self
+            .pending_transactions
+            .read()
+            .await
+            .get(&args.reference)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let options = args.options.as_ref();
+        let delayed = options
+            .and_then(|o| o.accept_delayed_broadcast)
+            .unwrap_or(pending.is_delayed);
+        let send_with: Vec<String> = options
+            .and_then(|o| o.send_with.as_ref())
+            .map(|txids| txids.iter().map(hex::encode).collect())
+            .unwrap_or(pending.send_with);
+        if send_with.is_empty() || delayed {
+            return Ok(());
+        }
+        Err(send_with_alone_refusal(SendWithAloneDoor::Sign, &send_with).into())
     }
 
     /// Returns the wallet's identity public key as a hex string.
@@ -1565,6 +1606,13 @@ where
             cache.retain(|_, tx| tx.created_at > cutoff);
             // Add the new pending transaction
             cache.insert(reference.clone(), pending_tx);
+            let mut bare = self.bare_deferred.write().await;
+            bare.retain(|r| cache.contains_key(r));
+            if args.inputs.as_deref().unwrap_or(&[]).is_empty()
+                && args.outputs.as_deref().unwrap_or(&[]).is_empty()
+            {
+                bare.insert(reference.clone());
+            }
         }
 
         // The canonical TS `WalletPermissionsManager.createAction`
@@ -1849,6 +1897,7 @@ where
         originator: &str,
     ) -> bsv_rs::Result<SignActionResult> {
         validate_originator(originator)?;
+        self.refuse_send_with_alone_at_sign(&args).await?;
 
         // Serialize spending operations (signs and broadcasts pending transactions).
         let _spend_guard = self.spend_lock.lock().await;
@@ -2128,6 +2177,7 @@ where
         {
             let mut cache = self.pending_transactions.write().await;
             cache.remove(&reference);
+            self.bare_deferred.write().await.remove(&reference);
         }
 
         // Convert txid string to [u8; 32]
@@ -3479,15 +3529,31 @@ fn refuse_send_with_alone(args: &CreateActionArgs) -> bsv_rs::Result<()> {
         return Ok(());
     }
     let txids: Vec<String> = send_with.iter().map(hex::encode).collect();
-    Err(Error::ValidationError(format!(
-        "sendWith with no inputs and no outputs is refused unless \
-         acceptDelayedBroadcast is true: the named transactions [{}] were NOT \
-         sent; they are still reserved under their txids; call again with \
-         acceptDelayedBroadcast: true to queue them, name them in sendWith \
-         beside a new action, or release them with abortAction",
+    Err(send_with_alone_refusal(SendWithAloneDoor::Create, &txids).into())
+}
+
+/// The door a `sendWith` alone was refused at.
+#[derive(Clone, Copy)]
+enum SendWithAloneDoor {
+    Create,
+    Sign,
+}
+
+/// The refusal's text, one for both doors.
+fn send_with_alone_refusal(door: SendWithAloneDoor, txids: &[String]) -> Error {
+    let what = match door {
+        SendWithAloneDoor::Create => "sendWith with no inputs and no outputs",
+        SendWithAloneDoor::Sign => {
+            "signAction: sendWith on a deferred action with no inputs and no outputs of the caller's"
+        }
+    };
+    Error::ValidationError(format!(
+        "{what} is refused unless acceptDelayedBroadcast is true: the named \
+         transactions [{}] were NOT sent; they are still reserved under their \
+         txids; call again with acceptDelayedBroadcast: true to queue them, name \
+         them in sendWith beside a new action, or release them with abortAction",
         txids.join(", ")
     ))
-    .into())
 }
 
 #[cfg(test)]
