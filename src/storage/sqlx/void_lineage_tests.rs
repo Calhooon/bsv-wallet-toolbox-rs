@@ -205,7 +205,7 @@ fn status_source(txid: &str, status: &str) -> MockResponse<GetStatusForTxidsResu
     })
 }
 
-fn serving(raw: &[u8], proof: Option<Vec<u8>>) -> MockWalletServicesBuilder {
+pub(super) fn serving(raw: &[u8], proof: Option<Vec<u8>>) -> MockWalletServicesBuilder {
     MockWalletServicesBuilder::default()
         .get_raw_tx_response(MockResponse::Success(GetRawTxResult {
             name: "mock".to_string(),
@@ -232,7 +232,7 @@ fn set(s: &StorageSqlx, builder: MockWalletServicesBuilder) -> Arc<MockWalletSer
 
 /// Arcade's pushed REJECTED 466 for `txid`, naming `competitor`: the
 /// competitor is queued for the proof ask.
-async fn apply_rejected_naming(s: &StorageSqlx, txid: &str, competitor: &str) {
+pub(super) async fn apply_rejected_naming(s: &StorageSqlx, txid: &str, competitor: &str) {
     let ev = ArcadeStatusEvent {
         txid: txid.to_string(),
         tx_status: statuses::REJECTED.to_string(),

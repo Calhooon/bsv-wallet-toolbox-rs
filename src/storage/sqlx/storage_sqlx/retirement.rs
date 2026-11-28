@@ -220,26 +220,9 @@ impl StorageSqlx {
             return Ok(None);
         };
 
-        // Their own outputs never fund anything again.
-        for id in &ended {
-            sqlx::query(
-                "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? AND spent_by IS NULL",
-            )
-            .bind(rows.now)
-            .bind(id)
-            .execute(&mut *db_tx)
-            .await?;
-        }
         let inputs = retire_inputs(&mut db_tx, transaction_id).await?;
-        for id in &ended {
-            sqlx::query(
-                "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-            )
-            .bind(rows.now)
-            .bind(id)
-            .execute(&mut *db_tx)
-            .await?;
-        }
+        // Their own outputs never fund anything again.
+        fail_rows_on(&mut db_tx, &ended, "AND spent_by IS NULL", rows.now).await?;
         super::commit(db_tx).await?;
         Ok(Some((transaction_id, inputs)))
     }
@@ -394,6 +377,35 @@ async fn retired_rows_on(
     super::super::word_scope::rows_a_word_ends_on(conn, &candidates).await
 }
 
+/// `ids` `failed`, each one's own outputs unspendable (`outputs_clause`
+/// narrows which: `AND spent_by IS NULL` for the retire), on the caller's
+/// write.
+async fn fail_rows_on(
+    conn: &mut sqlx::SqliteConnection,
+    ids: &[i64],
+    outputs_clause: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let outputs = format!(
+        "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ? {outputs_clause}"
+    );
+    for id in ids {
+        sqlx::query(&outputs)
+            .bind(now)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query(
+            "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
 /// The inputs a retired transaction spends, read on its write transaction.
 async fn retire_inputs(
     conn: &mut sqlx::SqliteConnection,
@@ -454,27 +466,12 @@ impl StorageSqlx {
         let ended = {
             let mut tx = self.write_tx().await?;
             let ended = retired_rows_on(&mut tx, txid, false).await?;
-            for id in &ended {
-                sqlx::query(
-                    "UPDATE transactions SET status = 'failed', updated_at = ? WHERE transaction_id = ?",
-                )
-                .bind(now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-                // Its outputs never fund anything again: change chained on
-                // a rejected transaction is how a wallet poisons itself
-                // (2026-09-02). The inputs and the descendants are released
-                // / retired by the reconcile sweep, which has the services
-                // for the per-input chain verification.
-                sqlx::query(
-                    "UPDATE outputs SET spendable = 0, updated_at = ? WHERE transaction_id = ?",
-                )
-                .bind(now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-            }
+            // Their outputs never fund anything again: change chained on a
+            // rejected transaction is how a wallet poisons itself
+            // (2026-09-02). The inputs and the descendants are released /
+            // retired by the reconcile sweep, which has the services for
+            // the per-input chain verification.
+            fail_rows_on(&mut tx, &ended, "", now).await?;
             super::commit(tx).await?;
             ended.len()
         };

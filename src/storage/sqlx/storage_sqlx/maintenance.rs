@@ -29,6 +29,42 @@ async fn invalid_word_rows_on(conn: &mut sqlx::SqliteConnection) -> Result<Vec<i
     super::super::word_scope::rows_a_word_ends_on(conn, &candidates).await
 }
 
+/// Check 1's write: [`invalid_word_rows_on`]'s rows `failed`, on its
+/// write. Returns their ids.
+async fn fail_invalid_word_rows_on(
+    conn: &mut sqlx::SqliteConnection,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<i64>> {
+    let failed_ids = invalid_word_rows_on(conn).await?;
+    update_by_ids_on(
+        conn,
+        "UPDATE transactions SET status = 'failed', updated_at = ?",
+        &failed_ids,
+        now,
+    )
+    .await?;
+    Ok(failed_ids)
+}
+
+/// `update` (binding `now`) on the rows of `ids`, 400 a statement.
+async fn update_by_ids_on(
+    conn: &mut sqlx::SqliteConnection,
+    update: &str,
+    ids: &[i64],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    for ids in ids.chunks(400) {
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!("{update} WHERE transaction_id IN ({placeholders})");
+        let mut query = sqlx::query(&sql).bind(now);
+        for id in ids {
+            query = query.bind(id);
+        }
+        query.execute(&mut *conn).await?;
+    }
+    Ok(())
+}
+
 impl StorageSqlx {
     pub(super) async fn review_status_for_user(
         &self,
@@ -237,34 +273,17 @@ impl StorageSqlx {
         // (`word_scope`): the outgoing rows of the txid; a received row
         // only on evidence against the transaction.
         let mut tx = self.write_tx().await?;
-        let failed_ids = invalid_word_rows_on(&mut tx).await?;
-        for ids in failed_ids.chunks(400) {
-            let placeholders = vec!["?"; ids.len()].join(",");
-            let sql = format!(
-                "UPDATE transactions SET status = 'failed', updated_at = ? \
-                 WHERE transaction_id IN ({placeholders})"
-            );
-            let mut query = sqlx::query(&sql).bind(now);
-            for id in ids {
-                query = query.bind(id);
-            }
-            query.execute(&mut *tx).await?;
-        }
+        let failed_ids = fail_invalid_word_rows_on(&mut tx, now).await?;
 
         // Void only the outputs created by transactions this pass just failed.
         // Keep both writes atomic, without releasing their consumed inputs.
-        for ids in failed_ids.chunks(400) {
-            let placeholders = vec!["?"; ids.len()].join(",");
-            let sql = format!(
-                "UPDATE outputs SET spendable = 0, updated_at = ? \
-                 WHERE transaction_id IN ({placeholders})"
-            );
-            let mut query = sqlx::query(&sql).bind(now);
-            for id in ids {
-                query = query.bind(id);
-            }
-            query.execute(&mut *tx).await?;
-        }
+        update_by_ids_on(
+            &mut tx,
+            "UPDATE outputs SET spendable = 0, updated_at = ?",
+            &failed_ids,
+            now,
+        )
+        .await?;
 
         // Sweep every terminal failed creator, not only this pass's (#175):
         // a store from 0.13.0 holds `failed` beside `spendable = 1`. As the

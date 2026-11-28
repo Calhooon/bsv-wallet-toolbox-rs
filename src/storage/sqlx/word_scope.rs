@@ -33,17 +33,7 @@ pub(crate) async fn evidence_on_record_on(conn: &mut SqliteConnection, txid: &st
     let outpoints: Vec<(String, u32)> =
         super::abort_recovery::held_transaction_on(&mut *conn, txid)
             .await?
-            .map(|tx| {
-                tx.inputs()
-                    .iter()
-                    .filter_map(|i| {
-                        Some((
-                            i.get_source_txid().ok()?.to_ascii_lowercase(),
-                            i.source_output_index,
-                        ))
-                    })
-                    .collect()
-            })
+            .map(|tx| super::competitor_proof::inputs_of(&tx))
             .unwrap_or_default();
     if super::competitor_proof::stored_competitor_on(&mut *conn, txid, &outpoints)
         .await?
@@ -94,13 +84,13 @@ pub(crate) async fn rows_a_word_ends_on(
             ended.push(*transaction_id);
             continue;
         }
-        let against = match evidence.iter().find(|(t, _)| t == txid) {
-            Some((_, e)) => *e,
-            None => {
-                let e = evidence_on_record_on(&mut *conn, txid).await?;
-                evidence.push((txid.clone(), e));
-                e
-            }
+        let known = evidence.iter().find(|(t, _)| t == txid).map(|(_, e)| *e);
+        let against = if let Some(known) = known {
+            known
+        } else {
+            let read = evidence_on_record_on(&mut *conn, txid).await?;
+            evidence.push((txid.clone(), read));
+            read
         };
         if against {
             ended.push(*transaction_id);
