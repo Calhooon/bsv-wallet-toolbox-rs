@@ -319,3 +319,173 @@ async fn a_named_payment_already_sending_is_not_carried() {
     assert_eq!(words(&store, &waiting).await, word("sending", "unsent"));
     one_post_naming(&a, 0, &[payment, own]);
 }
+
+// =============================================================================
+// noSend beside a non-empty sendWith: refused at both doors, nothing written
+// =============================================================================
+
+const REFUSAL: &str = "Validation error: noSend and sendWith cannot be combined: a noSend action is not sent, and sendWith sends the named transactions with this action";
+
+/// (transaction rows, output rows, coins taken, requests).
+async fn rows(store: &StorageSqlx) -> (i64, i64, i64, i64) {
+    let one = |sql: &'static str| async move {
+        sqlx::query_scalar::<_, i64>(sql)
+            .fetch_one(store.pool())
+            .await
+            .unwrap()
+    };
+    (
+        one("SELECT COUNT(*) FROM transactions").await,
+        one("SELECT COUNT(*) FROM outputs").await,
+        one("SELECT COUNT(*) FROM outputs WHERE spent_by IS NOT NULL").await,
+        one("SELECT COUNT(*) FROM proven_tx_reqs").await,
+    )
+}
+
+fn assert_refused(answer: bsv_rs::Error, cell: &str) {
+    match answer {
+        bsv_rs::Error::WalletRefusal { class, message } => {
+            assert_eq!(
+                class,
+                bsv_rs::WalletRefusalClass::InvalidParameter,
+                "{cell}"
+            );
+            assert_eq!(message, REFUSAL, "{cell}");
+        }
+        other => panic!("{cell}: not the refusal: {other:?}"),
+    }
+}
+
+/// The create door: an action of the caller's under `noSend` naming the
+/// prepared payment, signed in the call or deferred: refused, nothing
+/// built, written, reserved or queued, nothing posted.
+#[tokio::test]
+async fn the_create_door_refuses_no_send_beside_send_with() {
+    for sign_and_process in [true, false] {
+        let cell = format!("signAndProcess {sign_and_process}");
+        let root = PrivateKey::random();
+        let store = store_of(&root).await;
+        let a = wallet(&store, &root, accepting()).await;
+        let payment = prepared(&a).await;
+        let before = rows(&store).await;
+        let options = CreateActionOptions {
+            no_send: Some(true),
+            sign_and_process: Some(sign_and_process),
+            send_with: Some(vec![payment]),
+            ..Default::default()
+        };
+        let answer = a
+            .create_action(args(Some(vec![payment_output()]), options), Some(ORIGIN))
+            .await
+            .expect_err("refused");
+        assert_refused(answer, &cell);
+        assert_eq!(rows(&store).await, before, "{cell}: nothing written");
+        assert_eq!(
+            words(&store, &payment).await,
+            word("nosend", "nosend"),
+            "{cell}"
+        );
+        assert!(posts(&a).is_empty(), "{cell}: nothing posted");
+    }
+}
+
+/// A deferred action and its sign, `noSend` and `sendWith` from either
+/// call: (the create's options, the sign's options). A create naming the
+/// payment carries an output of the caller's: with none it would build
+/// nothing (a `sendWith` alone).
+fn sign_cells(payment: [u8; 32]) -> Vec<(&'static str, CreateActionOptions, SignActionOptions)> {
+    let deferred = CreateActionOptions {
+        sign_and_process: Some(false),
+        ..Default::default()
+    };
+    vec![
+        (
+            "noSend cached from the create, sendWith at the sign",
+            CreateActionOptions {
+                no_send: Some(true),
+                ..deferred.clone()
+            },
+            SignActionOptions {
+                send_with: Some(vec![payment]),
+                ..Default::default()
+            },
+        ),
+        (
+            "both at the sign",
+            deferred.clone(),
+            SignActionOptions {
+                no_send: Some(true),
+                send_with: Some(vec![payment]),
+                ..Default::default()
+            },
+        ),
+        (
+            "sendWith cached from the create, noSend at the sign",
+            CreateActionOptions {
+                send_with: Some(vec![payment]),
+                ..deferred
+            },
+            SignActionOptions {
+                no_send: Some(true),
+                ..Default::default()
+            },
+        ),
+    ]
+}
+
+/// The sign door (S2): refused before anything is signed or written; the
+/// deferred action stays unsigned with its session, and signs afterwards
+/// with no `sendWith`.
+#[tokio::test]
+async fn the_sign_door_refuses_no_send_beside_send_with() {
+    use base64::Engine;
+    for index in 0..3 {
+        let root = PrivateKey::random();
+        let store = store_of(&root).await;
+        let a = wallet(&store, &root, accepting()).await;
+        let payment = prepared(&a).await;
+        let (cell, create, sign) = sign_cells(payment).swap_remove(index);
+        let outputs = create.send_with.is_some().then(|| vec![payment_output()]);
+        let made = a
+            .create_action(args(outputs, create), Some(ORIGIN))
+            .await
+            .unwrap_or_else(|e| panic!("{cell}: the create: {e}"));
+        let reference = base64::engine::general_purpose::STANDARD
+            .encode(made.signable_transaction.unwrap().reference);
+        let before = (rows(&store).await, posts(&a).len());
+        let call = |options: SignActionOptions| SignActionArgs {
+            spends: std::collections::HashMap::new(),
+            reference: reference.clone(),
+            options: Some(options),
+        };
+        let answer = a
+            .sign_action(call(sign), Some(ORIGIN))
+            .await
+            .expect_err("refused");
+        assert_refused(answer, cell);
+        assert_eq!(
+            (rows(&store).await, posts(&a).len()),
+            before,
+            "{cell}: nothing written, nothing posted"
+        );
+        assert_eq!(
+            words(&store, &payment).await,
+            word("nosend", "nosend"),
+            "{cell}"
+        );
+        let unsigned: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE status = 'unsigned'")
+                .fetch_one(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(unsigned, 1, "{cell}: the deferred action stays unsigned");
+        let again = SignActionOptions {
+            no_send: Some(true),
+            send_with: Some(vec![]),
+            ..Default::default()
+        };
+        a.sign_action(call(again), Some(ORIGIN))
+            .await
+            .unwrap_or_else(|e| panic!("{cell}: the session stays: {e}"));
+    }
+}

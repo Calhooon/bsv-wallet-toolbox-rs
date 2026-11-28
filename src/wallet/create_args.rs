@@ -68,6 +68,19 @@ pub(crate) fn validate_sign_action_send_with(send_with: &[[u8; 32]]) -> Result<(
     Ok(())
 }
 
+/// The refusal of an action that is `noSend` beside a non-empty `sendWith`,
+/// at both doors: the create door's validator and `signAction` (the
+/// action's `noSend` said at the sign or cached from its create).
+pub(crate) const NO_SEND_BESIDE_SEND_WITH: &str = "noSend and sendWith cannot be combined: a noSend action is not sent, and sendWith sends the named transactions with this action";
+
+/// Refuses an action that is `no_send` while `sendWith` names `named` txids.
+pub(crate) fn refuse_no_send_beside_send_with(no_send: bool, named: usize) -> Result<()> {
+    if no_send && named > 0 {
+        return Err(Error::ValidationError(NO_SEND_BESIDE_SEND_WITH.to_string()));
+    }
+    Ok(())
+}
+
 /// Validates create action arguments.
 pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArgs) -> Result<()> {
     validate_description(&args.description)?;
@@ -253,6 +266,18 @@ pub(crate) fn validate_create_action_args(args: &bsv_rs::wallet::CreateActionArg
             MAXIMUM_SEND_WITH_TRANSACTIONS - 1
         )));
     }
+
+    // A new action under noSend is not sent; sendWith sends the named
+    // transactions with it. The reference has no status for the pair and
+    // throws before its commit (ts-stack 57c5f130 storage/methods/
+    // processAction.ts 429-443); this door refuses it by name, before any
+    // write. A sendWith alone (no new action) is not this pair.
+    let no_send = args
+        .options
+        .as_ref()
+        .and_then(|o| o.no_send)
+        .unwrap_or(false);
+    refuse_no_send_beside_send_with(is_new_tx && no_send, send_with_len)?;
 
     // BRC-177 (0177.md:53): a wallet without module `nosend` rejects the
     // request rather than storing the label as metadata. The reference

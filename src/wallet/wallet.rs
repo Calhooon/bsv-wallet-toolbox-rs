@@ -2288,6 +2288,33 @@ where
             });
         }
 
+        // Determine options from sign_action args, falling back to cached values
+        let is_no_send = args
+            .options
+            .as_ref()
+            .and_then(|o| o.no_send)
+            .unwrap_or(pending_tx.is_no_send);
+
+        let is_delayed = args
+            .options
+            .as_ref()
+            .and_then(|o| o.accept_delayed_broadcast)
+            .unwrap_or(pending_tx.is_delayed);
+
+        let send_with = args
+            .options
+            .as_ref()
+            .and_then(|o| o.send_with.clone())
+            .map(|txids| txids.iter().map(hex::encode).collect())
+            .unwrap_or_else(|| pending_tx.send_with.clone());
+
+        let is_send_with = !send_with.is_empty();
+
+        // An action under noSend beside a non-empty sendWith is refused
+        // before anything is signed or written: the pending transaction
+        // stays cached and the action unsigned, its inputs reserved.
+        super::create_args::refuse_no_send_beside_send_with(is_no_send, send_with.len())?;
+
         // Merge any client-provided unlocking scripts AND sequence numbers from
         // args.spends. BRC-100 lets a signAction spend carry `sequenceNumber`;
         // covenant spends (PUSHTX) grind nSequence so the preimage they signed
@@ -2377,28 +2404,6 @@ where
 
         // Compute txid from signed transaction
         let txid = compute_txid(&signed_tx);
-
-        // Determine options from sign_action args, falling back to cached values
-        let is_no_send = args
-            .options
-            .as_ref()
-            .and_then(|o| o.no_send)
-            .unwrap_or(pending_tx.is_no_send);
-
-        let is_delayed = args
-            .options
-            .as_ref()
-            .and_then(|o| o.accept_delayed_broadcast)
-            .unwrap_or(pending_tx.is_delayed);
-
-        let send_with = args
-            .options
-            .as_ref()
-            .and_then(|o| o.send_with.clone())
-            .map(|txids| txids.iter().map(hex::encode).collect())
-            .unwrap_or_else(|| pending_tx.send_with.clone());
-
-        let is_send_with = !send_with.is_empty();
 
         // Process the signed transaction
         let auth = self.auth();
