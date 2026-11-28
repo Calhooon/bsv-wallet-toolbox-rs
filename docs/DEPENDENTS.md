@@ -8,7 +8,7 @@ PR, so this page stays current.
 | crate | repository | pins this crate | how it consumes | captain |
 |---|---|---|---|---|
 | `bsv-wallet-cli` 0.18.2 | [Calhooon/bsv-wallet-cli](https://github.com/Calhooon/bsv-wallet-cli) (public) | main `=0.13.7` with `bsv-rs` `=0.8.13` and `bsv-tracker` `=0.8.0` (its `Cargo.toml` and lock at main 9358665, read 2026-11-28); beta `=0.14.0-beta.3` with `bsv-rs` `=0.9.0-beta.3` and `bsv-tracker` `=0.9.0-beta.3` (CLI PR 345, 6e1a7bc, 2026-10-28 21:11Z; before it `=0.14.0-beta.2` with the beta.2 pair, CLI PR 332, b101d67, 2026-10-28; before it `=0.14.0-beta.1` with the beta.1 pair, CLI PR 274, bb0a149, 2026-10-26); its main never pins a prerelease; renamed `bsv-wallet-toolbox` | features `sqlite`. The crate root re-exports (`Wallet`, `StorageSqlx`, `Services`, `ServicesOptions`, `Chain`, `Monitor`, `Error` and `StoreBusyReason`, the storage traits `WalletStorageProvider`, `WalletStorageWriter`, `MonitorStorage`, the broadcast and status words `BroadcastStatus`, `BROADCAST_*`, `PROVIDER_*`, `classify_broadcast_results`, `is_fatal_status`, `unproven_ancestors_in_beef`); `services` (`mock::MockWalletServices` in its tests, `traits`, `UtxoVerdict`, `providers::{arcade, whatsonchain, BananaBlocks}`); `storage` (`sqlx::refuse_invalid_beef_bytes`, `ProvenTxAnchor`, `StorageProcessActionArgs`); `monitor` (`ArcadeEventsTask`, `reorg_ops`, `tasks::check_for_proofs`) | the stack keeper (the CLI's programme, bsv-wallet-cli #106) |
-| `agent-manage` 0.1.0 (`manage/` in the agents repository) | Calgooon/agents (private) | `0.7.7` (locked 0.7.7), renamed `bsv-wallet-toolbox`, with `bsv-rs` `0.5.0` | features `remote`. The crate root (`Wallet`, `Services`, `ServicesOptions`, `Chain`, `StorageClient`, the storage traits `WalletStorageReader`, `WalletStorageWriter`, `WalletStorageSync`, `WalletStorageProvider`, `WalletServices`); `storage` (`StorageClient`, `entities`, the sync arguments `RequestSyncChunkArgs`, `SyncChunk`, `SyncOffsets`, `FindProvenTxReqsArgs`); `services::providers::arc::ArcConfig` | the agents captain |
+| `agent-manage` 0.1.0 (`manage/` in the agents repository) | Calgooon/agents (private) | main (4a75add) locks this crate at 0.13.3 with `bsv-rs` 0.8.11 (its lock as the dependents check read it on 2026-11-28), renamed `bsv-wallet-toolbox` | features `remote`. The crate root (`Wallet`, `Services`, `ServicesOptions`, `Chain`, `StorageClient`, the storage traits `WalletStorageReader`, `WalletStorageWriter`, `WalletStorageSync`, `WalletStorageProvider`, `WalletServices`); `storage` (`StorageClient`, `entities`, the sync arguments `RequestSyncChunkArgs`, `SyncChunk`, `SyncOffsets`, `FindProvenTxReqsArgs`); `services::providers::arc::ArcConfig` | the agents captain |
 | `dolphin-milk` 0.1.4 | [Calhooon/dolphinmilk](https://github.com/Calhooon/dolphinmilk) (public) | `0.3.38`, optional, with `bsv-rs` `0.3.4` and `bsv-wallet-cli` `0.1.23`; no committed `Cargo.lock` | behind its default feature `embedded-wallet`, default features of this crate (`sqlite`). The crate root (`Wallet`, `WalletOptions`, `Monitor`, `Services`, `ServicesOptions`, `StorageSqlx`, `Chain`, `WalletStorageWriter`); `services::providers::ArcConfig` | none named |
 
 ## The check
@@ -18,7 +18,7 @@ branch named after the line under test when it has one (`--line`; in CI the pull
 request's base or the pushed branch: the toolbox's beta builds the CLI's beta, which
 is where the CLI pins this crate's prereleases, and main builds the CLI's main; a
 dependent without such a branch is cloned at its default with a note only for an
-implicit line; an explicit `--line` (including a non-empty `cli_ref`) must name an
+implicit line; an explicit `--line` (on the 0.14 line, a non-empty `cli_ref` too) must name an
 existing branch or the row fails without cloning. A probe
 that faults rather than answers marks the row failed, #208) into a
 scratch directory, rewrites its dependency on this crate
@@ -31,7 +31,7 @@ a narrowed row is noted in the summary. The dispatched workflow `dependents.yml`
 before a tag and when the pin lane asks, never on a push run (the owner's word of
 2026-10-27); a private repository needs a token the job does not hold, so its
 row runs on a laptop with `--from`.
-Select a CLI branch with the optional `cli_ref` input: `gh workflow run Dependents --ref beta -f cli_ref=<branch>`; leaving it empty keeps the branch named like this line, including the CLI's main on main.
+On the 0.14 line the workflow takes an optional `cli_ref` input that selects a CLI branch (`gh workflow run Dependents --ref beta -f cli_ref=<branch>`); this line's workflow has no such input and builds the CLI's main.
 Every probe or clone fault appears as a summary row, and the job fails for the named reason.
 
 The rows a test run carries (#252). A `default` row's tests run with
@@ -56,8 +56,9 @@ line (`src/lib.rs - module::item (line 3)`), and a `should_panic`,
 names it. The marker reaches the gate
 only where libtest shows it (a passing test's `println!` and `eprintln!` are
 captured). The rows go to the terminal and, in CI, to the job summary;
-`tools/dependents-check.sh --parse FILE` reads a captured output alone, and
-`tools/dependents-check-test.sh` proves the parsing on fixed output.
+`tools/dependents-check.sh --parse FILE` reads a captured output alone; on the
+0.14 line `tools/dependents-check-test.sh` proves the parsing on fixed output
+(this line does not carry that script).
 
 What the check found against 0.13.0 on 2026-10-23: `bsv-wallet-cli` at
 `main` builds `--locked` and `cargo test --locked` passes on every target
@@ -199,7 +200,7 @@ excluded row joins the job when its captain re-pins it onto this crate's
 | row | blocker | tracked | joins the job |
 |---|---|---|---|
 | `dolphin-milk` | pins `bsv-rs` 0.3, which does not build against this tree; kept out by the captain's decision on the #59 cold review | tracked in #94 | when its captain re-pins `bsv-rs` and this crate |
-| `agent-manage` | a private repository (the job holds no token), and it pins `bsv-rs` 0.5.0 | tracked in #94 | when its captain re-pins `bsv-rs` and this crate; until then it runs on a laptop with `--from` |
+| `agent-manage` | a private repository (the job holds no token); on this line its main builds `--locked` and its tests pass (the dependents check of 2026-11-28 against this line's tree: `build: ok (--locked)`, `test: ok`) | tracked in #94 | when the job can read it; until then it runs on a laptop with `--from` |
 
 The lock is moved by `cargo update -p bsv-wallet-toolbox-rs@<locked version>`
 alone, so only this crate and what it newly needs change; the script prints

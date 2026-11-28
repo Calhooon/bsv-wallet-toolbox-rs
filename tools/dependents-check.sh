@@ -107,7 +107,8 @@ report() {
   done
 }
 
-# A captured output read alone: the parsing's own proof (tools/dependents-check-test.sh).
+# A captured output read alone: the parsing's own proof (tools/dependents-check-test.sh,
+# on the 0.14 line; this line does not carry it).
 if [ -n "$parse" ]; then
   crate="${only:-dependent}"
   failed="$(failed_tests "$parse")"
