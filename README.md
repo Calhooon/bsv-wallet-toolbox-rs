@@ -122,8 +122,10 @@ either, and it holds its coins until the application or the host releases it
 with `abortAction` (the wallet never aborts it). The same call with
 `acceptDelayedBroadcast` not said is refused the same way, as this line's
 default is `false`; with `acceptDelayedBroadcast: true` it is answered as on
-0.13.9, which on this line also builds and posts a change-only transaction of
-the wallet's own, with its fee, and queues the payment for the monitor. The
+0.13.9, which on this line also builds a change-only transaction of the
+wallet's own, with its fee, and queues it and the payment for the monitor's
+send-waiting task (nothing is posted by the call; a host with no monitor
+running never posts them). The
 same build reached through `signAction` (a deferred action with no inputs and
 no outputs of the caller's, signed naming the payment in `sendWith` without a
 delayed post) is refused the same way, and the deferred action stays signable
