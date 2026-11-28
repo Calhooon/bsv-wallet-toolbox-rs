@@ -15,8 +15,13 @@
   every row it ends (a received row's own spends included), and asks and
   retires once a request however many rows of the txid the store holds.
   Evidence against a transaction beside a word is a proof this store
-  checked: a stored competitor proof counts with its root-check record,
-  and a `spent-proven` check at one of its input outpoints counts unless
+  checked: a stored competitor proof counts with its root-check record;
+  one with none is asked of the tracker before the word is written
+  (confirmed, its root is recorded and the received row ends; refuted, the
+  row keeps its word; with no tracker, or one that errs, the row ends and
+  the request records it as ended beside a proof this store had not
+  checked, `endedBesideUncheckedProof`, why `trackerNotAnswered`, with the
+  competitor's txid); and a `spent-proven` check at one of its input outpoints counts unless
   its recorded spender (a proof row this store checked whose bytes spend
   the outpoint, found by the outpoint) is the transaction itself, or none
   is on record and the transaction holds a proof this store checked. The
@@ -24,7 +29,7 @@
   demoted proof makes a request only for a txid the store holds a
   transaction row of (`src/storage/sqlx/checked_mark_tests.rs`,
   `checked_evidence_tests.rs`, `checked_walk_tests.rs`,
-  `checked_spender_tests.rs`).
+  `checked_spender_tests.rs`, `checked_word_ask_tests.rs`).
   Hosts: a coin a checked proof showed spent stays withheld through later
   retires of the transactions around it. A take beside a stored competitor
   proof asks the tracker of its root: confirmed, the take is refused (for
