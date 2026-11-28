@@ -411,3 +411,52 @@ async fn the_walk_keeps_a_descendant_ended_on_a_checked_double_spend() {
     }
     assert!(wrong.is_empty(), "walk off the rule:\n{}", wrong.join("\n"));
 }
+
+/// The schedule's own rule: a caller that brings `unknown` or a hint to a
+/// coin whose verdict reads `spent-proven` writes nothing over it, neither
+/// the verdict nor its schedule; a `spent-proven` verdict is written over
+/// any other.
+#[tokio::test]
+async fn the_schedule_keeps_a_spent_proven_verdict_over_a_weaker_one() {
+    let st = seed().await;
+    competitor_proven(&st.s, &st.d, &c_raw(), C_HEIGHT).await;
+    let read = |s: &StorageSqlx, o: i64| {
+        let s = s.clone();
+        async move {
+            sqlx::query_as::<_, (Option<String>, i64, String)>(
+                "SELECT last_verdict, attempts, CAST(next_check_at AS TEXT) FROM locked_input_checks WHERE output_id = ?",
+            )
+            .bind(o)
+            .fetch_one(s.pool())
+            .await
+            .unwrap()
+        }
+    };
+    let before = read(&st.s, st.o).await;
+    for weaker in [
+        super::LOCKED_VERDICT_UNKNOWN,
+        super::LOCKED_VERDICT_SPENT_HINT,
+    ] {
+        st.s.schedule_locked_input_check(st.o, weaker).await;
+        assert_eq!(
+            read(&st.s, st.o).await,
+            before,
+            "{weaker} over spent-proven"
+        );
+    }
+    st.s.schedule_locked_input_check(st.o, super::LOCKED_VERDICT_UNKNOWN)
+        .await;
+    let other: i64 =
+        sqlx::query_scalar("SELECT output_id FROM outputs WHERE txid = ? AND vout = 0")
+            .bind(&st.r)
+            .fetch_one(st.s.pool())
+            .await
+            .unwrap();
+    st.s.schedule_locked_input_check(other, super::LOCKED_VERDICT_SPENT_PROVEN)
+        .await;
+    assert_eq!(
+        verdict(&st.s, other).await.as_deref(),
+        Some("spent-proven"),
+        "spent-proven over unknown"
+    );
+}
