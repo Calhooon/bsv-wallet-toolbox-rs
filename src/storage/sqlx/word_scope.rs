@@ -13,62 +13,149 @@
 //! receipt does.
 //!
 //! Evidence about the transaction is the same for every user and ends every
-//! row of the txid. It is a proof this store checked, read from the store's
-//! own records on the caller's write ([`evidence_on_record_on`]): a stored
-//! competitor (an output row at one of the txid's input outpoints whose
-//! `spent_by` names another transaction with a `proven_txs` row this store
-//! checked, its root-check record, whose bytes spend that outpoint), or a
-//! `spent-proven` check (`locked_input_checks`) on an output row at one of
-//! its input outpoints whose recorded spender is another txid (a proof row
-//! this store checked whose bytes spend that outpoint, found by the
-//! outpoint, `competitor_proof::checked_spenders_on`); the records the take guard
+//! row of the txid. It is a proof this store checked, read on the caller's
+//! write ([`word_evidence_on`]): a stored competitor (an output row at one
+//! of the txid's input outpoints whose `spent_by` names another
+//! transaction with a `proven_txs` row whose bytes spend that outpoint)
+//! whose proof has its root-check record, or a `spent-proven` check
+//! (`locked_input_checks`) on an output row at one of its input outpoints
+//! whose recorded spender is another txid (a proof row this store checked
+//! whose bytes spend that outpoint, found by the outpoint,
+//! `competitor_proof::checked_spenders_on`); the records the take guard
 //! reads (`competitor_proof.rs`, `abort_recovery::failed_outgoing_rows`).
 //! A `spent-proven` check with no spender on record is evidence too, unless
-//! the txid holds a proof this store checked. A proof row this store has
-//! not checked, and a `spent-proven` check whose recorded spender is the
-//! txid itself, are not evidence.
+//! the txid holds a proof this store checked; one whose recorded spender is
+//! the txid itself is not.
+//!
+//! A stored competitor whose proof row has no root-check record is asked of
+//! the tracker by every writer of a word BEFORE its write, with no lock
+//! held (`StorageSqlx::word_ask`, the lookup the take guard shares): the
+//! retire (`retire_undeliverable_tx`'s `retire_rows`), the broadcaster's
+//! fatal word (`mark_transaction_rejected`) and the status review's check 1
+//! (`review_status_impl`). The root confirmed, the word's write records it
+//! and the proof is evidence; refuted, it is none and the row keeps its
+//! word. No tracker, or one that errs: it is evidence (a proof nobody could
+//! check takes a coin out of the count, never puts one in), and the request
+//! records it as a proof this store had NOT checked (the note `what`
+//! `endedBesideUncheckedProof`, `why` `trackerNotAnswered`, the
+//! `competitor`, the `transactionIds`): no root-check record and no
+//! `spent-proven` mark is written on its account. A proof row stored after
+//! the ask counts the same way (`why` `storedAfterLookup`). A row ended so
+//! completes on its own checked proof, as any `failed` row does
+//! (`proof_completion`).
 
 use sqlx::SqliteConnection;
 
 use crate::Result;
 
-/// Does the store hold evidence against `txid` on record: a stored
-/// competitor this store checked, or a `spent-proven` check at one of its
-/// input outpoints that is evidence against it ([`spent_proven_against_on`])? The outpoints
-/// are read from a held copy that hashes to the txid; with none, the
-/// outpoints of the outputs a row of the txid spends.
-pub(crate) async fn evidence_on_record_on(conn: &mut SqliteConnection, txid: &str) -> Result<bool> {
-    let mut outpoints: Vec<(String, u32)> =
+/// The outpoints a word's evidence read judges `txid` by: read from a held
+/// copy that hashes to the txid; with none, the outpoints of the outputs a
+/// row of the txid spends.
+pub(crate) async fn word_outpoints_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+) -> Result<Vec<(String, u32)>> {
+    let outpoints: Vec<(String, u32)> =
         super::abort_recovery::held_transaction_on(&mut *conn, txid)
             .await?
             .map(|tx| super::competitor_proof::inputs_of(&tx))
             .unwrap_or_default();
-    if outpoints.is_empty() {
-        let spent: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT lower(o.txid), o.vout FROM outputs o \
-             JOIN transactions t ON t.transaction_id = o.spent_by \
-             WHERE t.txid = ? AND o.txid IS NOT NULL",
-        )
-        .bind(txid)
-        .fetch_all(&mut *conn)
-        .await?;
-        outpoints = spent
-            .into_iter()
-            .filter_map(|(t, v)| Some((t, u32::try_from(v).ok()?)))
-            .collect();
+    if !outpoints.is_empty() {
+        return Ok(outpoints);
     }
-    if super::competitor_proof::stored_competitor_on(&mut *conn, txid, &outpoints)
-        .await?
-        .is_some()
-    {
-        return Ok(true);
+    let spent: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT lower(o.txid), o.vout FROM outputs o \
+         JOIN transactions t ON t.transaction_id = o.spent_by \
+         WHERE t.txid = ? AND o.txid IS NOT NULL",
+    )
+    .bind(txid)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(spent
+        .into_iter()
+        .filter_map(|(t, v)| Some((t, u32::try_from(v).ok()?)))
+        .collect())
+}
+
+/// The evidence a word's write finds against a transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WordEvidence {
+    /// A proof this store checked: a stored competitor with its root-check
+    /// record (one the ask confirmed, recorded in this write), or a
+    /// `spent-proven` check that is evidence against it.
+    Checked,
+    /// A stored competitor proof this store had NOT checked: no tracker
+    /// answered the ask (`why` `trackerNotAnswered`), or it was stored after
+    /// the ask (`storedAfterLookup`). Evidence still (a proof nobody could
+    /// check takes a coin out of the count, never puts one in), recorded
+    /// as such on the request, never as a checked proof.
+    Unchecked {
+        competitor: String,
+        why: &'static str,
+    },
+}
+
+/// The evidence against `txid` on the caller's write (see the module),
+/// `ask` the word's ask made before the write: a stored competitor whose
+/// bytes spend one of its input outpoints, judged by its record or, with
+/// none, by the ask ([`super::competitor_proof::WordAsk`]: confirmed, its
+/// root recorded here; refuted, none; unanswered or not asked, unchecked
+/// evidence); or a `spent-proven` check at one of its input outpoints that
+/// is evidence against it ([`spent_proven_against_on`]).
+pub(crate) async fn word_evidence_on(
+    conn: &mut SqliteConnection,
+    txid: &str,
+    ask: &super::competitor_proof::WordAsk,
+) -> Result<Option<WordEvidence>> {
+    use super::competitor_proof::WordRoot;
+    let outpoints = word_outpoints_on(&mut *conn, txid).await?;
+    let competitors =
+        super::competitor_proof::spending_competitors_on(&mut *conn, txid, &outpoints).await?;
+    let mut unchecked = None;
+    for (competitor, _, _, recorded) in &competitors {
+        if *recorded {
+            return Ok(Some(WordEvidence::Checked));
+        }
+        match ask.answer(txid, competitor) {
+            Some(WordRoot::Confirmed { height, root }) => {
+                // The root the ask confirmed, recorded in the word's write.
+                super::proof_root_checks::record_root_checked_on(conn, competitor, *height, root)
+                    .await?;
+                return Ok(Some(WordEvidence::Checked));
+            }
+            Some(WordRoot::Refuted) => {}
+            Some(WordRoot::Unanswered) => {
+                unchecked.get_or_insert(WordEvidence::Unchecked {
+                    competitor: competitor.clone(),
+                    why: "trackerNotAnswered",
+                });
+            }
+            None => {
+                unchecked.get_or_insert(WordEvidence::Unchecked {
+                    competitor: competitor.clone(),
+                    why: "storedAfterLookup",
+                });
+            }
+        }
     }
     for outpoint in &outpoints {
         if spent_proven_against_on(&mut *conn, txid, outpoint, None).await? {
-            return Ok(true);
+            return Ok(Some(WordEvidence::Checked));
         }
     }
-    Ok(false)
+    Ok(unchecked)
+}
+
+/// The txids of `candidates` (`transaction_id`, `txid`, `is_outgoing`)
+/// with a received row: the txids a word's ask reads before its write.
+pub(crate) fn received_txids(candidates: &[(i64, String, bool)]) -> Vec<String> {
+    let mut txids: Vec<String> = Vec::new();
+    for (_, txid, is_outgoing) in candidates {
+        if !*is_outgoing && !txids.contains(txid) {
+            txids.push(txid.clone());
+        }
+    }
+    txids
 }
 
 /// Is there a `spent-proven` check at `outpoint` (on an output row there,
@@ -121,29 +208,36 @@ pub(crate) async fn spent_proven_against_on(
 
 /// The rows a request's word ends, of `candidates` (`transaction_id`,
 /// `txid`, `is_outgoing`): every outgoing row, and a received row only
-/// where the store holds evidence against its txid. Read on the caller's
-/// write; one evidence read per txid that has a received candidate.
+/// where the store holds evidence against its txid ([`word_evidence_on`],
+/// `ask` the word's ask made before the write). Read on the caller's
+/// write; one evidence read per txid that has a received candidate. A
+/// received row ended beside a proof this store had not checked is noted
+/// on the request (`what` `endedBesideUncheckedProof`, `why`, the
+/// `competitor`'s txid, the `transactionIds` ended).
 pub(crate) async fn rows_a_word_ends_on(
     conn: &mut SqliteConnection,
     candidates: &[(i64, String, bool)],
+    ask: &super::competitor_proof::WordAsk,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<i64>> {
-    let mut evidence: Vec<(String, bool)> = Vec::new();
+    let mut evidence: Vec<(String, Option<WordEvidence>, Vec<i64>)> = Vec::new();
     let mut ended = Vec::with_capacity(candidates.len());
     for (transaction_id, txid, is_outgoing) in candidates {
         if *is_outgoing {
             ended.push(*transaction_id);
             continue;
         }
-        let known = evidence.iter().find(|(t, _)| t == txid).map(|(_, e)| *e);
-        let against = if let Some(known) = known {
-            known
-        } else {
-            let read = evidence_on_record_on(&mut *conn, txid).await?;
-            evidence.push((txid.clone(), read));
-            read
+        let at = match evidence.iter().position(|(t, ..)| t == txid) {
+            Some(at) => at,
+            None => {
+                let read = word_evidence_on(&mut *conn, txid, ask).await?;
+                evidence.push((txid.clone(), read, Vec::new()));
+                evidence.len() - 1
+            }
         };
-        if against {
+        if evidence[at].1.is_some() {
             ended.push(*transaction_id);
+            evidence[at].2.push(*transaction_id);
         } else {
             tracing::info!(
                 txid = %txid,
@@ -153,5 +247,34 @@ pub(crate) async fn rows_a_word_ends_on(
             );
         }
     }
+    for (txid, read, rows) in &evidence {
+        let Some(WordEvidence::Unchecked { competitor, why }) = read else {
+            continue;
+        };
+        super::abort_recovery::note_request_on(
+            conn,
+            txid,
+            serde_json::json!({
+                "what": ENDED_BESIDE_UNCHECKED_PROOF,
+                "why": why,
+                "competitor": competitor,
+                "transactionIds": rows,
+                "when": now.to_rfc3339(),
+            }),
+        )
+        .await?;
+        tracing::warn!(
+            txid = %txid,
+            competitor = %competitor,
+            why,
+            rows = ?rows,
+            marker = "received_row_ended_beside_unchecked_proof",
+            "a request's word beside a stored competitor proof this store had not checked: the received rows end, recorded as unchecked"
+        );
+    }
     Ok(ended)
 }
+
+/// The note's `what` for a received row a word ended beside a stored
+/// competitor proof this store had not checked.
+pub(crate) const ENDED_BESIDE_UNCHECKED_PROOF: &str = "endedBesideUncheckedProof";

@@ -57,6 +57,9 @@ struct RetireRows<'a> {
     evidence: bool,
     /// The competitor whose checked proof the retire stands on, with it.
     competitor: Option<(&'a str, &'a super::competitors::CheckedCompetitorProof)>,
+    /// The word's ask, made before the write (`word_scope`); empty on
+    /// evidence.
+    ask: super::super::competitor_proof::WordAsk,
     now: chrono::DateTime<chrono::Utc>,
 }
 
@@ -138,19 +141,28 @@ impl StorageSqlx {
             RetireBasis::CompetitorProven { lost, .. } => lost,
             RetireBasis::Undelivered => &[],
         };
+        let evidence = matches!(basis, RetireBasis::CompetitorProven { .. });
+        // On a word, the ask before the write (`word_scope`): an unrecorded
+        // stored competitor proof beside a received row of the txid.
+        let ask = if evidence {
+            super::super::competitor_proof::WordAsk::default()
+        } else {
+            self.word_ask_for(txid).await?
+        };
         let rows = RetireRows {
             txid,
             proven_tx_req_id,
             attempts,
             req_status,
             guard,
-            evidence: matches!(basis, RetireBasis::CompetitorProven { .. }),
+            evidence,
             competitor: match basis {
                 RetireBasis::CompetitorProven {
                     competitor, proof, ..
                 } => Some((competitor, proof)),
                 RetireBasis::Undelivered => None,
             },
+            ask,
             now,
         };
         let Some((ended, inputs)) = self.retire_rows(&rows).await? else {
@@ -254,7 +266,13 @@ impl StorageSqlx {
             )
             .await?;
         }
-        let ended = retired_rows_on(&mut db_tx, rows.txid, rows.evidence).await?;
+        let ended = retired_rows_on(
+            &mut db_tx,
+            rows.txid,
+            (!rows.evidence).then_some(&rows.ask),
+            rows.now,
+        )
+        .await?;
         let [transaction_id, ..] = ended[..] else {
             super::commit(db_tx).await?;
             return Ok(None);
@@ -393,15 +411,16 @@ impl StorageSqlx {
 }
 
 /// The rows of `txid` a retire ends, read on its write transaction: every
-/// `sending` or `unproven` row on evidence (`evidence`, or evidence on
-/// record), else the outgoing ones alone (a word ends the rows of the user
+/// `sending` or `unproven` row on evidence (`word` `None`, or evidence the
+/// word's read finds, `word` its ask), else the outgoing ones alone (a word ends the rows of the user
 /// whose word it is, `word_scope`). Ordered outgoing before received: the
 /// head of the list is the row whose inputs and descendants the retire
 /// reads.
 async fn retired_rows_on(
     conn: &mut sqlx::SqliteConnection,
     txid: &str,
-    evidence: bool,
+    word: Option<&super::super::competitor_proof::WordAsk>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<i64>> {
     let candidates: Vec<(i64, String, bool)> = sqlx::query_as(
         "SELECT transaction_id, txid, is_outgoing FROM transactions \
@@ -411,10 +430,12 @@ async fn retired_rows_on(
     .bind(txid)
     .fetch_all(&mut *conn)
     .await?;
-    if evidence {
-        return Ok(candidates.into_iter().map(|(id, ..)| id).collect());
+    match word {
+        None => Ok(candidates.into_iter().map(|(id, ..)| id).collect()),
+        Some(ask) => {
+            super::super::word_scope::rows_a_word_ends_on(conn, &candidates, ask, now).await
+        }
     }
-    super::super::word_scope::rows_a_word_ends_on(conn, &candidates).await
 }
 
 /// `ids` `failed`, each one's own outputs unspendable (`outputs_clause`
@@ -474,6 +495,23 @@ async fn retire_inputs(
 }
 
 impl StorageSqlx {
+    /// A word's ask for `txid` (`word_scope`), read before the write: the
+    /// txid asked only where a received row of it is `sending` or
+    /// `unproven`, the rows a word on it reads.
+    async fn word_ask_for(&self, txid: &str) -> Result<super::super::competitor_proof::WordAsk> {
+        let received: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM transactions \
+             WHERE txid = ? AND is_outgoing = 0 AND status IN ('sending', 'unproven')",
+        )
+        .bind(txid)
+        .fetch_one(self.pool())
+        .await?;
+        if received == 0 {
+            return Ok(super::super::competitor_proof::WordAsk::default());
+        }
+        self.word_ask(&[txid.to_string()]).await
+    }
+
     pub(super) async fn mark_transaction_rejected_impl(
         &self,
         txid: &str,
@@ -503,9 +541,11 @@ impl StorageSqlx {
         // A broadcaster's word ends the rows of the user whose post it
         // answers (the outgoing rows), a received row only on evidence on
         // record (`word_scope`).
+        // The word's ask, before the write (`word_scope`).
+        let ask = self.word_ask_for(txid).await?;
         let ended = {
             let mut tx = self.write_tx().await?;
-            let ended = retired_rows_on(&mut tx, txid, false).await?;
+            let ended = retired_rows_on(&mut tx, txid, Some(&ask), now).await?;
             // Their outputs never fund anything again: change chained on a
             // rejected transaction is how a wallet poisons itself
             // (2026-09-02). The inputs and the descendants are released /

@@ -16,8 +16,12 @@
 //! tracker that cannot answer (none, or an error) leaves the check
 //! undecided: the competitor neither stands nor is gone, and a take beside
 //! it waits (`takeNotCounted`, why `trackerNotAnswered`) until a later take
-//! finds the tracker answering. A word's evidence read
-//! ([`stored_competitor_on`]) reads a recorded proof alone.
+//! finds the tracker answering. A word's writer asks the same way before
+//! its write ([`StorageSqlx::word_ask`], the lookup
+//! [`spending_competitors_on`] shared): confirmed, the word's write records
+//! the root and the proof is evidence; refuted, it is none; with no answer
+//! it counts as evidence, recorded on the request as a proof this store
+//! had not checked (`word_scope`).
 //! The proof path's competitor ask (`competitors.rs`) keeps the
 //! competitor's bytes and checked proof in the write that retires ours, so
 //! a `spent-proven` mark it writes has its spender on record: a proof row
@@ -87,6 +91,38 @@ enum RootAnswer {
     Unanswered,
 }
 
+/// What the tracker answered, before a word's write, of a stored
+/// competitor proof with no root-check record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WordRoot {
+    /// Our headers carry the root its path computes: the word's write
+    /// records it, and it is evidence.
+    Confirmed { height: u32, root: String },
+    /// Refuted: no evidence.
+    Refuted,
+    /// No tracker, or one that erred: evidence, as a proof nobody could
+    /// check, recorded on the request as such.
+    Unanswered,
+}
+
+/// A word's ask ([`StorageSqlx::word_ask`]): per txid, per unrecorded
+/// stored competitor, the tracker's answer.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WordAsk {
+    answers: Vec<(String, String, WordRoot)>,
+}
+
+impl WordAsk {
+    /// The answer asked for `competitor` beside `txid`; `None` where it was
+    /// stored after the ask.
+    pub(crate) fn answer(&self, txid: &str, competitor: &str) -> Option<&WordRoot> {
+        self.answers
+            .iter()
+            .find(|(t, c, _)| t == txid && c == competitor)
+            .map(|(.., root)| root)
+    }
+}
+
 /// A stored competitor: its txid, proof height, merkle path, bytes, and
 /// whether its proof row has this store's root-check record.
 type StoredCompetitor = (String, i64, Vec<u8>, Vec<u8>, bool);
@@ -114,32 +150,24 @@ pub(crate) fn inputs_of(tx: &bsv_rs::transaction::Transaction) -> Vec<(String, u
 
 /// The stored competitors of `txid`: a transaction the store records as
 /// spending one of `outpoints` (an output row there whose `spent_by` names
-/// it), with a stored proof; `recorded_only` keeps only a proof this store
-/// checked (its root-check record). Indexed by the transactions' txid.
+/// it), with a stored proof, record or none. Indexed by the transactions'
+/// txid.
 async fn stored_competitors(
     conn: &mut SqliteConnection,
     txid: &str,
     outpoints: &[(String, u32)],
-    recorded_only: bool,
 ) -> Result<Vec<(StoredCompetitor, (String, u32))>> {
     let mut found = Vec::new();
-    let sql = format!(
-        "SELECT DISTINCT s.txid, p.height, p.merkle_path, p.raw_tx, c.txid IS NOT NULL \
+    let sql = "SELECT DISTINCT s.txid, p.height, p.merkle_path, p.raw_tx, c.txid IS NOT NULL \
          FROM transactions t \
          JOIN outputs o ON o.transaction_id = t.transaction_id \
          JOIN transactions s ON s.transaction_id = o.spent_by \
          JOIN proven_txs p ON p.txid = s.txid \
          LEFT JOIN proof_root_checks c \
            ON c.txid = p.txid AND c.height = p.height AND c.merkle_root = lower(p.merkle_root) \
-         WHERE t.txid = ? AND o.vout = ? AND s.txid <> ?{}",
-        if recorded_only {
-            " AND c.txid IS NOT NULL"
-        } else {
-            ""
-        }
-    );
+         WHERE t.txid = ? AND o.vout = ? AND s.txid <> ?";
     for (source, vout) in outpoints {
-        let rows: Vec<StoredCompetitor> = sqlx::query_as(&sql)
+        let rows: Vec<StoredCompetitor> = sqlx::query_as(sql)
             .bind(source)
             .bind(i64::from(*vout))
             .bind(txid)
@@ -157,20 +185,36 @@ async fn stored_competitors(
     Ok(found)
 }
 
-/// A stored competitor of `txid` on record, read on the caller's write: the
-/// indexed read of [`stored_competitors`] with its root-check record (a
-/// word's writer reads no header), kept only where the competitor's own
-/// stored bytes spend the outpoint (`word_scope`'s evidence read).
-pub(crate) async fn stored_competitor_on(
+/// A stored competitor that spends: its txid, the height its proof names,
+/// its merkle path, and whether its proof row has this store's root-check
+/// record.
+pub(crate) type SpendingCompetitor = (String, u32, Vec<u8>, bool);
+
+/// The stored competitors of `txid` (record or none) whose own stored
+/// bytes spend the outpoint they are found at, with a height that fits:
+/// the one lookup the take guard ([`StorageSqlx::competitor_check`]) and a
+/// word's writers ([`StorageSqlx::word_ask`], `word_scope`'s read on the
+/// write) share.
+pub(crate) async fn spending_competitors_on(
     conn: &mut SqliteConnection,
     txid: &str,
     outpoints: &[(String, u32)],
-) -> Result<Option<String>> {
-    Ok(stored_competitors(conn, txid, outpoints, true)
-        .await?
+) -> Result<Vec<SpendingCompetitor>> {
+    Ok(spending_of(
+        stored_competitors(conn, txid, outpoints).await?,
+    ))
+}
+
+/// Of `found`, the competitors whose own bytes spend the outpoint they are
+/// found at, with a height that fits.
+fn spending_of(found: Vec<(StoredCompetitor, (String, u32))>) -> Vec<SpendingCompetitor> {
+    found
         .into_iter()
-        .find(|((competitor, _, _, raw, _), outpoint)| spends(competitor, raw, outpoint))
-        .map(|((competitor, ..), _)| competitor))
+        .filter(|((competitor, _, _, raw, _), outpoint)| spends(competitor, raw, outpoint))
+        .filter_map(|((competitor, height, path, _, recorded), _)| {
+            Some((competitor, u32::try_from(height).ok()?, path, recorded))
+        })
+        .collect()
 }
 
 /// The 36 bytes an input spending `outpoint` carries: the source txid in
@@ -244,22 +288,18 @@ impl StorageSqlx {
                 .map(|tx| inputs_of(&tx))
                 .unwrap_or_default(),
         };
-        let found = stored_competitors(&mut conn, txid, &outpoints, false).await?;
+        let found = stored_competitors(&mut conn, txid, &outpoints).await?;
         drop(conn);
+        let read = found.iter().map(|((t, ..), _)| t.clone()).collect();
+        let found = spending_of(found);
         let mut check = CompetitorCheck {
             txid: txid.to_string(),
             outpoints,
-            read: found.iter().map(|((t, ..), _)| t.clone()).collect(),
+            read,
             standing: None,
             undecided: None,
         };
-        for ((competitor, height, path, raw, recorded), outpoint) in found {
-            let Ok(height) = u32::try_from(height) else {
-                continue;
-            };
-            if !spends(&competitor, &raw, &outpoint) {
-                continue;
-            }
+        for (competitor, height, path, recorded) in found {
             match self.root_answer(&competitor, height, &path).await {
                 RootAnswer::Stands(root) => {
                     check.standing = Some(StandingCompetitor {
@@ -276,6 +316,35 @@ impl StorageSqlx {
             }
         }
         Ok(check)
+    }
+
+    /// A word's ask (`word_scope`), before its write and with no lock
+    /// held: for each of `txids`, every stored competitor whose proof row
+    /// has no root-check record, its root asked of the tracker now. The
+    /// word's write reads the stored competitors again and judges each by
+    /// this answer ([`WordAsk::answer`]).
+    pub(crate) async fn word_ask(&self, txids: &[String]) -> Result<WordAsk> {
+        let mut ask = WordAsk::default();
+        for txid in txids {
+            let unrecorded: Vec<SpendingCompetitor> = {
+                let mut conn = self.pool().acquire().await?;
+                let outpoints = super::word_scope::word_outpoints_on(&mut conn, txid).await?;
+                spending_competitors_on(&mut conn, txid, &outpoints)
+                    .await?
+                    .into_iter()
+                    .filter(|(.., recorded)| !recorded)
+                    .collect()
+            };
+            for (competitor, height, path, _) in unrecorded {
+                let root = match self.root_answer(&competitor, height, &path).await {
+                    RootAnswer::Stands(root) => WordRoot::Confirmed { height, root },
+                    RootAnswer::Gone => WordRoot::Refuted,
+                    RootAnswer::Unanswered => WordRoot::Unanswered,
+                };
+                ask.answers.push((txid.clone(), competitor, root));
+            }
+        }
+        Ok(ask)
     }
 
     /// Does `path` prove `competitor` at `height` under our headers now? A
@@ -407,7 +476,7 @@ async fn standing_refusal_on(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Option<TakeApplied>> {
     let txid = check.txid.as_str();
-    let late = stored_competitors(&mut *conn, txid, &check.outpoints, false)
+    let late = stored_competitors(&mut *conn, txid, &check.outpoints)
         .await?
         .into_iter()
         .map(|((t, ..), _)| t)

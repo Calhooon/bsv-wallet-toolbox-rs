@@ -498,6 +498,14 @@ impl StorageSqlx {
         *ct = None;
     }
 
+    /// Clear the services (a test's store with no header source at all).
+    #[cfg(test)]
+    pub(crate) fn clear_services(&self) {
+        if let Ok(mut guard) = crate::lock_utils::lock_write(&self.services) {
+            *guard = None;
+        }
+    }
+
     /// Get a reference to the current ChainTracker, if set.
     pub(crate) async fn get_chain_tracker(&self) -> Option<Arc<dyn ChainTracker>> {
         let ct = self.chain_tracker.read().await;
