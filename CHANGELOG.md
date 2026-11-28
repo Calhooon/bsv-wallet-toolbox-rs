@@ -62,7 +62,35 @@
   (`src/storage/sqlx/held_receipt_scope_tests.rs`,
   `a_named_txid_moves_the_callers_row_alone`).
 
+- `signAction` sends the transactions named in `sendWith` with the
+  action in the call. A named transaction that is the caller's own
+  `noSend` action is posted with the signed action in one post, and each
+  reads `unproven` when a broadcaster takes them (`sending` when none
+  does, a hint the send-waiting task asks again), as the reference's
+  wallet posts `[...sendWith, txid]` in one post (ts-stack 57c5f130
+  `storage/methods/processAction.ts` 124, 148). It was queued `sending`
+  and left for the send-waiting task while the action was posted alone.
+  `createAction` with `signAndProcess` beside a new action now posts the
+  same way, through the same function (`src/wallet/send_set.rs`). A named
+  txid that is not the caller's `noSend` action (unknown, another
+  user's, ended, or already on its way) is answered as before and not
+  carried (`tests/sign_door_send_with_tests.rs`).
+
 ### Changed
+
+- An action that is `noSend` beside a non-empty `sendWith` is refused at
+  both doors, `createAction` (with `signAndProcess` or deferred) and
+  `signAction` (its `noSend` said at the sign or kept from its create),
+  with `Validation error: noSend and sendWith cannot be combined: a
+  noSend action is not sent, and sendWith sends the named transactions
+  with this action` (`InvalidParameter`), before anything is built,
+  signed, written, reserved or queued; a deferred action stays unsigned
+  with its session. Both were queued `sending` for the send-waiting task
+  to post, a transaction its caller said not to send. The reference
+  throws before its commit (`processAction.ts` 429-443). A `sendWith`
+  alone, with no inputs and no outputs, builds no action and keeps
+  sending the named transactions (`the_create_door_refuses_no_send_beside_send_with`,
+  `the_sign_door_refuses_no_send_beside_send_with`).
 
 - The published crate carries the source, the tests, the test vectors, the
   examples, the bench sources and the documents a host reads
@@ -421,6 +449,15 @@
 
 ### Hosts
 
+- A host that set `noSend: true` beside a non-empty `sendWith` gets the
+  refusal above. To build an action and keep it with the named
+  transactions unsent, create it `noSend` with no `sendWith` and name all
+  of them in a later call's `sendWith` (a `createAction` with no inputs
+  and no outputs sends them in one post); to send them with the action,
+  drop `noSend`.
+- A host that read a named payment `sending` after `signAction`, or after
+  `createAction` beside a new action, and waited for the send-waiting
+  task reads it `unproven` in the answer when a broadcaster took it.
 - No store write is held across a post on any road: `createAction`'s and
   `signAction`'s posts, `internalizeAction`'s post of a held body, the
   stored-action door (`Wallet::process_action`), the send-waiting task and
