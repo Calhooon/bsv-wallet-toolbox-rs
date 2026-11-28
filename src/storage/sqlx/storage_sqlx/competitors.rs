@@ -13,7 +13,7 @@ const COMPETITORS_QUEUED: &str = "competitorsQueued";
 type QueuedCompetitorRow = (i64, String, i64, String, Option<Vec<u8>>);
 
 /// The competitors queued on a request's history.
-fn queued_competitors(history: &str) -> Vec<String> {
+pub(crate) fn queued_competitors(history: &str) -> Vec<String> {
     serde_json::from_str::<serde_json::Value>(history)
         .ok()
         .and_then(|h| {
@@ -26,31 +26,43 @@ fn queued_competitors(history: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The competitor's checked proof as the ask found it: its bytes (hashing
+/// to its txid), its merkle path, the height and the root our tracker
+/// confirmed there. Kept by the write that retires our action, so a mark
+/// written on it has its spender on record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheckedCompetitorProof {
+    pub(crate) raw_tx: Vec<u8>,
+    pub(crate) merkle_path: Vec<u8>,
+    pub(crate) height: u32,
+    pub(crate) root: String,
+    pub(crate) idx: i64,
+}
+
 /// Is `competitor`'s proof, as `get_merkle_path` served it, for the root our
 /// header names at its height? A proof for a block the header gate has not
 /// let through yet is not checked (as `ingest_merkle_proof` defers it).
+/// `Some` with the path's bytes, height, root and leaf offset when it is.
 async fn competitor_proof_meets_our_header(
     tracker: &dyn bsv_rs::transaction::ChainTracker,
     competitor: &str,
     merkle_path_hex: &str,
     gate: u32,
-) -> bool {
-    let Ok(bytes) = hex::decode(merkle_path_hex) else {
-        return false;
-    };
-    let Ok(bump) = MerklePath::from_binary(&bytes) else {
-        return false;
-    };
-    let Ok(root) = bump.compute_root(Some(competitor)) else {
-        return false;
-    };
-    bump.block_height <= gate
+) -> Option<(Vec<u8>, u32, String, i64)> {
+    let bytes = hex::decode(merkle_path_hex).ok()?;
+    let bump = MerklePath::from_binary(&bytes).ok()?;
+    let root = bump.compute_root(Some(competitor)).ok()?;
+    let checked = bump.block_height <= gate
         && matches!(
             tracker
                 .is_valid_root_for_height(&root, bump.block_height)
                 .await,
             Ok(true)
-        )
+        );
+    checked.then(|| {
+        let idx = super::proven_txs::bump_leaf_index(&bump, competitor);
+        (bytes, bump.block_height, root, idx)
+    })
 }
 
 /// The competitor's word for our transaction: the proof path's evidence.
@@ -148,13 +160,15 @@ impl StorageSqlx {
     /// tracker), bound as Rule 28's `is_utxo` binds a named spender: the
     /// name is the broadcaster's word, the bytes and the proof the evidence.
     /// No spender is looked up. No tracker, no check, and nothing asked.
+    /// The competitor's bytes and checked proof come back beside the lost
+    /// outpoints, for the retire's write to keep.
     async fn competitor_is_proven(
         &self,
         services: &dyn WalletServices,
         our_raw_tx: &[u8],
         competitor: &str,
         gate: u32,
-    ) -> Option<Vec<(String, u32)>> {
+    ) -> Option<(Vec<(String, u32)>, CheckedCompetitorProof)> {
         let tracker = self.get_chain_tracker().await?;
         let ours = bsv_rs::transaction::Transaction::from_binary(our_raw_tx).ok()?;
         let raw = match services.get_raw_tx(competitor, false).await {
@@ -197,9 +211,18 @@ impl StorageSqlx {
             Ok(found) => found.merkle_path?,
             Err(_) => return None,
         };
-        competitor_proof_meets_our_header(&*tracker, competitor, &merkle_path, gate)
-            .await
-            .then_some(lost)
+        let (merkle_path, height, root, idx) =
+            competitor_proof_meets_our_header(&*tracker, competitor, &merkle_path, gate).await?;
+        Some((
+            lost,
+            CheckedCompetitorProof {
+                raw_tx: raw,
+                merkle_path,
+                height,
+                root,
+                idx,
+            },
+        ))
     }
 
     /// The proof path's first step (bsv-stack-lean #66): every request with
@@ -233,7 +256,7 @@ impl StorageSqlx {
                 continue;
             };
             for competitor in queued_competitors(&history) {
-                let Some(lost) = self
+                let Some((lost, proof)) = self
                     .competitor_is_proven(services.as_ref(), &raw_tx, &competitor, gate)
                     .await
                 else {
@@ -255,6 +278,7 @@ impl StorageSqlx {
                         RetireBasis::CompetitorProven {
                             competitor: &competitor,
                             lost: &lost,
+                            proof: &proof,
                         },
                         None,
                         chrono::Utc::now(),

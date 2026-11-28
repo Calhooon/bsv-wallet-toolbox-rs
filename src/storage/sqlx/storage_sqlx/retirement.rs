@@ -32,6 +32,9 @@ pub(crate) enum RetireBasis<'a> {
         /// The outpoints of ours the competitor's bytes spend (`txid`,
         /// `vout`): lost to it, locked for good (`spent-proven`).
         lost: &'a [(String, u32)],
+        /// Its bytes and checked proof, kept in the write that retires
+        /// ours (a `proven_txs` row and its root-check record).
+        proof: &'a super::competitors::CheckedCompetitorProof,
     },
 }
 
@@ -52,6 +55,8 @@ struct RetireRows<'a> {
     /// and ends the outgoing rows alone, a received row only where the
     /// store holds evidence on record (`word_scope`).
     evidence: bool,
+    /// The competitor whose checked proof the retire stands on, with it.
+    competitor: Option<(&'a str, &'a super::competitors::CheckedCompetitorProof)>,
     now: chrono::DateTime<chrono::Utc>,
 }
 
@@ -140,6 +145,12 @@ impl StorageSqlx {
             req_status,
             guard,
             evidence: matches!(basis, RetireBasis::CompetitorProven { .. }),
+            competitor: match basis {
+                RetireBasis::CompetitorProven {
+                    competitor, proof, ..
+                } => Some((competitor, proof)),
+                RetireBasis::Undelivered => None,
+            },
             now,
         };
         let Some((transaction_id, inputs)) = self.retire_rows(&rows).await? else {
@@ -214,6 +225,26 @@ impl StorageSqlx {
             .bind(rows.proven_tx_req_id)
             .execute(&mut *db_tx)
             .await?;
+        // The competitor's checked proof, kept in this write: its proof row
+        // and this store's root-check record for it, the records a checked
+        // proof is read from, so every mark this retire writes has its
+        // spender on record.
+        if let Some((competitor, proof)) = rows.competitor {
+            super::proven_txs::store_validated_proof_on(
+                &mut db_tx,
+                &super::proven_txs::ValidatedProofRow {
+                    txid: competitor,
+                    block_height: proof.height,
+                    checked_root: &proof.root,
+                    block_hash: "",
+                    merkle_root: &proof.root,
+                    merkle_path: &proof.merkle_path,
+                    idx: proof.idx,
+                    raw_tx: Some(&proof.raw_tx),
+                },
+            )
+            .await?;
+        }
         let ended = retired_rows_on(&mut db_tx, rows.txid, rows.evidence).await?;
         let [transaction_id, ..] = ended[..] else {
             super::commit(db_tx).await?;

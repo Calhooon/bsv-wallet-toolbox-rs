@@ -56,6 +56,7 @@ mod users;
 #[cfg(test)]
 mod validation_tests;
 mod writer;
+pub(crate) use competitors::queued_competitors;
 pub(crate) use door_notes::InstanceNote;
 pub(crate) use outputs::{output_from_row, sequence_number_from_row};
 pub use proven_tx_reqs::{UnprovenAdoption, ADOPT_UNPROVEN_TX_LIMIT};
