@@ -156,6 +156,18 @@ pub struct Services {
 - `post_beef_count()` - Number of post beef providers
 - `get_utxo_status_count()` - Number of UTXO status providers
 
+### A host's services object and the store's writer
+
+No store write is held across a `post_beef` call on any road (`createAction`,
+`signAction`, `internalizeAction`'s held body, the stored-action door, the
+send-waiting task, the lost-proof announce): every door commits before it
+posts and builds its BEEF on a reader. A host's `WalletServices` may therefore
+write to the store through the store's writer (`write_tx()`) before it passes
+a post on. It must take the writer through a clone of the same `StorageSqlx`
+it gave the `Wallet` and the `Monitor`, and must not open the file a second
+time. Witnesses: `tests/post_holds_no_write_tests.rs` (the acquire under a
+tenth of `STORE_BUSY_CEILING_MS`, one witness a road).
+
 ### WalletServices Trait (traits.rs:117)
 
 Core trait that `Services` implements:

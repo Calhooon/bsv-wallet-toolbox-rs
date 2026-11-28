@@ -256,6 +256,13 @@ let settings = storage.make_available().await?;
 
 See `sqlx/CLAUDE.md` for detailed documentation.
 
+A host's services object may write through the store's writer: no store
+write (neither the writer connection nor a write transaction) is held across
+a `post_beef` call on any road, so a `WalletServices` that takes `write_tx()`
+on a clone of the same `StorageSqlx` before it passes a post on does not wait
+on the door that posts. It must use a clone of the one store, never a second
+open of the file. Witnesses: `tests/post_holds_no_write_tests.rs`.
+
 ### StorageClient (feature: `remote`)
 
 Remote storage via JSON-RPC to `storage.babbage.systems`. Uses BRC-31 (Authrite) authentication.
