@@ -404,3 +404,40 @@ mod storage {
         reads_whole_at_and_refuses_past(STORAGE_ANSWER_MAX_BYTES).await;
     }
 }
+
+/// The Arcade event stream.
+mod stream {
+    use super::*;
+
+    const TXID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[tokio::test]
+    async fn an_event_line_past_its_cap_ends_the_connection_and_the_next_reads() {
+        use crate::services::providers::arcade::{ArcadeSseClient, SSE_LINE_MAX_BYTES};
+        let frame = format!(
+            "id: 1\nevent: status\ndata: {{\"txid\":\"{TXID}\",\"txStatus\":\"SEEN_ON_NETWORK\",\"timestamp\":\"2026-11-28T00:00:00Z\"}}\n\n"
+        );
+        let long = [b"data: ".as_slice(), &vec![b'7'; SSE_LINE_MAX_BYTES + 1]].concat();
+        let l = listen(vec![
+            Answer::Body(StdArc::new(long)),
+            Answer::Body(StdArc::new(frame.into_bytes())),
+        ])
+        .await;
+        let mut sse = ArcadeSseClient::new(&l.url, "token").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (r, _) = bounded(Duration::from_secs(20), sse.stream_once(tx)).await;
+        let text = format!("{r:?}");
+        assert!(
+            matches!(r, Err(crate::Error::NetworkError(_))) && text.contains("stream's bound"),
+            "{text}"
+        );
+        assert!(rx.recv().await.is_none());
+        // The task's loop reconnects on any error: the next connection reads
+        // a normal stream unchanged.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (r, _) = bounded(Duration::from_secs(20), sse.stream_once(tx)).await;
+        assert_eq!(r.unwrap(), 1);
+        assert_eq!(rx.recv().await.unwrap().txid, TXID);
+        assert_eq!(l.connections.load(Ordering::SeqCst), 2);
+    }
+}
