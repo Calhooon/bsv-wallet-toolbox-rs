@@ -62,8 +62,12 @@ loopback requests with the existing request headers and bodies. Lookup keeps
 its graceful failover behavior, so its refusal witness inspects the client's
 typed error directly. Storage's witnesses also check authenticated remote
 refusals and a loopback handshake, and run in the integration target with
-`sqlite,remote,bench-support`. Production still uses `reqwest::Client::new()`;
-lookup's per-request timeouts, issuance headers, and storage settings are unchanged.
+`sqlite,remote,bench-support`. Production builds the same wrapper over reqwest
+(see Outward bounds); lookup's per-request timeouts and issuance headers are unchanged.
+
+## Outward bounds
+
+Every door's client is `providers/http_client.rs`'s `Client` in every build (production wraps reqwest; test and bench builds add #182's check and the loopback table). A door's builder sets `connect_timeout(CONNECT_TIMEOUT)` (10 s), its total time (`timeout`) and `answer_limit(<door's bound>)`; `Response::bytes`, `text` and `json` read chunk by chunk and stop past the bound with `RequestError::TooLarge` (a declared length past it stops before any read), which converts to `Error::NetworkError` (transient in the ladders, as a timeout). A door's own read closure is applied through `AnswerRead::or_door`, which keeps the door's mapping for every other fault and hands an answer past the bound on as that network fault, never a parse or "invalid" error. The bounds (`http_client.rs` constants): `TX_ANSWER_MAX_BYTES` 64 MiB (WhatsOnChain, Bitails, BananaBlocks: one 32 MiB transaction as hex), `STATUS_ANSWER_MAX_BYTES` 8 MiB (ARC, Arcade REST), `HEADER_ANSWER_MAX_BYTES` 4 MiB (BHS, Chaintracks, the explorer header fallback), `RATES_ANSWER_MAX_BYTES` 256 KiB (fiat rates), `STORAGE_ANSWER_MAX_BYTES` 16 MiB (the storage client's unauthenticated door). The Arcade event stream has a connect time and no total time; `SseFrameParser` caps a line and a frame's data at `SSE_LINE_MAX_BYTES` (1 MiB), after which `stream_once` ends that connection with `NetworkError` and `arcade_events`' loop reconnects. A client built with no `answer_limit` reads whole (the lookups, which have their own bounds). Witnesses: `outward_bounds_tests.rs` (a raw loopback listener that stalls, streams without end and counts what it wrote, or answers at the bound).
 
 ## Architecture
 
