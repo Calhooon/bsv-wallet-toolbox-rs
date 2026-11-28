@@ -8,7 +8,7 @@
 //! Supports BEEF format transaction broadcasting with callbacks for
 //! proof delivery and double-spend notifications.
 
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{self, AnswerRead, Client};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -212,10 +212,10 @@ impl Arc {
         let config = config.unwrap_or_default();
 
         let timeout = config.timeout_secs.unwrap_or(30);
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout))
-            .build()
-            .map_err(|e| Error::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
+        let client = http_client::door_client(
+            Duration::from_secs(timeout),
+            http_client::STATUS_ANSWER_MAX_BYTES,
+        )?;
 
         let deployment_id = config
             .deployment_id
@@ -368,7 +368,7 @@ impl Arc {
     ) -> Result<PostTxResultForTxid> {
         match response {
             Ok(resp) if resp.status().is_success() => {
-                let data: ArcResponse = resp.json().await.map_err(|e| {
+                let data: ArcResponse = resp.json().await.or_door(|e| {
                     Error::ServiceError(format!("Failed to parse ARC response: {}", e))
                 })?;
 
@@ -652,7 +652,10 @@ impl Arc {
                             http_code: Some(code),
                             items: vec![self.service_error_result(
                                 subject.to_string(),
-                                format!("Failed to parse ARC batch response: {}", e),
+                                match e {
+                                    e @ http_client::RequestError::TooLarge { .. } => e.to_string(),
+                                    e => format!("Failed to parse ARC batch response: {}", e),
+                                },
                                 "postBeefBatchParseError",
                             )],
                         }
@@ -1299,7 +1302,7 @@ impl Arc {
                 let data: ArcTxInfo = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse response: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse response: {}", e)))?;
                 Ok(Some(data))
             }
             StatusCode::NOT_FOUND => Ok(None),

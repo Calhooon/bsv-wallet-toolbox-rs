@@ -16,6 +16,7 @@ use crate::services::broadcast_memory::{
     BROADCAST_STATUS_ACCEPTED, PREF_LAST_ACCEPTED_PROVIDER, PROVIDER_ARCADE_V2, PROVIDER_BITAILS,
     PROVIDER_GORILLAPOOL_ARC, PROVIDER_TAAL_ARC, PROVIDER_WHATSONCHAIN,
 };
+use crate::services::providers::http_client::AnswerRead;
 #[cfg(feature = "break-glass-script-history")]
 use crate::services::traits::GetScriptHashHistoryResult;
 use crate::services::traits::{merkle_path_note, PostBeefDelivery, NOTE_REFUTED};
@@ -1208,8 +1209,11 @@ impl Services {
     /// cached defaults if the fetch fails.
     async fn fetch_fiat_exchange_rates(&self) -> Result<FiatExchangeRates> {
         // Use a free/open exchange rate API
-        let client = crate::services::providers::http_client::Client::builder()
+        use crate::services::providers::http_client;
+        let client = http_client::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(http_client::CONNECT_TIMEOUT)
+            .answer_limit(http_client::RATES_ANSWER_MAX_BYTES)
             .build()
             .map_err(|e| Error::NetworkError(format!("HTTP client error: {}", e)))?;
 
@@ -1236,7 +1240,7 @@ impl Services {
         let data: ExchangeRateResponse = response
             .json()
             .await
-            .map_err(|e| Error::ServiceError(format!("Fiat rate parse: {}", e)))?;
+            .or_door(|e| Error::ServiceError(format!("Fiat rate parse: {}", e)))?;
 
         let mut rates = HashMap::new();
         rates.insert(FiatCurrency::USD, 1.0);

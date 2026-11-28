@@ -40,7 +40,7 @@
 //! (which sets `arcade_v2 = true`) to register the Arcade broadcaster as the
 //! first postBeef provider.
 
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{self, AnswerRead, Client};
 use bsv_rs::transaction::MerklePath;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -268,10 +268,10 @@ impl Arcade {
         let config = config.unwrap_or_default();
 
         let timeout = config.timeout_secs.unwrap_or(30);
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout))
-            .build()
-            .map_err(|e| Error::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
+        let client = http_client::door_client(
+            Duration::from_secs(timeout),
+            http_client::STATUS_ANSWER_MAX_BYTES,
+        )?;
 
         Ok(Self {
             client,
@@ -675,7 +675,7 @@ impl Arcade {
 
         match response {
             Ok(resp) if resp.status().is_success() => {
-                let data: ArcadeSubmitResponse = resp.json().await.map_err(|e| {
+                let data: ArcadeSubmitResponse = resp.json().await.or_door(|e| {
                     Error::ServiceError(format!("Failed to parse Arcade response: {}", e))
                 })?;
                 tracing::debug!(
@@ -725,7 +725,7 @@ impl Arcade {
 
         match response {
             Ok(resp) if resp.status().is_success() => {
-                let data: ArcadeBatchResponse = resp.json().await.map_err(|e| {
+                let data: ArcadeBatchResponse = resp.json().await.or_door(|e| {
                     Error::ServiceError(format!("Failed to parse Arcade batch response: {}", e))
                 })?;
                 tracing::debug!(
@@ -774,7 +774,7 @@ impl Arcade {
 
         match response.status() {
             reqwest::StatusCode::OK => {
-                let data: ArcadeTxInfo = response.json().await.map_err(|e| {
+                let data: ArcadeTxInfo = response.json().await.or_door(|e| {
                     Error::ServiceError(format!("Failed to parse Arcade tx info: {}", e))
                 })?;
                 Ok(Some(data))
@@ -966,7 +966,7 @@ impl Arcade {
         let v: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| Error::ServiceError(format!("Failed to parse health: {}", e)))?;
+            .or_door(|e| Error::ServiceError(format!("Failed to parse health: {}", e)))?;
         Ok(v.get("healthy").and_then(|h| h.as_bool()).unwrap_or(false))
     }
 }
@@ -1385,7 +1385,7 @@ impl ArcadeSseClient {
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Result<Self> {
         // No total-request timeout: SSE connections are long-lived.
         let client = Client::builder()
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(http_client::CONNECT_TIMEOUT)
             .build()
             .map_err(|e| Error::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
         Ok(Self {

@@ -30,6 +30,10 @@ pub(crate) fn door_client(
         .map_err(|e| crate::Error::NetworkError(format!("Failed to create HTTP client: {}", e)))
 }
 
+/// A broadcaster's answer (ARC, Arcade REST): a status document, a batch
+/// of them, a merkle path. The reference's `FetchHttpClient` default.
+pub(crate) const STATUS_ANSWER_MAX_BYTES: usize = 8 * 1024 * 1024;
+
 /// A header service's answer (BHS, Chaintracks, the explorers' header
 /// fallback): a height, a header, a short run of headers. The
 /// reference's bound for its BHS and Chaintracks clients.
@@ -41,6 +45,9 @@ pub(crate) const HEADER_ANSWER_MAX_BYTES: usize = 4 * 1024 * 1024;
 /// is generous; an answer past it is a fault of that rung (could not
 /// look) and the ladder asks the next.
 pub(crate) const TX_ANSWER_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// The fiat rates document: the reference's bound for it.
+pub(crate) const RATES_ANSWER_MAX_BYTES: usize = 256 * 1024;
 
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
