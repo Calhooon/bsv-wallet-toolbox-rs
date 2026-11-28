@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A held receipt ends on evidence about its transaction, not on a
+  request's word alone. Where several users of one store hold a row of
+  one txid, a request's word (the sender's abort, a host's retire, a
+  broadcaster's refusal of the sender's post) ends the sender's own
+  outgoing rows; a received row beside it keeps its word (held `sending`,
+  or `unproven` where an instance took it), its outputs and its count,
+  and ends on its proof (`completed`) or on a competitor's checked proof
+  (`failed`, its outputs voided). Evidence the store holds on record (a
+  stored competitor whose bytes spend one of the transaction's input
+  outpoints, or a `spent-proven` check at one) ends every row of the
+  txid, as before. The status review's check 1, the retire write, the
+  broadcaster's fatal verdict (`mark_transaction_rejected`) and the
+  `sendWith` send of a named txid (which now moves the caller's own rows
+  of it alone) follow the rule
+  (`src/storage/sqlx/held_receipt_scope_tests.rs`,
+  `a_named_txid_moves_the_callers_row_alone`).
+
 ### Changed
 
 - The published crate carries the source, the tests, the test vectors, the
@@ -360,6 +379,9 @@
 - `createAction` with a `sendWith` naming at least one txid and no inputs and no outputs builds no transaction, as the reference's wallet does (ts-stack 57c5f130 `validationHelpers.ts` 805-807, `signer/methods/createAction.ts` 87 and 132-140): no coin is taken, no transaction row is added and nothing is signed; the named transactions are sent through the stored post, the path `Wallet::process_action` takes, and the answer carries `sendWithResults` alone, one entry a named txid, with no `txid`, `tx` or `noSendChange`. With `acceptDelayedBroadcast: false` and a broadcaster that takes it, a named `noSend` action of the caller's reads `unproven`; with `acceptDelayedBroadcast: true` it is queued and reads `sending`; when the broadcaster refuses, faults or times out it reads `sending` and waits to be sent again. This is the second call of the reference SDK's paying client (`AuthFetch`: a `noSend` payment, then a `sendWith` of its txid alone), which requires exactly one entry, of that txid, reading `unproven`. With a permissions manager the call asks no spending authorization. Before, on 0.14.0-beta.10, the call was funded from the wallet's coins as an empty action: with a spare coin it built and posted a change-only transaction of the wallet's own (one input, the wallet's change outputs, a fee of 34 satoshis in the run) and answered two entries, the named txid `sending` and the new transaction `unproven`, the broadcaster sent the new transaction's txid alone; with no other spendable coin it answered `Insufficient funds: need 2, have 0`. The empty call with no `sendWith` stays a new transaction (`tests/send_with_alone_tests.rs`: `the_payers_two_calls_send_exactly_the_payment`, `the_payers_two_calls_with_no_spare_coin_send_exactly_the_payment`, `the_cells_of_a_send_with_alone`, `a_permissions_manager_is_asked_nothing_for_a_send_with_alone`).
 
 ### Hosts
+
+- A store shared by several users: a held receipt is ended by evidence
+  about its transaction, not by another row's request word.
 
 Each read from a run (`tests/internalize_held_receipt_tests.rs`,
 `tests/internalize_held_word_tests.rs`,
