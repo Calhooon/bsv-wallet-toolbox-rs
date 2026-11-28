@@ -367,3 +367,40 @@ mod broadcasters {
         reads_whole_at_and_refuses_past(RATES_ANSWER_MAX_BYTES).await;
     }
 }
+
+/// The storage client's unauthenticated door.
+#[cfg(feature = "remote")]
+mod storage {
+    use super::*;
+    use crate::services::providers::http_client::STORAGE_ANSWER_MAX_BYTES;
+    use crate::storage::client::StorageClient;
+    use crate::storage::WalletStorageWriter;
+    use bsv_rs::primitives::PrivateKey;
+    use bsv_rs::wallet::ProtoWallet;
+
+    fn client(url: &str, secs: u64) -> StorageClient<ProtoWallet> {
+        let wallet = ProtoWallet::new(Some(PrivateKey::from_bytes(&[7u8; 32]).unwrap()));
+        StorageClient::new_unauthenticated(wallet, url).with_timeout(Duration::from_secs(secs))
+    }
+
+    #[tokio::test]
+    async fn a_stalled_storage_returns_within_its_total_time() {
+        let l = listen(vec![Answer::Stall]).await;
+        let (r, took) = bounded(Duration::from_secs(10), client(&l.url, 2).make_available()).await;
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert!(matches!(r, Err(crate::Error::NetworkError(_))), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn an_endless_storage_answer_stops_at_its_bound() {
+        let l = listen(vec![Answer::Endless]).await;
+        let (r, _) = bounded(Duration::from_secs(60), client(&l.url, 50).make_available()).await;
+        stopped_at(&l, STORAGE_ANSWER_MAX_BYTES, &format!("{r:?}"));
+        assert!(matches!(r, Err(crate::Error::NetworkError(_))), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn a_storage_answer_at_its_bound_is_read_whole() {
+        reads_whole_at_and_refuses_past(STORAGE_ANSWER_MAX_BYTES).await;
+    }
+}

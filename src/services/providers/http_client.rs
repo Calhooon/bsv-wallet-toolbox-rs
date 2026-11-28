@@ -49,6 +49,13 @@ pub(crate) const TX_ANSWER_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// The fiat rates document: the reference's bound for it.
 pub(crate) const RATES_ANSWER_MAX_BYTES: usize = 256 * 1024;
 
+/// A remote storage's JSON-RPC answer on the unauthenticated door (a list,
+/// a sync chunk): the application bound bsv-rs's transport holds on the
+/// authenticated door, so both doors of one storage read the same. A
+/// chunk past it is a network fault of that call.
+#[cfg(feature = "remote")]
+pub(crate) const STORAGE_ANSWER_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
     let url = reqwest::Url::parse(url)

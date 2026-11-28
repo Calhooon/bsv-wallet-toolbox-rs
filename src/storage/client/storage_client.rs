@@ -36,7 +36,18 @@ use bsv_rs::wallet::{
 };
 
 use crate::error::{Error, Result};
-use crate::services::providers::http_client::{Client, SimplifiedFetchTransport};
+use crate::services::providers::http_client::{self, AnswerRead, Client, SimplifiedFetchTransport};
+
+/// The unauthenticated door's client: the connect time and the answer
+/// bound every door has; the total time is the client's own per call
+/// (`set_timeout`, 30 s by default).
+fn unauthenticated_client() -> Client {
+    Client::builder()
+        .connect_timeout(http_client::CONNECT_TIMEOUT)
+        .answer_limit(http_client::STORAGE_ANSWER_MAX_BYTES)
+        .build()
+        .unwrap_or_default()
+}
 use crate::services::WalletServices;
 use crate::storage::entities::*;
 use crate::storage::traits::*;
@@ -299,7 +310,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             endpoint_url: url,
             peer: Arc::new(peer),
             wallet,
-            http_client: Client::new(),
+            http_client: unauthenticated_client(),
             next_id: AtomicU64::new(1),
             settings: Arc::new(RwLock::new(None)),
             use_auth: true,
@@ -583,6 +594,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
             .post(&self.endpoint_url)
             .header("Content-Type", "application/json")
             .body(request_body.to_vec())
+            .timeout(self.timeout)
             .send()
             .await
             .map_err(|e| Error::NetworkError(format!("HTTP request failed: {}", e)))?;
@@ -599,7 +611,7 @@ impl<W: WalletInterface + Clone + 'static> StorageClient<W> {
         let response_body = response
             .bytes()
             .await
-            .map_err(|e| Error::NetworkError(format!("Failed to read response body: {}", e)))?;
+            .or_door(|e| Error::NetworkError(format!("Failed to read response body: {}", e)))?;
 
         Self::parse_rpc_response(method, &response_body, id)
     }
