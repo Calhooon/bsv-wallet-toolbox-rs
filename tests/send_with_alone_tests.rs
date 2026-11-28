@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use bsv_rs::primitives::PrivateKey;
 use bsv_rs::wallet::{
     AbortActionArgs, CreateActionArgs, CreateActionOptions, CreateActionOutput, CreateActionResult,
-    ProtoWallet, WalletInterface,
+    ProtoWallet, SendWithResult, SignActionArgs, SignActionOptions, WalletInterface,
 };
 use bsv_wallet_toolbox_rs::services::mock::{MockErrorKind, MockResponse, MockWalletServices};
 use bsv_wallet_toolbox_rs::{
@@ -184,10 +184,13 @@ where
 
 /// `sendWithResults` as `(txid, word)` pairs.
 fn entries(result: &CreateActionResult) -> Vec<(String, String)> {
-    result
-        .send_with_results
+    listed(result.send_with_results.as_deref())
+}
+
+fn listed(results: Option<&[SendWithResult]>) -> Vec<(String, String)> {
+    results
+        .unwrap_or_default()
         .iter()
-        .flatten()
         .map(|r| (hex::encode(r.txid), format!("{:?}", r.status)))
         .collect()
 }
@@ -691,4 +694,104 @@ async fn a_send_with_alone_through_a_storage_client_is_one_process_action() {
     assert_eq!(sent[0]["isNoSend"], json!(false));
     assert_eq!(sent[0]["isDelayed"], json!(false));
     assert_eq!(sent[0]["sendWith"], json!([hex::encode(txid)]));
+}
+
+/// A deferred action with nothing of the caller's (`signAndProcess: false`,
+/// no inputs, no outputs, no `sendWith`) signed with `sendWith` and
+/// `acceptDelayedBroadcast`: (the action's txid, the answer's entries).
+async fn signed_deferred(
+    wallet: &W,
+    send_with: Vec<[u8; 32]>,
+    delayed: bool,
+) -> ([u8; 32], Vec<(String, String)>) {
+    use base64::Engine;
+    let deferred = action(
+        None,
+        CreateActionOptions {
+            sign_and_process: Some(false),
+            ..Default::default()
+        },
+    );
+    let made = wallet.create_action(deferred, Some(ORIGIN)).await.unwrap();
+    let reference = made.signable_transaction.unwrap().reference;
+    let options = SignActionOptions {
+        send_with: Some(send_with),
+        accept_delayed_broadcast: Some(delayed),
+        ..Default::default()
+    };
+    let args = SignActionArgs {
+        spends: std::collections::HashMap::new(),
+        reference: base64::engine::general_purpose::STANDARD.encode(reference),
+        options: Some(options),
+    };
+    let answer = wallet.sign_action(args, Some(ORIGIN)).await.unwrap();
+    let got = listed(answer.send_with_results.as_deref());
+    (answer.txid.unwrap(), got)
+}
+
+/// Each post names exactly `txid`.
+fn posted_alone(wallet: &W, txid: &[u8; 32], count: usize) {
+    let posted = posts(wallet);
+    assert_eq!(posted.len(), count, "{posted:?}");
+    let alone = format!("txids=[\"{}\"]", hex::encode(txid));
+    assert!(posted.iter().all(|p| p.contains(&alone)), "{posted:?}");
+}
+
+/// Signed with `acceptDelayedBroadcast: true`: the action and the named
+/// payment are queued together and nothing is posted by the call.
+#[tokio::test]
+async fn a_deferred_action_signed_delayed_with_a_named_payment_queues_both() {
+    let (a, _b) = two_users(accepting()).await;
+    let payment = prepared(&a).await;
+    let (own, got) = signed_deferred(&a, vec![payment], true).await;
+    assert_eq!(
+        got,
+        vec![entry(&payment, "Sending"), entry(&own, "Sending")]
+    );
+    assert_eq!(
+        words(a.storage(), &payment).await,
+        word("sending", "unsent")
+    );
+    assert_eq!(words(a.storage(), &own).await, word("sending", "unsent"));
+    posted_alone(&a, &own, 0);
+}
+
+/// Signed with `sendWith: []`: the action alone is posted and the prepared
+/// payment stays `nosend`.
+#[tokio::test]
+async fn a_deferred_action_signed_with_an_empty_send_with_posts_the_action_alone() {
+    let (a, _b) = two_users(accepting()).await;
+    let payment = prepared(&a).await;
+    let (own, got) = signed_deferred(&a, vec![], false).await;
+    assert_eq!(got, vec![entry(&own, "Unproven")]);
+    assert_eq!(words(a.storage(), &own).await, word("unproven", "unmined"));
+    assert_eq!(words(a.storage(), &payment).await, word("nosend", "nosend"));
+    posted_alone(&a, &own, 1);
+}
+
+/// A txid named at the sign that is unknown to the store or is not a
+/// transaction of the caller's: its entry reads failed, nothing is written
+/// for it, and the action alone is posted.
+#[tokio::test]
+async fn a_txid_named_at_the_sign_that_is_not_the_callers_reads_failed_and_is_not_sent() {
+    for name in ["unknown", "another user's"] {
+        let (a, b) = two_users(accepting()).await;
+        let (named, before) = match name {
+            "unknown" => ([0x5a; 32], (vec![], vec![])),
+            _ => (prepared(&b).await, word("nosend", "nosend")),
+        };
+        let (own, got) = signed_deferred(&a, vec![named], false).await;
+        assert_eq!(
+            got,
+            vec![entry(&named, "Failed"), entry(&own, "Unproven")],
+            "{name}"
+        );
+        assert_eq!(words(a.storage(), &named).await, before, "{name}");
+        assert_eq!(
+            words(a.storage(), &own).await,
+            word("unproven", "unmined"),
+            "{name}"
+        );
+        posted_alone(&a, &own, 1);
+    }
 }
