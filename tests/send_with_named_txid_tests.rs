@@ -368,4 +368,63 @@ async fn a_txid_the_caller_holds_no_row_of_is_answered_as_unknown() {
     assert!(posted.iter().any(|p| p.contains(&named_held.txid)));
 }
 
+/// Two users on one store, each holding a `nosend` row of one txid. One
+/// names it beside a new action: the caller's send moves the caller's row
+/// alone; the other user's row keeps its word.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_named_txid_moves_the_callers_row_alone() {
+    let store = store().await;
+    let one = funded_on(&PrivateKey::random(), &store).await;
+    let other = PrivateKey::random().public_key().to_hex();
+    let (other, _) = store.find_or_insert_user(&other).await.unwrap();
+    let held = create(&one, pay(1_000, false, true, &[])).await;
+    ::sqlx::query(
+        "INSERT INTO transactions (user_id, status, reference, is_outgoing, satoshis, description, \
+         txid, version, lock_time, raw_tx, created_at, updated_at) \
+         SELECT ?, 'nosend', reference || '-other', is_outgoing, satoshis, description, txid, \
+         version, lock_time, raw_tx, created_at, updated_at FROM transactions WHERE txid = ?",
+    )
+    .bind(other.user_id)
+    .bind(&held.txid)
+    .execute(store.writer())
+    .await
+    .unwrap();
+    let named = create(
+        &one,
+        pay(500, true, false, std::slice::from_ref(&held.txid)),
+    )
+    .await;
+    let rows: Vec<(i64, String)> = ::sqlx::query_as(
+        "SELECT user_id, status FROM transactions WHERE txid = ? ORDER BY transaction_id",
+    )
+    .bind(&held.txid)
+    .fetch_all(store.pool())
+    .await
+    .unwrap();
+    println!(
+        "STEP named beside another user's nosend row\n  {:?}\n  {rows:?}",
+        named.results
+    );
+    assert_eq!(answer_for(&named, &held.txid).as_deref(), Some("Sending"));
+    let word_of = |user: i64| {
+        rows.iter()
+            .find(|(u, _)| *u == user)
+            .map(|(_, w)| w.clone())
+            .unwrap()
+    };
+    let caller: i64 = ::sqlx::query_scalar(
+        "SELECT user_id FROM transactions WHERE txid = ? ORDER BY transaction_id LIMIT 1",
+    )
+    .bind(&held.txid)
+    .fetch_one(store.pool())
+    .await
+    .unwrap();
+    assert_eq!(word_of(caller), "sending", "the caller's row is sent");
+    assert_eq!(
+        word_of(other.user_id),
+        "nosend",
+        "the other user's row keeps its word"
+    );
+}
+
 fn _unused(_: &dyn MonitorStorage, _: &dyn WalletStorageWriter) {}
