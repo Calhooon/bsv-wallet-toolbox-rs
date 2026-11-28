@@ -19,9 +19,9 @@
 //! `spent_by` names another transaction with a `proven_txs` row this store
 //! checked, its root-check record, whose bytes spend that outpoint), or a
 //! `spent-proven` check (`locked_input_checks`) on an output row at one of
-//! its input outpoints whose recorded spender is another txid (a competitor
-//! queued on the txid's request with a checked proof whose bytes spend it,
-//! `competitor_proof::checked_spender_on`); the records the take guard
+//! its input outpoints whose recorded spender is another txid (a proof row
+//! this store checked whose bytes spend that outpoint, found by the
+//! outpoint, `competitor_proof::checked_spenders_on`); the records the take guard
 //! reads (`competitor_proof.rs`, `abort_recovery::failed_outgoing_rows`).
 //! A proof row merely stored, and a `spent-proven` check with no spender on
 //! record or with the txid itself as its spender, are not evidence.
@@ -94,11 +94,8 @@ pub(crate) async fn spent_proven_against_on(
     if proven == 0 {
         return Ok(false);
     }
-    Ok(
-        super::competitor_proof::checked_spender_on(conn, txid, outpoint)
-            .await?
-            .is_some(),
-    )
+    let spenders = super::competitor_proof::checked_spenders_on(conn, outpoint).await?;
+    Ok(spenders.iter().any(|s| !s.eq_ignore_ascii_case(txid)))
 }
 
 /// The rows a request's word ends, of `candidates` (`transaction_id`,

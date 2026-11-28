@@ -17,8 +17,9 @@
 //! `trackerNotAnswered`) until a later take finds the tracker answering.
 //! The proof path's competitor ask (`competitors.rs`) keeps the
 //! competitor's bytes and checked proof in the write that retires ours, so
-//! a `spent-proven` mark it writes has its spender on record
-//! ([`checked_spender_on`]).
+//! a `spent-proven` mark it writes has its spender on record: a proof row
+//! this store checked whose bytes spend the outpoint, found by the outpoint
+//! ([`checked_spenders_on`]).
 //!
 //! Its cost: one indexed read per input outpoint, and one header read per
 //! competitor found (none when none is held). It is asked before any
@@ -157,42 +158,44 @@ pub(crate) async fn stored_competitor_on(
         .map(|((competitor, ..), _)| competitor))
 }
 
-/// The recorded spender of `outpoint` against `txid`: a competitor queued on
-/// `txid`'s request whose stored proof this store checked
-/// (`held_receipts::CHECKED_PROOF_JOIN`) and whose bytes, hashing to its
-/// txid, spend the outpoint; never `txid` itself. A `spent-proven` check
-/// counts as evidence against `txid` only where one is on record.
-pub(crate) async fn checked_spender_on(
+/// The 36 bytes an input spending `outpoint` carries: the source txid in
+/// its wire order (reversed hex) and the vout, little-endian.
+fn outpoint_bytes((source, vout): &(String, u32)) -> Option<Vec<u8>> {
+    let mut bytes = hex::decode(source).ok()?;
+    if bytes.len() != 32 {
+        return None;
+    }
+    bytes.reverse();
+    bytes.extend_from_slice(&vout.to_le_bytes());
+    Some(bytes)
+}
+
+/// The recorded spenders of `outpoint`: every proof row this store checked
+/// (`held_receipts::CHECKED_PROOF_JOIN`) whose own bytes, hashing to its
+/// txid, spend the outpoint, found by the outpoint (a byte search of the
+/// checked rows' transactions for its 36 bytes, then a parse that confirms
+/// an input). Read only where a `spent-proven` check stands at an input of
+/// the judged transaction (`word_scope::spent_proven_against_on`).
+pub(crate) async fn checked_spenders_on(
     conn: &mut SqliteConnection,
-    txid: &str,
     outpoint: &(String, u32),
-) -> Result<Option<String>> {
-    let history: Option<String> =
-        sqlx::query_scalar("SELECT history FROM proven_tx_reqs WHERE txid = ?")
-            .bind(txid)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let queued = history
-        .as_deref()
-        .map(super::storage_sqlx::competitors::queued_competitors)
-        .unwrap_or_default();
+) -> Result<Vec<String>> {
+    let Some(needle) = outpoint_bytes(outpoint) else {
+        return Ok(Vec::new());
+    };
     let sql = format!(
-        "SELECT p.raw_tx FROM {} WHERE p.txid = ?",
+        "SELECT p.txid, p.raw_tx FROM {} WHERE instr(p.raw_tx, ?) > 0",
         super::held_receipts::CHECKED_PROOF_JOIN
     );
-    for competitor in queued {
-        if competitor.eq_ignore_ascii_case(txid) {
-            continue;
-        }
-        let raw: Option<Vec<u8>> = sqlx::query_scalar(&sql)
-            .bind(&competitor)
-            .fetch_optional(&mut *conn)
-            .await?;
-        if raw.is_some_and(|raw| spends(&competitor, &raw, outpoint)) {
-            return Ok(Some(competitor));
-        }
-    }
-    Ok(None)
+    let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(&sql)
+        .bind(needle)
+        .fetch_all(&mut *conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|(spender, raw)| spends(spender, raw, outpoint))
+        .map(|(spender, _)| spender)
+        .collect())
 }
 
 /// Do `competitor`'s stored bytes, hashing to its txid, spend `outpoint`?

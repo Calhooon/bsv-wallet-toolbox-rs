@@ -62,7 +62,7 @@ fn from_zero(name: &str) -> SyncOffset {
 }
 
 /// A take of P through the one write that applies a take.
-async fn take(c: &Cell) -> TakeApplied {
+pub(super) async fn take(c: &Cell) -> TakeApplied {
     let check = c.s.competitor_check(&c.p, None).await.unwrap();
     let mut tx = c.s.write_tx().await.unwrap();
     let applied = apply_take_on(
