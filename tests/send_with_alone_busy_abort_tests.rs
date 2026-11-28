@@ -346,17 +346,16 @@ async fn w12_a_busy_abort_keeps_the_sign_doors_guard() {
 /// What the guard answers at the sign door, the payment's txid written
 /// `<payment>` (W13 pins it whole).
 const SIGN_DOOR_REFUSAL: &str =
-    "wallet error: Validation error: signAction: sendWith on a deferred \
-     action with no inputs and no outputs of the caller's is refused unless acceptDelayedBroadcast \
-     is true. The named transactions [<payment>] were NOT sent by this call; those that are your \
-     own unsent noSend transactions are still reserved under their txids. The deferred action is \
-     as it was: sign it with an empty sendWith or release it with abortAction. Ways out, by cost: \
-     (1) name them in sendWith beside a new action, which queues them for the monitor's \
-     send-waiting task, with no change-only transaction of the wallet's own; (2) release one with \
-     abortAction, which frees its coins and voids it; (3) call again with acceptDelayedBroadcast: \
-     true, which on this line also builds a change-only transaction of the wallet's own, with its \
-     fee, and queues it and the named transactions for the monitor's send-waiting task. A host \
-     with no monitor running never posts what (1) or (3) queues.";
+    "wallet error: Validation error: signAction: sendWith on a deferred action with no inputs \
+     and no outputs of the caller's is refused unless acceptDelayedBroadcast is true. The \
+     named transactions [<payment>] were NOT sent by this call; those that are your own \
+     unsent noSend transactions are still reserved under their txids. The deferred action is \
+     as it was: sign it with an empty sendWith or release it with abortAction. Ways out, by \
+     cost: (1) name them in sendWith beside a new action, with no change-only transaction of \
+     the wallet's own; (2) release one with abortAction; (3) call again with \
+     acceptDelayedBroadcast: true, which on this line also builds a change-only transaction \
+     of the wallet's own, with its fee, and queues it for the monitor's send-waiting task. A \
+     host with no monitor running never posts what (1) or (3) queues.";
 
 /// W13: a bare deferred action created `noSend`. Signed naming the payment
 /// in `sendWith` with no delayed post, it is refused with the sign door's
