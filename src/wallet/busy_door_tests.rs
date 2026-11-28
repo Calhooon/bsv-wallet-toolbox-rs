@@ -507,6 +507,96 @@ async fn sign_action_on_another_process_action_error_still_aborts() {
     assert!(spendable, "the coin is spendable again");
 }
 
+/// A signing failure whose abort the store refuses (the writer held): the
+/// error does not say the coins were released, the action stays unsigned
+/// with its coin locked, cached and in the sign door's set; then
+/// `abortAction` releases it and the reference leaves the set.
+#[tokio::test]
+async fn a_signing_failure_whose_abort_is_busy_says_the_action_is_still_reserved() {
+    let (_dir, wallet) = wallet().await;
+    unsigned_action(&wallet, "sign-fails").await;
+    let coin = lock_a_coin_to(&wallet, "sign-fails").await;
+    pending(&wallet, "sign-fails", "25").await;
+    // An input to sign with no derivation: the signer refuses it.
+    wallet
+        .pending_transactions
+        .write()
+        .await
+        .get_mut("sign-fails")
+        .unwrap()
+        .inputs
+        .push(SignerInput {
+            vin: 0,
+            source_txid: "25".repeat(32),
+            source_vout: 0,
+            satoshis: 1_000,
+            source_locking_script: Some(pay_lock()),
+            unlocking_script: None,
+            derivation_prefix: None,
+            derivation_suffix: None,
+            sender_identity_key: None,
+        });
+    wallet
+        .bare_deferred
+        .write()
+        .await
+        .insert("sign-fails".to_string());
+
+    let held = wallet.storage().write_tx().await.unwrap();
+    let err = wallet
+        .sign_action(
+            SignActionArgs {
+                spends: HashMap::new(),
+                reference: "sign-fails".to_string(),
+                options: Some(bsv_rs::wallet::SignActionOptions {
+                    send_with: Some(vec![]),
+                    ..Default::default()
+                }),
+            },
+            ORIGINATOR,
+        )
+        .await
+        .unwrap_err();
+    held.rollback().await.unwrap();
+    println!("STEP signing failure, abort busy: {err}");
+    match &err {
+        bsv_rs::Error::WalletError(text) => assert!(
+            text.starts_with("Signing failed: ")
+                && !text.contains("Transaction aborted and UTXOs released.")
+                && text.ends_with(
+                    "the action is still reserved under its reference, and abortAction \
+                     releases it."
+                ),
+            "{text}"
+        ),
+        other => panic!("expected the signing failure's WalletError, got {other:?}"),
+    }
+    assert_eq!(
+        action_and_coin(&wallet, "sign-fails", coin).await,
+        ("unsigned".to_string(), true),
+        "not aborted, the coin still locked to it"
+    );
+    assert!(wallet.bare_deferred.read().await.contains("sign-fails"));
+
+    let aborted = wallet
+        .abort_action(
+            AbortActionArgs {
+                reference: "sign-fails".to_string(),
+            },
+            ORIGINATOR,
+        )
+        .await
+        .map(|r| r.aborted)
+        .map_err(|e| e.to_string());
+    assert_eq!(aborted, Ok(true));
+    assert!(!wallet.bare_deferred.read().await.contains("sign-fails"));
+    assert_eq!(
+        action_and_coin(&wallet, "sign-fails", coin).await,
+        ("failed".to_string(), false),
+        "aborted, the coin released"
+    );
+}
+
 /// Every row count `createAction` could touch, the default basket's coin
 /// locks and SQLite's sequence counters: equal before and after a refusal
 /// means the action wrote nothing.
