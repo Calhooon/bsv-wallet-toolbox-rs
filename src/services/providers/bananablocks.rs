@@ -34,7 +34,7 @@
 //! - Mainnet: `https://bananablocks.com/api/v1`
 //! - Testnet: `https://test.bananablocks.com/api/v1`
 
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{self, AnswerRead, Client};
 use reqwest::StatusCode;
 use std::time::Duration;
 
@@ -152,10 +152,10 @@ impl BananaBlocks {
         timeout_secs: Option<u64>,
         gate: Arc<RateGate>,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout_secs.unwrap_or(30)))
-            .build()
-            .map_err(|e| Error::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
+        let client = http_client::door_client(
+            Duration::from_secs(timeout_secs.unwrap_or(30)),
+            http_client::TX_ANSWER_MAX_BYTES,
+        )?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -189,7 +189,7 @@ impl BananaBlocks {
         let body = response
             .text()
             .await
-            .map_err(|e| Error::NetworkError(format!("BananaBlocks read failed: {}", e)))?;
+            .or_door(|e| Error::NetworkError(format!("BananaBlocks read failed: {}", e)))?;
         Ok((status, body))
     }
 

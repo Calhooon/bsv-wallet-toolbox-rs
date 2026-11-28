@@ -35,6 +35,13 @@ pub(crate) fn door_client(
 /// reference's bound for its BHS and Chaintracks clients.
 pub(crate) const HEADER_ANSWER_MAX_BYTES: usize = 4 * 1024 * 1024;
 
+/// An explorer's answer (`WhatsOnChain`, `Bitails`, `BananaBlocks`), which may
+/// be one transaction's bytes as hex: twice the reference's 32 MiB
+/// `MAX_RAW_TRANSACTION_BYTES`. A transaction has no small bound, so this
+/// is generous; an answer past it is a fault of that rung (could not
+/// look) and the ladder asks the next.
+pub(crate) const TX_ANSWER_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 #[cfg(any(test, feature = "bench-support"))]
 pub(crate) fn check_url_str(url: &str) -> crate::Result<()> {
     let url = reqwest::Url::parse(url)

@@ -11,7 +11,7 @@
 //! - Mainnet: `https://api.bitails.io/`
 //! - Testnet: `https://test-api.bitails.io/`
 
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{self, AnswerRead, Client};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -110,10 +110,10 @@ impl Bitails {
         };
 
         let timeout = config.timeout_secs.unwrap_or(30);
-        let client = Client::builder()
-            .timeout(Duration::from_secs(timeout))
-            .build()
-            .map_err(|e| Error::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
+        let client = http_client::door_client(
+            Duration::from_secs(timeout),
+            http_client::TX_ANSWER_MAX_BYTES,
+        )?;
 
         let gate_key = match config.api_key.as_deref().filter(|k| !k.is_empty()) {
             Some(key) => format!(
@@ -215,7 +215,7 @@ impl Bitails {
                 let hex_str = response
                     .text()
                     .await
-                    .map_err(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
+                    .or_door(|e| Error::NetworkError(format!("Failed to read response: {}", e)))?;
 
                 let raw_tx = hex::decode(hex_str.trim())
                     .map_err(|e| Error::ValidationError(format!("Failed to decode hex: {}", e)))?;
@@ -278,7 +278,7 @@ impl Bitails {
                 let data: BitailsTscProof = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse proof: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse proof: {}", e)))?;
 
                 // Convert to standard format
                 Ok(GetMerklePathResult {
@@ -339,7 +339,7 @@ impl Bitails {
                 let results: Vec<BitailsBroadcastResult> = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse response: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse response: {}", e)))?;
                 Ok(results)
             }
             status => Err(Error::ServiceError(format!(
@@ -578,7 +578,7 @@ impl Bitails {
                 let block: BitailsBlock = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse block: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse block: {}", e)))?;
 
                 let header_bytes = hex::decode(block.header.trim()).map_err(|e| {
                     Error::ValidationError(format!("Failed to decode header hex: {}", e))
@@ -669,7 +669,7 @@ impl Bitails {
         let body = response
             .bytes()
             .await
-            .map_err(|e| Error::NetworkError(format!("Unspent set read failed: {}", e)))?;
+            .or_door(|e| Error::NetworkError(format!("Unspent set read failed: {}", e)))?;
         let data: BitailsUnspentResponse = serde_json::from_slice(&body)
             .map_err(|e| Error::ServiceError(format!("Failed to parse unspent set: {}", e)))?;
 
@@ -873,7 +873,7 @@ impl Bitails {
                 let data: Vec<BitailsHistoryItem> = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse history: {}", e)))?;
 
                 let history = data
                     .into_iter()
@@ -980,7 +980,7 @@ impl Bitails {
                 let data: BitailsTxInfo = response
                     .json()
                     .await
-                    .map_err(|e| Error::ServiceError(format!("Failed to parse tx info: {}", e)))?;
+                    .or_door(|e| Error::ServiceError(format!("Failed to parse tx info: {}", e)))?;
                 Ok(Some(data))
             }
             StatusCode::NOT_FOUND => Ok(None),
