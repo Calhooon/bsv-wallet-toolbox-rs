@@ -123,7 +123,7 @@ fn the_set(
         let fits = Beef::from_binary(&input)
             .map_err(|e| e.to_string())
             .and_then(|input| merged.merge_beef(&input).map_err(|e| e.to_string()))
-            .and_then(|_| {
+            .and_then(|()| {
                 merged
                     .merge_raw_tx(raw, None)
                     .map(|_| ())
@@ -184,21 +184,7 @@ pub(super) async fn post_action_with_named<S, V>(
             Err(e) => (Vec::new(), Some(e.to_string())),
         };
     for posted in &txids {
-        let outcome = match &fault {
-            Some(fault) => BroadcastOutcome::ServiceError {
-                details: vec![fault.clone()],
-            },
-            None if txids.len() == 1 => classify_broadcast_results(&words),
-            None => classify_for_txid(&words, posted),
-        };
-        match &outcome {
-            BroadcastOutcome::Success => {
-                tracing::info!(txid = %posted, "Transaction broadcast successfully")
-            }
-            other => {
-                tracing::warn!(txid = %posted, outcome = ?other, "Broadcast not taken: a hint, re-asked via SendWaitingTask")
-            }
-        }
+        let outcome = outcome_of(posted, txids.len(), &words, fault.as_deref());
         super::wallet::record_post(
             storage,
             posted,
@@ -208,4 +194,27 @@ pub(super) async fn post_action_with_named<S, V>(
         )
         .await;
     }
+}
+
+/// One posted txid's outcome: the fault when no broadcaster answered, the
+/// whole word for a post naming one txid, else the word selected for it.
+fn outcome_of(
+    posted: &str,
+    named: usize,
+    words: &[PostBeefResult],
+    fault: Option<&str>,
+) -> BroadcastOutcome {
+    let outcome = match fault {
+        Some(fault) => BroadcastOutcome::ServiceError {
+            details: vec![fault.to_string()],
+        },
+        None if named == 1 => classify_broadcast_results(words),
+        None => classify_for_txid(words, posted),
+    };
+    if matches!(outcome, BroadcastOutcome::Success) {
+        tracing::info!(txid = %posted, "Transaction broadcast successfully");
+    } else {
+        tracing::warn!(txid = %posted, outcome = ?outcome, "Broadcast not taken: a hint, re-asked via SendWaitingTask");
+    }
+    outcome
 }
