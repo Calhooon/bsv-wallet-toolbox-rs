@@ -11,7 +11,9 @@ use super::{
 /// 1. `proven_tx_reqs`: the row goes back to `unmined`, attempts 0, no proof
 ///    link; when the completed row had been purged, a new `unmined` row is
 ///    inserted with the raw bytes taken from the proof row, so the bytes
-///    survive even after the 30-day purge cleared `transactions.raw_tx`.
+///    survive even after the 30-day purge cleared `transactions.raw_tx`;
+///    a txid with no transaction row (a competitor's proof row alone) gets
+///    no request.
 /// 2. `transactions`: every row linked to the proof but a `failed` one
 ///    and a held receipt (a received row reading `sending`, which stays
 ///    `sending`), and a `completed` row for the txid left without a link,
@@ -60,7 +62,15 @@ pub(in crate::storage::sqlx) async fn demote_stale_proof_on(
     .execute(&mut *conn)
     .await?
     .rows_affected();
-    if updated == 0 {
+    // A request is made only for a txid the store holds a transaction row
+    // of: a competitor's proof row alone (the competitor ask's) is no
+    // transaction of this store's to ask after.
+    let held: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM transactions WHERE txid = ?)")
+            .bind(txid)
+            .fetch_one(&mut *conn)
+            .await?;
+    if updated == 0 && held {
         sqlx::query(
             "INSERT INTO proven_tx_reqs (txid, status, attempts, notified, history, notify, raw_tx, input_beef, created_at, updated_at) \
              VALUES (?, 'unmined', 0, 0, '{}', '{}', ?, NULL, ?, ?)",
@@ -113,7 +123,7 @@ pub(in crate::storage::sqlx) async fn demote_stale_proof_on(
     tracing::warn!(
         txid = %txid,
         proven_tx_id,
-        request_recreated = updated == 0,
+        request_recreated = updated == 0 && held,
         mined_rows_forgotten = forgotten,
         marker = "stale_proof_demoted",
         "demote_stale_proof: the stored proof is gone; the transaction is unproven again with its bytes in the request and will be re-proved"

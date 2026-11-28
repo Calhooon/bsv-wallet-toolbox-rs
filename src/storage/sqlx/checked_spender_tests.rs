@@ -185,3 +185,40 @@ async fn the_ask_reads_our_inputs_from_bytes_that_hash_to_our_txid() {
         .unwrap();
     assert_ne!(word, "doubleSpend");
 }
+
+/// The verdict on X's coin C.
+async fn c_verdict(c: &Cell) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT l.last_verdict FROM locked_input_checks l JOIN outputs o ON o.output_id = l.output_id \
+         WHERE o.txid = ? AND o.vout = 0",
+    )
+    .bind(COINBASE_TXID)
+    .fetch_optional(c.s.pool())
+    .await
+    .unwrap()
+}
+
+/// R's checked proof, which the ask kept, leaves the headers: its proof row
+/// is demoted as the reorg path demotes one, no request is made for R (the
+/// store holds no transaction of R), and the mark it bound on C stays
+/// `spent-proven`.
+#[tokio::test]
+async fn a_stale_competitor_proof_makes_no_request_for_its_txid() {
+    let c = seed("sending").await;
+    write_word(&c, Writer::Competitor).await;
+    let r = txid_of(&super::held_receipt_scope_tests::r_raw());
+    assert_eq!(c_verdict(&c).await.as_deref(), Some("spent-proven"));
+    c.s.set_chain_tracker(Arc::new(MockChainTracker::new(1000)))
+        .await;
+    assert!(MonitorStorage::demote_stale_proof(&c.s, &r).await.unwrap());
+    let (proofs, requests): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM proven_txs WHERE txid = ?1), \
+                (SELECT COUNT(*) FROM proven_tx_reqs WHERE txid = ?1)",
+    )
+    .bind(&r)
+    .fetch_one(c.s.pool())
+    .await
+    .unwrap();
+    assert_eq!((proofs, requests), (0, 0), "R demoted, no request for R");
+    assert_eq!(c_verdict(&c).await.as_deref(), Some("spent-proven"));
+}
