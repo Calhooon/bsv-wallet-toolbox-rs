@@ -461,6 +461,50 @@ where
         })
     }
 
+    /// The sign path's abort after a signing or process failure: the
+    /// reference leaves the sign door's set only when the store's abort
+    /// answered Ok. Returns the sentence the caller's error ends with: the
+    /// release where it happened; on a busy store, which wrote nothing, that
+    /// the action is still reserved under its reference and `abortAction`
+    /// releases it; on any other error, only what is true whatever the
+    /// store did.
+    async fn release_after_failure(&self, auth: &AuthId, reference: &str, step: &str) -> String {
+        match self
+            .storage
+            .abort_action(
+                auth,
+                bsv_rs::wallet::AbortActionArgs {
+                    reference: reference.to_string(),
+                },
+            )
+            .await
+        {
+            Ok(_) => {
+                self.bare_deferred.write().await.remove(reference);
+                "Transaction aborted and UTXOs released.".to_string()
+            }
+            // Busy: the store refused before acting and wrote nothing, so
+            // the action is still reserved, as it was.
+            Err(abort_err @ Error::StoreBusy { .. }) => {
+                tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after {step} error");
+                format!(
+                    "The release of its coins did not complete ({abort_err}): the action is \
+                     still reserved under its reference, and abortAction releases it."
+                )
+            }
+            // Any other refusal (an action already aborted, a remote call
+            // that failed): the store's answer does not say whether the
+            // action is still reserved.
+            Err(abort_err) => {
+                tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after {step} error");
+                format!(
+                    "Its abort answered an error ({abort_err}): abortAction on its reference \
+                     releases its coins if it is still reserved."
+                )
+            }
+        }
+    }
+
     /// The sign door's refusal of a `sendWith` alone, before any
     /// signature, the spend lock or a write: a cached deferred action that
     /// carries no input and no output of the caller's, asked at signing to
@@ -1976,24 +2020,14 @@ where
             Ok(tx) => tx,
             Err(e) => {
                 // Signing failed - abort the transaction to release locked UTXOs
-                self.bare_deferred.write().await.remove(&reference);
                 tracing::error!(reference = %reference, error = %e, "Signing failed, aborting transaction to release UTXOs");
                 let auth = self.auth();
-                if let Err(abort_err) = self
-                    .storage
-                    .abort_action(
-                        &auth,
-                        bsv_rs::wallet::AbortActionArgs {
-                            reference: reference.clone(),
-                        },
-                    )
-                    .await
-                {
-                    tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after signing error");
-                }
+                let released = self
+                    .release_after_failure(&auth, &reference, "signing")
+                    .await;
                 return Err(bsv_rs::Error::WalletError(format!(
-                    "Signing failed: {}. Transaction aborted and UTXOs released.",
-                    e
+                    "Signing failed: {}. {}",
+                    e, released
                 )));
             }
         };
@@ -2044,23 +2078,13 @@ where
             Err(e @ Error::StoreBusy { .. }) => return Err(e.into()),
             Err(e) => {
                 // Processing failed - abort the transaction to release locked UTXOs
-                self.bare_deferred.write().await.remove(&reference);
                 tracing::error!(reference = %reference, error = %e, "Process action failed, aborting transaction to release UTXOs");
-                if let Err(abort_err) = self
-                    .storage
-                    .abort_action(
-                        &auth,
-                        bsv_rs::wallet::AbortActionArgs {
-                            reference: reference.clone(),
-                        },
-                    )
-                    .await
-                {
-                    tracing::error!(reference = %reference, error = %abort_err, "Failed to abort transaction after process error");
-                }
+                let released = self
+                    .release_after_failure(&auth, &reference, "process")
+                    .await;
                 return Err(bsv_rs::Error::WalletError(format!(
-                    "Process action failed: {}. Transaction aborted and UTXOs released.",
-                    e
+                    "Process action failed: {}. {}",
+                    e, released
                 )));
             }
         };
