@@ -38,7 +38,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::error::{Error, Result};
 use crate::rng::RandomSource;
 use crate::services::{Chain, WalletServices};
-use crate::storage::broadcast::{classify_broadcast_results, BroadcastOutcome};
+use crate::storage::broadcast::BroadcastOutcome;
 use crate::storage::entities::{TableCertificate, TableCertificateField, TransactionStatus};
 use crate::storage::{
     AuthId, FindOutputsArgs, StorageProcessActionArgs, StorageProvidedBy, WalletStorageProvider,
@@ -1673,42 +1673,18 @@ where
                         // parses cleanly (BRC-62: a BEEF should carry exactly the subject's
                         // dependency graph). BUMPs are left intact — retained txs' bump_index
                         // still resolves; surplus BUMPs are harmless.
-                        {
-                            use std::collections::{HashMap, HashSet};
-                            let by_id: HashMap<String, usize> = beef
-                                .txs
-                                .iter()
-                                .enumerate()
-                                .map(|(i, t)| (t.txid(), i))
-                                .collect();
-                            let mut keep: HashSet<String> = HashSet::new();
-                            let mut stack = vec![txid.clone()];
-                            while let Some(id) = stack.pop() {
-                                if !keep.insert(id.clone()) {
-                                    continue;
-                                }
-                                if let Some(&idx) = by_id.get(&id) {
-                                    if let Some(tx) = beef.txs[idx].tx() {
-                                        for inp in tx.inputs() {
-                                            if let Ok(src) = inp.get_source_txid() {
-                                                if by_id.contains_key(&src) {
-                                                    stack.push(src);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if keep.len() < beef.txs.len() {
-                                let before = beef.txs.len();
-                                beef.txs.retain(|t| keep.contains(&t.txid()));
-                                tracing::debug!(
-                                    txid = %txid,
-                                    pruned = before - beef.txs.len(),
-                                    kept = beef.txs.len(),
-                                    "Pruned BEEF to subject ancestor closure for ARC compatibility"
-                                );
-                            }
+                        let before = beef.txs.len();
+                        super::send_set::keep_ancestor_closure(
+                            &mut beef,
+                            std::slice::from_ref(&txid),
+                        );
+                        if beef.txs.len() < before {
+                            tracing::debug!(
+                                txid = %txid,
+                                pruned = before - beef.txs.len(),
+                                kept = beef.txs.len(),
+                                "Pruned BEEF to subject ancestor closure for ARC compatibility"
+                            );
                         }
 
                         // Force V1 for ARC compatibility
@@ -1739,9 +1715,7 @@ where
             // Broadcast the transaction if not no_send and not delayed
             // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
             if !no_send && !accept_delayed_broadcast {
-                let (mut post_words, mut post_fault) = (Vec::new(), None);
-                let broadcast_outcome = if let Some(ref beef_bytes) = full_beef_bytes {
-                    let txid_strings = vec![txid.clone()];
+                if let Some(ref beef_bytes) = full_beef_bytes {
                     // Validate BEEF structure and log its shape
                     match bsv_rs::transaction::Beef::from_binary(beef_bytes) {
                         Ok(parsed) => {
@@ -1775,59 +1749,16 @@ where
                             );
                         }
                     }
-                    tracing::debug!(
-                        txid = %txid,
-                        beef_len = beef_bytes.len(),
-                        "Broadcasting transaction via post_beef (with signed tx)"
-                    );
-                    match self.services.post_beef(beef_bytes, &txid_strings).await {
-                        Ok(results) => {
-                            let outcome = classify_broadcast_results(&results);
-                            post_words = results;
-                            match &outcome {
-                                BroadcastOutcome::Success => {
-                                    tracing::info!(txid = %txid, "Transaction broadcast successfully");
-                                }
-                                BroadcastOutcome::ServiceError { details } => {
-                                    tracing::warn!(
-                                        txid = %txid,
-                                        errors = ?details,
-                                        "Broadcast returned service errors — will retry via SendWaitingTask"
-                                    );
-                                }
-                                BroadcastOutcome::DoubleSpend { details, .. } => {
-                                    tracing::warn!(
-                                        txid = %txid,
-                                        errors = ?details,
-                                        "Broadcast drew a double-spend word: a hint, re-asked via SendWaitingTask"
-                                    );
-                                }
-                                BroadcastOutcome::InvalidTx { details } => {
-                                    tracing::warn!(
-                                        txid = %txid,
-                                        errors = ?details,
-                                        "Broadcast drew a refusal: a hint, re-asked via SendWaitingTask"
-                                    );
-                                }
-                                BroadcastOutcome::OrphanMempool { details } => {
-                                    tracing::warn!(
-                                        txid = %txid,
-                                        errors = ?details,
-                                        "Broadcast returned orphan mempool (parent not propagated) — will retry via SendWaitingTask"
-                                    );
-                                }
-                            }
-                            outcome
-                        }
-                        Err(e) => {
-                            // Network/service error is transient — will retry
-                            tracing::warn!(txid = %txid, error = %e, "Broadcast service error — will retry");
-                            post_fault = Some(e.to_string());
-                            BroadcastOutcome::ServiceError {
-                                details: vec![e.to_string()],
-                            }
-                        }
-                    }
+                    // One post: the action and every named transaction the
+                    // process step queued with it in this call.
+                    super::send_set::post_action_with_named(
+                        &*self.storage,
+                        &*self.services,
+                        &txid,
+                        beef_bytes,
+                        &mut process_result.send_with_results,
+                    )
+                    .await;
                 } else {
                     // The wallet's own fault, before any post: nothing reached a
                     // broadcaster, so the action is aborted (its inputs released)
@@ -1849,24 +1780,7 @@ where
                         "No BEEF available for broadcast of txid {}. Transaction aborted and inputs released.",
                         txid
                     )));
-                };
-
-                // Update transaction status based on classified broadcast
-                // outcome. After the post a store fault is never the call's
-                // error: the transaction is on the network (bsv-wallet-cli #44).
-                record_post(
-                    &*self.storage,
-                    &txid,
-                    &broadcast_outcome,
-                    (&post_words, post_fault.as_deref()),
-                    &mut process_result.send_with_results,
-                )
-                .await;
-
-                // A broadcaster's word is never an error to the caller
-                // (bsv-stack-lean #66): every outcome but a success leaves the
-                // transaction 'sending' and the result carries the txid with
-                // that status; the monitor re-asks on the cadence.
+                }
             }
 
             // Convert txid string to [u8; 32]
@@ -2538,8 +2452,7 @@ where
         // If not no_send and not delayed, broadcast the transaction
         // BUG-002/BUG-003 FIX: Update status AFTER broadcast attempt, not before
         if !is_no_send && !is_delayed {
-            let (mut post_words, mut post_fault) = (Vec::new(), None);
-            let broadcast_outcome = if let Some(ref input_beef_bytes) = pending_tx.input_beef {
+            let broadcast_beef = if let Some(ref input_beef_bytes) = pending_tx.input_beef {
                 // Create a new BEEF that includes both the signed tx and its ancestors
                 match bsv_rs::transaction::Beef::from_binary(input_beef_bytes) {
                     Ok(mut broadcast_beef) => 'post: {
@@ -2569,44 +2482,7 @@ where
                                 break 'post Err(format!("Failed to write the broadcast BEEF: {e}"))
                             }
                         };
-                        let txid_strings = vec![txid.clone()];
-                        Ok(
-                            match self.services.post_beef(&beef_bytes, &txid_strings).await {
-                                Ok(results) => {
-                                    let outcome = classify_broadcast_results(&results);
-                                    post_words = results;
-                                    match &outcome {
-                                        BroadcastOutcome::Success => {
-                                            tracing::info!(txid = %txid, "Transaction broadcast successfully (sign_action)");
-                                        }
-                                        BroadcastOutcome::ServiceError { details } => {
-                                            tracing::warn!(
-                                                txid = %txid,
-                                                errors = ?details,
-                                                "Broadcast returned service errors: will retry (sign_action)"
-                                            );
-                                        }
-                                        BroadcastOutcome::DoubleSpend { details, .. } => {
-                                            tracing::warn!(txid = %txid, errors = ?details, "Double-spend word: a hint, re-asked (sign_action)");
-                                        }
-                                        BroadcastOutcome::InvalidTx { details } => {
-                                            tracing::warn!(txid = %txid, errors = ?details, "Refusal: a hint, re-asked (sign_action)");
-                                        }
-                                        BroadcastOutcome::OrphanMempool { details } => {
-                                            tracing::warn!(txid = %txid, errors = ?details, "Orphan mempool (parent not propagated): will retry (sign_action)");
-                                        }
-                                    }
-                                    outcome
-                                }
-                                Err(e) => {
-                                    tracing::warn!(txid = %txid, error = %e, "Broadcast service error: will retry (sign_action)");
-                                    post_fault = Some(e.to_string());
-                                    BroadcastOutcome::ServiceError {
-                                        details: vec![e.to_string()],
-                                    }
-                                }
-                            },
-                        )
+                        Ok(beef_bytes)
                     }
                     Err(e) => {
                         tracing::error!(txid = %txid, error = %e, "Failed to parse input BEEF (sign_action)");
@@ -2617,8 +2493,8 @@ where
                 tracing::warn!(txid = %txid, "No input_beef available for broadcast (sign_action)");
                 Err("No input_beef available for broadcast".to_string())
             };
-            let broadcast_outcome = match broadcast_outcome {
-                Ok(outcome) => outcome,
+            let beef_bytes = match broadcast_beef {
+                Ok(bytes) => bytes,
                 Err(fault) => {
                     // The wallet's own fault, before any post: nothing reached
                     // a broadcaster, so the action is aborted (its inputs
@@ -2642,23 +2518,19 @@ where
                 }
             };
 
-            // Update transaction status based on classified broadcast outcome,
-            // with the post note the door's post and the one-call composition
-            // write (#330). After the post a store fault is never the call's
-            // error.
-            record_post(
+            // One post, as the create door's: the action and every named
+            // transaction the process step queued with it in this call, each
+            // txid's word recorded with the post note (#330). After the post a
+            // store fault is never the call's error, and a broadcaster's word
+            // is never an error to the caller (bsv-stack-lean #66).
+            super::send_set::post_action_with_named(
                 &*self.storage,
+                &*self.services,
                 &txid,
-                &broadcast_outcome,
-                (&post_words, post_fault.as_deref()),
+                &beef_bytes,
                 &mut process_result.send_with_results,
             )
             .await;
-
-            // A broadcaster's word is never an error to the caller
-            // (bsv-stack-lean #66): every outcome but a success leaves the
-            // transaction 'sending' and the result carries the txid with that
-            // status; the monitor re-asks on the cadence.
         }
 
         // Remove from pending transactions cache on success
@@ -3518,7 +3390,7 @@ fn mark_send_with_result_after_broadcast(
 /// note and the statuses through `update_transaction_status_after_post`, a
 /// store fault logged and never the call's error (bsv-wallet-cli #44), then
 /// the sendWith result marked.
-async fn record_post<S: WalletStorageProvider>(
+pub(super) async fn record_post<S: WalletStorageProvider>(
     storage: &S,
     txid: &str,
     outcome: &BroadcastOutcome,

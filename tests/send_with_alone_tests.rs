@@ -512,9 +512,8 @@ async fn a_named_txid_beside_a_new_action_is_sent_only_when_it_is_the_callers_no
 }
 
 /// Two named txids of which one is not the caller's, beside a new action:
-/// the caller's own is queued with the action (`sending`, as a named
-/// `noSend` action beside a new one is answered), the other is answered
-/// not sent and nothing of it is written.
+/// the caller's own is sent with the action in one post (`unproven`), the
+/// other is answered not sent and nothing of it is written.
 #[tokio::test]
 async fn of_two_named_txids_beside_a_new_action_the_one_not_the_callers_is_not_sent() {
     let (a, b) = two_users(accepting()).await;
@@ -531,13 +530,16 @@ async fn of_two_named_txids_beside_a_new_action_the_one_not_the_callers_is_not_s
     assert_eq!(
         entries(&got),
         vec![
-            entry(&mine, "Sending"),
+            entry(&mine, "Unproven"),
             entry(&theirs, "Failed"),
             entry(&own, "Unproven")
         ]
     );
     assert_eq!(words(a.storage(), &theirs).await, word("nosend", "nosend"));
-    assert_eq!(words(a.storage(), &mine).await, word("sending", "unsent"));
+    assert_eq!(words(a.storage(), &mine).await, word("unproven", "unmined"));
+    let last = posts(&a).pop().expect("the one post");
+    let both = format!("txids={:?}", [hex::encode(mine), hex::encode(own)]);
+    assert!(last.contains(&both), "mine with the action: {last}");
     assert!(
         posts(&a).iter().all(|p| !p.contains(&hex::encode(theirs))),
         "nothing of the other user's is posted"
