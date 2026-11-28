@@ -152,4 +152,39 @@ mod tests {
             "the door reads the same words"
         );
     }
+
+    /// The read ahead of 006 is built from the statement's own condition:
+    /// the statement is `UPDATE transactions SET ... WHERE <c>` and the read
+    /// `SELECT EXISTS (SELECT 1 FROM transactions WHERE <c>)`, the same
+    /// `<c>` byte for byte.
+    #[test]
+    fn the_read_ahead_of_006_is_its_own_condition() {
+        let statements = crate::storage::sqlx::broadcast_seen::migration_statements(
+            MIGRATION_006_HELD_RECEIPTS_SQL,
+        );
+        assert_eq!(statements.len(), 1, "006 is one statement");
+        let update = &statements[0];
+        let guard = crate::storage::sqlx::broadcast_seen::data_statement_guard(update)
+            .expect("006 is a data statement with a read ahead of it");
+        let condition = guard
+            .strip_prefix("SELECT EXISTS (SELECT 1 FROM transactions WHERE ")
+            .and_then(|c| c.strip_suffix(')'))
+            .expect("the read names the statement's table");
+        let (head, tail) = update.split_once("\nWHERE ").expect("one WHERE line");
+        assert!(
+            head.starts_with("UPDATE transactions\nSET status = 'sending'"),
+            "{head}"
+        );
+        assert!(!head.to_ascii_uppercase().contains("WHERE"), "{head}");
+        assert_eq!(
+            condition,
+            tail.trim(),
+            "the read and the write share the condition"
+        );
+        let join = folded(CHECKED_PROOF_JOIN);
+        assert!(
+            folded(condition).contains(&join),
+            "the read reads the checked proof"
+        );
+    }
 }

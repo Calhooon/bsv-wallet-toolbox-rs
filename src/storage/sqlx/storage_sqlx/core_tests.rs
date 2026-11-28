@@ -2,6 +2,34 @@
 mod tests {
     use super::super::*;
 
+    /// Every statement the migration list runs at open is a schema
+    /// statement with its own `IF NOT EXISTS` (no write lock on a store that
+    /// has it) or a data statement with a read ahead of it, built from its
+    /// own condition, whose `SET` clause holds no `WHERE`. A new data
+    /// statement the guard cannot read fails here.
+    #[test]
+    fn every_migration_statement_is_if_not_exists_or_guarded() {
+        use crate::storage::sqlx::broadcast_seen::{data_statement_guard, migration_statements};
+        for (name, sql) in MIGRATIONS {
+            for statement in migration_statements(sql) {
+                let upper = statement.to_ascii_uppercase();
+                let schema = upper.starts_with("CREATE TABLE IF NOT EXISTS ")
+                    || upper.starts_with("CREATE INDEX IF NOT EXISTS ");
+                if schema {
+                    continue;
+                }
+                let guard = data_statement_guard(&statement).unwrap_or_else(|| {
+                    panic!("{name}: neither IF NOT EXISTS nor guarded: {statement}")
+                });
+                let (_, condition) = statement.split_once("WHERE").unwrap();
+                assert!(
+                    guard.ends_with(&format!("WHERE {})", condition.trim())),
+                    "{name}: {guard}"
+                );
+            }
+        }
+    }
+
     /// A tracker that answers every root valid.
     struct AnyRoot;
 
