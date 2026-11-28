@@ -1,0 +1,181 @@
+//! Every outward door's times and answer bound, through the real provider
+//! code against a raw loopback listener: (a) a server that accepts and
+//! never answers, (b) an answer that never ends, counted on the server's
+//! side, (c) an honest answer at the bound.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc as StdArc;
+use std::time::{Duration, Instant};
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+
+use crate::services::providers::http_client::{self, Client, RequestError};
+
+/// What the listener does with each connection.
+#[derive(Clone)]
+enum Answer {
+    /// Accept, read the request, never answer.
+    Stall,
+    /// A 200 whose chunked body never ends; the bytes written are counted.
+    Endless,
+    /// A 200 with this chunked body (no declared length).
+    Body(StdArc<Vec<u8>>),
+}
+
+struct Listener {
+    url: String,
+    written: StdArc<AtomicUsize>,
+    connections: StdArc<AtomicUsize>,
+}
+
+/// A raw listener answering every connection with `answers[i]` (the last
+/// repeated): mockito cannot hold a connection open without an answer.
+async fn listen(answers: Vec<Answer>) -> Listener {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let written = StdArc::new(AtomicUsize::new(0));
+    let connections = StdArc::new(AtomicUsize::new(0));
+    let (w, c) = (written.clone(), connections.clone());
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let n = c.fetch_add(1, Ordering::SeqCst);
+            let answer = answers[n.min(answers.len() - 1)].clone();
+            let w = w.clone();
+            tokio::spawn(async move {
+                let mut head = vec![0u8; 64 * 1024];
+                let _ = socket.read(&mut head).await;
+                let start = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+                match answer {
+                    Answer::Stall => {
+                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                    }
+                    Answer::Endless => {
+                        if socket.write_all(start).await.is_err() {
+                            return;
+                        }
+                        let chunk = vec![b'7'; 64 * 1024];
+                        let frame =
+                            [format!("{:x}\r\n", chunk.len()).as_bytes(), &chunk, b"\r\n"].concat();
+                        while socket.write_all(&frame).await.is_ok() {
+                            w.fetch_add(chunk.len(), Ordering::SeqCst);
+                        }
+                    }
+                    Answer::Body(body) => {
+                        let _ = socket.write_all(start).await;
+                        for chunk in body.chunks(64 * 1024) {
+                            let frame =
+                                [format!("{:x}\r\n", chunk.len()).as_bytes(), chunk, b"\r\n"]
+                                    .concat();
+                            if socket.write_all(&frame).await.is_err() {
+                                return;
+                            }
+                            w.fetch_add(chunk.len(), Ordering::SeqCst);
+                        }
+                        let _ = socket.write_all(b"0\r\n\r\n").await;
+                        let _ = socket.shutdown().await;
+                    }
+                }
+            });
+        }
+    });
+    Listener {
+        url,
+        written,
+        connections,
+    }
+}
+
+/// The test's own bound: a hang fails here, not in the harness.
+async fn bounded<T>(limit: Duration, call: impl std::future::Future<Output = T>) -> (T, Duration) {
+    let started = Instant::now();
+    let out = tokio::time::timeout(limit, call)
+        .await
+        .unwrap_or_else(|_| panic!("the door did not return within {limit:?}: it hangs"));
+    (out, started.elapsed())
+}
+
+/// (b)'s reading: the read stopped near the bound (what the kernel buffers
+/// beside it aside), and the door's text names the bound.
+fn stopped_at(listener: &Listener, limit: usize, text: &str) {
+    // Let the server's last writes fail.
+    let written = listener.written.load(Ordering::SeqCst);
+    assert!(
+        written <= limit + 16 * 1024 * 1024,
+        "the read did not stop at the bound: {written} bytes written past a bound of {limit}"
+    );
+    assert!(
+        text.contains(&format!("bound of {limit} bytes")),
+        "not the bound's fault: {text}"
+    );
+}
+
+/// The one read every door shares, at a door's bound: exactly the bound
+/// is read whole; a byte past it is the bound's fault.
+async fn reads_whole_at_and_refuses_past(limit: usize) {
+    let body = StdArc::new(vec![b'7'; limit]);
+    let over = StdArc::new(vec![b'7'; limit + 1]);
+    let l = listen(vec![Answer::Body(body), Answer::Body(over)]).await;
+    let client = Client::builder()
+        .timeout(Duration::from_secs(50))
+        .connect_timeout(http_client::CONNECT_TIMEOUT)
+        .answer_limit(limit)
+        .build()
+        .unwrap();
+    let read = client.get(&l.url).send().await.unwrap().bytes().await;
+    assert_eq!(read.map(|b| b.len()).ok(), Some(limit), "at {limit}");
+    let read = client.get(&l.url).send().await.unwrap().bytes().await;
+    assert!(
+        matches!(read, Err(RequestError::TooLarge { limit: l }) if l == limit),
+        "past {limit}: {read:?}"
+    );
+    assert_eq!(l.connections.load(Ordering::SeqCst), 2);
+}
+
+/// The header services (BHS, Chaintracks) and the explorer header fallback.
+mod headers {
+    use super::*;
+    use crate::services::providers::http_client::HEADER_ANSWER_MAX_BYTES;
+    use crate::services::providers::{BlockHeaderService, ChaintracksServiceClient};
+
+    #[tokio::test]
+    async fn a_stalled_header_service_returns_within_its_total_time() {
+        let l = listen(vec![Answer::Stall]).await;
+        let bhs = BlockHeaderService::from_url(&l.url);
+        let ct = ChaintracksServiceClient::from_url(&l.url);
+        let ((b, c), took) = bounded(Duration::from_secs(45), async {
+            tokio::join!(bhs.current_height(), ct.get_present_height())
+        })
+        .await;
+        assert!(took < Duration::from_secs(40), "{took:?}");
+        assert!(b.is_err() && c.is_err(), "{b:?} {c:?}");
+    }
+
+    #[tokio::test]
+    async fn an_endless_header_service_answer_stops_at_its_bound() {
+        let l = listen(vec![Answer::Endless]).await;
+        let (r, _) = bounded(
+            Duration::from_secs(40),
+            BlockHeaderService::from_url(&l.url).current_height(),
+        )
+        .await;
+        stopped_at(&l, HEADER_ANSWER_MAX_BYTES, &format!("{r:?}"));
+        assert!(matches!(r, Err(crate::Error::NetworkError(_))), "{r:?}");
+        let l = listen(vec![Answer::Endless]).await;
+        let (r, _) = bounded(
+            Duration::from_secs(40),
+            ChaintracksServiceClient::from_url(&l.url).get_present_height(),
+        )
+        .await;
+        stopped_at(&l, HEADER_ANSWER_MAX_BYTES, &format!("{r:?}"));
+        assert!(matches!(r, Err(crate::Error::NetworkError(_))), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn a_header_answer_at_its_bound_is_read_whole() {
+        reads_whole_at_and_refuses_past(HEADER_ANSWER_MAX_BYTES).await;
+    }
+}

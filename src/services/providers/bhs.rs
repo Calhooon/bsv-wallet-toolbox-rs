@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{self, AnswerRead, Client};
 #[cfg(test)]
 use crate::services::providers::pace::Clock;
 use crate::services::providers::pace::{shared_key, RateGate};
@@ -61,10 +61,11 @@ pub struct BlockHeaderService {
 impl BlockHeaderService {
     /// Create a new BHS provider.
     pub fn new(config: BhsConfig) -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_default();
+        let client = http_client::door_client(
+            std::time::Duration::from_secs(30),
+            http_client::HEADER_ANSWER_MAX_BYTES,
+        )
+        .unwrap_or_default();
         let key = shared_key("BHS", &config.url, config.api_key.as_deref());
         Self {
             client,
@@ -130,7 +131,7 @@ impl BlockHeaderService {
         let text = response
             .text()
             .await
-            .map_err(|e| Error::ServiceError(format!("BHS parse error: {}", e)))?;
+            .or_door(|e| Error::ServiceError(format!("BHS parse error: {}", e)))?;
         text.trim()
             .parse::<u32>()
             .map_err(|e| Error::ServiceError(format!("BHS height parse: {}", e)))
@@ -157,7 +158,7 @@ impl BlockHeaderService {
         response
             .json::<BlockHeader>()
             .await
-            .map_err(|e| Error::ServiceError(format!("BHS header parse: {}", e)))
+            .or_door(|e| Error::ServiceError(format!("BHS header parse: {}", e)))
     }
 
     /// Validate a merkle root for a given block height.
@@ -187,7 +188,7 @@ impl BlockHeaderService {
         response
             .json::<BlockHeader>()
             .await
-            .map_err(|e| Error::ServiceError(format!("BHS tip parse: {}", e)))
+            .or_door(|e| Error::ServiceError(format!("BHS tip parse: {}", e)))
     }
 }
 

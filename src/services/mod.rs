@@ -42,6 +42,8 @@ pub mod mock;
 mod network_isolation_tests;
 #[cfg(test)]
 mod network_post_tests;
+#[cfg(test)]
+mod outward_bounds_tests;
 pub mod providers;
 #[allow(clippy::module_inception)]
 pub mod services;

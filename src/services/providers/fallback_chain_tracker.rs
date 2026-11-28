@@ -26,7 +26,7 @@
 //! header here: two words agreeing is the whole of the check, which is why
 //! the setting is break-glass.
 
-use crate::services::providers::http_client::Client;
+use crate::services::providers::http_client::{self, Client};
 use async_trait::async_trait;
 use bsv_rs::transaction::{ChainTracker, ChainTrackerError};
 use serde::Deserialize;
@@ -164,10 +164,11 @@ impl FallbackChainTracker {
         primary: ChaintracksServiceClient,
         break_glass_explorers: Option<(String, String)>,
     ) -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .unwrap_or_default();
+        let client = http_client::door_client(
+            std::time::Duration::from_secs(15),
+            http_client::HEADER_ANSWER_MAX_BYTES,
+        )
+        .unwrap_or_default();
         Self {
             primary,
             break_glass_explorers,
@@ -202,10 +203,10 @@ impl FallbackChainTracker {
             return Err(format!("Bitails fallback HTTP {}", status));
         }
 
-        let block: BitailsBlockByHeight = response
-            .json()
-            .await
-            .map_err(|e| format!("Bitails fallback parse error: {}", e))?;
+        let block: BitailsBlockByHeight = response.json().await.map_err(|e| match e {
+            e @ http_client::RequestError::TooLarge { .. } => format!("Bitails fallback: {e}"),
+            e => format!("Bitails fallback parse error: {}", e),
+        })?;
         if block.height != height {
             return Err(format!(
                 "Bitails: asked for height {} and was answered for {}",
@@ -238,10 +239,10 @@ impl FallbackChainTracker {
             return Err(format!("WoC fallback HTTP {}", status));
         }
 
-        let header: WocBlockByHeight = response
-            .json()
-            .await
-            .map_err(|e| format!("WoC fallback parse error: {}", e))?;
+        let header: WocBlockByHeight = response.json().await.map_err(|e| match e {
+            e @ http_client::RequestError::TooLarge { .. } => format!("WoC fallback: {e}"),
+            e => format!("WoC fallback parse error: {}", e),
+        })?;
 
         header
             .merkleroot
