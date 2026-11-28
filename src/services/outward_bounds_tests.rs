@@ -526,6 +526,19 @@ mod stream {
 
     const TXID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+    /// The task's loop reconnects on any error: the second connection of
+    /// `l` reads a normal stream unchanged, one event of [`TXID`].
+    async fn the_next_connection_reads_one_event(
+        sse: &mut crate::services::providers::arcade::ArcadeSseClient,
+        l: &Listener,
+    ) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (r, _) = bounded(Duration::from_secs(20), sse.stream_once(tx)).await;
+        assert_eq!(r.unwrap(), 1);
+        assert_eq!(rx.recv().await.unwrap().txid, TXID);
+        assert_eq!(l.connections.load(Ordering::SeqCst), 2);
+    }
+
     #[tokio::test]
     async fn an_event_line_past_its_cap_ends_the_connection_and_the_next_reads() {
         use crate::services::providers::arcade::{ArcadeSseClient, SSE_LINE_MAX_BYTES};
@@ -547,13 +560,7 @@ mod stream {
             "{text}"
         );
         assert!(rx.recv().await.is_none());
-        // The task's loop reconnects on any error: the next connection reads
-        // a normal stream unchanged.
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        let (r, _) = bounded(Duration::from_secs(20), sse.stream_once(tx)).await;
-        assert_eq!(r.unwrap(), 1);
-        assert_eq!(rx.recv().await.unwrap().txid, TXID);
-        assert_eq!(l.connections.load(Ordering::SeqCst), 2);
+        the_next_connection_reads_one_event(&mut sse, &l).await;
     }
 
     /// A frame of `count` copies of `line` and no blank line: the
@@ -580,11 +587,7 @@ mod stream {
             "{text} after {took:?}"
         );
         assert!(rx.recv().await.is_none());
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        let (r, _) = bounded(Duration::from_secs(20), sse.stream_once(tx)).await;
-        assert_eq!(r.unwrap(), 1);
-        assert_eq!(rx.recv().await.unwrap().txid, TXID);
-        assert_eq!(l.connections.load(Ordering::SeqCst), 2);
+        the_next_connection_reads_one_event(&mut sse, &l).await;
     }
 
     #[tokio::test]
