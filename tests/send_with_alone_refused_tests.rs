@@ -596,8 +596,8 @@ async fn w6_the_sign_door_refuses_send_with_alone() {
     assert!(text.contains("signAction"), "{text}");
     assert!(
         text.contains(
-            "The deferred action is as it was: sign it with an empty sendWith or release it \
-             with abortAction."
+            "The deferred action is as it was: sign it with an empty sendWith (which posts its \
+             own change-only transaction, with its fee) or release it with abortAction."
         ),
         "{text}"
     );
@@ -788,5 +788,9 @@ async fn w11_an_empty_send_with_signs_what_the_create_named() {
             .map(|r| r.txid.map(hex::encode))
             .map_err(|e| e.to_string())
     );
-    assert!(empty.expect("sendWith [] signs").txid.is_some());
+    let own = hex::encode(empty.expect("sendWith [] signs").txid.expect("txid"));
+    println!("STEP W11 posts {:?}", posts(&wallet));
+    let seen = posts(&wallet);
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert!(seen[0].ends_with(&format!("txids=[\"{own}\"]")), "{seen:?}");
 }
