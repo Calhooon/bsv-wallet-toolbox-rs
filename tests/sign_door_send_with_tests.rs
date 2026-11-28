@@ -453,13 +453,13 @@ async fn the_sign_door_refuses_no_send_beside_send_with() {
         let reference = base64::engine::general_purpose::STANDARD
             .encode(made.signable_transaction.unwrap().reference);
         let before = (rows(&store).await, posts(&a).len());
-        let call = |options: SignActionOptions| SignActionArgs {
+        let signing = |options: SignActionOptions| SignActionArgs {
             spends: std::collections::HashMap::new(),
             reference: reference.clone(),
             options: Some(options),
         };
         let answer = a
-            .sign_action(call(sign), Some(ORIGIN))
+            .sign_action(signing(sign), Some(ORIGIN))
             .await
             .expect_err("refused");
         assert_refused(answer, cell);
@@ -484,7 +484,7 @@ async fn the_sign_door_refuses_no_send_beside_send_with() {
             send_with: Some(vec![]),
             ..Default::default()
         };
-        a.sign_action(call(again), Some(ORIGIN))
+        a.sign_action(signing(again), Some(ORIGIN))
             .await
             .unwrap_or_else(|e| panic!("{cell}: the session stays: {e}"));
     }

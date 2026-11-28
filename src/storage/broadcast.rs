@@ -129,33 +129,6 @@ pub fn is_definitive_rejection(tr: &PostTxResultForTxid) -> bool {
 /// but `Success` as a hint (bsv-stack-lean #66). The transaction stays
 /// `sending`, the caller gets its txid, and `SendWaitingTask` re-asks on the
 /// cadence until a proof, a competitor's checked proof or the host's retire.
-/// One txid's outcome from a post naming several: each broadcaster's
-/// per-txid results kept for `txid` alone, the broadcaster's word read from
-/// them, then [`classify_broadcast_results`]. A word carrying no per-txid
-/// result is its own word for every txid it was asked about.
-pub(crate) fn classify_for_txid(results: &[PostBeefResult], txid: &str) -> BroadcastOutcome {
-    let selected: Vec<_> = results
-        .iter()
-        .cloned()
-        .map(|mut word| {
-            if !word.txid_results.is_empty() {
-                word.txid_results.retain(|result| result.txid == txid);
-                word.status = if word
-                    .txid_results
-                    .iter()
-                    .any(PostTxResultForTxid::is_success)
-                {
-                    "success".to_string()
-                } else {
-                    "error".to_string()
-                };
-            }
-            word
-        })
-        .collect();
-    classify_broadcast_results(&selected)
-}
-
 pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcome {
     // Collect all per-txid results across providers
     let all_txid_results: Vec<&PostTxResultForTxid> =
@@ -235,6 +208,33 @@ pub fn classify_broadcast_results(results: &[PostBeefResult]) -> BroadcastOutcom
 
     // 5. Everything else is a transient service error
     BroadcastOutcome::ServiceError { details }
+}
+
+/// One txid's outcome from a post naming several: each broadcaster's
+/// per-txid results kept for `txid` alone, the broadcaster's word read from
+/// them, then [`classify_broadcast_results`]. A word carrying no per-txid
+/// result is its own word for every txid it was asked about.
+pub(crate) fn classify_for_txid(results: &[PostBeefResult], txid: &str) -> BroadcastOutcome {
+    let selected: Vec<_> = results
+        .iter()
+        .cloned()
+        .map(|mut word| {
+            if !word.txid_results.is_empty() {
+                word.txid_results.retain(|result| result.txid == txid);
+                word.status = if word
+                    .txid_results
+                    .iter()
+                    .any(PostTxResultForTxid::is_success)
+                {
+                    "success".to_string()
+                } else {
+                    "error".to_string()
+                };
+            }
+            word
+        })
+        .collect();
+    classify_broadcast_results(&selected)
 }
 
 // =============================================================================
