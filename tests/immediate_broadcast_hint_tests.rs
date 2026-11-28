@@ -627,3 +627,39 @@ async fn internalize_action_answered_465_is_a_hint_not_an_error() {
             .unwrap();
     assert_eq!(kept, 1, "the internalized output is not written off");
 }
+
+/// The modified time of one path, `None` when nothing is there.
+fn modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// An immediate broadcast writes no `beef-<txid8>.hex` under the temp folder (#530).
+///
+/// #584: the witness reads no folder. The #530 dump's name was fixed by the
+/// txid, so one `metadata` call on that path after the broadcast answers what
+/// a scan of the shared temp folder answered, and a pile of unrelated files
+/// there costs it nothing. The txid is known only after the call, so the
+/// clock read before it stands for the snapshot: a file of that name modified
+/// before the call is not this run's.
+#[tokio::test]
+async fn immediate_broadcast_writes_no_beef_dump() {
+    let (storage, root, _parent) = seed().await;
+    let wallet = Wallet::new(Some(root), storage, posting(word("rejected", true, None)))
+        .await
+        .expect("wallet");
+    let started = std::time::SystemTime::now();
+    let result = wallet
+        .create_action(pay_args(true), "test.local")
+        .await
+        .expect("a double-spend word is not an error to the caller");
+    let txid = hex::encode(result.txid.expect("the answer carries its txid"));
+    assert_eq!(wallet.services().call_count("post_beef"), 1);
+
+    let path = std::env::temp_dir().join(format!("beef-{}.hex", &txid[..8]));
+    let written = modified(&path).filter(|time| *time >= started);
+    // Only a file this run wrote is removed.
+    if written.is_some() {
+        let _ = std::fs::remove_file(&path);
+    }
+    assert!(written.is_none(), "the broadcast wrote {}", path.display());
+}
