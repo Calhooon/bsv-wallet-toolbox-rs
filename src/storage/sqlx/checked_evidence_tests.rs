@@ -94,10 +94,11 @@ async fn the_ask_keeps_the_competitors_checked_proof() {
     assert!(checked(&c, &r).await, "R's checked proof is on record");
 }
 
-/// A competitor proof the store's sync door placed from another store (Z's
-/// R, its path's root on no header, no check of this store's) beside a
-/// word: the received row keeps its word, and a take while the store has
-/// no tracker of its own is applied, not refused on it.
+/// A proof row this store has not checked (Z's R, its path's root on no
+/// header) beside a word: the received row keeps its word (a word's
+/// evidence read is a recorded proof alone). A take beside it asks the
+/// tracker: with a tracker that cannot answer it waits; with one that refutes the root
+/// it is applied.
 #[tokio::test]
 async fn a_stored_proof_no_check_saw_is_no_evidence() {
     let c = seed("sending").await;
@@ -143,7 +144,7 @@ async fn a_stored_proof_no_check_saw_is_no_evidence() {
         .fetch_one(c.s.pool())
         .await
         .unwrap();
-    assert_eq!(placed, 1, "the sync door placed R's proof row");
+    assert_eq!(placed, 1, "R's proof row is stored");
     assert!(!checked(&c, &r).await);
 
     MonitorStorage::review_status(&c.s).await.unwrap();
@@ -154,9 +155,51 @@ async fn a_stored_proof_no_check_saw_is_no_evidence() {
         "the received row keeps its word: {got:?}"
     );
 
-    c.s.clear_chain_tracker().await;
+    c.s.set_chain_tracker(Arc::new(ErringTracker)).await;
+    assert_eq!(take(&c).await, TakeApplied::Withheld);
+    assert_eq!(read(&c).await.y_row, "sending");
+
+    c.s.set_chain_tracker(Arc::new(MockChainTracker::new(1000)))
+        .await;
     assert_eq!(take(&c).await, TakeApplied::Applied);
     assert_eq!(read(&c).await.y_row, "unproven");
+}
+
+/// A proof row of R this store has not checked, beside a take of P: the
+/// take asks the tracker. Its root confirmed, the take is refused and the
+/// root-check record is written in the take's write; at a height whose
+/// root the tracker refutes, the take is applied.
+#[tokio::test]
+async fn a_take_asks_the_tracker_of_a_proof_row_with_no_record() {
+    for (height, refused) in [(HEIGHT, true), (950, false)] {
+        let c = seed("sending").await;
+        assert!(write_word(&c, Writer::Retire).await);
+        z_spends_c(&c.s, "unproven").await;
+        let r = txid_of(&r_raw());
+        super::reorg_tests::insert_proven(
+            &c.s,
+            &r,
+            height,
+            &"0".repeat(64),
+            &r_raw(),
+            &single_leaf_bump(height, &r),
+        )
+        .await;
+        assert!(!checked(&c, &r).await);
+        let applied = take(&c).await;
+        if refused {
+            assert!(
+                matches!(applied, TakeApplied::Refused { .. }),
+                "{applied:?}"
+            );
+            assert_eq!(read(&c).await.y_row, "sending");
+            assert!(checked(&c, &r).await, "the take's write recorded R's root");
+        } else {
+            assert_eq!(applied, TakeApplied::Applied);
+            assert_eq!(read(&c).await.y_row, "unproven");
+            assert!(!checked(&c, &r).await);
+        }
+    }
 }
 
 /// A stored competitor proof this store checked, while no tracker answers:
