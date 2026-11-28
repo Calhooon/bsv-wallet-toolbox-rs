@@ -52,29 +52,114 @@ pub(crate) fn parse_db_timestamp(text: &str) -> DateTime<Utc> {
 }
 
 /// Run every statement of one migration file: comment lines stripped,
-/// statements split on `;`. Shared by `StorageSqlx::run_migrations` and the
-/// lazy schema check of [`SqlxBroadcastMemory`]. `pool` is a writer pool,
-/// acquired once for the whole migration (a timeout is `StoreBusy`).
+/// statements split on `;`. Shared by `StorageSqlx::run_migrations`, the
+/// open path (`make_available`) and the lazy schema check of
+/// [`SqlxBroadcastMemory`]. `pool` is a writer pool, acquired once for the
+/// whole migration: the store's one writer connection, whose
+/// `busy_timeout` is the store's ceiling ([`STORE_BUSY_CEILING_MS`]), the
+/// equivalent of `write_tx()` for statements that each commit alone (a
+/// `CREATE` cannot share a `BEGIN IMMEDIATE` with nothing to do without
+/// taking the file's write lock).
+///
+/// Opening a store that needs nothing writes nothing: a schema statement is
+/// `IF NOT EXISTS` and takes no write lock on a store that has it; a data
+/// statement (`UPDATE` or `DELETE`) runs only after a read built from its
+/// own `WHERE` ([`data_statement_guard`]) finds a row it would change. A
+/// busy answer (the writer not acquired, SQLite's busy past the ceiling) is
+/// the store's busy answer, [`Error::StoreBusy`]; any other failure is
+/// [`Error::MigrationError`] naming the migration.
+///
+/// [`STORE_BUSY_CEILING_MS`]: super::storage_sqlx::STORE_BUSY_CEILING_MS
 pub(crate) async fn apply_migration_sql(pool: &Pool<Sqlite>, name: &str, sql: &str) -> Result<()> {
     let mut conn = super::storage_sqlx::acquire_writer(pool).await?;
-    // Remove comments and split by semicolons
+    for statement in migration_statements(sql) {
+        if let Some(guard) = data_statement_guard(&statement) {
+            let pending: bool = sqlx::query_scalar(&guard)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|e| migration_error(name, &e, &guard))?;
+            if !pending {
+                continue;
+            }
+        }
+        sqlx::query(&statement)
+            .execute(&mut *conn)
+            .await
+            .map_err(|e| migration_error(name, &e, &statement))?;
+    }
+
+    Ok(())
+}
+
+/// The statements of one migration file, comment lines out, split on `;`,
+/// each trimmed, the empty ones dropped.
+pub(crate) fn migration_statements(sql: &str) -> Vec<String> {
     let sql_without_comments: String = sql
         .lines()
         .filter(|line| !line.trim().starts_with("--"))
         .collect::<Vec<_>>()
         .join("\n");
+    sql_without_comments
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
 
-    for statement in sql_without_comments.split(';') {
-        let statement = statement.trim();
-        if !statement.is_empty() {
-            sqlx::query(statement)
-                .execute(&mut *conn)
-                .await
-                .map_err(|e| Error::MigrationError(format!("{}: {}: {}", name, e, statement)))?;
+/// The read ahead of a data statement: for `UPDATE <table> ... WHERE <c>`
+/// or `DELETE FROM <table> WHERE <c>`, the read
+/// `SELECT EXISTS (SELECT 1 FROM <table> WHERE <c>)`, with the
+/// statement's own condition, so the read and the
+/// write cannot drift. `None` for any other statement (a schema statement
+/// runs as it is). The condition is the text after the statement's earliest
+/// `WHERE`; a migration's data statement keeps `WHERE` out of its `SET`
+/// clause (a unit test holds every statement of the list to it).
+pub(crate) fn data_statement_guard(statement: &str) -> Option<String> {
+    let words: Vec<&str> = statement.split_whitespace().collect();
+    let table = match words.as_slice() {
+        [verb, table, ..] if verb.eq_ignore_ascii_case("UPDATE") => *table,
+        [verb, from, table, ..]
+            if verb.eq_ignore_ascii_case("DELETE") && from.eq_ignore_ascii_case("FROM") =>
+        {
+            *table
         }
-    }
+        _ => return None,
+    };
+    let condition = where_condition(statement)?;
+    Some(format!(
+        "SELECT EXISTS (SELECT 1 FROM {table} WHERE {condition})"
+    ))
+}
 
-    Ok(())
+/// The text after the earliest whole word `WHERE` of `statement`, trimmed.
+fn where_condition(statement: &str) -> Option<&str> {
+    let upper = statement.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    let mut from = 0;
+    while let Some(at) = upper[from..].find("WHERE") {
+        let start = from + at;
+        let end = start + "WHERE".len();
+        let before = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        let after = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if before && after {
+            return Some(statement[end..].trim());
+        }
+        from = end;
+    }
+    None
+}
+
+/// A migration statement's failure: SQLite's busy is the store's busy
+/// answer (`StoreBusy`, as at every door), anything else `MigrationError`
+/// with the migration's name, the error and the statement.
+fn migration_error(name: &str, err: &sqlx::Error, statement: &str) -> Error {
+    match crate::error::sqlite_busy_code(err) {
+        Some(code) => Error::StoreBusy {
+            reason: crate::error::StoreBusyReason::SqliteBusy { code },
+        },
+        None => Error::MigrationError(format!("{name}: {err}: {statement}")),
+    }
 }
 
 /// Apply one ladder record on an open connection (inside the caller's
