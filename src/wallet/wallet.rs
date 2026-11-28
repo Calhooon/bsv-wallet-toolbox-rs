@@ -3568,7 +3568,7 @@ fn send_with_alone_refusal(door: SendWithAloneDoor, txids: &[String]) -> Error {
         ),
         SendWithAloneDoor::Sign => (
             "signAction: sendWith on a deferred action with no inputs and no outputs of the caller's",
-            " The deferred action is as it was: sign it without sendWith or release it with abortAction.",
+            " The deferred action is as it was: sign it with an empty sendWith or release it with abortAction.",
         ),
     };
     Error::ValidationError(format!(
@@ -3576,11 +3576,13 @@ fn send_with_alone_refusal(door: SendWithAloneDoor, txids: &[String]) -> Error {
          transactions [{named}] were NOT sent by this call; those that are your \
          own unsent noSend transactions are still reserved under their txids.{kept} \
          Ways out, by cost: (1) name them in sendWith beside a new action, which \
-         sends them with it at that action's own fee; (2) release one with \
-         abortAction, which frees its coins and voids it; (3) call again with \
-         acceptDelayedBroadcast: true, which on this line also builds a \
-         change-only transaction of the wallet's own, with its fee, and queues \
-         the named transactions for the monitor."
+         queues them for the monitor's send-waiting task, with no change-only \
+         transaction of the wallet's own; (2) release one with abortAction, which \
+         frees its coins and voids it; (3) call again with acceptDelayedBroadcast: \
+         true, which on this line also builds a change-only transaction of the \
+         wallet's own, with its fee, and queues it and the named transactions for \
+         the monitor's send-waiting task. A host with no monitor running never \
+         posts what (1) or (3) queues."
     ))
 }
 
