@@ -96,22 +96,33 @@ ancestor goes in as raw bytes and the walk continues to proven ancestors.
 ## Known limits
 
 A payer built on the reference's SDK from its 4.1 cannot complete a paid HTTP
-request through a wallet on this release line (observed by a run): its
-submitting call (`createAction` with `sendWith` and no inputs or outputs) is
+request through a wallet on this release line. Its submitting call
+(`createAction` with `sendWith`, no inputs and no outputs, and
+`acceptDelayedBroadcast: false`) is answered differently by release.
+
+On 0.13.9 and earlier (observed by a run on 0.13.9's tree) the call is
 answered as a new action. With a spare coin, that action builds and posts a
 change-only transaction of the wallet's own, the payment itself is not posted
 by the call and reads `sending`, and the answer does not report the payment as
 sent; with no spare coin, the call is refused (`Insufficient funds: need 2,
-have 0`), nothing is written and the payment reads `nosend`.
+have 0`), nothing is written and the payment reads `nosend`. On a host that
+runs the monitor, the payment left `sending` is posted later by the
+send-waiting task. The reference's client has by then reported the outcome as
+unknown and has not sent its paid request, so the payer is charged for a
+request that was never made. A host whose applications pay through the
+reference's SDK from its 4.1 should not serve them from 0.13.9 or earlier.
 
-On a host that runs the monitor, the payment left `sending` is posted later
-by the send-waiting task. The reference's client has by then reported the
-outcome as unknown and has not sent its paid request, so the payer is charged
-for a request that was never made. Until this line refuses that call, a host
-whose applications pay through the reference's SDK from its 4.1 should not
-serve them from a wallet on this line. The 0.14 line's tree answers the call
-as the reference does (the named payment is sent by the call and answered
-`unproven`); no published prerelease carries that yet.
+From this line's next release the call is refused by name before anything is
+built or written (`Validation error: sendWith with no inputs and no outputs is
+refused unless acceptDelayedBroadcast is true: ...`): the payment stays
+`nosend`, nothing is posted and no fee is spent, but the payment is not made
+either, and it holds its coins until the application or the host releases it
+with `abortAction` (the wallet never aborts it). The same call with
+`acceptDelayedBroadcast` not said is refused the same way, as this line's
+default is `false`; with `acceptDelayedBroadcast: true` it is answered as on
+0.13.9. The 0.14 line's tree answers the call as the reference does (the named
+payment is sent by the call and answered `unproven`); no published prerelease
+carries that yet.
 
 ## Records and releases
 

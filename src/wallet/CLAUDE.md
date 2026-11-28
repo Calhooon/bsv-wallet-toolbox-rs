@@ -360,6 +360,18 @@ All check helpers return `Ok(())` if no permissions manager is set.
 
 ## Transaction Signing Flow
 
+### The create door's refusals ahead of the storage door
+
+Before the spend lock, the storage door or any write, `create_action_at` (both `create_action` and `create_action_offering`) refuses these by name; nothing is built, written, taken or posted:
+
+| Call | Answer |
+|------|--------|
+| empty or over-long originator | `validate_originator`'s refusal |
+| `sendWith` non-empty, no inputs, no outputs, `acceptDelayedBroadcast` `false` or not said (this line's default is `false`) | `refuse_send_with_alone`: `Error::ValidationError` (as `bsv_rs::Error::WalletError`, `Validation error: sendWith with no inputs and no outputs is refused unless acceptDelayedBroadcast is true: the named transactions [<txids>] were NOT sent; they are still reserved under their txids; ...`). The named transactions stay `nosend`; the wallet never aborts them. The reference payer's submit (`AuthFetch` from the SDK's 4.1); this line has no stored post of named transactions alone, the 0.14 line answers it as the reference does (`tests/send_with_alone_refused_tests.rs`) |
+| the same with `acceptDelayedBroadcast: true`; `sendWith` beside an input or an output | not refused here: a new action, as before |
+
+The storage door's own argument refusals (`validate_create_action_args`: description, labels, outputs, inputs) are the same class, `Error::ValidationError`.
+
 ### Immediate Signing (sign_and_process = true, default)
 
 ```
