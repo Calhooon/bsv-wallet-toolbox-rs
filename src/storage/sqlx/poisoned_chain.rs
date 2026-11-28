@@ -321,6 +321,23 @@ impl StorageSqlx {
         Ok(chain)
     }
 
+    /// Is `transaction_id` ended on a checked double spend: `failed`, with
+    /// a `spent-proven` verdict at an input it spends?
+    async fn ended_on_checked_double_spend(&self, transaction_id: i64) -> Result<bool> {
+        let ended: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM transactions t \
+             WHERE t.transaction_id = ?1 AND t.status = 'failed' \
+               AND EXISTS (SELECT 1 FROM outputs o \
+                           JOIN locked_input_checks c ON c.output_id = o.output_id \
+                           WHERE o.spent_by = ?1 AND c.last_verdict = ?2)",
+        )
+        .bind(transaction_id)
+        .bind(super::LOCKED_VERDICT_SPENT_PROVEN)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(ended.is_some())
+    }
+
     /// `transaction_id`s of the transactions spending an output of
     /// `transaction_id`.
     async fn spenders_of_transaction(&self, transaction_id: i64) -> Result<Vec<i64>> {
@@ -688,6 +705,26 @@ impl StorageSqlx {
         now: DateTime<Utc>,
         report: &mut PoisonReport,
     ) -> Result<()> {
+        // A transaction already ended on a checked double spend (`failed`,
+        // a `spent-proven` verdict at one of its inputs) keeps every mark
+        // and word that proof wrote: none of its inputs' verdicts and no
+        // word of its request is rewritten by a walk that merely does not
+        // know. Read now, not from the walk's snapshot, so a row ended
+        // after the walk began is kept too. Its own descendants were
+        // walked when it was ended; the walk reaches them through it and
+        // writes them the same `invalid` word.
+        if self
+            .ended_on_checked_double_spend(tx.transaction_id)
+            .await?
+        {
+            tracing::info!(
+                txid = %tx.txid,
+                root = %root_txid,
+                marker = "poisoned_walk_kept_checked_double_spend",
+                "poisoned chain: a descendant already ended on a checked double spend keeps its marks and its word"
+            );
+            return Ok(());
+        }
         // Inputs: released one by one, each on a chain verification, and
         // only when the coin came from OUTSIDE the poisoned set.
         let inputs = sqlx::query(

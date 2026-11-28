@@ -71,6 +71,9 @@ fn d_raw() -> Vec<u8> {
 fn e_raw() -> Vec<u8> {
     spending(&[(&txid_of(&r_raw()), 1)], &[900])
 }
+fn f_raw() -> Vec<u8> {
+    spending(&[(&txid_of(&d_raw()), 0)], &[2400])
+}
 /// The stranger's spend of O.
 fn c_raw() -> Vec<u8> {
     spending(&[(&txid_of(&ot_raw()), 0)], &[1999])
@@ -84,8 +87,9 @@ pub(super) struct Store {
     pub(super) s: StorageSqlx,
     pub(super) r: String,
     pub(super) d: String,
-    #[allow(dead_code)]
     pub(super) e: String,
+    /// D's own child.
+    pub(super) f: String,
     /// O's output row.
     pub(super) o: i64,
     pub(super) d_row: i64,
@@ -191,13 +195,15 @@ async fn seed() -> Store {
     let r = tx_row(&s, user_id, &r_raw(), "sending").await;
     let d = tx_row(&s, user_id, &d_raw(), "sending").await;
     let e = tx_row(&s, user_id, &e_raw(), "sending").await;
+    let f = tx_row(&s, user_id, &f_raw(), "sending").await;
     out_row(&s, user_id, cb, COINBASE_TXID, 0, Some(r)).await;
     let o = out_row(&s, user_id, ot, &txid_of(&ot_raw()), 0, Some(d)).await;
     out_row(&s, user_id, r, &txid_of(&r_raw()), 0, Some(d)).await;
     out_row(&s, user_id, r, &txid_of(&r_raw()), 1, Some(e)).await;
-    out_row(&s, user_id, d, &txid_of(&d_raw()), 0, None).await;
+    out_row(&s, user_id, d, &txid_of(&d_raw()), 0, Some(f)).await;
     out_row(&s, user_id, e, &txid_of(&e_raw()), 0, None).await;
-    for raw in [r_raw(), d_raw(), e_raw()] {
+    out_row(&s, user_id, f, &txid_of(&f_raw()), 0, None).await;
+    for raw in [r_raw(), d_raw(), e_raw(), f_raw()] {
         req_row(&s, &raw).await;
     }
     Store {
@@ -205,6 +211,7 @@ async fn seed() -> Store {
         r: txid_of(&r_raw()),
         d: txid_of(&d_raw()),
         e: txid_of(&e_raw()),
+        f: txid_of(&f_raw()),
         o,
         d_row: d,
     }
@@ -278,6 +285,33 @@ pub(super) async fn req_word(s: &StorageSqlx, txid: &str) -> String {
         .unwrap()
 }
 
+pub(super) async fn tx_word(s: &StorageSqlx, txid: &str) -> String {
+    sqlx::query_scalar("SELECT status FROM transactions WHERE txid = ?")
+        .bind(txid)
+        .fetch_one(s.pool())
+        .await
+        .unwrap()
+}
+
+/// O's check row and D's request: (verdict, attempts, next check), (word,
+/// attempts).
+async fn d_marks(st: &Store) -> ((Option<String>, i64, String), (String, i64)) {
+    let check: (Option<String>, i64, String) = sqlx::query_as(
+        "SELECT last_verdict, attempts, CAST(next_check_at AS TEXT) FROM locked_input_checks WHERE output_id = ?",
+    )
+    .bind(st.o)
+    .fetch_one(st.s.pool())
+    .await
+    .unwrap();
+    let req: (String, i64) =
+        sqlx::query_as("SELECT status, attempts FROM proven_tx_reqs WHERE txid = ?")
+            .bind(&st.d)
+            .fetch_one(st.s.pool())
+            .await
+            .unwrap();
+    (check, req)
+}
+
 /// Every locked-input re-check due now.
 async fn due_now(s: &StorageSqlx) {
     sqlx::query("UPDATE locked_input_checks SET next_check_at = datetime('now', '-1 minutes')")
@@ -320,4 +354,60 @@ async fn a_spent_proven_verdict_stays_through_every_later_retire() {
         }
     }
     assert!(wrong.is_empty(), "marks lowered:\n{}", wrong.join("\n"));
+}
+
+/// The descendants' walk keeps a descendant already ended on a checked
+/// double spend: none of its inputs' verdicts (O's verdict, attempts and
+/// schedule) and no word of its request (`doubleSpend`, its attempts) is
+/// rewritten, for each of R's retires; and where D is ended by its own
+/// competitor after R's retire began (the walk cut by a busy store after
+/// R's rows, finished by the status review), the same. D's child F was
+/// walked when D was ended (`failed`, `invalid`) and reads so after.
+#[tokio::test]
+async fn the_walk_keeps_a_descendant_ended_on_a_checked_double_spend() {
+    let mut wrong = Vec::new();
+    for how in RETIRES {
+        let st = seed().await;
+        competitor_proven(&st.s, &st.d, &c_raw(), C_HEIGHT).await;
+        let before = d_marks(&st).await;
+        let f_before = (tx_word(&st.s, &st.f).await, req_word(&st.s, &st.f).await);
+        retire_r(&st, how).await;
+        let after = d_marks(&st).await;
+        let f_after = (tx_word(&st.s, &st.f).await, req_word(&st.s, &st.f).await);
+        if after != before || f_before != ("failed".into(), "invalid".into()) || f_after != f_before
+        {
+            wrong.push(format!(
+                "{how:?}: D {before:?} -> {after:?}; F {f_before:?} -> {f_after:?}"
+            ));
+        }
+        if tx_word(&st.s, &st.e).await != "failed" {
+            wrong.push(format!("{how:?}: E not retired"));
+        }
+    }
+
+    // D ended by its own competitor after R's retire began.
+    let st = seed().await;
+    st.s.busy_next_descendant_retire();
+    let services = asking(&c2_raw(), C2_HEIGHT);
+    WalletStorageProvider::set_services(&st.s, services.clone());
+    assert!(st
+        .s
+        .retire_undeliverable_txid(services.as_ref(), &st.r, "invalid")
+        .await
+        .is_err());
+    assert_eq!(tx_word(&st.s, &st.r).await, "failed");
+    assert_eq!(tx_word(&st.s, &st.d).await, "sending");
+    competitor_proven(&st.s, &st.d, &c_raw(), C_HEIGHT).await;
+    let before = d_marks(&st).await;
+    MonitorStorage::review_status(&st.s).await.unwrap();
+    let after = d_marks(&st).await;
+    if after != before {
+        wrong.push(format!(
+            "ended after the walk began: D {before:?} -> {after:?}"
+        ));
+    }
+    if tx_word(&st.s, &st.e).await != "failed" {
+        wrong.push("ended after the walk began: E not retired by the review".into());
+    }
+    assert!(wrong.is_empty(), "walk off the rule:\n{}", wrong.join("\n"));
 }
