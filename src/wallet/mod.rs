@@ -97,6 +97,7 @@ pub(crate) mod internalize_answer;
 pub(crate) mod internalize_args;
 pub(crate) mod label;
 pub mod lookup;
+mod send_set;
 mod signer;
 #[allow(clippy::module_inception)]
 mod wallet;

@@ -27,7 +27,8 @@ use chrono::Utc;
 use sqlx::{Row, SqliteConnection};
 
 use super::StorageSqlx;
-use crate::services::{PostBeefResult, PostTxResultForTxid};
+use crate::services::PostBeefResult;
+#[cfg(test)]
 use crate::storage::broadcast::classify_broadcast_results;
 use crate::storage::broadcast::BroadcastOutcome;
 use bsv_rs::transaction::{Beef, BeefTx};
@@ -876,26 +877,7 @@ async fn post_stored_actions(
 }
 
 fn stored_post_outcome(words: &[PostBeefResult], txid: &str) -> BroadcastOutcome {
-    let selected: Vec<_> = words
-        .iter()
-        .cloned()
-        .map(|mut word| {
-            if !word.txid_results.is_empty() {
-                word.txid_results.retain(|result| result.txid == txid);
-                word.status = if word
-                    .txid_results
-                    .iter()
-                    .any(PostTxResultForTxid::is_success)
-                {
-                    "success".to_string()
-                } else {
-                    "error".to_string()
-                };
-            }
-            word
-        })
-        .collect();
-    classify_broadcast_results(&selected)
+    crate::storage::broadcast::classify_for_txid(words, txid)
 }
 
 async fn finish_stored_posts(
