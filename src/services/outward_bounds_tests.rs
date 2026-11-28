@@ -290,3 +290,80 @@ mod explorers {
         assert_eq!(r.unwrap().raw_tx.map(|t| t.len()), Some(raw.len()));
     }
 }
+
+/// The broadcasters (ARC, Arcade REST) and the fiat rates.
+mod broadcasters {
+    use super::*;
+
+    const TXID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    use crate::services::providers::http_client::{
+        RATES_ANSWER_MAX_BYTES, STATUS_ANSWER_MAX_BYTES,
+    };
+    use crate::services::providers::{Arc, ArcConfig, Arcade, ArcadeConfig};
+
+    fn arc(url: &str, secs: u64) -> Arc {
+        let config = ArcConfig {
+            timeout_secs: Some(secs),
+            ..Default::default()
+        };
+        Arc::new(url, Some(config), Some("arc")).unwrap()
+    }
+
+    fn arcade(url: &str, secs: u64) -> Arcade {
+        let config = ArcadeConfig {
+            timeout_secs: Some(secs),
+            ..Default::default()
+        };
+        Arcade::new(url, Some(config), Some("arcade")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_stalled_arc_returns_within_its_total_time() {
+        let l = listen(vec![Answer::Stall]).await;
+        let (r, took) = bounded(Duration::from_secs(10), arc(&l.url, 2).get_tx_data(TXID)).await;
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert!(r.is_err(), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_arcade_returns_within_its_total_time() {
+        let l = listen(vec![Answer::Stall]).await;
+        let (r, took) = bounded(
+            Duration::from_secs(10),
+            arcade(&l.url, 2).get_tx_status(TXID),
+        )
+        .await;
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert!(r.is_err(), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn an_endless_arc_answer_stops_at_its_bound() {
+        let l = listen(vec![Answer::Endless]).await;
+        let (r, _) = bounded(Duration::from_secs(60), arc(&l.url, 50).get_tx_data(TXID)).await;
+        stopped_at(&l, STATUS_ANSWER_MAX_BYTES, &format!("{r:?}"));
+        assert!(matches!(r, Err(crate::Error::NetworkError(_))), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn an_endless_arcade_answer_stops_at_its_bound() {
+        let l = listen(vec![Answer::Endless]).await;
+        let (r, _) = bounded(
+            Duration::from_secs(60),
+            arcade(&l.url, 50).get_tx_status(TXID),
+        )
+        .await;
+        stopped_at(&l, STATUS_ANSWER_MAX_BYTES, &format!("{r:?}"));
+        assert!(matches!(r, Err(crate::Error::NetworkError(_))), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn a_broadcaster_answer_at_its_bound_is_read_whole() {
+        reads_whole_at_and_refuses_past(STATUS_ANSWER_MAX_BYTES).await;
+    }
+
+    #[tokio::test]
+    async fn a_rates_answer_at_its_bound_is_read_whole() {
+        reads_whole_at_and_refuses_past(RATES_ANSWER_MAX_BYTES).await;
+    }
+}
