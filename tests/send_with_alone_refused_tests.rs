@@ -29,8 +29,8 @@ use bsv_rs::script::{LockingScript, UnlockingScript};
 use bsv_rs::transaction::{MerklePath, Transaction, TransactionInput, TransactionOutput};
 use bsv_rs::wallet::{
     AbortActionArgs, Counterparty, CreateActionArgs, CreateActionOptions, CreateActionOutput,
-    CreateActionResult, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel, SendWithResult,
-    SignActionArgs, SignActionOptions, WalletInterface,
+    CreateActionResult, KeyDeriverApi, ProtoWallet, Protocol, SecurityLevel, SignActionArgs,
+    SignActionOptions, SignActionResult, WalletInterface,
 };
 use bsv_wallet_toolbox_rs::monitor::tasks::SendWaitingTask;
 use bsv_wallet_toolbox_rs::services::mock::MockWalletServices;
@@ -554,14 +554,12 @@ async fn deferred_reference(wallet: &Payer, outputs: Option<Vec<CreateActionOutp
 }
 
 /// A sign answer in the words `described` reads.
-fn as_create(
-    answer: bsv_rs::Result<(Option<[u8; 32]>, Option<Vec<SendWithResult>>)>,
-) -> bsv_rs::Result<CreateActionResult> {
-    answer.map(|(txid, send_with_results)| CreateActionResult {
-        txid,
+fn as_create(answer: bsv_rs::Result<SignActionResult>) -> bsv_rs::Result<CreateActionResult> {
+    answer.map(|r| CreateActionResult {
+        txid: r.txid,
         tx: None,
         no_send_change: None,
-        send_with_results,
+        send_with_results: r.send_with_results,
         signable_transaction: None,
         input_type: None,
         inputs: None,
@@ -584,8 +582,7 @@ async fn w6_the_sign_door_refuses_send_with_alone() {
     let answer = as_create(
         wallet
             .sign_action(sign_naming(reference.clone(), vec![txid]), ORIGIN)
-            .await
-            .map(|r| (r.txid, r.send_with_results)),
+            .await,
     );
     println!(
         "STEP W6 signAction\n{}\nEND",
@@ -626,8 +623,7 @@ async fn w7_the_sign_door_with_an_output_is_unchanged() {
     let answer = as_create(
         wallet
             .sign_action(sign_naming(reference, vec![txid]), ORIGIN)
-            .await
-            .map(|r| (r.txid, r.send_with_results)),
+            .await,
     );
     let seen = described(&wallet, &payment, &answer, before).await;
     println!("STEP W7\n{seen}\nEND");
