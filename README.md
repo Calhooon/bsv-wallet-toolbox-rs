@@ -5,7 +5,7 @@
 The CI badge is the required set on `main`, the gate every pull request and push runs; the others are dispatched measurements (run once before a tag, never on a push), each its own workflow. Bench, Dependents and Fuzz are registered here so they can be dispatched; they measure the programme's beta line (`--ref beta`).
 
 Storage, signing, services and monitoring for BSV wallets. The stable line is
-**0.13.x** on crates.io; this tree is **0.13.8**, and it requires
+**0.13.x** on crates.io; this tree is **0.13.9**, and it requires
 **bsv-rs "0.8.13"** by caret (0.8.13 or a later 0.8 release), the Rust SDK published by this project. The toolbox
 implements wallet operations over local SQLite storage or a remote
 JSON-RPC storage service.
@@ -92,6 +92,18 @@ and nothing is failed until a competitor's checked proof arrives. The courier
 is asked once for it and told once only when it does not know it. A BEEF never
 carries a stored path whose root the wallet's headers do not hold: that
 ancestor goes in as raw bytes and the walk continues to proven ancestors.
+
+## Known limits
+
+A payer built on the reference's SDK from its 4.1 cannot complete a paid HTTP
+request through a wallet on this release line (observed by a run): its
+submitting call (`createAction` with `sendWith` and no inputs or outputs) is
+answered as a new action. With a spare coin, that action builds and posts a
+change-only transaction of the wallet's own, the payment itself is not posted
+and reads `sending`, and the answer does not report the payment as sent; with
+no spare coin, the call is refused (`Insufficient funds: need 2, have 0`),
+nothing is written and the payment reads `nosend`. The 0.14 prerelease line is
+where the answer changes.
 
 ## Records and releases
 
