@@ -145,6 +145,7 @@ fn the_set(
     txids.push(txid.to_string());
     keep_ancestor_closure(&mut beef, &txids);
     beef.sort_txs();
+    action_last(&mut beef, txid);
     if beef.txs.iter().all(|tx| !tx.is_txid_only()) {
         beef.version = bsv_rs::transaction::BEEF_V1;
     }
@@ -217,4 +218,73 @@ fn outcome_of(
         tracing::warn!(txid = %posted, outcome = ?outcome, "Broadcast not taken: a hint, re-asked via SendWaitingTask");
     }
     outcome
+}
+
+/// Moves the action to the end of the BEEF when nothing in it spends the
+/// action: a broadcaster reads a BEEF's last transaction as its subject,
+/// and the post names the action last (`txids.last()`), as the reference's
+/// `[...sendWith, txid]`.
+fn action_last(beef: &mut Beef, txid: &str) {
+    let spends_it = beef.txs.iter().any(|t| {
+        t.tx().is_some_and(|tx| {
+            tx.inputs()
+                .iter()
+                .any(|input| input.get_source_txid().is_ok_and(|source| source == txid))
+        })
+    });
+    if spends_it {
+        return;
+    }
+    if let Some(at) = beef.txs.iter().position(|t| t.txid() == txid) {
+        let action = beef.txs.remove(at);
+        beef.txs.push(action);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::action_last;
+    use bsv_rs::script::{LockingScript, UnlockingScript};
+    use bsv_rs::transaction::{Beef, BeefTx, Transaction, TransactionInput, TransactionOutput};
+
+    /// A transaction spending `source`'s output 0, paying one output.
+    fn spending(source: &str) -> Transaction {
+        let mut tx = Transaction::new();
+        let mut input = TransactionInput::new(source.to_string(), 0);
+        input.unlocking_script = Some(UnlockingScript::from_hex("00").unwrap());
+        tx.inputs_mut().push(input);
+        tx.outputs_mut().push(TransactionOutput {
+            satoshis: Some(1_000),
+            locking_script: LockingScript::from_hex("51").unwrap(),
+            change: false,
+        });
+        tx
+    }
+
+    /// The action ends the BEEF, the subject a broadcaster reads, after a
+    /// named payment held behind it.
+    #[test]
+    fn the_action_is_the_beefs_last_transaction() {
+        let action = spending(&"11".repeat(32));
+        let payment = spending(&"22".repeat(32));
+        let mut beef = Beef::new();
+        beef.merge_raw_tx(action.to_binary(), None).unwrap();
+        beef.merge_raw_tx(payment.to_binary(), None).unwrap();
+        action_last(&mut beef, &action.id());
+        let order: Vec<String> = beef.txs.iter().map(BeefTx::txid).collect();
+        assert_eq!(order, vec![payment.id(), action.id()]);
+    }
+
+    /// A payment that spends the action stays after it.
+    #[test]
+    fn a_payment_spending_the_action_stays_after_it() {
+        let action = spending(&"11".repeat(32));
+        let payment = spending(&action.id());
+        let mut beef = Beef::new();
+        beef.merge_raw_tx(action.to_binary(), None).unwrap();
+        beef.merge_raw_tx(payment.to_binary(), None).unwrap();
+        action_last(&mut beef, &action.id());
+        let order: Vec<String> = beef.txs.iter().map(BeefTx::txid).collect();
+        assert_eq!(order, vec![action.id(), payment.id()]);
+    }
 }
