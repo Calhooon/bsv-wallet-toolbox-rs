@@ -14,7 +14,7 @@
   (`failed`, its outputs voided). Evidence the store holds on record (a
   stored competitor whose bytes spend one of the transaction's input
   outpoints, or a `spent-proven` check at one) ends every row of the
-  txid, as before. The status review's check 1, the retire write, the
+  txid. The status review's check 1, the retire write, the
   broadcaster's fatal verdict (`mark_transaction_rejected`) and the
   `sendWith` send of a named txid (which now moves the caller's own rows
   of it alone) follow the rule
